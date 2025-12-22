@@ -11,6 +11,7 @@ function Emails() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('in:inbox');
 
   useEffect(() => {
@@ -48,10 +49,12 @@ function Emails() {
   const handleSync = async () => {
     setSyncing(true);
     setError('');
+    setSuccessMessage('');
     try {
       const response = await emailService.syncEmails();
-      alert(`${response.data.synced} emails synchronisés sur ${response.data.total}`);
+      setSuccessMessage(`${response.data.synced} emails synchronisés sur ${response.data.total}`);
       fetchEmails();
+      setTimeout(() => setSuccessMessage(''), 5000);
     } catch (err) {
       setError('Erreur lors de la synchronisation: ' + err.message);
     } finally {
@@ -102,6 +105,7 @@ function Emails() {
         </div>
 
         {error && <div className="error-message">{error}</div>}
+        {successMessage && <div className="success-message">{successMessage}</div>}
 
         {loading ? (
           <div className="loading">Chargement des emails...</div>

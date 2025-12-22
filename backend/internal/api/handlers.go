@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -36,7 +38,8 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 // Auth endpoints
 func (h *Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
-	state := "random_state_string" // In production, generate a secure random state
+	// Generate a cryptographically secure random state to prevent CSRF attacks
+	state := generateRandomState()
 	authURL := h.gmailService.GetAuthURL(state)
 	
 	w.Header().Set("Content-Type", "application/json")
@@ -413,7 +416,7 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(labels)
 }
 
-// Helper function
+// Helper functions
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
@@ -421,4 +424,13 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+func generateRandomState() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based state if random generation fails
+		return base64.URLEncoding.EncodeToString([]byte(time.Now().String()))
+	}
+	return base64.URLEncoding.EncodeToString(b)
 }

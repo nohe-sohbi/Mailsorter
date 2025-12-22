@@ -70,6 +70,16 @@ button:disabled {
   border-left: 4px solid #c5221f;
 }
 
+/* Success message */
+.success-message {
+  background-color: #e6f4ea;
+  color: #137333;
+  padding: 12px;
+  border-radius: 4px;
+  margin: 10px 0;
+  border-left: 4px solid #137333;
+}
+
 /* Loading state */
 .loading {
   text-align: center;

@@ -10,8 +10,10 @@ function Rules() {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingRule, setEditingRule] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   useEffect(() => {
     const userEmail = localStorage.getItem('userEmail');
@@ -36,35 +38,53 @@ function Rules() {
   };
 
   const handleCreateRule = async (rule) => {
+    setError('');
+    setSuccessMessage('');
     try {
       await ruleService.createRule(rule);
       setShowForm(false);
+      setSuccessMessage('Règle créée avec succès');
       fetchRules();
+      setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err) {
-      alert('Erreur lors de la création de la règle: ' + err.message);
+      setError('Erreur lors de la création de la règle: ' + err.message);
     }
   };
 
   const handleUpdateRule = async (id, rule) => {
+    setError('');
+    setSuccessMessage('');
     try {
       await ruleService.updateRule(id, rule);
       setEditingRule(null);
+      setSuccessMessage('Règle mise à jour avec succès');
       fetchRules();
+      setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err) {
-      alert('Erreur lors de la mise à jour de la règle: ' + err.message);
+      setError('Erreur lors de la mise à jour de la règle: ' + err.message);
     }
   };
 
   const handleDeleteRule = async (id) => {
-    if (!window.confirm('Êtes-vous sûr de vouloir supprimer cette règle ?')) {
-      return;
-    }
+    setError('');
+    setSuccessMessage('');
     try {
       await ruleService.deleteRule(id);
+      setSuccessMessage('Règle supprimée avec succès');
+      setDeleteConfirm(null);
       fetchRules();
+      setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err) {
-      alert('Erreur lors de la suppression de la règle: ' + err.message);
+      setError('Erreur lors de la suppression de la règle: ' + err.message);
     }
+  };
+
+  const confirmDelete = (id) => {
+    setDeleteConfirm(id);
+  };
+
+  const cancelDelete = () => {
+    setDeleteConfirm(null);
   };
 
   const handleEdit = (rule) => {
@@ -93,6 +113,24 @@ function Rules() {
 
       <div className="rules-content">
         {error && <div className="error-message">{error}</div>}
+        {successMessage && <div className="success-message">{successMessage}</div>}
+
+        {deleteConfirm && (
+          <div className="delete-confirm-modal">
+            <div className="delete-confirm-content">
+              <h3>Confirmer la suppression</h3>
+              <p>Êtes-vous sûr de vouloir supprimer cette règle ?</p>
+              <div className="delete-confirm-actions">
+                <button onClick={cancelDelete} className="btn-secondary">
+                  Annuler
+                </button>
+                <button onClick={() => handleDeleteRule(deleteConfirm)} className="btn-delete">
+                  Supprimer
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {showForm && (
           <RuleForm
@@ -108,7 +146,7 @@ function Rules() {
           <RuleList
             rules={rules}
             onEdit={handleEdit}
-            onDelete={handleDeleteRule}
+            onDelete={confirmDelete}
           />
         )}
       </div>
