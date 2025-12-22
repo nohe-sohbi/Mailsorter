@@ -26,6 +26,8 @@ L'application est composée de 3 services Docker distincts :
    - URI de redirection autorisés : `http://localhost:3000/auth/callback`
 5. Notez le Client ID et le Client Secret
 
+📖 **Guide détaillé** : Voir [GMAIL_SETUP.md](GMAIL_SETUP.md) pour des instructions complètes avec captures d'écran.
+
 ## Installation
 
 1. Clonez le repository :
@@ -196,6 +198,11 @@ npm start
 - **Backend** : Go 1.21, Gorilla Mux, OAuth2, Gmail API
 - **Database** : MongoDB 7.0
 - **Containerization** : Docker, Docker Compose
+
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Architecture détaillée du système
+- [GMAIL_SETUP.md](GMAIL_SETUP.md) - Guide de configuration de l'API Gmail
 
 ## Licence
 
