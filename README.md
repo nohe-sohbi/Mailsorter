@@ -47,16 +47,60 @@ GMAIL_CLIENT_SECRET=votre_client_secret
 
 ## Démarrage de l'application
 
+### Avec Docker Compose (Production)
+
 Lancez tous les services avec Docker Compose :
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 L'application sera accessible à :
 - Frontend : http://localhost:3000
 - Backend API : http://localhost:8080
 - MongoDB : localhost:27017
+
+### Avec Make
+
+Si vous avez Make installé, vous pouvez utiliser les commandes suivantes :
+
+```bash
+make build    # Construire les images Docker
+make up       # Démarrer tous les services
+make down     # Arrêter tous les services
+make logs     # Voir les logs
+make clean    # Nettoyer tous les conteneurs et volumes
+```
+
+### Développement Local (sans Docker)
+
+Pour le développement local, vous pouvez exécuter chaque service séparément :
+
+#### Backend
+```bash
+cd backend
+go run cmd/server/main.go
+```
+
+#### Frontend
+```bash
+cd frontend
+npm install
+npm start
+```
+
+#### MongoDB
+```bash
+docker run -d -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=password \
+  mongo:7.0
+```
+
+Ou utilisez le script de développement automatique :
+```bash
+./dev-start.sh
+```
 
 ## Utilisation
 
@@ -113,13 +157,20 @@ Mailsorter/
 
 ## Arrêt de l'application
 
+### Avec Docker Compose
 ```bash
-docker-compose down
+docker compose down
 ```
 
 Pour supprimer également les volumes (données) :
 ```bash
-docker-compose down -v
+docker compose down -v
+```
+
+### Avec Make
+```bash
+make down    # Arrêter les services
+make clean   # Arrêter et nettoyer complètement
 ```
 
 ## Développement

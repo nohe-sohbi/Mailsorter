@@ -12,6 +12,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/oauth2"
 )
 
@@ -63,15 +64,6 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store user in database
-	user := models.User{
-		Email:        userEmail,
-		AccessToken:  token.AccessToken,
-		RefreshToken: token.RefreshToken,
-		TokenExpiry:  token.Expiry,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -89,8 +81,8 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	_, err = h.db.Users().UpdateOne(ctx, filter, update, 
-		&bson.M{"upsert": true})
+	opts := options.Update().SetUpsert(true)
+	_, err = h.db.Users().UpdateOne(ctx, filter, update, opts)
 	if err != nil {
 		http.Error(w, "Failed to save user: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -232,8 +224,8 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 
 		filter := bson.M{"messageId": msg.Id, "userId": userEmail}
 		update := bson.M{"$set": email}
-		_, err := h.db.Emails().UpdateOne(ctx, filter, update,
-			&bson.M{"upsert": true})
+		opts := options.Update().SetUpsert(true)
+		_, err := h.db.Emails().UpdateOne(ctx, filter, update, opts)
 		if err == nil {
 			syncCount++
 		}
