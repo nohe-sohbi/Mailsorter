@@ -29,6 +29,11 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// Labels routes
 	r.HandleFunc("/api/labels", h.GetLabels).Methods("GET")
 
+	// Config routes (no auth required for initial setup)
+	r.HandleFunc("/api/config/status", h.GetConfigStatus).Methods("GET")
+	r.HandleFunc("/api/config/gmail", h.GetGmailConfig).Methods("GET")
+	r.HandleFunc("/api/config/gmail", h.SaveGmailConfig).Methods("POST")
+
 	// Setup CORS
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost"},

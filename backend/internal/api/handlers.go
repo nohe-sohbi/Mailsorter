@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -21,12 +22,14 @@ import (
 type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
+	encryptor    *crypto.Encryptor
 }
 
-func NewHandler(db *database.Database, gmailService *gmail.Service) *Handler {
+func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor) *Handler {
 	return &Handler{
 		db:           db,
 		gmailService: gmailService,
+		encryptor:    encryptor,
 	}
 }
 
@@ -414,6 +417,131 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(labels)
+}
+
+// Config endpoints
+
+// GetConfigStatus returns whether Gmail credentials are configured
+func (h *Handler) GetConfigStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var config models.GmailConfig
+	err := h.db.GmailConfig().FindOne(ctx, bson.M{}).Decode(&config)
+
+	status := models.GmailConfigStatus{
+		IsConfigured: err == nil && config.IsConfigured,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+// GetGmailConfig returns the current config with masked secret
+func (h *Handler) GetGmailConfig(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var config models.GmailConfig
+	err := h.db.GmailConfig().FindOne(ctx, bson.M{}).Decode(&config)
+
+	masked := models.GmailConfigMasked{
+		IsConfigured: false,
+	}
+
+	if err == nil {
+		masked.ClientID = config.ClientID
+		masked.RedirectURL = config.RedirectURL
+		masked.IsConfigured = config.IsConfigured
+		if config.ClientSecretEncrypted != "" {
+			masked.ClientSecret = "********"
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(masked)
+}
+
+// SaveGmailConfig saves the Gmail credentials (encrypted)
+func (h *Handler) SaveGmailConfig(w http.ResponseWriter, r *http.Request) {
+	var input models.GmailConfigInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if input.ClientID == "" {
+		http.Error(w, "Client ID is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Check if we need to keep the existing secret
+	var existingConfig models.GmailConfig
+	existingErr := h.db.GmailConfig().FindOne(ctx, bson.M{}).Decode(&existingConfig)
+
+	var encryptedSecret string
+	var plainSecret string
+
+	if input.ClientSecret != "" {
+		// New secret provided, encrypt it
+		encrypted, err := h.encryptor.Encrypt(input.ClientSecret)
+		if err != nil {
+			http.Error(w, "Failed to encrypt credentials", http.StatusInternalServerError)
+			return
+		}
+		encryptedSecret = encrypted
+		plainSecret = input.ClientSecret
+	} else if existingErr == nil && existingConfig.ClientSecretEncrypted != "" {
+		// Keep existing secret
+		encryptedSecret = existingConfig.ClientSecretEncrypted
+		// Decrypt for hot reload
+		decrypted, err := h.encryptor.Decrypt(existingConfig.ClientSecretEncrypted)
+		if err != nil {
+			http.Error(w, "Failed to decrypt existing credentials", http.StatusInternalServerError)
+			return
+		}
+		plainSecret = decrypted
+	} else {
+		http.Error(w, "Client Secret is required", http.StatusBadRequest)
+		return
+	}
+
+	// Set default redirect URL if not provided
+	redirectURL := input.RedirectURL
+	if redirectURL == "" {
+		redirectURL = "http://localhost:3000/auth/callback"
+	}
+
+	// Upsert configuration (single document)
+	filter := bson.M{}
+	update := bson.M{
+		"$set": bson.M{
+			"clientId":              input.ClientID,
+			"clientSecretEncrypted": encryptedSecret,
+			"redirectUrl":           redirectURL,
+			"isConfigured":          true,
+			"updatedAt":             time.Now(),
+		},
+		"$setOnInsert": bson.M{
+			"createdAt": time.Now(),
+		},
+	}
+	opts := options.Update().SetUpsert(true)
+	_, err := h.db.GmailConfig().UpdateOne(ctx, filter, update, opts)
+	if err != nil {
+		http.Error(w, "Failed to save configuration", http.StatusInternalServerError)
+		return
+	}
+
+	// Hot reload Gmail service
+	h.gmailService.UpdateConfig(input.ClientID, plainSecret, redirectURL)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
 // Helper functions
