@@ -39,4 +39,10 @@ export const labelService = {
   getLabels: () => apiClient.get('/api/labels'),
 };
 
+export const configService = {
+  getStatus: () => apiClient.get('/api/config/status'),
+  getGmailConfig: () => apiClient.get('/api/config/gmail'),
+  saveGmailConfig: (config) => apiClient.post('/api/config/gmail', config),
+};
+
 export default apiClient;
