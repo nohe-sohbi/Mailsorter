@@ -102,11 +102,14 @@ function Rules() {
       <header className="rules-header">
         <h1>Règles de tri</h1>
         <div className="header-actions">
+          <button onClick={() => navigate('/settings')} className="btn-settings">
+            Settings
+          </button>
           <button onClick={() => navigate('/emails')} className="btn-secondary">
-            Retour aux emails
+            Back to Emails
           </button>
           <button onClick={() => setShowForm(true)} className="btn-primary">
-            Nouvelle règle
+            New Rule
           </button>
         </div>
       </header>

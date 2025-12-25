@@ -78,14 +78,17 @@ function Emails() {
       <header className="emails-header">
         <h1>Mailsorter</h1>
         <div className="header-actions">
+          <button onClick={() => navigate('/settings')} className="btn-settings">
+            Settings
+          </button>
           <button onClick={() => navigate('/rules')} className="btn-secondary">
-            Règles de tri
+            Sorting Rules
           </button>
           <button onClick={handleSync} disabled={syncing} className="btn-primary">
-            {syncing ? 'Synchronisation...' : 'Synchroniser'}
+            {syncing ? 'Syncing...' : 'Sync'}
           </button>
           <button onClick={handleLogout} className="btn-logout">
-            Déconnexion
+            Logout
           </button>
         </div>
       </header>
