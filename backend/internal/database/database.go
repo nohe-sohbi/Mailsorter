@@ -57,3 +57,7 @@ func (d *Database) SortingRules() *mongo.Collection {
 func (d *Database) Labels() *mongo.Collection {
 	return d.DB.Collection("labels")
 }
+
+func (d *Database) GmailConfig() *mongo.Collection {
+	return d.DB.Collection("gmail_config")
+}

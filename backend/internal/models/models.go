@@ -71,3 +71,34 @@ type TokenResponse struct {
 	AccessToken string `json:"accessToken"`
 	UserEmail   string `json:"userEmail"`
 }
+
+// GmailConfig stores the Gmail API credentials
+type GmailConfig struct {
+	ID                    string    `json:"id" bson:"_id,omitempty"`
+	ClientID              string    `json:"clientId" bson:"clientId"`
+	ClientSecretEncrypted string    `json:"-" bson:"clientSecretEncrypted"`
+	RedirectURL           string    `json:"redirectUrl" bson:"redirectUrl"`
+	IsConfigured          bool      `json:"isConfigured" bson:"isConfigured"`
+	CreatedAt             time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt" bson:"updatedAt"`
+}
+
+// GmailConfigStatus is returned by GET /api/config/status
+type GmailConfigStatus struct {
+	IsConfigured bool `json:"isConfigured"`
+}
+
+// GmailConfigMasked is returned by GET /api/config/gmail
+type GmailConfigMasked struct {
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	RedirectURL  string `json:"redirectUrl"`
+	IsConfigured bool   `json:"isConfigured"`
+}
+
+// GmailConfigInput is the request body for POST /api/config/gmail
+type GmailConfigInput struct {
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	RedirectURL  string `json:"redirectUrl"`
+}

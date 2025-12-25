@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -14,10 +15,36 @@ import (
 
 type Service struct {
 	config *oauth2.Config
+	mu     sync.RWMutex
 }
 
 func NewService(clientID, clientSecret, redirectURL string) *Service {
-	config := &oauth2.Config{
+	var config *oauth2.Config
+	if clientID != "" && clientSecret != "" {
+		config = &oauth2.Config{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			RedirectURL:  redirectURL,
+			Scopes: []string{
+				gmail.GmailReadonlyScope,
+				gmail.GmailModifyScope,
+				gmail.GmailLabelsScope,
+			},
+			Endpoint: google.Endpoint,
+		}
+	}
+
+	return &Service{
+		config: config,
+	}
+}
+
+// UpdateConfig updates the OAuth configuration at runtime (hot reload)
+func (s *Service) UpdateConfig(clientID, clientSecret, redirectURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.config = &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURL,
@@ -28,27 +55,38 @@ func NewService(clientID, clientSecret, redirectURL string) *Service {
 		},
 		Endpoint: google.Endpoint,
 	}
+}
 
-	return &Service{
-		config: config,
-	}
+// IsConfigured returns true if OAuth credentials are set
+func (s *Service) IsConfigured() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config != nil && s.config.ClientID != "" && s.config.ClientSecret != ""
 }
 
 func (s *Service) GetAuthURL(state string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
 }
 
 func (s *Service) ExchangeCode(code string) (*oauth2.Token, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.config.Exchange(context.Background(), code)
 }
 
 func (s *Service) GetClient(token *oauth2.Token) *gmail.Service {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	client := s.config.Client(context.Background(), token)
 	srv, _ := gmail.NewService(context.Background(), option.WithHTTPClient(client))
 	return srv
 }
 
 func (s *Service) RefreshToken(refreshToken string) (*oauth2.Token, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	token := &oauth2.Token{
 		RefreshToken: refreshToken,
 	}
