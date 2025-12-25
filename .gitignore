@@ -1,0 +1,47 @@
+# Environment files
+.env
+
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# MongoDB data
+mongo-data/
+
+# Go
+*.test
+*.out
+coverage.txt
+backend/server
+
+# Frontend
+frontend/build/
+frontend/node_modules/
+frontend/package-lock.json
+
+# Backend
+backend/mailsorter
+backend/token.json
+backend/credentials.json

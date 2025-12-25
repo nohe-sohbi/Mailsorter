@@ -1,0 +1,301 @@
+.rules-container {
+  min-height: 100vh;
+  background-color: #f5f5f5;
+}
+
+.rules-header {
+  background-color: white;
+  padding: 20px 40px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.rules-header h1 {
+  color: #202124;
+  font-size: 24px;
+}
+
+.rules-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Rule Form */
+.rule-form-container {
+  background-color: white;
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.rule-form h2 {
+  margin-bottom: 20px;
+  color: #202124;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #202124;
+  font-size: 14px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: #1a73e8;
+}
+
+.condition-row,
+.action-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.condition-row select,
+.action-row select {
+  padding: 10px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: white;
+}
+
+.condition-row input,
+.action-row input {
+  flex: 1;
+}
+
+.btn-add {
+  background-color: #e8f0fe;
+  color: #1967d2;
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.btn-add:hover {
+  background-color: #d2e3fc;
+}
+
+.btn-remove {
+  background-color: #fce8e6;
+  color: #c5221f;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.btn-remove:hover {
+  background-color: #f8d7da;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 24px;
+}
+
+/* Rule List */
+.rule-list {
+  display: grid;
+  gap: 16px;
+}
+
+.rule-item {
+  background-color: white;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: box-shadow 0.2s;
+}
+
+.rule-item:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.rule-item.disabled {
+  opacity: 0.6;
+}
+
+.rule-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.rule-header h3 {
+  color: #202124;
+  font-size: 18px;
+}
+
+.rule-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-edit {
+  background-color: #e8f0fe;
+  color: #1967d2;
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.btn-edit:hover {
+  background-color: #d2e3fc;
+}
+
+.btn-delete {
+  background-color: #fce8e6;
+  color: #c5221f;
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.btn-delete:hover {
+  background-color: #f8d7da;
+}
+
+.rule-description {
+  color: #5f6368;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+.rule-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+
+.rule-section h4 {
+  font-size: 14px;
+  color: #202124;
+  margin-bottom: 8px;
+}
+
+.rule-section ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.rule-section li {
+  padding: 6px 0;
+  color: #5f6368;
+  font-size: 13px;
+}
+
+.rule-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid #e8eaed;
+}
+
+.rule-priority {
+  font-size: 12px;
+  color: #5f6368;
+  font-weight: 500;
+}
+
+.rule-status {
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.rule-status.enabled {
+  background-color: #e6f4ea;
+  color: #137333;
+}
+
+.rule-status.disabled {
+  background-color: #e8eaed;
+  color: #5f6368;
+}
+
+.no-rules {
+  text-align: center;
+  padding: 60px 20px;
+  color: #5f6368;
+  font-size: 16px;
+}
+
+/* Delete Confirmation Modal */
+.delete-confirm-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.delete-confirm-content {
+  background-color: white;
+  padding: 24px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  max-width: 400px;
+  width: 90%;
+}
+
+.delete-confirm-content h3 {
+  margin-bottom: 12px;
+  color: #202124;
+}
+
+.delete-confirm-content p {
+  margin-bottom: 20px;
+  color: #5f6368;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
