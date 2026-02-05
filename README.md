@@ -201,7 +201,7 @@ npm start
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - Architecture détaillée du système
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Architecture détaillée du système
 - [GMAIL_SETUP.md](GMAIL_SETUP.md) - Guide de configuration de l'API Gmail
 
 ## Licence
