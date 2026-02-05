@@ -24,19 +24,40 @@ export const authService = {
 };
 
 export const emailService = {
-  getEmails: (query = '') => apiClient.get(`/api/emails${query ? `?q=${query}` : ''}`),
+  getEmails: (query = '', options = {}) => {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    if (options.maxResults) params.set('maxResults', options.maxResults);
+    if (options.pageToken) params.set('pageToken', options.pageToken);
+    const queryString = params.toString();
+    return apiClient.get(`/api/emails${queryString ? `?${queryString}` : ''}`);
+  },
   syncEmails: () => apiClient.post('/api/emails/sync'),
-};
-
-export const ruleService = {
-  getRules: () => apiClient.get('/api/rules'),
-  createRule: (rule) => apiClient.post('/api/rules', rule),
-  updateRule: (id, rule) => apiClient.put(`/api/rules/${id}`, rule),
-  deleteRule: (id) => apiClient.delete(`/api/rules/${id}`),
+  getStats: () => apiClient.get('/api/stats'),
 };
 
 export const labelService = {
   getLabels: () => apiClient.get('/api/labels'),
+};
+
+export const aiService = {
+  analyzeEmails: (emailIds) => apiClient.post('/api/ai/analyze', { emailIds }),
+  analyzeSender: (senderEmail) => apiClient.post('/api/ai/analyze-sender', { senderEmail }),
+  applySuggestion: (suggestionId) => apiClient.post('/api/ai/apply', { suggestionId }),
+  applyBulk: (senderEmail, action, labelName) =>
+    apiClient.post('/api/ai/apply-bulk', { senderEmail, action, labelName }),
+  getSuggestions: (status = 'pending') => apiClient.get(`/api/ai/suggestions?status=${status}`),
+  rejectSuggestion: (id) => apiClient.post(`/api/ai/suggestions/${id}/reject`),
+};
+
+export const senderService = {
+  getSenders: () => apiClient.get('/api/senders'),
+  updatePreference: (id, preference) => apiClient.put(`/api/senders/${id}/preferences`, preference),
+};
+
+export const smartLabelService = {
+  getLabels: () => apiClient.get('/api/smart-labels'),
+  createLabel: (label) => apiClient.post('/api/smart-labels', label),
 };
 
 export const configService = {

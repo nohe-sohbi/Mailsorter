@@ -12,6 +12,10 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
+# Load environment variables from .env file
+echo "Loading environment variables from .env..."
+export $(grep -v '^#' .env | grep -v '^$' | xargs)
+
 # Start MongoDB using Docker
 echo "Starting MongoDB..."
 docker run -d \

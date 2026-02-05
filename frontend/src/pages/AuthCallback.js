@@ -29,7 +29,7 @@ function AuthCallback() {
       const response = await authService.handleCallback(code);
       localStorage.setItem('userEmail', response.data.userEmail);
       localStorage.setItem('accessToken', response.data.accessToken);
-      navigate('/emails');
+      navigate('/inbox');
     } catch (err) {
       const errorMessage = err.response?.data?.error || err.message;
       setError(`Erreur lors de l'authentification: ${errorMessage}`);

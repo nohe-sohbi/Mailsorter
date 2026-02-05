@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
-import Emails from './pages/Emails';
-import Rules from './pages/Rules';
+import Inbox from './pages/Inbox';
 import Setup from './pages/Setup';
 import Settings from './pages/Settings';
 import AuthCallback from './pages/AuthCallback';
+import Header from './components/Header';
+import { EmailProvider } from './contexts/EmailContext';
 import { configService } from './services/api';
 import './styles/App.css';
 
@@ -47,8 +48,10 @@ function App() {
 
   return (
     <Router>
-      <div className="App">
-        <Routes>
+      <EmailProvider>
+        <div className="App">
+          <Header />
+          <Routes>
           <Route
             path="/setup"
             element={
@@ -66,15 +69,9 @@ function App() {
             }
           />
           <Route
-            path="/emails"
+            path="/inbox"
             element={
-              isConfigured ? <Emails /> : <Navigate to="/setup" replace />
-            }
-          />
-          <Route
-            path="/rules"
-            element={
-              isConfigured ? <Rules /> : <Navigate to="/setup" replace />
+              isConfigured ? <Inbox /> : <Navigate to="/setup" replace />
             }
           />
           <Route
@@ -87,8 +84,12 @@ function App() {
             path="/auth/callback"
             element={<AuthCallback />}
           />
+          {/* Redirects for old routes */}
+          <Route path="/emails" element={<Navigate to="/inbox" replace />} />
+          <Route path="/triage" element={<Navigate to="/inbox" replace />} />
         </Routes>
       </div>
+    </EmailProvider>
     </Router>
   );
 }

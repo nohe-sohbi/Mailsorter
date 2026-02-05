@@ -10,82 +10,31 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
+  background-color: #f5f7fa;
+  color: #1a1a2e;
 }
 
 .App {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Common button styles */
 button {
   cursor: pointer;
   border: none;
-  border-radius: 4px;
-  padding: 10px 20px;
+  border-radius: 6px;
+  padding: 8px 16px;
   font-size: 14px;
   font-weight: 500;
   transition: all 0.2s;
-}
-
-.btn-primary {
-  background-color: #1a73e8;
-  color: white;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background-color: #1557b0;
-}
-
-.btn-secondary {
-  background-color: #f1f3f4;
-  color: #202124;
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background-color: #e8eaed;
-}
-
-.btn-logout {
-  background-color: #ea4335;
-  color: white;
-}
-
-.btn-logout:hover {
-  background-color: #d33b2c;
+  font-family: inherit;
 }
 
 button:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
-}
-
-/* Error message */
-.error-message {
-  background-color: #fce8e6;
-  color: #c5221f;
-  padding: 12px;
-  border-radius: 4px;
-  margin: 10px 0;
-  border-left: 4px solid #c5221f;
-}
-
-/* Success message */
-.success-message {
-  background-color: #e6f4ea;
-  color: #137333;
-  padding: 12px;
-  border-radius: 4px;
-  margin: 10px 0;
-  border-left: 4px solid #137333;
-}
-
-/* Loading state */
-.loading {
-  text-align: center;
-  padding: 40px;
-  color: #5f6368;
-  font-size: 16px;
 }
 
 /* App loading state */
@@ -95,15 +44,15 @@ button:disabled {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: #f5f7fa;
+  color: #1a1a2e;
 }
 
 .app-loading .spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
+  border: 3px solid #e0e0e0;
+  border-top-color: #4f46e5;
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
@@ -111,10 +60,11 @@ button:disabled {
 
 .app-loading p {
   font-size: 16px;
+  color: #6b7280;
 }
 
 .app-loading .error {
-  color: #ffcccb;
+  color: #dc2626;
   font-weight: 500;
 }
 
@@ -124,12 +74,26 @@ button:disabled {
   }
 }
 
-/* Settings button in header */
-.btn-settings {
-  background-color: #5f6368;
-  color: white;
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
-.btn-settings:hover {
-  background-color: #444;
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c0c0c0;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a0a0a0;
+}
+
+/* Selection */
+::selection {
+  background: rgba(79, 70, 229, 0.2);
 }

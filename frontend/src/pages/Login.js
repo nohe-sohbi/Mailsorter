@@ -10,11 +10,18 @@ function Login() {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    // Redirect if already logged in
+    const userEmail = localStorage.getItem('userEmail');
+    if (userEmail) {
+      navigate('/inbox');
+      return;
+    }
+
     const code = searchParams.get('code');
     if (code) {
       handleCallback(code);
     }
-  }, [searchParams]);
+  }, [searchParams, navigate]);
 
   const handleCallback = async (code) => {
     setLoading(true);
@@ -23,7 +30,7 @@ function Login() {
       const response = await authService.handleCallback(code);
       localStorage.setItem('userEmail', response.data.userEmail);
       localStorage.setItem('accessToken', response.data.accessToken);
-      navigate('/emails');
+      navigate('/inbox');
     } catch (err) {
       setError('Erreur lors de l\'authentification: ' + err.message);
       setLoading(false);
@@ -46,12 +53,12 @@ function Login() {
     <div className="login-container">
       <div className="login-card">
         <h1>Mailsorter</h1>
-        <p>Triez automatiquement vos emails Gmail</p>
-        
+        <p>Triez automatiquement vos emails Gmail avec l'IA</p>
+
         {error && <div className="error-message">{error}</div>}
-        
-        <button 
-          onClick={handleLogin} 
+
+        <button
+          onClick={handleLogin}
           disabled={loading}
           className="login-button"
         >
