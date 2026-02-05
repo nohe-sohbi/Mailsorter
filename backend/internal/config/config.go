@@ -11,6 +11,8 @@ type Config struct {
 	GmailClientSecret string
 	GmailRedirectURL  string
 	EncryptionKey     string
+	MistralAPIKey     string
+	MistralModel      string
 }
 
 func Load() *Config {
@@ -21,6 +23,8 @@ func Load() *Config {
 		GmailClientSecret: getEnv("GMAIL_CLIENT_SECRET", ""),
 		GmailRedirectURL:  getEnv("GMAIL_REDIRECT_URL", "http://localhost:3000/auth/callback"),
 		EncryptionKey:     getEnv("ENCRYPTION_KEY", "default-dev-key-change-in-production"),
+		MistralAPIKey:     getEnv("MISTRAL_API_KEY", ""),
+		MistralModel:      getEnv("MISTRAL_MODEL", "mistral-small-latest"),
 	}
 }
 

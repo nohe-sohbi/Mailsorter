@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/api"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/config"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
@@ -68,8 +69,17 @@ func main() {
 		}
 	}
 
+	// Initialize Mistral AI client
+	var aiClient *ai.MistralClient
+	if cfg.MistralAPIKey != "" {
+		aiClient = ai.NewMistralClient(cfg.MistralAPIKey, cfg.MistralModel)
+		log.Println("Mistral AI client initialized")
+	} else {
+		log.Println("Warning: MISTRAL_API_KEY not set - AI features disabled")
+	}
+
 	// Initialize API handler
-	handler := api.NewHandler(db, gmailService, encryptor)
+	handler := api.NewHandler(db, gmailService, encryptor, aiClient)
 
 	// Setup routes
 	router := handler.SetupRoutes()

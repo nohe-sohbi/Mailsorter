@@ -5,16 +5,16 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/oauth2"
 )
@@ -23,13 +23,15 @@ type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
 	encryptor    *crypto.Encryptor
+	aiClient     *ai.MistralClient
 }
 
-func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor) *Handler {
+func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient) *Handler {
 	return &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
+		aiClient:     aiClient,
 	}
 }
 
@@ -148,16 +150,30 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 		query = "in:inbox"
 	}
 
-	messages, err := h.gmailService.ListMessages(gmailClient, query, 50)
+	// Parse maxResults (default 50, max 500)
+	maxResults := int64(50)
+	if maxStr := r.URL.Query().Get("maxResults"); maxStr != "" {
+		if parsed, err := parseInt64(maxStr); err == nil && parsed > 0 {
+			maxResults = parsed
+			if maxResults > 500 {
+				maxResults = 500
+			}
+		}
+	}
+
+	// Get page token for pagination
+	pageToken := r.URL.Query().Get("pageToken")
+
+	resp, err := h.gmailService.ListMessagesWithPagination(gmailClient, query, maxResults, pageToken)
 	if err != nil {
 		http.Error(w, "Failed to fetch emails: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	emails := make([]models.Email, 0)
-	for _, msg := range messages {
+	for _, msg := range resp.Messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
-		
+
 		email := models.Email{
 			MessageID:    msg.Id,
 			UserID:       userEmail,
@@ -175,7 +191,60 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(emails)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"emails":             emails,
+		"nextPageToken":      resp.NextPageToken,
+		"resultSizeEstimate": resp.ResultSizeEstimate,
+	})
+}
+
+// GetMailboxStats returns mailbox statistics
+func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var user models.User
+	err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  user.AccessToken,
+		RefreshToken: user.RefreshToken,
+		Expiry:       user.TokenExpiry,
+	}
+
+	if token.Expiry.Before(time.Now()) && user.RefreshToken != "" {
+		newToken, err := h.gmailService.RefreshToken(user.RefreshToken)
+		if err == nil {
+			token = newToken
+			h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail}, bson.M{
+				"$set": bson.M{
+					"accessToken": newToken.AccessToken,
+					"tokenExpiry": newToken.Expiry,
+					"updatedAt":   time.Now(),
+				},
+			})
+		}
+	}
+
+	gmailClient := h.gmailService.GetClient(token)
+	stats, err := h.gmailService.GetMailboxStats(gmailClient)
+	if err != nil {
+		http.Error(w, "Failed to get mailbox stats: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }
 
 func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
@@ -242,146 +311,6 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		"synced": syncCount,
 		"total":  len(messages),
 	})
-}
-
-// Sorting rules endpoints
-func (h *Handler) GetSortingRules(w http.ResponseWriter, r *http.Request) {
-	userEmail := r.Header.Get("X-User-Email")
-	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	cursor, err := h.db.SortingRules().Find(ctx, bson.M{"userId": userEmail})
-	if err != nil {
-		http.Error(w, "Failed to fetch rules: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer cursor.Close(ctx)
-
-	var rules []models.SortingRule
-	if err := cursor.All(ctx, &rules); err != nil {
-		http.Error(w, "Failed to decode rules: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(rules)
-}
-
-func (h *Handler) CreateSortingRule(w http.ResponseWriter, r *http.Request) {
-	userEmail := r.Header.Get("X-User-Email")
-	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
-		return
-	}
-
-	var rule models.SortingRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	rule.UserID = userEmail
-	rule.CreatedAt = time.Now()
-	rule.UpdatedAt = time.Now()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, err := h.db.SortingRules().InsertOne(ctx, rule)
-	if err != nil {
-		http.Error(w, "Failed to create rule: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	rule.ID = result.InsertedID.(primitive.ObjectID).Hex()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(rule)
-}
-
-func (h *Handler) UpdateSortingRule(w http.ResponseWriter, r *http.Request) {
-	userEmail := r.Header.Get("X-User-Email")
-	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
-		return
-	}
-
-	vars := mux.Vars(r)
-	ruleID := vars["id"]
-
-	objectID, err := primitive.ObjectIDFromHex(ruleID)
-	if err != nil {
-		http.Error(w, "Invalid rule ID", http.StatusBadRequest)
-		return
-	}
-
-	var rule models.SortingRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	rule.UpdatedAt = time.Now()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	update := bson.M{"$set": rule}
-	filter := bson.M{"_id": objectID, "userId": userEmail}
-
-	result, err := h.db.SortingRules().UpdateOne(ctx, filter, update)
-	if err != nil {
-		http.Error(w, "Failed to update rule: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if result.MatchedCount == 0 {
-		http.Error(w, "Rule not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(rule)
-}
-
-func (h *Handler) DeleteSortingRule(w http.ResponseWriter, r *http.Request) {
-	userEmail := r.Header.Get("X-User-Email")
-	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
-		return
-	}
-
-	vars := mux.Vars(r)
-	ruleID := vars["id"]
-
-	objectID, err := primitive.ObjectIDFromHex(ruleID)
-	if err != nil {
-		http.Error(w, "Invalid rule ID", http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	filter := bson.M{"_id": objectID, "userId": userEmail}
-	result, err := h.db.SortingRules().DeleteOne(ctx, filter)
-	if err != nil {
-		http.Error(w, "Failed to delete rule: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if result.DeletedCount == 0 {
-		http.Error(w, "Rule not found", http.StatusNotFound)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // Labels endpoints
@@ -552,6 +481,12 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+func parseInt64(s string) (int64, error) {
+	var n int64
+	_, err := fmt.Sscanf(s, "%d", &n)
+	return n, err
 }
 
 func generateRandomState() string {

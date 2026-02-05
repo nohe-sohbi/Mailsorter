@@ -50,14 +50,24 @@ func (d *Database) Emails() *mongo.Collection {
 	return d.DB.Collection("emails")
 }
 
-func (d *Database) SortingRules() *mongo.Collection {
-	return d.DB.Collection("sorting_rules")
-}
-
 func (d *Database) Labels() *mongo.Collection {
 	return d.DB.Collection("labels")
 }
 
 func (d *Database) GmailConfig() *mongo.Collection {
 	return d.DB.Collection("gmail_config")
+}
+
+// AI Sorting Collections
+
+func (d *Database) AISuggestions() *mongo.Collection {
+	return d.DB.Collection("ai_suggestions")
+}
+
+func (d *Database) SenderPreferences() *mongo.Collection {
+	return d.DB.Collection("sender_preferences")
+}
+
+func (d *Database) SmartLabels() *mongo.Collection {
+	return d.DB.Collection("smart_labels")
 }
