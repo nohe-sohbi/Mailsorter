@@ -9,8 +9,6 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-admin}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-password}
       MONGO_INITDB_DATABASE: mailsorter
-    ports:
-      - "27017:27017"
     volumes:
       - mongodb_data:/data/db
       - ./mongo-init:/docker-entrypoint-initdb.d
@@ -29,8 +27,6 @@ services:
       GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID}
       GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET}
       GMAIL_REDIRECT_URL: ${GMAIL_REDIRECT_URL:-http://localhost:3000/auth/callback}
-    ports:
-      - "8080:8080"
     depends_on:
       - mongodb
     networks:
@@ -44,8 +40,8 @@ services:
     restart: unless-stopped
     environment:
       REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8080}
-    ports:
-      - "3000:80"
+    expose:
+      - "80"
     depends_on:
       - backend
     networks:
