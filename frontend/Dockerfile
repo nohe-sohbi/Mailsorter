@@ -12,6 +12,10 @@ RUN npm install --silent
 # Copy source code
 COPY . .
 
+# Set API URL at build time
+ARG REACT_APP_API_URL=http://localhost:8080
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+
 # Build the app
 RUN npm run build
 
