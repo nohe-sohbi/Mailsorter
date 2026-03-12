@@ -47,7 +47,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 
 	// Setup CORS
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost"},
+		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost", "https://mailsorter.sohbi.dev"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-User-Email"},
 		AllowCredentials: true,
