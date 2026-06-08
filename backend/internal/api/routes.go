@@ -26,6 +26,10 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// Account / usage
 	r.HandleFunc("/api/usage", h.GetUsage).Methods("GET")
 
+	// Unsubscribe / subscriptions cleanup
+	r.HandleFunc("/api/subscriptions", h.GetSubscriptions).Methods("GET")
+	r.HandleFunc("/api/unsubscribe", h.Unsubscribe).Methods("POST")
+
 	// Labels routes
 	r.HandleFunc("/api/labels", h.GetLabels).Methods("GET")
 

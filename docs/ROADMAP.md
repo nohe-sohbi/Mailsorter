@@ -41,6 +41,15 @@ Rendre le produit **addictif** et **fiable**.
 3. **Récap d'activité** — `GET /api/stats/activity` (7 derniers jours, par jour + par action) affiché en mini-graphe sur la page **Tarifs**.
 4. **Page Tarifs** — `/pricing` (Free vs Pro), jauge d'usage + récap, CTA liste d'attente Pro ; liée depuis le header et la landing.
 
+## ✅ Phase 4 — Feature-killer désabonnement (livrée)
+
+La fonctionnalité qui définit la catégorie « nettoyeur de boîte » (Unroll.me, Clean Email, Leave Me Alone) :
+
+1. **Détection des newsletters** — parsing des en-têtes `List-Unsubscribe` (RFC 2369) et `List-Unsubscribe-Post` (RFC 8058) à la volée dans `GET /api/emails` et au sync. Les champs `unsubUrl` / `unsubMailto` / `unsubOneClick` sont stockés sur l'email.
+2. **Désabonnement 1-clic serveur** — `POST /api/unsubscribe` exécute le POST RFC 8058 (`List-Unsubscribe=One-Click`) **côté serveur** quand l'expéditeur le supporte : l'utilisateur ne quitte jamais l'app. Repli automatique : ouverture du lien https ou du `mailto:`.
+3. **Vue « Abonnements »** — `GET /api/subscriptions` agrège les expéditeurs de type liste de diffusion (volume, dernier reçu, support 1-clic, déjà désabonné). Nouvel onglet dans le cockpit avec badge « 1-clic » et compteur d'emails.
+4. **Désabonner + archiver** — un seul geste coupe la source **et** vide le backlog de l'expéditeur (`alsoArchive`). Désabonnements idempotents (index unique `{userId, senderEmail}`), action proposée aussi depuis le lecteur d'email.
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.

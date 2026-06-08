@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { authService } from '../services/api';
-import { Logo, Google, Sparkles, Archive, Tag, Users, Shield, Bolt, Check } from '../ui/icons';
+import { Logo, Google, Sparkles, Archive, Tag, Users, Shield, Bolt, Check, BellOff } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 
 const FEATURES = [
@@ -9,6 +9,11 @@ const FEATURES = [
     Icon: Sparkles,
     title: 'Tri par IA en un clic',
     text: "L'IA lit, comprend et classe vos emails comme un assistant humain — newsletters, factures, colis, spam.",
+  },
+  {
+    Icon: BellOff,
+    title: 'Désabonnement en 1 clic',
+    text: 'Mailsorter traque les newsletters qui vous noient et vous désabonne instantanément — sans formulaire, sans quitter l’app.',
   },
   {
     Icon: Users,

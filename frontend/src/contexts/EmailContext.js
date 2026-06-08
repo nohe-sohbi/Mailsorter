@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import { emailService, aiService, senderService } from '../services/api';
+import { emailService, aiService, senderService, subscriptionService } from '../services/api';
 
 const EmailContext = createContext(null);
 
@@ -8,6 +8,7 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 export function EmailProvider({ children }) {
   const [emails, setEmails] = useState([]);
   const [senders, setSenders] = useState([]);
+  const [subscriptions, setSubscriptions] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [stats, setStats] = useState(null);
   const [pagination, setPagination] = useState({ nextPageToken: null, resultSizeEstimate: 0 });
@@ -67,10 +68,11 @@ export function EmailProvider({ children }) {
       }
 
       // Fetch all data
-      const [emailsRes, sendersRes, suggestionsRes] = await Promise.allSettled([
+      const [emailsRes, sendersRes, suggestionsRes, subscriptionsRes] = await Promise.allSettled([
         emailService.getEmails(query, { maxResults }),
         senderService.getSenders(),
         aiService.getSuggestions('pending'),
+        subscriptionService.getSubscriptions(),
       ]);
 
       // Handle new response format with pagination
@@ -92,11 +94,13 @@ export function EmailProvider({ children }) {
 
       const newSenders = sendersRes.status === 'fulfilled' ? (sendersRes.value.data || []) : [];
       const newSuggestions = suggestionsRes.status === 'fulfilled' ? (suggestionsRes.value.data || []) : [];
+      const newSubscriptions = subscriptionsRes.status === 'fulfilled' ? (subscriptionsRes.value.data || []) : [];
 
       setEmails(newEmails);
       setPagination(newPagination);
       setSenders(newSenders);
       setSuggestions(newSuggestions);
+      setSubscriptions(newSubscriptions);
       lastFetchRef.current = Date.now();
 
       if (emailsRes.status === 'rejected') {
@@ -154,9 +158,16 @@ export function EmailProvider({ children }) {
     setSuggestions(prev => prev.filter(s => !set.has(s.id || s._id)));
   }, []);
 
+  const markUnsubscribed = useCallback((senderEmail) => {
+    setSubscriptions((prev) =>
+      prev.map((s) => (s.senderEmail === senderEmail ? { ...s, unsubscribed: true } : s))
+    );
+  }, []);
+
   const clearCache = useCallback(() => {
     setEmails([]);
     setSenders([]);
+    setSubscriptions([]);
     setSuggestions([]);
     setStats(null);
     setPagination({ nextPageToken: null, resultSizeEstimate: 0 });
@@ -168,6 +179,7 @@ export function EmailProvider({ children }) {
   const value = {
     emails,
     senders,
+    subscriptions,
     suggestions,
     stats,
     pagination,
@@ -180,6 +192,7 @@ export function EmailProvider({ children }) {
     refreshSuggestions,
     removeSuggestion,
     removeSuggestions,
+    markUnsubscribed,
     clearCache,
     isCacheValid,
   };

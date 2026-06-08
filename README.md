@@ -20,6 +20,7 @@ Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de col
 Mailsorter automatise tout ça :
 
 - **🧠 Tri par IA en un clic** — L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
+- **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
 - **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
 - **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
 - **🏷️ Libellés intelligents** — Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
@@ -113,6 +114,8 @@ docker compose up -d        # ou : make up
 | `POST`  | `/api/ai/apply`           | Applique une suggestion                       |
 | `POST`  | `/api/ai/apply-batch`     | **Applique N suggestions en une requête**     |
 | `POST`  | `/api/ai/analyze-sender`  | Apprend une préférence par expéditeur         |
+| `GET`   | `/api/subscriptions`      | **Newsletters détectées** (agrégées par expéditeur) |
+| `POST`  | `/api/unsubscribe`        | **Désabonnement 1-clic** (+ archivage optionnel) |
 | `GET`   | `/api/stats`              | Statistiques de la boîte                      |
 | `GET`   | `/api/stats/activity`     | Récap d'activité (7 derniers jours)           |
 | `GET`   | `/api/usage`              | Quota mensuel (socle billing)                 |

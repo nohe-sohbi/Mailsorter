@@ -85,6 +85,10 @@ func (d *Database) Usage() *mongo.Collection {
 	return d.DB.Collection("usage")
 }
 
+func (d *Database) Unsubscribes() *mongo.Collection {
+	return d.DB.Collection("unsubscribes")
+}
+
 // EnsureIndexes creates the indexes that keep hot queries fast at scale.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
@@ -99,6 +103,7 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.AnalysisCache(), mongo.IndexModel{Keys: bson.D{{Key: "key", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.AnalysisJobs(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "createdAt", Value: -1}}}},
 		{d.Usage(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "period", Value: 1}}, Options: options.Index().SetUnique(true)}},
+		{d.Unsubscribes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}, Options: options.Index().SetUnique(true)}},
 	}
 
 	var firstErr error

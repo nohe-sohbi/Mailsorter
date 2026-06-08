@@ -178,19 +178,23 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	emails := make([]models.Email, 0)
 	for _, msg := range resp.Messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
+		unsubURL, unsubMailto, oneClick := gmail.ParseUnsubscribe(msg)
 
 		email := models.Email{
-			MessageID:    msg.Id,
-			UserID:       userEmail,
-			ThreadID:     msg.ThreadId,
-			From:         from,
-			To:           to,
-			Subject:      subject,
-			Snippet:      msg.Snippet,
-			LabelIDs:     msg.LabelIds,
-			ReceivedDate: date,
-			IsRead:       !contains(msg.LabelIds, "UNREAD"),
-			CreatedAt:    time.Now(),
+			MessageID:     msg.Id,
+			UserID:        userEmail,
+			ThreadID:      msg.ThreadId,
+			From:          from,
+			To:            to,
+			Subject:       subject,
+			Snippet:       msg.Snippet,
+			LabelIDs:      msg.LabelIds,
+			ReceivedDate:  date,
+			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			UnsubURL:      unsubURL,
+			UnsubMailto:   unsubMailto,
+			UnsubOneClick: oneClick,
+			CreatedAt:     time.Now(),
 		}
 		emails = append(emails, email)
 	}
@@ -286,20 +290,24 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	for _, msg := range messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
 		body := gmail.GetEmailBody(msg)
-		
+		unsubURL, unsubMailto, oneClick := gmail.ParseUnsubscribe(msg)
+
 		email := models.Email{
-			MessageID:    msg.Id,
-			UserID:       userEmail,
-			ThreadID:     msg.ThreadId,
-			From:         from,
-			To:           to,
-			Subject:      subject,
-			Body:         body,
-			Snippet:      msg.Snippet,
-			LabelIDs:     msg.LabelIds,
-			ReceivedDate: date,
-			IsRead:       !contains(msg.LabelIds, "UNREAD"),
-			CreatedAt:    time.Now(),
+			MessageID:     msg.Id,
+			UserID:        userEmail,
+			ThreadID:      msg.ThreadId,
+			From:          from,
+			To:            to,
+			Subject:       subject,
+			Body:          body,
+			Snippet:       msg.Snippet,
+			LabelIDs:      msg.LabelIds,
+			ReceivedDate:  date,
+			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			UnsubURL:      unsubURL,
+			UnsubMailto:   unsubMailto,
+			UnsubOneClick: oneClick,
+			CreatedAt:     time.Now(),
 		}
 
 		filter := bson.M{"messageId": msg.Id, "userId": userEmail}

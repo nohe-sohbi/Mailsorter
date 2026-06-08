@@ -128,6 +128,76 @@ Synchronize emails from Gmail to database.
 
 ---
 
+## Unsubscribe Endpoints
+
+Detects mailing-list senders via the `List-Unsubscribe` (RFC 2369) and
+`List-Unsubscribe-Post` (RFC 8058) headers, and unsubscribes the user — either
+silently server-side (one-click) or by handing back the link to open.
+
+### Get Subscriptions
+
+#### GET /api/subscriptions
+
+Aggregates the senders in the user's mailbox that advertise an unsubscribe link,
+ranked by volume.
+
+**Headers:**
+- `X-User-Email` (required): User's email address
+
+**Response:**
+```json
+[
+  {
+    "senderEmail": "news@medium.com",
+    "senderName": "Medium Daily Digest",
+    "emailCount": 37,
+    "lastReceived": "2026-06-07T08:12:00Z",
+    "sampleMessageId": "18c8c1f2a3b4d5e6",
+    "oneClick": true,
+    "unsubscribed": false
+  }
+]
+```
+
+### Unsubscribe
+
+#### POST /api/unsubscribe
+
+Unsubscribes from the sender of a given message. When the sender supports RFC
+8058 one-click, the POST is performed server-side (`done: true`); otherwise the
+`url` / `mailto` is returned for the client to open. Optionally archives the
+sender's backlog in the same call.
+
+**Headers:**
+- `X-User-Email` (required): User's email address
+
+**Request Body:**
+```json
+{
+  "messageId": "18c8c1f2a3b4d5e6",
+  "alsoArchive": true
+}
+```
+
+**Response:**
+```json
+{
+  "done": true,
+  "method": "one-click",
+  "url": "https://medium.com/unsub?token=abc",
+  "mailto": "",
+  "archived": 37,
+  "sender": "news@medium.com"
+}
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Missing user email
+- `404 Not Found`: Email not found
+- `422 Unprocessable Entity`: Sender exposes no unsubscribe link
+
+---
+
 ## Sorting Rules Endpoints
 
 ### Get Sorting Rules
