@@ -135,6 +135,12 @@ type AnalyzeEmailsRequest struct {
 	EmailIDs []string `json:"emailIds"` // Gmail message IDs to analyze
 }
 
+// EmailActionRequest is the request body for POST /api/emails/action
+type EmailActionRequest struct {
+	MessageID string `json:"messageId"`
+	Action    string `json:"action"` // "archive", "delete", "read", "unread"
+}
+
 // AnalyzeSenderRequest is the request body for POST /api/ai/analyze-sender
 type AnalyzeSenderRequest struct {
 	SenderEmail string `json:"senderEmail"`
@@ -143,6 +149,11 @@ type AnalyzeSenderRequest struct {
 // ApplySuggestionRequest is the request body for POST /api/ai/apply
 type ApplySuggestionRequest struct {
 	SuggestionID string `json:"suggestionId"`
+}
+
+// ApplyBatchRequest is the request body for POST /api/ai/apply-batch
+type ApplyBatchRequest struct {
+	SuggestionIDs []string `json:"suggestionIds"`
 }
 
 // ApplyBulkRequest is the request body for POST /api/ai/apply-bulk

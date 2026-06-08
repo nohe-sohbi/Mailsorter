@@ -19,6 +19,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// Email routes
 	r.HandleFunc("/api/emails", h.GetEmails).Methods("GET")
 	r.HandleFunc("/api/emails/sync", h.SyncEmails).Methods("POST")
+	r.HandleFunc("/api/emails/action", h.EmailAction).Methods("POST")
 	r.HandleFunc("/api/stats", h.GetMailboxStats).Methods("GET")
 
 	// Labels routes
@@ -28,6 +29,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/ai/analyze", h.AnalyzeEmails).Methods("POST")
 	r.HandleFunc("/api/ai/analyze-sender", h.AnalyzeSender).Methods("POST")
 	r.HandleFunc("/api/ai/apply", h.ApplySuggestion).Methods("POST")
+	r.HandleFunc("/api/ai/apply-batch", h.ApplyBatch).Methods("POST")
 	r.HandleFunc("/api/ai/apply-bulk", h.ApplyBulk).Methods("POST")
 	r.HandleFunc("/api/ai/suggestions", h.GetSuggestions).Methods("GET")
 	r.HandleFunc("/api/ai/suggestions/{id}/reject", h.RejectSuggestion).Methods("POST")

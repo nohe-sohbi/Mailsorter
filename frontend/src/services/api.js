@@ -33,6 +33,7 @@ export const emailService = {
     return apiClient.get(`/api/emails${queryString ? `?${queryString}` : ''}`);
   },
   syncEmails: () => apiClient.post('/api/emails/sync'),
+  action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
   getStats: () => apiClient.get('/api/stats'),
 };
 
@@ -44,6 +45,7 @@ export const aiService = {
   analyzeEmails: (emailIds) => apiClient.post('/api/ai/analyze', { emailIds }),
   analyzeSender: (senderEmail) => apiClient.post('/api/ai/analyze-sender', { senderEmail }),
   applySuggestion: (suggestionId) => apiClient.post('/api/ai/apply', { suggestionId }),
+  applyBatch: (suggestionIds) => apiClient.post('/api/ai/apply-batch', { suggestionIds }),
   applyBulk: (senderEmail, action, labelName) =>
     apiClient.post('/api/ai/apply-bulk', { senderEmail, action, labelName }),
   getSuggestions: (status = 'pending') => apiClient.get(`/api/ai/suggestions?status=${status}`),

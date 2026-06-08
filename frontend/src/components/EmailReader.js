@@ -1,13 +1,36 @@
 import React from 'react';
-import '../styles/EmailReader.css';
+import DOMPurify from 'dompurify';
+import { X, Archive, Trash, Mail } from '../ui/icons';
 
-function EmailReader({ email, onClose }) {
+const AVATAR_GRADIENTS = [
+  'from-brand-500 to-fuchsia-500',
+  'from-sky-500 to-indigo-500',
+  'from-emerald-500 to-teal-500',
+  'from-amber-500 to-orange-500',
+  'from-rose-500 to-pink-500',
+];
+
+function gradientFor(seed = '') {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
+}
+
+function extractEmail(from) {
+  const match = from?.match(/<(.+)>/);
+  return match ? match[1] : from;
+}
+function extractName(from) {
+  const match = from?.match(/^(.+?)\s*</);
+  return match ? match[1].replace(/"/g, '').trim() : from;
+}
+
+function EmailReader({ email, onClose, onArchive, onDelete }) {
   if (!email) return null;
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('fr-FR', {
+    return new Date(dateStr).toLocaleDateString('fr-FR', {
       weekday: 'long',
       day: 'numeric',
       month: 'long',
@@ -17,88 +40,74 @@ function EmailReader({ email, onClose }) {
     });
   };
 
-  const extractEmail = (from) => {
-    const match = from?.match(/<(.+)>/);
-    return match ? match[1] : from;
-  };
-
-  const extractName = (from) => {
-    const match = from?.match(/^(.+?)\s*</);
-    return match ? match[1].replace(/"/g, '').trim() : from;
-  };
+  const name = extractName(email.from) || 'Expéditeur inconnu';
+  const cleanBody = email.body
+    ? DOMPurify.sanitize(email.body, { USE_PROFILES: { html: true } })
+    : null;
 
   return (
-    <div className="email-reader">
-      <div className="reader-header">
-        <button className="btn-close" onClick={onClose}>
-          ✕
+    <aside className="flex h-full w-full animate-slide-in-right flex-col overflow-hidden bg-white">
+      <div className="flex items-center justify-between border-b border-ink-200/70 px-5 py-3">
+        <button onClick={onClose} className="btn-ghost px-2.5" aria-label="Fermer">
+          <X size={18} />
         </button>
-        <div className="reader-actions">
-          <button className="btn-action" title="Archiver">📥</button>
-          <button className="btn-action" title="Supprimer">🗑</button>
-          <button className="btn-action" title="Marquer non lu">📧</button>
+        <div className="flex items-center gap-1">
+          <button onClick={onArchive} className="btn-ghost px-2.5" title="Archiver">
+            <Archive size={18} />
+          </button>
+          <button onClick={onDelete} className="btn-ghost px-2.5 text-rose-500 hover:bg-rose-50" title="Supprimer">
+            <Trash size={18} />
+          </button>
         </div>
       </div>
 
-      <div className="reader-content">
-        <h2 className="email-subject">{email.subject || '(Sans sujet)'}</h2>
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        <h2 className="text-xl font-bold leading-snug text-ink-900">{email.subject || '(Sans sujet)'}</h2>
 
-        <div className="email-meta">
-          <div className="sender-avatar">
-            {extractName(email.from)?.[0]?.toUpperCase() || '?'}
+        <div className="mt-5 flex items-center gap-3">
+          <span
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-base font-bold text-white ${gradientFor(
+              email.from
+            )}`}
+          >
+            {name[0]?.toUpperCase() || '?'}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-semibold text-ink-900">{name}</div>
+            <div className="truncate text-sm text-ink-500">{extractEmail(email.from)}</div>
           </div>
-          <div className="sender-details">
-            <div className="sender-name">{extractName(email.from)}</div>
-            <div className="sender-email">{extractEmail(email.from)}</div>
-          </div>
-          <div className="email-date">{formatDate(email.receivedDate)}</div>
+          <div className="hidden text-right text-xs text-ink-400 sm:block">{formatDate(email.receivedDate)}</div>
         </div>
 
-        {email.to && (
-          <div className="email-to">
-            <span className="label">A:</span> {email.to}
-          </div>
-        )}
-
-        <div className="email-body">
-          {email.body ? (
+        <div className="mt-6 border-t border-ink-100 pt-6">
+          {cleanBody ? (
             <div
-              className="body-content"
-              dangerouslySetInnerHTML={{ __html: sanitizeHtml(email.body) }}
+              className="prose-sm max-w-none text-sm leading-relaxed text-ink-700 [&_a]:text-brand-600 [&_img]:max-w-full"
+              dangerouslySetInnerHTML={{ __html: cleanBody }}
             />
           ) : (
-            <div className="body-snippet">
-              <p>{email.snippet}</p>
-              <p className="snippet-notice">
-                Contenu complet non disponible. Synchronisez les emails pour charger le contenu.
-              </p>
+            <div className="space-y-4">
+              <p className="text-sm leading-relaxed text-ink-700">{email.snippet}</p>
+              <div className="flex items-center gap-2 rounded-xl bg-ink-50 px-4 py-3 text-xs text-ink-400">
+                <Mail size={16} />
+                Contenu complet indisponible. Synchronisez pour charger le corps de l'email.
+              </div>
             </div>
           )}
         </div>
 
         {email.labelIds && email.labelIds.length > 0 && (
-          <div className="email-labels">
+          <div className="mt-6 flex flex-wrap gap-2 border-t border-ink-100 pt-5">
             {email.labelIds.map((label) => (
-              <span key={label} className="label-tag">
-                {label.replace('Label_', '').replace('CATEGORY_', '')}
+              <span key={label} className="chip bg-ink-100 text-ink-600">
+                {label.replace('Label_', '').replace('CATEGORY_', '').toLowerCase()}
               </span>
             ))}
           </div>
         )}
       </div>
-    </div>
+    </aside>
   );
-}
-
-// Basic HTML sanitization (in production, use a library like DOMPurify)
-function sanitizeHtml(html) {
-  if (!html) return '';
-
-  // Remove script tags and event handlers
-    return html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/on\w+="[^"]*"/gi, '')
-      .replace(/on\w+='[^']*'/gi, '');
 }
 
 export default EmailReader;

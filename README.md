@@ -1,209 +1,141 @@
-# Mailsorter
+<div align="center">
 
-Application dockerisée pour trier automatiquement les emails Gmail avec une interface React, un backend Go et une base de données MongoDB.
+# 📬 Mailsorter
 
-## Architecture
+### Inbox Zero, propulsé par l'IA.
 
-L'application est composée de 3 services Docker distincts :
+**Mailsorter lit, comprend et range vos emails Gmail à votre place.**
+Stop au scroll infini — atteignez l'Inbox Zero en quelques clics, et gardez-la propre pour toujours.
 
-1. **Frontend** (React) - Interface utilisateur sur le port 3000
-2. **Backend** (Go) - API REST sur le port 8080
-3. **MongoDB** - Base de données sur le port 27017
+`React + Tailwind` · `Go` · `MongoDB` · `Mistral AI`
 
-## Prérequis
+</div>
 
-- Docker et Docker Compose installés
-- Un compte Google Cloud Platform avec l'API Gmail activée
-- Client ID et Client Secret OAuth 2.0 de Google
+---
 
-## Configuration de l'API Gmail
+## ⚡ Pourquoi Mailsorter
 
-1. Allez sur [Google Cloud Console](https://console.cloud.google.com/)
-2. Créez un nouveau projet ou sélectionnez un projet existant
-3. Activez l'API Gmail
-4. Créez des identifiants OAuth 2.0 :
-   - Type d'application : Application Web
-   - URI de redirection autorisés : `http://localhost:3000/auth/callback`
-5. Notez le Client ID et le Client Secret
+Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de colis noient les messages importants, le spam passe entre les mailles. Le tri manuel prend des heures — et recommence chaque semaine.
 
-📖 **Guide détaillé** : Voir [GMAIL_SETUP.md](GMAIL_SETUP.md) pour des instructions complètes avec captures d'écran.
+Mailsorter automatise tout ça :
 
-## Installation
+- **🧠 Tri par IA en un clic** — L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
+- **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
+- **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
+- **🏷️ Libellés intelligents** — Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
+- **🔒 Zéro mot de passe stocké** — OAuth Google natif. Le secret API est chiffré au repos. Vos emails ne quittent jamais votre contrôle.
 
-1. Clonez le repository :
+---
+
+## 🏗️ Architecture
+
+```
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│   Frontend   │─────▶│   Backend    │─────▶│   MongoDB    │
+│ React+Tailwind│      │   Go API     │      │  Persistence │
+│   (nginx)    │◀─────│  REST + IA   │◀─────│              │
+└──────────────┘      └──────┬───────┘      └──────────────┘
+                             │
+                ┌────────────┴────────────┐
+                ▼                         ▼
+          ┌───────────┐            ┌───────────┐
+          │ Gmail API │            │ Mistral AI│
+          └───────────┘            └───────────┘
+```
+
+| Service  | Stack                          | Rôle                                   |
+| -------- | ------------------------------ | -------------------------------------- |
+| Frontend | React 18, Tailwind CSS, Axios  | Cockpit de tri, design system maison   |
+| Backend  | Go 1.21+, Gorilla Mux, OAuth2  | API REST, orchestration IA, Gmail      |
+| Database | MongoDB 7.0                    | Users, suggestions, préférences        |
+| IA       | Mistral AI                     | Analyse et classification des emails   |
+
+---
+
+## 🚀 Démarrage rapide
+
+### 1. Prérequis
+
+- Docker & Docker Compose
+- Identifiants **OAuth 2.0** Google (API Gmail activée)
+- Une clé **Mistral AI** ([console.mistral.ai](https://console.mistral.ai/))
+
+### 2. Configuration
+
 ```bash
 git clone https://github.com/nohe-sohbi/Mailsorter.git
 cd Mailsorter
-```
-
-2. Copiez le fichier d'exemple d'environnement et configurez-le :
-```bash
 cp .env.example .env
 ```
 
-3. Éditez le fichier `.env` et ajoutez vos identifiants Gmail API :
+Éditez `.env` :
+
 ```env
-GMAIL_CLIENT_ID=votre_client_id
-GMAIL_CLIENT_SECRET=votre_client_secret
+ENCRYPTION_KEY=une-chaine-aleatoire-de-32-caracteres-minimum
+MISTRAL_API_KEY=votre_cle_mistral
+MISTRAL_MODEL=mistral-large-2411
 ```
 
-## Démarrage de l'application
+> Les identifiants Gmail peuvent être renseignés **dans `.env`** ou directement via la **page Setup** de l'application (chiffrés en base).
 
-### Avec Docker Compose (Production)
-
-Lancez tous les services avec Docker Compose :
+### 3. Lancement
 
 ```bash
-docker compose up -d
+docker compose up -d        # ou : make up
 ```
 
-L'application sera accessible à :
-- Frontend : http://localhost:3000
-- Backend API : http://localhost:8080
-- MongoDB : localhost:27017
+| Surface       | URL                     |
+| ------------- | ----------------------- |
+| App           | http://localhost:3000   |
+| API           | http://localhost:8080   |
+| Health check  | http://localhost:8080/health |
 
-### Avec Make
+---
 
-Si vous avez Make installé, vous pouvez utiliser les commandes suivantes :
+## 🧭 Le flow utilisateur
 
+1. **Connectez Gmail** — un clic, OAuth Google sécurisé.
+2. **Lancez « Trier ma boîte »** — l'IA analyse vos emails et empile ses suggestions.
+3. **Validez** — *Tout appliquer* pour l'auto-pilote, ou tranchez au cas par cas. Filtrez sur *haute confiance* pour aller encore plus vite.
+4. **Industrialisez** — passez en vue *Expéditeurs* pour archiver/supprimer en masse et mémoriser vos préférences.
+
+---
+
+## 🔌 API (extrait)
+
+| Méthode | Endpoint                  | Description                                   |
+| ------- | ------------------------- | --------------------------------------------- |
+| `GET`   | `/api/emails`             | Liste paginée de la boîte                     |
+| `POST`  | `/api/emails/action`      | Action directe (archive/trash/read) sur 1 msg |
+| `POST`  | `/api/ai/analyze`         | Génère des suggestions pour N emails          |
+| `POST`  | `/api/ai/apply`           | Applique une suggestion                       |
+| `POST`  | `/api/ai/apply-batch`     | **Applique N suggestions en une requête**     |
+| `POST`  | `/api/ai/analyze-sender`  | Apprend une préférence par expéditeur         |
+| `GET`   | `/api/stats`              | Statistiques de la boîte                      |
+
+Documentation complète : [`docs/API.md`](docs/API.md) · Architecture : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Roadmap : [`docs/ROADMAP.md`](docs/ROADMAP.md)
+
+---
+
+## 🛠️ Développement local
+
+**Backend**
 ```bash
-make build    # Construire les images Docker
-make up       # Démarrer tous les services
-make down     # Arrêter tous les services
-make logs     # Voir les logs
-make clean    # Nettoyer tous les conteneurs et volumes
+cd backend && go run cmd/server/main.go
 ```
 
-### Développement Local (sans Docker)
-
-Pour le développement local, vous pouvez exécuter chaque service séparément :
-
-#### Backend
+**Frontend**
 ```bash
-cd backend
-go run cmd/server/main.go
+cd frontend && npm install && npm start
 ```
 
-#### Frontend
+**Build de production (frontend)**
 ```bash
-cd frontend
-npm install
-npm start
+cd frontend && npm run build
 ```
 
-#### MongoDB
-```bash
-docker run -d -p 27017:27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=admin \
-  -e MONGO_INITDB_ROOT_PASSWORD=password \
-  mongo:7.0
-```
+---
 
-Ou utilisez le script de développement automatique :
-```bash
-./dev-start.sh
-```
-
-## Utilisation
-
-1. Ouvrez votre navigateur à http://localhost:3000
-2. Cliquez sur "Se connecter avec Gmail"
-3. Autorisez l'application à accéder à vos emails Gmail
-4. Une fois connecté, vous pourrez :
-   - Voir vos emails
-   - Synchroniser vos emails
-   - Créer des règles de tri automatique
-   - Gérer vos libellés
-
-## Fonctionnalités
-
-### Gestion des emails
-- Affichage des emails de la boîte de réception
-- Synchronisation avec Gmail
-- Recherche avec les requêtes Gmail (ex: `from:example@gmail.com`)
-- Affichage des libellés
-
-### Règles de tri
-- Créer des règles basées sur des conditions (expéditeur, destinataire, objet, corps)
-- Actions possibles : ajouter/retirer des libellés, marquer comme lu, archiver
-- Priorités des règles
-- Activer/désactiver les règles
-
-## Structure du projet
-
-```
-Mailsorter/
-├── backend/              # API Go
-│   ├── cmd/
-│   │   └── server/       # Point d'entrée de l'application
-│   ├── internal/
-│   │   ├── api/          # Handlers et routes
-│   │   ├── config/       # Configuration
-│   │   ├── database/     # Connexion MongoDB
-│   │   ├── gmail/        # Service Gmail API
-│   │   └── models/       # Modèles de données
-│   └── Dockerfile
-├── frontend/             # Application React
-│   ├── public/
-│   ├── src/
-│   │   ├── components/   # Composants React
-│   │   ├── pages/        # Pages
-│   │   ├── services/     # Services API
-│   │   └── styles/       # CSS
-│   └── Dockerfile
-├── mongo-init/           # Scripts d'initialisation MongoDB
-├── docker-compose.yml    # Orchestration des services
-└── .env.example          # Exemple de configuration
-
-```
-
-## Arrêt de l'application
-
-### Avec Docker Compose
-```bash
-docker compose down
-```
-
-Pour supprimer également les volumes (données) :
-```bash
-docker compose down -v
-```
-
-### Avec Make
-```bash
-make down    # Arrêter les services
-make clean   # Arrêter et nettoyer complètement
-```
-
-## Développement
-
-### Backend (Go)
-
-```bash
-cd backend
-go run cmd/server/main.go
-```
-
-### Frontend (React)
-
-```bash
-cd frontend
-npm install
-npm start
-```
-
-## Technologies utilisées
-
-- **Frontend** : React 18, React Router, Axios
-- **Backend** : Go 1.21, Gorilla Mux, OAuth2, Gmail API
-- **Database** : MongoDB 7.0
-- **Containerization** : Docker, Docker Compose
-
-## Documentation
-
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Architecture détaillée du système
-- [GMAIL_SETUP.md](GMAIL_SETUP.md) - Guide de configuration de l'API Gmail
-
-## Licence
+## 📄 Licence
 
 MIT
