@@ -24,15 +24,20 @@ type Handler struct {
 	gmailService *gmail.Service
 	encryptor    *crypto.Encryptor
 	aiClient     *ai.MistralClient
+	jobQueue     chan string
 }
 
 func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient) *Handler {
-	return &Handler{
+	h := &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
 		aiClient:     aiClient,
+		jobQueue:     make(chan string, 256),
 	}
+	// Background pool that drains async analysis jobs.
+	h.startAnalysisWorkers(3)
+	return h
 }
 
 // Health check
@@ -311,6 +316,62 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		"synced": syncCount,
 		"total":  len(messages),
 	})
+}
+
+// EmailAction performs a direct action on a single Gmail message
+// (archive, trash, mark read/unread) without going through AI suggestions.
+func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	var req models.EmailActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.MessageID == "" {
+		http.Error(w, "Message ID required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	token, err := h.getUserToken(ctx, userEmail)
+	if err != nil {
+		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		return
+	}
+	gmailClient := h.gmailService.GetClient(token)
+
+	switch req.Action {
+	case "archive":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"INBOX"})
+	case "delete", "trash":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"TRASH"}, nil)
+	case "unarchive":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, nil)
+	case "untrash":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, []string{"TRASH"})
+	case "read":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"UNREAD"})
+	case "unread":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"UNREAD"}, nil)
+	default:
+		http.Error(w, "Unsupported action", http.StatusBadRequest)
+		return
+	}
+
+	if err != nil {
+		http.Error(w, "Failed to apply action: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": req.Action})
 }
 
 // Labels endpoints

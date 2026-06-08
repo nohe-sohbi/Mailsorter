@@ -149,6 +149,11 @@ export function EmailProvider({ children }) {
     setSuggestions(prev => prev.filter(s => (s.id || s._id) !== suggestionId));
   }, []);
 
+  const removeSuggestions = useCallback((ids) => {
+    const set = new Set(ids);
+    setSuggestions(prev => prev.filter(s => !set.has(s.id || s._id)));
+  }, []);
+
   const clearCache = useCallback(() => {
     setEmails([]);
     setSenders([]);
@@ -174,6 +179,7 @@ export function EmailProvider({ children }) {
     loadMoreEmails,
     refreshSuggestions,
     removeSuggestion,
+    removeSuggestions,
     clearCache,
     isCacheValid,
   };

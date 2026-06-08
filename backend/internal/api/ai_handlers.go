@@ -14,9 +14,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/oauth2"
+	gmailapi "google.golang.org/api/gmail/v1"
 )
 
-// AnalyzeEmails analyzes selected emails and creates AI suggestions
+// AnalyzeEmails synchronously analyzes selected emails and creates AI suggestions.
 func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	if h.aiClient == nil {
 		http.Error(w, "AI service not configured", http.StatusServiceUnavailable)
@@ -34,82 +35,74 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-
 	if len(req.EmailIDs) == 0 {
 		http.Error(w, "No email IDs provided", http.StatusBadRequest)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	// Get existing labels for context
-	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
-
-	// Fetch emails from database
-	var emails []models.Email
-	for _, emailID := range req.EmailIDs {
-		var email models.Email
-		err := h.db.Emails().FindOne(ctx, bson.M{
-			"messageId": emailID,
-			"userId":    userEmail,
-		}).Decode(&email)
-		if err == nil {
-			emails = append(emails, email)
-		}
-	}
-
-	if len(emails) == 0 {
-		http.Error(w, "No emails found", http.StatusNotFound)
+	if h.quotaExceeded(ctx, userEmail) {
+		http.Error(w, "Quota mensuel atteint. Passez à Pro pour continuer.", http.StatusPaymentRequired)
 		return
 	}
 
-	// Analyze each email
-	var suggestions []models.AISuggestion
-	for _, email := range emails {
-		analysis, err := h.aiClient.AnalyzeEmail(email, existingLabels)
-		if err != nil {
-			continue // Skip failed analyses
-		}
-
-		suggestion := models.AISuggestion{
-			UserID:     userEmail,
-			EmailID:    email.MessageID,
-			Action:     analysis.Action,
-			LabelName:  analysis.LabelName,
-			Confidence: analysis.Confidence,
-			Reasoning:  analysis.Reasoning,
-			Status:     "pending",
-			CreatedAt:  time.Now(),
-		}
-
-		// Check if label already exists
-		if analysis.Action == "label" && analysis.LabelName != "" {
-			matchedLabel, exists, _ := h.aiClient.FindMatchingLabel(analysis.LabelName, existingLabels)
-			suggestion.LabelName = matchedLabel
-			if exists {
-				// Find Gmail label ID
-				var smartLabel models.SmartLabel
-				err := h.db.SmartLabels().FindOne(ctx, bson.M{
-					"userId": userEmail,
-					"name":   matchedLabel,
-				}).Decode(&smartLabel)
-				if err == nil {
-					suggestion.LabelID = smartLabel.GmailLabelID
-				}
-			}
-		}
-
-		// Save suggestion
-		result, err := h.db.AISuggestions().InsertOne(ctx, suggestion)
-		if err == nil {
-			suggestion.ID = result.InsertedID.(primitive.ObjectID).Hex()
-			suggestions = append(suggestions, suggestion)
-		}
+	progress, suggestions, err := h.runAnalysis(ctx, userEmail, req.EmailIDs, nil)
+	if err != nil {
+		http.Error(w, "Analysis failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(suggestions)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"suggestions": suggestions,
+		"autoApplied": progress.AutoApplied,
+		"cachedHits":  progress.CachedHits,
+	})
+}
+
+// autoApplySender applies a sender's saved default action to an email directly,
+// recording it as an already-applied suggestion. Returns true on success so the
+// caller can skip the AI analysis for that email.
+func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Service, userEmail string, email models.Email, pref models.SenderPreference) bool {
+	suggestion := models.AISuggestion{
+		UserID:     userEmail,
+		EmailID:    email.MessageID,
+		Action:     pref.DefaultAction,
+		LabelName:  pref.DefaultLabel,
+		Confidence: 1.0,
+		Reasoning:  "Auto-appliqué (préférence expéditeur)",
+		Status:     "applied",
+		CreatedAt:  time.Now(),
+		AppliedAt:  time.Now(),
+	}
+
+	var err error
+	switch pref.DefaultAction {
+	case "archive":
+		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, nil, []string{"INBOX"})
+	case "delete":
+		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{"TRASH"}, nil)
+	case "label":
+		labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, pref.DefaultLabel)
+		if lerr != nil {
+			return false
+		}
+		suggestion.LabelID = labelID
+		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{labelID}, nil)
+	case "keep":
+		// Nothing to mutate in Gmail.
+	default:
+		return false
+	}
+
+	if err != nil {
+		return false
+	}
+
+	h.db.AISuggestions().InsertOne(ctx, suggestion)
+	return true
 }
 
 // AnalyzeSender analyzes all emails from a specific sender
@@ -279,6 +272,100 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "applied"})
+}
+
+// ApplyBatch applies a list of AI suggestions in a single request.
+// It refreshes the token once and loops server-side, which scales far better
+// than firing one HTTP request per suggestion from the client.
+func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	var req models.ApplyBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if len(req.SuggestionIDs) == 0 {
+		http.Error(w, "No suggestion IDs provided", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	token, err := h.getUserToken(ctx, userEmail)
+	if err != nil {
+		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		return
+	}
+	gmailClient := h.gmailService.GetClient(token)
+
+	applied := 0
+	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
+	failed := 0
+
+	for _, id := range req.SuggestionIDs {
+		objectID, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			failed++
+			continue
+		}
+
+		var suggestion models.AISuggestion
+		if err := h.db.AISuggestions().FindOne(ctx, bson.M{
+			"_id":    objectID,
+			"userId": userEmail,
+		}).Decode(&suggestion); err != nil {
+			failed++
+			continue
+		}
+
+		var applyErr error
+		switch suggestion.Action {
+		case "archive":
+			applyErr = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, nil, []string{"INBOX"})
+		case "delete":
+			applyErr = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{"TRASH"}, nil)
+		case "label":
+			labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, suggestion.LabelName)
+			if lerr != nil {
+				applyErr = lerr
+				break
+			}
+			applyErr = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{labelID}, nil)
+			suggestion.LabelID = labelID
+		case "keep":
+			// No Gmail mutation required.
+		}
+
+		if applyErr != nil {
+			failed++
+			continue
+		}
+
+		h.db.AISuggestions().UpdateOne(ctx,
+			bson.M{"_id": objectID},
+			bson.M{"$set": bson.M{
+				"status":    "applied",
+				"appliedAt": time.Now(),
+				"labelId":   suggestion.LabelID,
+			}},
+		)
+		applied++
+		appliedIDs = append(appliedIDs, id)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"applied":    applied,
+		"failed":     failed,
+		"total":      len(req.SuggestionIDs),
+		"appliedIds": appliedIDs,
+	})
 }
 
 // ApplyBulk applies an action to all emails from a sender

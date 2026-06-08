@@ -214,6 +214,83 @@ Réponds UNIQUEMENT en JSON valide:
 	return &analysis, nil
 }
 
+// AnalyzeBatch analyzes several emails in a single API call and returns one
+// analysis per email, in order. This collapses N requests into ⌈N/batch⌉,
+// slashing both cost and latency. Returns an error if the model's response
+// can't be aligned with the input, so the caller can fall back per-email.
+func (c *MistralClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+	if len(emails) == 0 {
+		return nil, nil
+	}
+
+	var list strings.Builder
+	for i, e := range emails {
+		fmt.Fprintf(&list, "%d. De: %s | Sujet: %s | Extrait: %s\n",
+			i+1, e.From, e.Subject, truncate(e.Snippet, 160))
+	}
+
+	labelsContext := ""
+	if len(existingLabels) > 0 {
+		labelsContext = "\nLabels existants de l'utilisateur: " + strings.Join(existingLabels, ", ")
+	}
+
+	prompt := fmt.Sprintf(`Tu es un assistant de tri d'emails. Analyse les %d emails ci-dessous et propose une action pour CHACUN.
+
+Emails:
+%s%s
+
+Actions possibles:
+- "archive": informatif déjà lu / non important (newsletters lues, confirmations, notifications)
+- "delete": indésirable, spam, promotions non souhaitées
+- "label": à catégoriser (labels PRÉCIS par TYPE: Livraison, Factures, Achats, Newsletters, Social, Voyages, Banque, Travail, Administratif)
+- "keep": important, nécessite une action ou attention
+
+Réponds UNIQUEMENT avec un TABLEAU JSON de %d objets, dans le MÊME ORDRE que les emails, format exact:
+[{"action":"archive|delete|label|keep","label_name":"label si action=label sinon vide","confidence":0.0,"reasoning":"explication courte en français"}]`,
+		len(emails), list.String(), labelsContext, len(emails))
+
+	maxTokens := 120*len(emails) + 200
+	if maxTokens > 4000 {
+		maxTokens = 4000
+	}
+
+	response, err := c.chatTokens(prompt, maxTokens)
+	if err != nil {
+		return nil, fmt.Errorf("mistral API error: %w", err)
+	}
+
+	start := strings.Index(response, "[")
+	end := strings.LastIndex(response, "]")
+	if start < 0 || end <= start {
+		return nil, fmt.Errorf("no JSON array in batch response")
+	}
+
+	var results []EmailAnalysis
+	if err := json.Unmarshal([]byte(response[start:end+1]), &results); err != nil {
+		return nil, fmt.Errorf("failed to parse batch response: %w", err)
+	}
+	if len(results) < len(emails) {
+		return nil, fmt.Errorf("batch returned %d analyses for %d emails", len(results), len(emails))
+	}
+
+	for i := range results {
+		results[i].Action = strings.ToLower(strings.TrimSpace(results[i].Action))
+		switch results[i].Action {
+		case "archive", "delete", "label", "keep":
+		default:
+			results[i].Action = "keep"
+		}
+		if results[i].Confidence < 0 {
+			results[i].Confidence = 0
+		}
+		if results[i].Confidence > 1 {
+			results[i].Confidence = 1
+		}
+	}
+
+	return results[:len(emails)], nil
+}
+
 // FindMatchingLabel checks if a suggested label matches an existing one
 func (c *MistralClient) FindMatchingLabel(suggestedLabel string, existingLabels []string) (string, bool, error) {
 	if len(existingLabels) == 0 {
@@ -264,15 +341,20 @@ Règles:
 	return result.MatchedLabel, result.MatchesExisting, nil
 }
 
-// chat sends a message to Mistral and returns the response
+// chat sends a message to Mistral and returns the response (default token budget).
 func (c *MistralClient) chat(prompt string) (string, error) {
+	return c.chatTokens(prompt, 500)
+}
+
+// chatTokens sends a message to Mistral with an explicit max-tokens budget.
+func (c *MistralClient) chatTokens(prompt string, maxTokens int) (string, error) {
 	reqBody := chatRequest{
 		Model: c.model,
 		Messages: []chatMessage{
 			{Role: "user", Content: prompt},
 		},
 		Temperature: 0.3, // Low temperature for consistent responses
-		MaxTokens:   500,
+		MaxTokens:   maxTokens,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
