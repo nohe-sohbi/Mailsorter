@@ -109,6 +109,11 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	if h.quotaExceeded(ctx, userEmail) {
+		http.Error(w, "Quota mensuel atteint. Passez à Pro pour continuer.", http.StatusPaymentRequired)
+		return
+	}
+
 	job := models.AnalysisJob{
 		UserID:    userEmail,
 		Status:    "queued",

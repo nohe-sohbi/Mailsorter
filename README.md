@@ -114,6 +114,8 @@ docker compose up -d        # ou : make up
 | `POST`  | `/api/ai/apply-batch`     | **Applique N suggestions en une requête**     |
 | `POST`  | `/api/ai/analyze-sender`  | Apprend une préférence par expéditeur         |
 | `GET`   | `/api/stats`              | Statistiques de la boîte                      |
+| `GET`   | `/api/stats/activity`     | Récap d'activité (7 derniers jours)           |
+| `GET`   | `/api/usage`              | Quota mensuel (socle billing)                 |
 
 Documentation complète : [`docs/API.md`](docs/API.md) · Architecture : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Roadmap : [`docs/ROADMAP.md`](docs/ROADMAP.md)
 

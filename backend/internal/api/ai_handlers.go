@@ -43,6 +43,11 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
+	if h.quotaExceeded(ctx, userEmail) {
+		http.Error(w, "Quota mensuel atteint. Passez à Pro pour continuer.", http.StatusPaymentRequired)
+		return
+	}
+
 	progress, suggestions, err := h.runAnalysis(ctx, userEmail, req.EmailIDs, nil)
 	if err != nil {
 		http.Error(w, "Analysis failed: "+err.Error(), http.StatusInternalServerError)

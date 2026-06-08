@@ -64,6 +64,11 @@ export const smartLabelService = {
   createLabel: (label) => apiClient.post('/api/smart-labels', label),
 };
 
+export const accountService = {
+  getUsage: () => apiClient.get('/api/usage'),
+  getActivity: () => apiClient.get('/api/stats/activity'),
+};
+
 export const configService = {
   getStatus: () => apiClient.get('/api/config/status'),
   getGmailConfig: () => apiClient.get('/api/config/gmail'),

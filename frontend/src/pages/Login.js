@@ -90,9 +90,17 @@ function Login() {
             <Logo size={32} />
             <span className="font-display text-lg font-extrabold tracking-tight">Mailsorter</span>
           </div>
-          <span className="chip bg-white/10 text-white/80">
-            <Shield size={14} /> OAuth Google sécurisé
-          </span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate('/pricing')}
+              className="text-sm font-semibold text-white/70 transition-colors hover:text-white"
+            >
+              Tarifs
+            </button>
+            <span className="hidden chip bg-white/10 text-white/80 sm:inline-flex">
+              <Shield size={14} /> OAuth Google sécurisé
+            </span>
+          </div>
         </nav>
 
         {/* Hero */}

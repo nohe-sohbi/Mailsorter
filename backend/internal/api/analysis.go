@@ -24,6 +24,7 @@ type analysisProgress struct {
 	AutoApplied        int
 	SuggestionsCreated int
 	CachedHits         int
+	Analyzed           int // emails that actually hit the AI (counts toward quota)
 }
 
 // runAnalysis is the shared engine behind both the synchronous endpoint and the
@@ -136,6 +137,7 @@ func (h *Handler) runAnalysis(
 				continue
 			}
 
+			p.Analyzed++
 			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, existingLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
@@ -145,6 +147,9 @@ func (h *Handler) runAnalysis(
 			report()
 		}
 	}
+
+	// Charge the AI-analyzed emails against the user's monthly quota.
+	h.incrUsage(ctx, userEmail, p.Analyzed)
 
 	return p, suggestions, nil
 }

@@ -21,6 +21,10 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/emails/sync", h.SyncEmails).Methods("POST")
 	r.HandleFunc("/api/emails/action", h.EmailAction).Methods("POST")
 	r.HandleFunc("/api/stats", h.GetMailboxStats).Methods("GET")
+	r.HandleFunc("/api/stats/activity", h.GetActivity).Methods("GET")
+
+	// Account / usage
+	r.HandleFunc("/api/usage", h.GetUsage).Methods("GET")
 
 	// Labels routes
 	r.HandleFunc("/api/labels", h.GetLabels).Methods("GET")

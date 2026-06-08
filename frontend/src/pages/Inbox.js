@@ -94,6 +94,7 @@ function Inbox() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [gamify, setGamify] = useState(getStreakState);
   const [job, setJob] = useState(null);
+  const [showWelcome, setShowWelcome] = useState(false);
 
   const searchRef = useRef(null);
   const rowRefs = useRef([]);
@@ -119,6 +120,16 @@ function Inbox() {
 
   // Stop polling if the page unmounts mid-job.
   useEffect(() => () => clearTimeout(pollRef.current), []);
+
+  // First-run onboarding.
+  useEffect(() => {
+    if (!localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
+  }, []);
+
+  const dismissWelcome = () => {
+    localStorage.setItem('mailsorter_onboarded', '1');
+    setShowWelcome(false);
+  };
 
   const visibleSuggestions = useMemo(
     () => (highConfOnly ? suggestions.filter((s) => (s.confidence || 0) >= 0.8) : suggestions),
@@ -210,7 +221,7 @@ function Inbox() {
       });
       setSelectedEmails([]);
     } catch (err) {
-      toast.error("L'analyse a échoué. Réessayez.");
+      if (!handleQuotaError(err)) toast.error("L'analyse a échoué. Réessayez.");
     } finally {
       setAnalyzing(false);
     }
@@ -224,10 +235,19 @@ function Inbox() {
       setSelectedEmails([]);
       pollJob(data.jobId);
     } catch (err) {
-      toast.error("Impossible de lancer l'analyse");
+      if (!handleQuotaError(err)) toast.error("Impossible de lancer l'analyse");
       setJob(null);
       setAnalyzing(false);
     }
+  };
+
+  // Returns true if it handled a 402 quota error.
+  const handleQuotaError = (err) => {
+    if (err.response?.status === 402) {
+      toast.action('Quota mensuel atteint.', 'Voir Pro', () => navigate('/pricing'), { variant: 'error' });
+      return true;
+    }
+    return false;
   };
 
   const pollJob = async (jobId) => {
@@ -801,6 +821,49 @@ function Inbox() {
           </div>
         )}
       </div>
+
+      {/* First-run onboarding */}
+      {showWelcome && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm">
+          <div className="card w-full max-w-lg animate-scale-in overflow-hidden">
+            <div className="bg-brand-gradient px-7 py-8 text-center text-white">
+              <span className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-white/15">
+                <Sparkles size={28} />
+              </span>
+              <h2 className="font-display text-2xl font-extrabold tracking-tight">Bienvenue dans Mailsorter 👋</h2>
+              <p className="mt-1 text-sm text-white/80">Votre boîte va enfin se ranger toute seule. Voici comment.</p>
+            </div>
+            <div className="space-y-4 p-7">
+              {[
+                { Icon: Sparkles, t: 'Lancez « Trier ma boîte »', d: "L'IA lit vos emails et propose une action pour chacun." },
+                { Icon: Bolt, t: 'Validez d’un clic', d: '« Tout appliquer » exécute toutes les suggestions d’un coup.' },
+                { Icon: Users, t: 'Activez l’auto-pilote', d: 'Mémorisez vos préférences par expéditeur pour la suite.' },
+              ].map(({ Icon, t, d }, i) => (
+                <div key={i} className="flex gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+                    <Icon size={18} />
+                  </span>
+                  <div>
+                    <div className="text-sm font-bold text-ink-900">{t}</div>
+                    <div className="text-sm text-ink-500">{d}</div>
+                  </div>
+                </div>
+              ))}
+              <div className="flex flex-col gap-2 pt-2 sm:flex-row">
+                <button
+                  onClick={() => { dismissWelcome(); emails.length ? handleAnalyze() : handleSync(); }}
+                  className="btn-primary flex-1"
+                >
+                  <Sparkles size={18} /> {emails.length ? 'Trier ma boîte' : 'Synchroniser ma boîte'}
+                </button>
+                <button onClick={dismissWelcome} className="btn-secondary">
+                  Explorer d'abord
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Keyboard shortcuts modal */}
       {showShortcuts && (

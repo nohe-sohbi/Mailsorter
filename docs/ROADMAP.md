@@ -34,13 +34,19 @@ Rendre le produit **addictif** et **fiable**.
 3. **Batching Mistral** — `AnalyzeBatch` envoie 8 emails par appel (au lieu de 1) ; le matching de labels est désormais **local** (plus d'appel IA par label). Repli per-email automatique si la réponse ne s'aligne pas.
 4. **Index MongoDB** — créés au démarrage (best-effort) : `{userId, messageId}` & `{userId, from}` sur emails, `{userId, status}` sur suggestions, `{userId, senderEmail}` sur préférences, `key` unique sur le cache, `{userId, createdAt}` sur les jobs.
 
-## 🔜 Phase 3 — Go-to-market (3–5 jours)
+## ✅ Phase 3 — Go-to-market (livrée)
 
-1. **Onboarding guidé** — première analyse pré-remplie + tooltip de bienvenue.
-2. **Digest quotidien** — email récap « 142 emails triés cette semaine ».
-3. **Multi-comptes Gmail** par utilisateur.
-4. **Billing** — quota gratuit (ex. 200 emails/mois) + offre Pro illimitée.
-5. **Analytics produit** — funnel connexion → 1ʳᵉ analyse → 1ʳᵉ application.
+1. **Onboarding guidé** — modale de bienvenue au premier lancement (3 étapes) avec CTA « Trier ma boîte » qui déclenche la 1ʳᵉ analyse ; flag `localStorage` pour ne plus la rejouer.
+2. **Quota & socle billing** — compteur mensuel par utilisateur (collection `usage`), exposé via `GET /api/usage`. Plan Free = 200 emails analysés/mois (cache & auto-pilote **non décomptés**) ; dépassement → `402` géré côté UI (toast → page Tarifs).
+3. **Récap d'activité** — `GET /api/stats/activity` (7 derniers jours, par jour + par action) affiché en mini-graphe sur la page **Tarifs**.
+4. **Page Tarifs** — `/pricing` (Free vs Pro), jauge d'usage + récap, CTA liste d'attente Pro ; liée depuis le header et la landing.
+
+### Reste à brancher (dépend d'infra externe)
+
+- **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.
+- **Stripe Checkout** — la jauge de quota et l'enforcement `402` sont prêts ; brancher Stripe (webhook → champ `plan` utilisateur) pour passer Pro = illimité.
+- **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).
+- **Analytics produit** — instrumenter le funnel (connexion → 1ʳᵉ analyse → 1ʳᵉ application) vers PostHog/Segment.
 
 ---
 
