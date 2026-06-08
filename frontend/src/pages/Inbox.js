@@ -1,14 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useEmails } from '../contexts/EmailContext';
 import { aiService, senderService, emailService } from '../services/api';
 import { useToast } from '../ui/Toast';
+import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
 import Spinner from '../ui/Spinner';
 import { cn } from '../ui/cn';
 import {
   Sparkles, Archive, Trash, Tag, Pin, Search, Refresh, Inbox as InboxIcon,
-  Users, Bolt, Check, X, Mail, Shield,
+  Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard,
 } from '../ui/icons';
 
 // --- Action design tokens (static classes so Tailwind keeps them) ---
@@ -19,6 +20,20 @@ const ACTIONS = {
   keep: { label: 'Garder', Icon: Pin, badge: 'bg-emerald-50 text-emerald-600', ring: '#10b981' },
 };
 const actionMeta = (a) => ACTIONS[a] || ACTIONS.keep;
+const isReversible = (a) => a === 'archive' || a === 'delete';
+
+const SHORTCUTS = [
+  ['J / K', 'Naviguer entre les emails'],
+  ['Entrée', "Ouvrir l'email ciblé"],
+  ['X', "Sélectionner l'email ciblé"],
+  ['E', 'Archiver'],
+  ['# / Suppr', 'Supprimer'],
+  ['A', 'Tout appliquer (suggestions)'],
+  ['R', 'Synchroniser'],
+  ['/', 'Rechercher'],
+  ['?', 'Afficher cette aide'],
+  ['Échap', 'Fermer le lecteur'],
+];
 
 const AVATAR_GRADIENTS = [
   'from-brand-500 to-fuchsia-500', 'from-sky-500 to-indigo-500',
@@ -75,6 +90,12 @@ function Inbox() {
   const [localSenders, setLocalSenders] = useState([]);
   const [analyzingSender, setAnalyzingSender] = useState(null);
   const [highConfOnly, setHighConfOnly] = useState(false);
+  const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [gamify, setGamify] = useState(getStreakState);
+
+  const searchRef = useRef(null);
+  const rowRefs = useRef([]);
 
   useEffect(() => {
     if (!localStorage.getItem('userEmail')) {
@@ -87,10 +108,16 @@ function Inbox() {
 
   useEffect(() => setLocalSenders(senders), [senders]);
 
+  useEffect(() => {
+    if (focusedIndex >= 0) rowRefs.current[focusedIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [focusedIndex]);
+
   const visibleSuggestions = useMemo(
     () => (highConfOnly ? suggestions.filter((s) => (s.confidence || 0) >= 0.8) : suggestions),
     [suggestions, highConfOnly]
   );
+
+  const bumpGamify = (n) => setGamify(recordTriage(n));
 
   const formatNumber = (num) => {
     if (!num) return '0';
@@ -107,7 +134,20 @@ function Inbox() {
     return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
   };
 
-  // --- Handlers ---
+  // --- Undo helper ---------------------------------------------------------
+  const undoToast = (messageId, action, message) => {
+    toast.action(message, 'Annuler', async () => {
+      try {
+        await emailService.action(messageId, action === 'archive' ? 'unarchive' : 'untrash');
+        toast.success('Action annulée');
+        fetchData({ forceRefresh: true });
+      } catch (err) {
+        toast.error("Impossible d'annuler");
+      }
+    });
+  };
+
+  // --- Handlers ------------------------------------------------------------
   const handleSync = async () => {
     setSyncing(true);
     await fetchData({ forceRefresh: true });
@@ -138,8 +178,13 @@ function Inbox() {
     try {
       const response = await aiService.analyzeEmails(ids);
       await fetchData({ forceRefresh: true });
-      const count = response.data?.length || 0;
-      toast.success(count ? `${count} suggestion${count > 1 ? 's' : ''} générée${count > 1 ? 's' : ''}` : 'Analyse terminée');
+      const generated = response.data?.suggestions?.length || 0;
+      const auto = response.data?.autoApplied || 0;
+      if (auto > 0) {
+        bumpGamify(auto);
+        toast.success(`${auto} email${auto > 1 ? 's' : ''} auto-trié${auto > 1 ? 's' : ''} (auto-pilote)`);
+      }
+      toast.success(generated ? `${generated} suggestion${generated > 1 ? 's' : ''} générée${generated > 1 ? 's' : ''}` : 'Analyse terminée');
       setSelectedEmails([]);
     } catch (err) {
       toast.error("L'analyse a échoué. Réessayez.");
@@ -150,10 +195,14 @@ function Inbox() {
 
   const handleApplySuggestion = async (suggestion) => {
     const id = suggestion.id || suggestion._id;
+    const act = suggestion.action;
     removeSuggestion(id);
     try {
       await aiService.applySuggestion(id);
-      toast.success(`${actionMeta(suggestion.action).label} appliqué`);
+      bumpGamify(1);
+      const msg = `${actionMeta(act).label} appliqué`;
+      if (isReversible(act)) undoToast(suggestion.emailId, act, msg);
+      else toast.success(msg);
       fetchData({ forceRefresh: true });
     } catch (err) {
       toast.error("Action impossible. L'email reste en place.");
@@ -174,6 +223,7 @@ function Inbox() {
       const res = await aiService.applyBatch(ids);
       const appliedIds = res.data?.appliedIds || ids;
       removeSuggestions(appliedIds);
+      bumpGamify(res.data?.applied ?? appliedIds.length);
       toast.success(`${res.data?.applied ?? appliedIds.length} action${appliedIds.length > 1 ? 's' : ''} appliquée${appliedIds.length > 1 ? 's' : ''}`);
       if (res.data?.failed) toast.error(`${res.data.failed} action(s) ont échoué`);
       fetchData({ forceRefresh: true });
@@ -191,15 +241,21 @@ function Inbox() {
     toast.info('Suggestions ignorées');
   };
 
-  const handleReaderAction = async (email, action) => {
-    setSelectedEmail(null);
+  // Direct action on a single email (used by reader buttons + keyboard).
+  const directAction = async (email, action) => {
     try {
       await emailService.action(email.messageId, action);
-      toast.success(action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
+      bumpGamify(1);
+      undoToast(email.messageId, action, action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
       fetchData({ forceRefresh: true });
     } catch (err) {
       toast.error("L'action a échoué");
     }
+  };
+
+  const handleReaderAction = (email, action) => {
+    setSelectedEmail(null);
+    directAction(email, action);
   };
 
   const handleAnalyzeSender = async (sender) => {
@@ -216,9 +272,31 @@ function Inbox() {
     }
   };
 
+  const handleToggleAutoApply = async (sender) => {
+    const pref = sender.preference;
+    if (!pref?.id) return;
+    const next = !pref.autoApply;
+    try {
+      await senderService.updatePreference(pref.id, {
+        autoApply: next,
+        defaultAction: pref.defaultAction,
+        defaultLabel: pref.defaultLabel || '',
+      });
+      setLocalSenders((prev) =>
+        prev.map((s) =>
+          s.senderEmail === sender.senderEmail ? { ...s, preference: { ...pref, autoApply: next } } : s
+        )
+      );
+      toast.success(next ? 'Auto-pilote activé pour cet expéditeur' : 'Auto-pilote désactivé');
+    } catch (err) {
+      toast.error('Mise à jour impossible');
+    }
+  };
+
   const handleApplyBulk = async (sender, action) => {
     try {
       const response = await aiService.applyBulk(sender.senderEmail, action, sender.preference?.defaultLabel || '');
+      bumpGamify(response.data.applied || 0);
       toast.success(`${response.data.applied} email${response.data.applied > 1 ? 's' : ''} traité${response.data.applied > 1 ? 's' : ''}`);
       fetchData({ forceRefresh: true });
     } catch (err) {
@@ -226,7 +304,60 @@ function Inbox() {
     }
   };
 
+  // --- Keyboard shortcuts --------------------------------------------------
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        setSelectedEmail(null);
+        setShowShortcuts(false);
+        return;
+      }
+      const el = document.activeElement;
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === '?') { setShowShortcuts((s) => !s); return; }
+      if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
+      if (e.key === 'r') { handleSync(); return; }
+      if (e.key === 'a' && visibleSuggestions.length) { handleApplyAll(); return; }
+      if (view !== 'emails' || emails.length === 0) return;
+
+      const cur = emails[focusedIndex];
+      switch (e.key) {
+        case 'j':
+          e.preventDefault();
+          setFocusedIndex((i) => Math.min((i < 0 ? -1 : i) + 1, emails.length - 1));
+          break;
+        case 'k':
+          e.preventDefault();
+          setFocusedIndex((i) => Math.max((i < 0 ? 1 : i) - 1, 0));
+          break;
+        case 'Enter':
+          if (cur) setSelectedEmail(cur);
+          break;
+        case 'x':
+          if (cur) handleSelectEmail(cur);
+          break;
+        case 'e':
+          if (cur) directAction(cur, 'archive');
+          break;
+        case '#':
+        case 'Delete':
+          if (cur) directAction(cur, 'delete');
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emails, focusedIndex, view, visibleSuggestions]);
+
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
+  const progressPct = Math.min(100, Math.round((gamify.today / gamify.goal) * 100));
+  const goalHit = gamify.today >= gamify.goal;
+  rowRefs.current = [];
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
@@ -246,15 +377,50 @@ function Inbox() {
           <form onSubmit={handleSearch} className="relative">
             <Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
             <input
+              ref={searchRef}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="from:amazon, is:unread…"
+              placeholder="from:amazon, is:unread…  ( / )"
               className="input w-44 pl-10 sm:w-64"
             />
           </form>
-          <button onClick={handleSync} disabled={syncing} className="btn-secondary px-3" title="Synchroniser">
+          <button onClick={() => setShowShortcuts(true)} className="btn-secondary px-3" title="Raccourcis clavier (?)">
+            <Keyboard size={18} />
+          </button>
+          <button onClick={handleSync} disabled={syncing} className="btn-secondary px-3" title="Synchroniser (r)">
             <Refresh size={18} className={syncing ? 'animate-spin' : ''} />
           </button>
+        </div>
+      </div>
+
+      {/* Daily progress + streak */}
+      <div className="card mb-6 flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:gap-6">
+        <div className="flex items-center gap-3">
+          <span className={cn('flex h-12 w-12 items-center justify-center rounded-2xl text-white', gamify.streak > 0 ? 'bg-gradient-to-br from-amber-400 to-orange-500' : 'bg-ink-200')}>
+            <Flame size={24} />
+          </span>
+          <div>
+            <div className="font-display text-lg font-extrabold leading-none text-ink-900">
+              {gamify.streak > 0 ? `Série de ${gamify.streak} jour${gamify.streak > 1 ? 's' : ''}` : 'Lancez votre série'}
+            </div>
+            <div className="text-xs text-ink-500">
+              {goalHit ? 'Objectif du jour atteint 🎉' : 'Triez chaque jour pour la garder vivante'}
+            </div>
+          </div>
+        </div>
+        <div className="flex-1">
+          <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-ink-500">
+            <span>Objectif du jour</span>
+            <span className={goalHit ? 'font-bold text-emerald-600' : 'text-ink-600'}>
+              {gamify.today}/{gamify.goal} triés
+            </span>
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
+            <div
+              className={cn('h-full rounded-full transition-all duration-500', goalHit ? 'bg-gradient-to-r from-emerald-400 to-teal-500' : 'bg-brand-gradient')}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
         </div>
       </div>
 
@@ -337,7 +503,7 @@ function Inbox() {
               <button onClick={handleRejectAll} className="btn-ghost px-3 py-1.5 text-xs">
                 Tout ignorer
               </button>
-              <button onClick={handleApplyAll} disabled={applyingAll} className="btn-primary px-3.5 py-1.5 text-xs">
+              <button onClick={handleApplyAll} disabled={applyingAll} className="btn-primary px-3.5 py-1.5 text-xs" title="Tout appliquer (a)">
                 {applyingAll ? <Spinner size={14} /> : <Bolt size={14} />} Tout appliquer
               </button>
             </div>
@@ -412,17 +578,20 @@ function Inbox() {
               </div>
             ) : (
               <div className="divide-y divide-ink-100">
-                {emails.map((email) => {
+                {emails.map((email, idx) => {
                   const name = email.from?.split('<')[0]?.trim() || email.from || '?';
                   const isActive = selectedEmail?.messageId === email.messageId;
                   const isChecked = selectedEmails.includes(email.messageId);
+                  const isFocused = idx === focusedIndex;
                   return (
                     <div
                       key={email.messageId}
+                      ref={(el) => (rowRefs.current[idx] = el)}
                       className={cn(
                         'group flex items-center gap-3 px-4 py-3 transition-colors',
                         isActive ? 'bg-brand-50/70' : 'hover:bg-ink-50/70',
-                        isChecked && 'bg-brand-50/40'
+                        isChecked && 'bg-brand-50/40',
+                        isFocused && 'ring-2 ring-inset ring-brand-400'
                       )}
                     >
                       <button
@@ -441,7 +610,7 @@ function Inbox() {
                           <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-white bg-brand-500" />
                         )}
                       </span>
-                      <button onClick={() => setSelectedEmail(email)} className="min-w-0 flex-1 text-left">
+                      <button onClick={() => { setFocusedIndex(idx); setSelectedEmail(email); }} className="min-w-0 flex-1 text-left">
                         <div className="flex items-baseline justify-between gap-2">
                           <span className={cn('truncate text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
                             {name}
@@ -483,41 +652,53 @@ function Inbox() {
                 <p className="mt-1 max-w-xs text-sm text-ink-500">Synchronisez votre boîte pour voir qui vous écrit le plus.</p>
               </div>
             ) : (
-              localSenders.map((sender) => (
-                <div key={sender.senderEmail} className="card flex flex-wrap items-center gap-4 p-4">
-                  <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white', gradientFor(sender.senderEmail))}>
-                    {(sender.senderName || sender.senderEmail)[0]?.toUpperCase()}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmail.split('@')[0]}</div>
-                    <div className="truncate text-xs text-ink-400">{sender.senderEmail}</div>
-                  </div>
-                  <span className="chip bg-ink-100 text-ink-600">{sender.emailCount} emails</span>
-                  {sender.preference ? (
-                    <span className={cn('chip', actionMeta(sender.preference.defaultAction).badge)}>
-                      {(() => { const M = actionMeta(sender.preference.defaultAction); return <M.Icon size={13} />; })()}
-                      {actionMeta(sender.preference.defaultAction).label}
+              localSenders.map((sender) => {
+                const pref = sender.preference;
+                return (
+                  <div key={sender.senderEmail} className="card flex flex-wrap items-center gap-4 p-4">
+                    <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white', gradientFor(sender.senderEmail))}>
+                      {(sender.senderName || sender.senderEmail)[0]?.toUpperCase()}
                     </span>
-                  ) : (
-                    <button
-                      onClick={() => handleAnalyzeSender(sender)}
-                      disabled={analyzingSender === sender.senderEmail}
-                      className="btn-secondary"
-                    >
-                      {analyzingSender === sender.senderEmail ? <Spinner size={16} /> : <Sparkles size={16} />}
-                      Analyser
-                    </button>
-                  )}
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => handleApplyBulk(sender, 'archive')} className="btn-ghost px-2.5" title="Tout archiver">
-                      <Archive size={18} />
-                    </button>
-                    <button onClick={() => handleApplyBulk(sender, 'delete')} className="btn-ghost px-2.5 text-rose-500 hover:bg-rose-50" title="Tout supprimer">
-                      <Trash size={18} />
-                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmail.split('@')[0]}</div>
+                      <div className="truncate text-xs text-ink-400">{sender.senderEmail}</div>
+                    </div>
+                    <span className="chip bg-ink-100 text-ink-600">{sender.emailCount} emails</span>
+                    {pref ? (
+                      <>
+                        <span className={cn('chip', actionMeta(pref.defaultAction).badge)}>
+                          {(() => { const M = actionMeta(pref.defaultAction); return <M.Icon size={13} />; })()}
+                          {actionMeta(pref.defaultAction).label}
+                        </span>
+                        <button
+                          onClick={() => handleToggleAutoApply(sender)}
+                          className={cn('chip transition-colors', pref.autoApply ? 'bg-emerald-100 text-emerald-700' : 'bg-ink-100 text-ink-500 hover:bg-ink-200')}
+                          title="Appliquer automatiquement à chaque tri"
+                        >
+                          <Bolt size={13} /> Auto-pilote {pref.autoApply ? 'ON' : 'OFF'}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => handleAnalyzeSender(sender)}
+                        disabled={analyzingSender === sender.senderEmail}
+                        className="btn-secondary"
+                      >
+                        {analyzingSender === sender.senderEmail ? <Spinner size={16} /> : <Sparkles size={16} />}
+                        Analyser
+                      </button>
+                    )}
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => handleApplyBulk(sender, 'archive')} className="btn-ghost px-2.5" title="Tout archiver">
+                        <Archive size={18} />
+                      </button>
+                      <button onClick={() => handleApplyBulk(sender, 'delete')} className="btn-ghost px-2.5 text-rose-500 hover:bg-rose-50" title="Tout supprimer">
+                        <Trash size={18} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
@@ -533,6 +714,36 @@ function Inbox() {
           </div>
         )}
       </div>
+
+      {/* Keyboard shortcuts modal */}
+      {showShortcuts && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-ink-950/40 p-4 backdrop-blur-sm"
+          onClick={() => setShowShortcuts(false)}
+        >
+          <div className="card w-full max-w-md animate-scale-in p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Keyboard size={20} className="text-brand-600" />
+                <h3 className="text-lg font-bold text-ink-900">Raccourcis clavier</h3>
+              </div>
+              <button onClick={() => setShowShortcuts(false)} className="btn-ghost px-2">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {SHORTCUTS.map(([keys, desc]) => (
+                <div key={keys} className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm hover:bg-ink-50">
+                  <span className="text-ink-600">{desc}</span>
+                  <kbd className="rounded-md border border-ink-200 bg-ink-50 px-2 py-0.5 font-mono text-xs font-semibold text-ink-700">
+                    {keys}
+                  </kbd>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

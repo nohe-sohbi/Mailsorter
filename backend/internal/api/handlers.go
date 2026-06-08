@@ -347,6 +347,10 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"INBOX"})
 	case "delete", "trash":
 		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"TRASH"}, nil)
+	case "unarchive":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, nil)
+	case "untrash":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, []string{"TRASH"})
 	case "read":
 		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"UNREAD"})
 	case "unread":

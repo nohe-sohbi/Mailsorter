@@ -18,14 +18,14 @@ Le socle « machine de guerre » est en place :
 
 ---
 
-## 🔜 Phase 1 — Rétention (1–2 jours)
+## ✅ Phase 1 — Rétention (livrée)
 
-L'objectif : rendre le produit **addictif** et **fiable**.
+Rendre le produit **addictif** et **fiable**.
 
-1. **Undo (annulation)** — toast « Annuler » de 5 s après chaque action ; restaure les labels via `/api/emails/action`.
-2. **Auto-apply par expéditeur** — la préférence `autoApply` existe déjà en base ; appliquer automatiquement à la synchro.
-3. **Raccourcis clavier** — `j/k` naviguer, `e` archiver, `#` supprimer, `a` tout appliquer.
-4. **Scoring Inbox Zero** — barre de progression gamifiée + streak quotidien.
+1. **Undo (annulation)** — toast « Annuler » de 5,5 s après archive/suppression (lecteur, suggestions, raccourcis) ; restaure via les actions inverses `unarchive` / `untrash` sur `/api/emails/action`.
+2. **Auto-pilote par expéditeur** — la préférence `autoApply` est appliquée directement lors du tri (court-circuite l'appel IA → plus rapide et moins coûteux) ; toggle ON/OFF dans la vue *Expéditeurs*.
+3. **Raccourcis clavier** — `j/k` naviguer, `Entrée` ouvrir, `x` sélectionner, `e` archiver, `# / Suppr` supprimer, `a` tout appliquer, `r` synchroniser, `/` rechercher, `?` aide, `Échap` fermer.
+4. **Scoring Inbox Zero** — barre de progression quotidienne (objectif 20) + **série de jours** (streak) avec flamme, persistés en `localStorage`.
 
 ## 🔜 Phase 2 — Échelle (2–4 jours)
 

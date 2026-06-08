@@ -126,6 +126,22 @@ export const Alert = make(
     <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
   </>
 );
+export const Flame = make(
+  <path d="M12 22c4 0 7-2.7 7-6.5 0-3.6-2.6-5.6-3.8-8.5-.5 1.6-1.4 2.6-2.4 3.2.2-2.2-.6-4.6-2.8-7.2-.3 3-2 4.4-3.4 6C5.3 10.5 5 12 5 13.5 5 17.3 8 22 12 22z" />
+);
+export const Keyboard = make(
+  <>
+    <rect x="2" y="6" width="20" height="12" rx="2" />
+    <path d="M7 10h.01M11 10h.01M15 10h.01M17 10h.01M7 14h10" />
+  </>
+);
+export const Undo = make(
+  <>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h11a5 5 0 0 1 0 10h-1" />
+  </>
+);
+
 export const Google = ({ size = 18, className = '' }) => (
   <svg width={size} height={size} viewBox="0 0 48 48" className={className} aria-hidden>
     <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8a12 12 0 1 1 7.9-21l5.7-5.7A20 20 0 1 0 44 24c0-1.2-.1-2.4-.4-3.5z" />

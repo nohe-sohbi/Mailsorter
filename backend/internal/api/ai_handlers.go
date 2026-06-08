@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/oauth2"
+	gmailapi "google.golang.org/api/gmail/v1"
 )
 
 // AnalyzeEmails analyzes selected emails and creates AI suggestions
@@ -64,9 +65,35 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Best-effort Gmail client used to auto-apply suggestions for senders the
+	// user has put on auto-pilot. If we can't get a token we silently fall back
+	// to generating pending suggestions only.
+	var gmailClient *gmailapi.Service
+	if token, terr := h.getUserToken(ctx, userEmail); terr == nil {
+		gmailClient = h.gmailService.GetClient(token)
+	}
+
 	// Analyze each email
-	var suggestions []models.AISuggestion
+	suggestions := make([]models.AISuggestion, 0)
+	autoApplied := 0
 	for _, email := range emails {
+		// Sender on auto-pilot? Apply its default action immediately and skip
+		// the (paid, slower) AI call entirely.
+		if gmailClient != nil {
+			var pref models.SenderPreference
+			perr := h.db.SenderPreferences().FindOne(ctx, bson.M{
+				"userId":      userEmail,
+				"senderEmail": email.From,
+				"autoApply":   true,
+			}).Decode(&pref)
+			if perr == nil && pref.DefaultAction != "" {
+				if h.autoApplySender(ctx, gmailClient, userEmail, email, pref) {
+					autoApplied++
+					continue
+				}
+			}
+		}
+
 		analysis, err := h.aiClient.AnalyzeEmail(email, existingLabels)
 		if err != nil {
 			continue // Skip failed analyses
@@ -109,7 +136,53 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(suggestions)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"suggestions": suggestions,
+		"autoApplied": autoApplied,
+	})
+}
+
+// autoApplySender applies a sender's saved default action to an email directly,
+// recording it as an already-applied suggestion. Returns true on success so the
+// caller can skip the AI analysis for that email.
+func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Service, userEmail string, email models.Email, pref models.SenderPreference) bool {
+	suggestion := models.AISuggestion{
+		UserID:     userEmail,
+		EmailID:    email.MessageID,
+		Action:     pref.DefaultAction,
+		LabelName:  pref.DefaultLabel,
+		Confidence: 1.0,
+		Reasoning:  "Auto-appliqué (préférence expéditeur)",
+		Status:     "applied",
+		CreatedAt:  time.Now(),
+		AppliedAt:  time.Now(),
+	}
+
+	var err error
+	switch pref.DefaultAction {
+	case "archive":
+		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, nil, []string{"INBOX"})
+	case "delete":
+		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{"TRASH"}, nil)
+	case "label":
+		labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, pref.DefaultLabel)
+		if lerr != nil {
+			return false
+		}
+		suggestion.LabelID = labelID
+		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{labelID}, nil)
+	case "keep":
+		// Nothing to mutate in Gmail.
+	default:
+		return false
+	}
+
+	if err != nil {
+		return false
+	}
+
+	h.db.AISuggestions().InsertOne(ctx, suggestion)
+	return true
 }
 
 // AnalyzeSender analyzes all emails from a specific sender

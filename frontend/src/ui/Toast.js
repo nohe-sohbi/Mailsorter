@@ -19,9 +19,9 @@ export function ToastProvider({ children }) {
   }, []);
 
   const push = useCallback(
-    (message, { variant = 'info', duration = 3500 } = {}) => {
+    (message, { variant = 'info', duration = 3500, action = null } = {}) => {
       const id = ++idRef.current;
-      setToasts((prev) => [...prev, { id, message, variant }]);
+      setToasts((prev) => [...prev, { id, message, variant, action }]);
       if (duration > 0) setTimeout(() => dismiss(id), duration);
       return id;
     },
@@ -32,6 +32,9 @@ export function ToastProvider({ children }) {
     success: (m, o) => push(m, { ...o, variant: 'success' }),
     error: (m, o) => push(m, { ...o, variant: 'error' }),
     info: (m, o) => push(m, { ...o, variant: 'info' }),
+    // Action toast (e.g. "Annuler"). Stays a bit longer by default.
+    action: (m, label, onClick, o = {}) =>
+      push(m, { variant: 'info', duration: 5500, ...o, action: { label, onClick } }),
   };
 
   return (
@@ -50,6 +53,17 @@ export function ToastProvider({ children }) {
                 <Icon size={18} />
               </span>
               <p className="flex-1 text-sm font-medium text-ink-800">{t.message}</p>
+              {t.action && (
+                <button
+                  onClick={() => {
+                    t.action.onClick();
+                    dismiss(t.id);
+                  }}
+                  className="shrink-0 rounded-lg px-2.5 py-1 text-sm font-bold text-brand-600 transition-colors hover:bg-brand-50"
+                >
+                  {t.action.label}
+                </button>
+              )}
               <button
                 onClick={() => dismiss(t.id)}
                 className="rounded-lg p-1 text-ink-400 transition-colors hover:bg-ink-100 hover:text-ink-600"
