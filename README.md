@@ -107,7 +107,9 @@ docker compose up -d        # ou : make up
 | ------- | ------------------------- | --------------------------------------------- |
 | `GET`   | `/api/emails`             | Liste paginée de la boîte                     |
 | `POST`  | `/api/emails/action`      | Action directe (archive/trash/read) sur 1 msg |
-| `POST`  | `/api/ai/analyze`         | Génère des suggestions pour N emails          |
+| `POST`  | `/api/ai/analyze`         | Génère des suggestions (synchrone, cache+batch) |
+| `POST`  | `/api/ai/analyze-async`   | **Lance un job d'analyse** (worker, non bloquant) |
+| `GET`   | `/api/ai/jobs/{id}`       | Statut/progression d'un job d'analyse         |
 | `POST`  | `/api/ai/apply`           | Applique une suggestion                       |
 | `POST`  | `/api/ai/apply-batch`     | **Applique N suggestions en une requête**     |
 | `POST`  | `/api/ai/analyze-sender`  | Apprend une préférence par expéditeur         |

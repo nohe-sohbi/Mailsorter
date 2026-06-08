@@ -17,7 +17,7 @@ import (
 	gmailapi "google.golang.org/api/gmail/v1"
 )
 
-// AnalyzeEmails analyzes selected emails and creates AI suggestions
+// AnalyzeEmails synchronously analyzes selected emails and creates AI suggestions.
 func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	if h.aiClient == nil {
 		http.Error(w, "AI service not configured", http.StatusServiceUnavailable)
@@ -35,110 +35,25 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-
 	if len(req.EmailIDs) == 0 {
 		http.Error(w, "No email IDs provided", http.StatusBadRequest)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	// Get existing labels for context
-	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
-
-	// Fetch emails from database
-	var emails []models.Email
-	for _, emailID := range req.EmailIDs {
-		var email models.Email
-		err := h.db.Emails().FindOne(ctx, bson.M{
-			"messageId": emailID,
-			"userId":    userEmail,
-		}).Decode(&email)
-		if err == nil {
-			emails = append(emails, email)
-		}
-	}
-
-	if len(emails) == 0 {
-		http.Error(w, "No emails found", http.StatusNotFound)
+	progress, suggestions, err := h.runAnalysis(ctx, userEmail, req.EmailIDs, nil)
+	if err != nil {
+		http.Error(w, "Analysis failed: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	// Best-effort Gmail client used to auto-apply suggestions for senders the
-	// user has put on auto-pilot. If we can't get a token we silently fall back
-	// to generating pending suggestions only.
-	var gmailClient *gmailapi.Service
-	if token, terr := h.getUserToken(ctx, userEmail); terr == nil {
-		gmailClient = h.gmailService.GetClient(token)
-	}
-
-	// Analyze each email
-	suggestions := make([]models.AISuggestion, 0)
-	autoApplied := 0
-	for _, email := range emails {
-		// Sender on auto-pilot? Apply its default action immediately and skip
-		// the (paid, slower) AI call entirely.
-		if gmailClient != nil {
-			var pref models.SenderPreference
-			perr := h.db.SenderPreferences().FindOne(ctx, bson.M{
-				"userId":      userEmail,
-				"senderEmail": email.From,
-				"autoApply":   true,
-			}).Decode(&pref)
-			if perr == nil && pref.DefaultAction != "" {
-				if h.autoApplySender(ctx, gmailClient, userEmail, email, pref) {
-					autoApplied++
-					continue
-				}
-			}
-		}
-
-		analysis, err := h.aiClient.AnalyzeEmail(email, existingLabels)
-		if err != nil {
-			continue // Skip failed analyses
-		}
-
-		suggestion := models.AISuggestion{
-			UserID:     userEmail,
-			EmailID:    email.MessageID,
-			Action:     analysis.Action,
-			LabelName:  analysis.LabelName,
-			Confidence: analysis.Confidence,
-			Reasoning:  analysis.Reasoning,
-			Status:     "pending",
-			CreatedAt:  time.Now(),
-		}
-
-		// Check if label already exists
-		if analysis.Action == "label" && analysis.LabelName != "" {
-			matchedLabel, exists, _ := h.aiClient.FindMatchingLabel(analysis.LabelName, existingLabels)
-			suggestion.LabelName = matchedLabel
-			if exists {
-				// Find Gmail label ID
-				var smartLabel models.SmartLabel
-				err := h.db.SmartLabels().FindOne(ctx, bson.M{
-					"userId": userEmail,
-					"name":   matchedLabel,
-				}).Decode(&smartLabel)
-				if err == nil {
-					suggestion.LabelID = smartLabel.GmailLabelID
-				}
-			}
-		}
-
-		// Save suggestion
-		result, err := h.db.AISuggestions().InsertOne(ctx, suggestion)
-		if err == nil {
-			suggestion.ID = result.InsertedID.(primitive.ObjectID).Hex()
-			suggestions = append(suggestions, suggestion)
-		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"suggestions": suggestions,
-		"autoApplied": autoApplied,
+		"autoApplied": progress.AutoApplied,
+		"cachedHits":  progress.CachedHits,
 	})
 }
 

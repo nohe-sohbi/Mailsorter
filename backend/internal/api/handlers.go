@@ -24,15 +24,20 @@ type Handler struct {
 	gmailService *gmail.Service
 	encryptor    *crypto.Encryptor
 	aiClient     *ai.MistralClient
+	jobQueue     chan string
 }
 
 func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient) *Handler {
-	return &Handler{
+	h := &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
 		aiClient:     aiClient,
+		jobQueue:     make(chan string, 256),
 	}
+	// Background pool that drains async analysis jobs.
+	h.startAnalysisWorkers(3)
+	return h
 }
 
 // Health check

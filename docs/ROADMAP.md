@@ -27,12 +27,12 @@ Rendre le produit **addictif** et **fiable**.
 3. **Raccourcis clavier** — `j/k` naviguer, `Entrée` ouvrir, `x` sélectionner, `e` archiver, `# / Suppr` supprimer, `a` tout appliquer, `r` synchroniser, `/` rechercher, `?` aide, `Échap` fermer.
 4. **Scoring Inbox Zero** — barre de progression quotidienne (objectif 20) + **série de jours** (streak) avec flamme, persistés en `localStorage`.
 
-## 🔜 Phase 2 — Échelle (2–4 jours)
+## ✅ Phase 2 — Échelle (livrée)
 
-1. **Analyse asynchrone** — file de jobs (worker Go) pour analyser 100+ emails sans bloquer l'UI ; statut en temps réel.
-2. **Cache d'analyses** — ne pas réanalyser un email/expéditeur déjà vu (clé : `from`+`subject` hash).
-3. **Batching Mistral** — un appel pour N emails au lieu de N appels (coût ÷ 5, latence ÷ 3).
-4. **Index MongoDB** — `{userId, status}` sur suggestions, `{userId, from}` sur emails.
+1. **Analyse asynchrone** — pool de 3 workers Go drainant une file de jobs (`POST /api/ai/analyze-async` → `GET /api/ai/jobs/{id}`). Au-delà de 10 emails, l'UI bascule en mode async avec **barre de progression en temps réel** (polling 1,5 s) ; l'app ne bloque jamais.
+2. **Cache d'analyses** — collection `analysis_cache` indexée sur un hash `sha256(from|subject)`. Les emails déjà vus (tous utilisateurs confondus) ne repassent jamais par l'IA.
+3. **Batching Mistral** — `AnalyzeBatch` envoie 8 emails par appel (au lieu de 1) ; le matching de labels est désormais **local** (plus d'appel IA par label). Repli per-email automatique si la réponse ne s'aligne pas.
+4. **Index MongoDB** — créés au démarrage (best-effort) : `{userId, messageId}` & `{userId, from}` sur emails, `{userId, status}` sur suggestions, `{userId, senderEmail}` sur préférences, `key` unique sur le cache, `{userId, createdAt}` sur les jobs.
 
 ## 🔜 Phase 3 — Go-to-market (3–5 jours)
 

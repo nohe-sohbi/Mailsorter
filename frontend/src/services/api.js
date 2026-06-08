@@ -43,6 +43,8 @@ export const labelService = {
 
 export const aiService = {
   analyzeEmails: (emailIds) => apiClient.post('/api/ai/analyze', { emailIds }),
+  analyzeAsync: (emailIds) => apiClient.post('/api/ai/analyze-async', { emailIds }),
+  getJob: (jobId) => apiClient.get(`/api/ai/jobs/${jobId}`),
   analyzeSender: (senderEmail) => apiClient.post('/api/ai/analyze-sender', { senderEmail }),
   applySuggestion: (suggestionId) => apiClient.post('/api/ai/apply', { suggestionId }),
   applyBatch: (suggestionIds) => apiClient.post('/api/ai/apply-batch', { suggestionIds }),

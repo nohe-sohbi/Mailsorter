@@ -93,9 +93,14 @@ function Inbox() {
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [gamify, setGamify] = useState(getStreakState);
+  const [job, setJob] = useState(null);
 
   const searchRef = useRef(null);
   const rowRefs = useRef([]);
+  const pollRef = useRef(null);
+
+  // Switch to the async worker beyond this many emails so the UI never blocks.
+  const ASYNC_THRESHOLD = 10;
 
   useEffect(() => {
     if (!localStorage.getItem('userEmail')) {
@@ -111,6 +116,9 @@ function Inbox() {
   useEffect(() => {
     if (focusedIndex >= 0) rowRefs.current[focusedIndex]?.scrollIntoView({ block: 'nearest' });
   }, [focusedIndex]);
+
+  // Stop polling if the page unmounts mid-job.
+  useEffect(() => () => clearTimeout(pollRef.current), []);
 
   const visibleSuggestions = useMemo(
     () => (highConfOnly ? suggestions.filter((s) => (s.confidence || 0) >= 0.8) : suggestions),
@@ -169,27 +177,77 @@ function Inbox() {
     setSelectedEmails((prev) => (prev.length === emails.length ? [] : emails.map((e) => e.messageId)));
 
   const handleAnalyze = async () => {
-    const ids = selectedEmails.length > 0 ? selectedEmails : emails.slice(0, 25).map((e) => e.messageId);
+    const ids = selectedEmails.length > 0 ? selectedEmails : emails.map((e) => e.messageId);
     if (ids.length === 0) {
       toast.error('Aucun email à analyser');
       return;
     }
+    if (ids.length > ASYNC_THRESHOLD) {
+      runAsyncAnalyze(ids);
+    } else {
+      runSyncAnalyze(ids);
+    }
+  };
+
+  const announceResult = ({ suggestionsCreated = 0, autoApplied = 0, cachedHits = 0 }) => {
+    if (autoApplied > 0) {
+      bumpGamify(autoApplied);
+      toast.success(`${autoApplied} email${autoApplied > 1 ? 's' : ''} auto-trié${autoApplied > 1 ? 's' : ''} (auto-pilote)`);
+    }
+    const extra = cachedHits > 0 ? ` · ${cachedHits} depuis le cache` : '';
+    toast.success(suggestionsCreated ? `${suggestionsCreated} suggestion${suggestionsCreated > 1 ? 's' : ''} générée${suggestionsCreated > 1 ? 's' : ''}${extra}` : 'Analyse terminée');
+  };
+
+  const runSyncAnalyze = async (ids) => {
     setAnalyzing(true);
     try {
-      const response = await aiService.analyzeEmails(ids);
+      const { data } = await aiService.analyzeEmails(ids);
       await fetchData({ forceRefresh: true });
-      const generated = response.data?.suggestions?.length || 0;
-      const auto = response.data?.autoApplied || 0;
-      if (auto > 0) {
-        bumpGamify(auto);
-        toast.success(`${auto} email${auto > 1 ? 's' : ''} auto-trié${auto > 1 ? 's' : ''} (auto-pilote)`);
-      }
-      toast.success(generated ? `${generated} suggestion${generated > 1 ? 's' : ''} générée${generated > 1 ? 's' : ''}` : 'Analyse terminée');
+      announceResult({
+        suggestionsCreated: data?.suggestions?.length || 0,
+        autoApplied: data?.autoApplied || 0,
+        cachedHits: data?.cachedHits || 0,
+      });
       setSelectedEmails([]);
     } catch (err) {
       toast.error("L'analyse a échoué. Réessayez.");
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const runAsyncAnalyze = async (ids) => {
+    setAnalyzing(true);
+    setJob({ status: 'queued', processed: 0, total: ids.length });
+    try {
+      const { data } = await aiService.analyzeAsync(ids);
+      setSelectedEmails([]);
+      pollJob(data.jobId);
+    } catch (err) {
+      toast.error("Impossible de lancer l'analyse");
+      setJob(null);
+      setAnalyzing(false);
+    }
+  };
+
+  const pollJob = async (jobId) => {
+    try {
+      const { data } = await aiService.getJob(jobId);
+      setJob(data);
+      if (data.status === 'done' || data.status === 'error') {
+        setJob(null);
+        setAnalyzing(false);
+        await fetchData({ forceRefresh: true });
+        if (data.status === 'error') {
+          toast.error('Analyse interrompue. Réessayez.');
+        } else {
+          announceResult(data);
+        }
+        return;
+      }
+      pollRef.current = setTimeout(() => pollJob(jobId), 1500);
+    } catch (err) {
+      pollRef.current = setTimeout(() => pollJob(jobId), 2500);
     }
   };
 
@@ -482,6 +540,35 @@ function Inbox() {
           </>
         )}
       </div>
+
+      {/* Async analysis progress */}
+      {job && (
+        <div className="card mb-6 flex flex-col gap-3 p-4 animate-fade-up sm:flex-row sm:items-center sm:gap-5">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+              <Spinner size={20} className="text-brand-500" />
+            </span>
+            <div>
+              <div className="text-sm font-bold text-ink-900">
+                {job.status === 'queued' ? 'Analyse en file…' : "L'IA trie votre boîte…"}
+              </div>
+              <div className="text-xs text-ink-500">
+                {job.processed || 0}/{job.total || 0} traités
+                {job.cachedHits ? ` · ${job.cachedHits} en cache` : ''}
+                {job.autoApplied ? ` · ${job.autoApplied} auto` : ''}
+              </div>
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
+              <div
+                className="h-full rounded-full bg-brand-gradient transition-all duration-500"
+                style={{ width: `${job.total ? Math.round(((job.processed || 0) / job.total) * 100) : 5}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Suggestions panel */}
       {visibleSuggestions.length > 0 && view === 'emails' && (

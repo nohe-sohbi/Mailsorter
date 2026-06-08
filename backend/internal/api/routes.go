@@ -27,6 +27,8 @@ func (h *Handler) SetupRoutes() http.Handler {
 
 	// AI Sorting routes
 	r.HandleFunc("/api/ai/analyze", h.AnalyzeEmails).Methods("POST")
+	r.HandleFunc("/api/ai/analyze-async", h.EnqueueAnalyze).Methods("POST")
+	r.HandleFunc("/api/ai/jobs/{id}", h.GetJob).Methods("GET")
 	r.HandleFunc("/api/ai/analyze-sender", h.AnalyzeSender).Methods("POST")
 	r.HandleFunc("/api/ai/apply", h.ApplySuggestion).Methods("POST")
 	r.HandleFunc("/api/ai/apply-batch", h.ApplyBatch).Methods("POST")

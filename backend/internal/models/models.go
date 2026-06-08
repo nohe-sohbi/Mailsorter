@@ -126,6 +126,34 @@ type SmartLabel struct {
 	UpdatedAt   time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
+// AnalysisJob tracks an asynchronous batch-analysis run.
+type AnalysisJob struct {
+	ID                 string    `json:"id" bson:"_id,omitempty"`
+	UserID             string    `json:"userId" bson:"userId"`
+	Status             string    `json:"status" bson:"status"` // queued, running, done, error
+	Total              int       `json:"total" bson:"total"`
+	Processed          int       `json:"processed" bson:"processed"`
+	AutoApplied        int       `json:"autoApplied" bson:"autoApplied"`
+	SuggestionsCreated int       `json:"suggestionsCreated" bson:"suggestionsCreated"`
+	CachedHits         int       `json:"cachedHits" bson:"cachedHits"`
+	Error              string    `json:"error,omitempty" bson:"error,omitempty"`
+	EmailIDs           []string  `json:"-" bson:"emailIds"`
+	CreatedAt          time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt" bson:"updatedAt"`
+}
+
+// AnalysisCacheEntry memoizes an AI verdict for a (from, subject) fingerprint
+// so identical emails are never analyzed twice. Content-based, not user-scoped.
+type AnalysisCacheEntry struct {
+	ID         string    `bson:"_id,omitempty"`
+	Key        string    `bson:"key"`
+	Action     string    `bson:"action"`
+	LabelName  string    `bson:"labelName"`
+	Confidence float64   `bson:"confidence"`
+	Reasoning  string    `bson:"reasoning"`
+	CreatedAt  time.Time `bson:"createdAt"`
+}
+
 // ============================================
 // AI API Request/Response Types
 // ============================================

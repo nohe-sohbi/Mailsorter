@@ -30,6 +30,15 @@ func main() {
 
 	log.Println("Connected to MongoDB successfully")
 
+	// Ensure hot-path indexes exist (best-effort).
+	idxCtx, idxCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := db.EnsureIndexes(idxCtx); err != nil {
+		log.Printf("Warning: failed to ensure some indexes: %v", err)
+	} else {
+		log.Println("Database indexes ensured")
+	}
+	idxCancel()
+
 	// Initialize encryptor
 	encryptor := crypto.NewEncryptor(cfg.EncryptionKey)
 
