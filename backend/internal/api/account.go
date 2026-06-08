@@ -37,11 +37,16 @@ func (h *Handler) incrUsage(ctx context.Context, userEmail string, n int) {
 	)
 }
 
+// quotaExceeded is true only for free users who have spent their monthly budget.
+// Pro is unlimited.
 func (h *Handler) quotaExceeded(ctx context.Context, userEmail string) bool {
+	if h.getPlan(ctx, userEmail) == PlanPro {
+		return false
+	}
 	return h.getUsage(ctx, userEmail) >= FreeMonthlyLimit
 }
 
-// GetUsage reports this month's AI usage against the free-tier limit.
+// GetUsage reports this month's AI usage against the plan's limit.
 func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -53,12 +58,19 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	used := h.getUsage(ctx, userEmail)
+	plan := h.getPlan(ctx, userEmail)
+	limit := FreeMonthlyLimit
+	if plan == PlanPro {
+		limit = -1 // unlimited
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"used":   used,
-		"limit":  FreeMonthlyLimit,
-		"period": currentPeriod(),
-		"plan":   "free",
+		"used":      used,
+		"limit":     limit,
+		"period":    currentPeriod(),
+		"plan":      plan,
+		"billingOn": h.billing.Client != nil && h.billing.PriceID != "",
 	})
 }
 
@@ -74,7 +86,7 @@ func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	since := time.Now().UTC().Truncate(24 * time.Hour).AddDate(0, 0, -6)
+	since := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -6)
 
 	cursor, err := h.db.AISuggestions().Find(ctx, bson.M{
 		"userId":    userEmail,
@@ -107,7 +119,7 @@ func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 
 	days := make([]map[string]interface{}, 0, 7)
 	for i := 6; i >= 0; i-- {
-		key := time.Now().UTC().Truncate(24 * time.Hour).AddDate(0, 0, -i).Format("2006-01-02")
+		key := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -i).Format("2006-01-02")
 		days = append(days, map[string]interface{}{"date": key, "count": dayCounts[key]})
 	}
 

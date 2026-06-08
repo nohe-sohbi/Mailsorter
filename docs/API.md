@@ -198,6 +198,51 @@ sender's backlog in the same call.
 
 ---
 
+## Billing Endpoints (Stripe)
+
+Pro unlocks unlimited AI analyses. These endpoints are active only when
+`STRIPE_SECRET_KEY` / `STRIPE_PRICE_ID` are set; otherwise the UI falls back to a
+waitlist and `/api/billing/checkout` returns `503`.
+
+### Create Checkout Session
+
+#### POST /api/billing/checkout
+
+Creates a subscription Checkout Session and returns the hosted URL to redirect to.
+
+**Headers:**
+- `X-User-Email` (required): User's email address
+
+**Response:**
+```json
+{ "url": "https://checkout.stripe.com/c/pay/cs_test_..." }
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Missing user email
+- `409 Conflict`: User is already on Pro
+- `502 Bad Gateway`: Stripe call failed
+- `503 Service Unavailable`: Billing not configured
+
+### Stripe Webhook
+
+#### POST /api/billing/webhook
+
+Receives Stripe events. The raw body is verified against the `Stripe-Signature`
+header (HMAC-SHA256, 5-minute tolerance) before processing. Keeps the user's
+`plan` in sync: `checkout.session.completed` → pro;
+`customer.subscription.updated/deleted` → pro/free.
+
+**Headers:**
+- `Stripe-Signature` (required): Stripe webhook signature
+
+**Response:** `200 OK` on success, `400 Bad Request` on signature failure.
+
+> Usage/plan is reported by `GET /api/usage` → `{ used, limit, plan, billingOn }`
+> where `limit: -1` means unlimited (Pro).
+
+---
+
 ## Sorting Rules Endpoints
 
 ### Get Sorting Rules

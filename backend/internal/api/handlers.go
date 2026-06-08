@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/billing"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
@@ -19,20 +20,31 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// BillingConfig wires the Stripe client and its environment-derived settings
+// into the handler. Client is nil when Stripe is not configured.
+type BillingConfig struct {
+	Client        *billing.Client
+	PriceID       string
+	WebhookSecret string
+	AppBaseURL    string
+}
+
 type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
 	encryptor    *crypto.Encryptor
 	aiClient     *ai.MistralClient
+	billing      BillingConfig
 	jobQueue     chan string
 }
 
-func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient) *Handler {
+func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig) *Handler {
 	h := &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
 		aiClient:     aiClient,
+		billing:      billingCfg,
 		jobQueue:     make(chan string, 256),
 	}
 	// Background pool that drains async analysis jobs.

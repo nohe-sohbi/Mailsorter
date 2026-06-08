@@ -10,8 +10,13 @@ type User struct {
 	AccessToken  string    `json:"-" bson:"accessToken"`
 	RefreshToken string    `json:"-" bson:"refreshToken"`
 	TokenExpiry  time.Time `json:"-" bson:"tokenExpiry"`
-	CreatedAt    time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt" bson:"updatedAt"`
+	// Billing — Plan is "free" (default/empty) or "pro".
+	Plan                 string    `json:"plan" bson:"plan,omitempty"`
+	StripeCustomerID     string    `json:"-" bson:"stripeCustomerId,omitempty"`
+	StripeSubscriptionID string    `json:"-" bson:"stripeSubscriptionId,omitempty"`
+	PlanUpdatedAt        time.Time `json:"-" bson:"planUpdatedAt,omitempty"`
+	CreatedAt            time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
 type Email struct {

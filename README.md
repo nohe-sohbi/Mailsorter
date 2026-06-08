@@ -118,7 +118,9 @@ docker compose up -d        # ou : make up
 | `POST`  | `/api/unsubscribe`        | **Désabonnement 1-clic** (+ archivage optionnel) |
 | `GET`   | `/api/stats`              | Statistiques de la boîte                      |
 | `GET`   | `/api/stats/activity`     | Récap d'activité (7 derniers jours)           |
-| `GET`   | `/api/usage`              | Quota mensuel (socle billing)                 |
+| `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
+| `POST`  | `/api/billing/checkout`   | **Stripe Checkout** (passage à Pro = illimité) |
+| `POST`  | `/api/billing/webhook`    | Webhook Stripe (signature vérifiée, sync plan) |
 
 Documentation complète : [`docs/API.md`](docs/API.md) · Architecture : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Roadmap : [`docs/ROADMAP.md`](docs/ROADMAP.md)
 

@@ -5,26 +5,34 @@ import (
 )
 
 type Config struct {
-	MongoDBURI        string
-	Port              string
-	GmailClientID     string
-	GmailClientSecret string
-	GmailRedirectURL  string
-	EncryptionKey     string
-	MistralAPIKey     string
-	MistralModel      string
+	MongoDBURI          string
+	Port                string
+	GmailClientID       string
+	GmailClientSecret   string
+	GmailRedirectURL    string
+	EncryptionKey       string
+	MistralAPIKey       string
+	MistralModel        string
+	StripeSecretKey     string
+	StripePriceID       string
+	StripeWebhookSecret string
+	AppBaseURL          string
 }
 
 func Load() *Config {
 	return &Config{
-		MongoDBURI:        getEnv("MONGODB_URI", "mongodb://admin:password@localhost:27017/mailsorter?authSource=admin"),
-		Port:              getEnv("PORT", "8080"),
-		GmailClientID:     getEnv("GMAIL_CLIENT_ID", ""),
-		GmailClientSecret: getEnv("GMAIL_CLIENT_SECRET", ""),
-		GmailRedirectURL:  getEnv("GMAIL_REDIRECT_URL", "http://localhost:3000/auth/callback"),
-		EncryptionKey:     getEnv("ENCRYPTION_KEY", "default-dev-key-change-in-production"),
-		MistralAPIKey:     getEnv("MISTRAL_API_KEY", ""),
-		MistralModel:      getEnv("MISTRAL_MODEL", "mistral-small-latest"),
+		MongoDBURI:          getEnv("MONGODB_URI", "mongodb://admin:password@localhost:27017/mailsorter?authSource=admin"),
+		Port:                getEnv("PORT", "8080"),
+		GmailClientID:       getEnv("GMAIL_CLIENT_ID", ""),
+		GmailClientSecret:   getEnv("GMAIL_CLIENT_SECRET", ""),
+		GmailRedirectURL:    getEnv("GMAIL_REDIRECT_URL", "http://localhost:3000/auth/callback"),
+		EncryptionKey:       getEnv("ENCRYPTION_KEY", "default-dev-key-change-in-production"),
+		MistralAPIKey:       getEnv("MISTRAL_API_KEY", ""),
+		MistralModel:        getEnv("MISTRAL_MODEL", "mistral-small-latest"),
+		StripeSecretKey:     getEnv("STRIPE_SECRET_KEY", ""),
+		StripePriceID:       getEnv("STRIPE_PRICE_ID", ""),
+		StripeWebhookSecret: getEnv("STRIPE_WEBHOOK_SECRET", ""),
+		AppBaseURL:          getEnv("APP_BASE_URL", "http://localhost:3000"),
 	}
 }
 

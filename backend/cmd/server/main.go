@@ -9,6 +9,7 @@ import (
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/api"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/billing"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/config"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
@@ -87,8 +88,21 @@ func main() {
 		log.Println("Warning: MISTRAL_API_KEY not set - AI features disabled")
 	}
 
+	// Initialize Stripe billing (optional)
+	billingCfg := api.BillingConfig{
+		PriceID:       cfg.StripePriceID,
+		WebhookSecret: cfg.StripeWebhookSecret,
+		AppBaseURL:    cfg.AppBaseURL,
+	}
+	if cfg.StripeSecretKey != "" {
+		billingCfg.Client = billing.New(cfg.StripeSecretKey)
+		log.Println("Stripe billing initialized")
+	} else {
+		log.Println("Warning: STRIPE_SECRET_KEY not set - billing disabled")
+	}
+
 	// Initialize API handler
-	handler := api.NewHandler(db, gmailService, encryptor, aiClient)
+	handler := api.NewHandler(db, gmailService, encryptor, aiClient, billingCfg)
 
 	// Setup routes
 	router := handler.SetupRoutes()
