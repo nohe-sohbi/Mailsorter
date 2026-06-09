@@ -26,6 +26,14 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// Account / usage
 	r.HandleFunc("/api/usage", h.GetUsage).Methods("GET")
 
+	// Billing (Stripe)
+	r.HandleFunc("/api/billing/checkout", h.CreateCheckout).Methods("POST")
+	r.HandleFunc("/api/billing/webhook", h.StripeWebhook).Methods("POST")
+
+	// Unsubscribe / subscriptions cleanup
+	r.HandleFunc("/api/subscriptions", h.GetSubscriptions).Methods("GET")
+	r.HandleFunc("/api/unsubscribe", h.Unsubscribe).Methods("POST")
+
 	// Labels routes
 	r.HandleFunc("/api/labels", h.GetLabels).Methods("GET")
 

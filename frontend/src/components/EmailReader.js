@@ -1,6 +1,7 @@
 import React from 'react';
 import DOMPurify from 'dompurify';
-import { X, Archive, Trash, Mail } from '../ui/icons';
+import { X, Archive, Trash, Mail, BellOff } from '../ui/icons';
+import Spinner from '../ui/Spinner';
 
 const AVATAR_GRADIENTS = [
   'from-brand-500 to-fuchsia-500',
@@ -25,8 +26,10 @@ function extractName(from) {
   return match ? match[1].replace(/"/g, '').trim() : from;
 }
 
-function EmailReader({ email, onClose, onArchive, onDelete }) {
+function EmailReader({ email, onClose, onArchive, onDelete, onUnsubscribe, unsubscribing }) {
   if (!email) return null;
+
+  const canUnsubscribe = Boolean(email.unsubUrl || email.unsubMailto);
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '';
@@ -78,6 +81,27 @@ function EmailReader({ email, onClose, onArchive, onDelete }) {
           </div>
           <div className="hidden text-right text-xs text-ink-400 sm:block">{formatDate(email.receivedDate)}</div>
         </div>
+
+        {canUnsubscribe && onUnsubscribe && (
+          <div className="mt-4 flex items-center gap-3 rounded-xl border border-amber-200/70 bg-amber-50 px-4 py-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+              <BellOff size={18} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-bold text-ink-900">Vous recevez trop d'emails de cet expéditeur ?</div>
+              <div className="text-xs text-ink-500">
+                {email.unsubOneClick ? 'Désabonnement instantané, sans quitter Mailsorter.' : "On ouvre la page de désabonnement pour vous."}
+              </div>
+            </div>
+            <button
+              onClick={onUnsubscribe}
+              disabled={unsubscribing}
+              className="btn-secondary shrink-0 border-amber-300 text-amber-700 hover:bg-amber-100"
+            >
+              {unsubscribing ? <Spinner size={16} /> : <BellOff size={16} />} Se désabonner
+            </button>
+          </div>
+        )}
 
         <div className="mt-6 border-t border-ink-100 pt-6">
           {cleanBody ? (

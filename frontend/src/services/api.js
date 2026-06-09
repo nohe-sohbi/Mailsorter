@@ -69,6 +69,16 @@ export const accountService = {
   getActivity: () => apiClient.get('/api/stats/activity'),
 };
 
+export const subscriptionService = {
+  getSubscriptions: () => apiClient.get('/api/subscriptions'),
+  unsubscribe: (messageId, alsoArchive = false) =>
+    apiClient.post('/api/unsubscribe', { messageId, alsoArchive }),
+};
+
+export const billingService = {
+  checkout: () => apiClient.post('/api/billing/checkout'),
+};
+
 export const configService = {
   getStatus: () => apiClient.get('/api/config/status'),
   getGmailConfig: () => apiClient.get('/api/config/gmail'),

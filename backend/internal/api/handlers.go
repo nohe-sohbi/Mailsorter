@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/billing"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
@@ -19,20 +20,31 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// BillingConfig wires the Stripe client and its environment-derived settings
+// into the handler. Client is nil when Stripe is not configured.
+type BillingConfig struct {
+	Client        *billing.Client
+	PriceID       string
+	WebhookSecret string
+	AppBaseURL    string
+}
+
 type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
 	encryptor    *crypto.Encryptor
 	aiClient     *ai.MistralClient
+	billing      BillingConfig
 	jobQueue     chan string
 }
 
-func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient) *Handler {
+func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig) *Handler {
 	h := &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
 		aiClient:     aiClient,
+		billing:      billingCfg,
 		jobQueue:     make(chan string, 256),
 	}
 	// Background pool that drains async analysis jobs.
@@ -178,19 +190,23 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	emails := make([]models.Email, 0)
 	for _, msg := range resp.Messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
+		unsubURL, unsubMailto, oneClick := gmail.ParseUnsubscribe(msg)
 
 		email := models.Email{
-			MessageID:    msg.Id,
-			UserID:       userEmail,
-			ThreadID:     msg.ThreadId,
-			From:         from,
-			To:           to,
-			Subject:      subject,
-			Snippet:      msg.Snippet,
-			LabelIDs:     msg.LabelIds,
-			ReceivedDate: date,
-			IsRead:       !contains(msg.LabelIds, "UNREAD"),
-			CreatedAt:    time.Now(),
+			MessageID:     msg.Id,
+			UserID:        userEmail,
+			ThreadID:      msg.ThreadId,
+			From:          from,
+			To:            to,
+			Subject:       subject,
+			Snippet:       msg.Snippet,
+			LabelIDs:      msg.LabelIds,
+			ReceivedDate:  date,
+			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			UnsubURL:      unsubURL,
+			UnsubMailto:   unsubMailto,
+			UnsubOneClick: oneClick,
+			CreatedAt:     time.Now(),
 		}
 		emails = append(emails, email)
 	}
@@ -286,20 +302,24 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	for _, msg := range messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
 		body := gmail.GetEmailBody(msg)
-		
+		unsubURL, unsubMailto, oneClick := gmail.ParseUnsubscribe(msg)
+
 		email := models.Email{
-			MessageID:    msg.Id,
-			UserID:       userEmail,
-			ThreadID:     msg.ThreadId,
-			From:         from,
-			To:           to,
-			Subject:      subject,
-			Body:         body,
-			Snippet:      msg.Snippet,
-			LabelIDs:     msg.LabelIds,
-			ReceivedDate: date,
-			IsRead:       !contains(msg.LabelIds, "UNREAD"),
-			CreatedAt:    time.Now(),
+			MessageID:     msg.Id,
+			UserID:        userEmail,
+			ThreadID:      msg.ThreadId,
+			From:          from,
+			To:            to,
+			Subject:       subject,
+			Body:          body,
+			Snippet:       msg.Snippet,
+			LabelIDs:      msg.LabelIds,
+			ReceivedDate:  date,
+			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			UnsubURL:      unsubURL,
+			UnsubMailto:   unsubMailto,
+			UnsubOneClick: oneClick,
+			CreatedAt:     time.Now(),
 		}
 
 		filter := bson.M{"messageId": msg.Id, "userId": userEmail}

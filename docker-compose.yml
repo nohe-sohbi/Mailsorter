@@ -21,6 +21,13 @@ services:
       GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID}
       GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET}
       GMAIL_REDIRECT_URL: ${GMAIL_REDIRECT_URL:-http://localhost:3000/auth/callback}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-default-dev-key-change-in-production}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      MISTRAL_MODEL: ${MISTRAL_MODEL:-mistral-large-2411}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
     depends_on:
       - mongodb
 

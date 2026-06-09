@@ -142,6 +142,15 @@ export const Undo = make(
   </>
 );
 
+export const BellOff = make(
+  <>
+    <path d="M8.7 3.6A6 6 0 0 1 18 8c0 2 .4 3.6 1 5" />
+    <path d="M6 8c0 4-2 5-2 5h12" />
+    <path d="M10.3 21a2 2 0 0 0 3.4 0" />
+    <path d="M2 2l20 20" />
+  </>
+);
+
 export const Google = ({ size = 18, className = '' }) => (
   <svg width={size} height={size} viewBox="0 0 48 48" className={className} aria-hidden>
     <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8a12 12 0 1 1 7.9-21l5.7-5.7A20 20 0 1 0 44 24c0-1.2-.1-2.4-.4-3.5z" />

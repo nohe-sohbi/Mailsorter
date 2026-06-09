@@ -10,8 +10,13 @@ type User struct {
 	AccessToken  string    `json:"-" bson:"accessToken"`
 	RefreshToken string    `json:"-" bson:"refreshToken"`
 	TokenExpiry  time.Time `json:"-" bson:"tokenExpiry"`
-	CreatedAt    time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt" bson:"updatedAt"`
+	// Billing — Plan is "free" (default/empty) or "pro".
+	Plan                 string    `json:"plan" bson:"plan,omitempty"`
+	StripeCustomerID     string    `json:"-" bson:"stripeCustomerId,omitempty"`
+	StripeSubscriptionID string    `json:"-" bson:"stripeSubscriptionId,omitempty"`
+	PlanUpdatedAt        time.Time `json:"-" bson:"planUpdatedAt,omitempty"`
+	CreatedAt            time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
 type Email struct {
@@ -27,7 +32,11 @@ type Email struct {
 	LabelIDs     []string  `json:"labelIds" bson:"labelIds"`
 	ReceivedDate time.Time `json:"receivedDate" bson:"receivedDate"`
 	IsRead       bool      `json:"isRead" bson:"isRead"`
-	CreatedAt    time.Time `json:"createdAt" bson:"createdAt"`
+	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.
+	UnsubURL      string `json:"unsubUrl,omitempty" bson:"unsubUrl,omitempty"`
+	UnsubMailto   string `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`
+	UnsubOneClick bool   `json:"unsubOneClick,omitempty" bson:"unsubOneClick,omitempty"`
+	CreatedAt     time.Time `json:"createdAt" bson:"createdAt"`
 }
 
 type Label struct {
@@ -196,6 +205,37 @@ type UpdateSenderPreferenceRequest struct {
 	AutoApply     bool   `json:"autoApply"`
 	DefaultAction string `json:"defaultAction"`
 	DefaultLabel  string `json:"defaultLabel"`
+}
+
+// Unsubscribe records a completed or assisted unsubscribe from a mailing-list
+// sender, keyed by (userId, senderEmail) so it is idempotent.
+type Unsubscribe struct {
+	ID          string    `json:"id" bson:"_id,omitempty"`
+	UserID      string    `json:"userId" bson:"userId"`
+	SenderEmail string    `json:"senderEmail" bson:"senderEmail"`
+	SenderName  string    `json:"senderName" bson:"senderName"`
+	Method      string    `json:"method" bson:"method"` // "one-click", "browser", "mailto"
+	Status      string    `json:"status" bson:"status"` // "done", "opened"
+	CreatedAt   time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt" bson:"updatedAt"`
+}
+
+// UnsubscribeRequest is the request body for POST /api/unsubscribe
+type UnsubscribeRequest struct {
+	MessageID   string `json:"messageId"`
+	AlsoArchive bool   `json:"alsoArchive"`
+}
+
+// Subscription is an aggregated mailing-list sender that advertises an
+// unsubscribe link, returned by GET /api/subscriptions.
+type Subscription struct {
+	SenderEmail     string    `json:"senderEmail"`
+	SenderName      string    `json:"senderName"`
+	EmailCount      int       `json:"emailCount"`
+	LastReceived    time.Time `json:"lastReceived"`
+	SampleMessageID string    `json:"sampleMessageId"`
+	OneClick        bool      `json:"oneClick"`
+	Unsubscribed    bool      `json:"unsubscribed"`
 }
 
 // SenderStats represents aggregated info about a sender

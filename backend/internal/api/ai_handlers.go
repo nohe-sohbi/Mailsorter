@@ -815,6 +815,18 @@ func extractDomain(email string) string {
 	return email
 }
 
+// extractSenderAddress returns the bare email address from a "Name <addr>" header,
+// or the trimmed input if no angle brackets are present.
+func extractSenderAddress(from string) string {
+	if idx := strings.Index(from, "<"); idx >= 0 {
+		rest := from[idx+1:]
+		if j := strings.Index(rest, ">"); j >= 0 {
+			return strings.TrimSpace(rest[:j])
+		}
+	}
+	return strings.TrimSpace(from)
+}
+
 func extractSenderName(from string) string {
 	// Handle "Name <email@domain.com>" format
 	if idx := strings.Index(from, "<"); idx > 0 {

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { accountService } from '../services/api';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { accountService, billingService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
+import Spinner from '../ui/Spinner';
 import { Logo, Check, Bolt, Sparkles, Shield, Google } from '../ui/icons';
 
 const PLANS = [
@@ -49,9 +50,14 @@ const ACTION_LABELS = { archive: 'Archivés', delete: 'Supprimés', label: 'Éti
 function Pricing() {
   const navigate = useNavigate();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const loggedIn = !!localStorage.getItem('userEmail');
   const [usage, setUsage] = useState(null);
   const [activity, setActivity] = useState(null);
+  const [upgrading, setUpgrading] = useState(false);
+
+  const isPro = usage?.plan === 'pro';
+  const billingOn = !!usage?.billingOn;
 
   useEffect(() => {
     if (!loggedIn) return;
@@ -59,12 +65,45 @@ function Pricing() {
     accountService.getActivity().then((r) => setActivity(r.data)).catch(() => {});
   }, [loggedIn]);
 
+  // Handle the post-Checkout redirect (success / cancel), then clean the URL.
+  useEffect(() => {
+    const status = searchParams.get('checkout');
+    if (!status) return;
+    if (status === 'success') {
+      toast.success('Bienvenue dans Pro ! Analyses illimitées débloquées. 🎉');
+      accountService.getUsage().then((r) => setUsage(r.data)).catch(() => {});
+    } else if (status === 'cancel') {
+      toast.info('Paiement annulé — vous pouvez réessayer quand vous voulez.');
+    }
+    searchParams.delete('checkout');
+    setSearchParams(searchParams, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleUpgrade = async () => {
+    if (!loggedIn) {
+      navigate('/');
+      return;
+    }
+    setUpgrading(true);
+    try {
+      const { data } = await billingService.checkout();
+      window.location.href = data.url;
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 503) toast.error('Le paiement n’est pas encore activé. Réessayez bientôt.');
+      else if (status === 409) toast.info('Vous êtes déjà abonné à Pro.');
+      else toast.error('Impossible de démarrer le paiement. Réessayez.');
+      setUpgrading(false);
+    }
+  };
+
   const handleWaitlist = () => {
     localStorage.setItem('mailsorter_pro_waitlist', '1');
     toast.success('Vous y êtes ! On vous prévient dès l’ouverture de Pro. 🚀');
   };
 
-  const usedPct = usage ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : 0;
+  const usedPct = usage && usage.limit > 0 ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : 0;
   const maxDay = activity ? Math.max(1, ...activity.days.map((d) => d.count)) : 1;
 
   return (
@@ -95,20 +134,29 @@ function Pricing() {
             <div className="card p-6">
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="font-bold text-ink-900">Usage du mois</h3>
-                <span className="chip bg-ink-100 text-ink-600">Plan Free</span>
+                <span className={cn('chip', isPro ? 'bg-brand-gradient text-white' : 'bg-ink-100 text-ink-600')}>
+                  {isPro ? <><Bolt size={13} /> Plan Pro</> : 'Plan Free'}
+                </span>
               </div>
               <div className="mb-2 flex items-baseline gap-1.5">
                 <span className="font-display text-3xl font-extrabold text-ink-900">{usage?.used ?? '—'}</span>
-                <span className="text-sm text-ink-500">/ {usage?.limit ?? 200} emails analysés</span>
+                <span className="text-sm text-ink-500">
+                  {isPro ? 'emails analysés · illimité' : `/ ${usage?.limit ?? 200} emails analysés`}
+                </span>
               </div>
               <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
                 <div
-                  className={cn('h-full rounded-full transition-all duration-500', usedPct >= 100 ? 'bg-rose-500' : 'bg-brand-gradient')}
-                  style={{ width: `${usedPct}%` }}
+                  className={cn(
+                    'h-full rounded-full transition-all duration-500',
+                    isPro ? 'bg-gradient-to-r from-emerald-400 to-teal-500' : usedPct >= 100 ? 'bg-rose-500' : 'bg-brand-gradient'
+                  )}
+                  style={{ width: isPro ? '100%' : `${usedPct}%` }}
                 />
               </div>
               <p className="mt-3 text-xs text-ink-400">
-                Le cache et l'auto-pilote ne consomment pas votre quota.
+                {isPro
+                  ? 'Analyses illimitées. Gérez votre abonnement à tout moment.'
+                  : "Le cache et l'auto-pilote ne consomment pas votre quota."}
               </p>
             </div>
 
@@ -178,12 +226,27 @@ function Pricing() {
               </ul>
               <div className="mt-7">
                 {plan.highlight ? (
-                  <button onClick={handleWaitlist} className="btn-primary w-full">
-                    {plan.cta}
-                  </button>
+                  isPro ? (
+                    <button disabled className="btn-primary w-full cursor-default opacity-80">
+                      <Check size={16} /> Votre plan
+                    </button>
+                  ) : billingOn ? (
+                    <button onClick={handleUpgrade} disabled={upgrading} className="btn-primary w-full">
+                      {upgrading ? <Spinner size={18} /> : <Bolt size={16} />}
+                      {upgrading ? 'Redirection…' : 'Passer à Pro'}
+                    </button>
+                  ) : loggedIn ? (
+                    <button onClick={handleWaitlist} className="btn-primary w-full">
+                      {plan.cta}
+                    </button>
+                  ) : (
+                    <button onClick={() => navigate('/')} className="btn-primary w-full">
+                      <Google size={16} /> Commencer gratuitement
+                    </button>
+                  )
                 ) : loggedIn ? (
                   <button disabled className="btn-secondary w-full cursor-default opacity-70">
-                    <Check size={16} /> {plan.cta}
+                    <Check size={16} /> {isPro ? 'Inclus' : 'Plan actuel'}
                   </button>
                 ) : (
                   <button onClick={() => navigate('/')} className="btn-secondary w-full">

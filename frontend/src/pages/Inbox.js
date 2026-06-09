@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useEmails } from '../contexts/EmailContext';
-import { aiService, senderService, emailService } from '../services/api';
+import { aiService, senderService, emailService, subscriptionService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
@@ -9,7 +9,7 @@ import Spinner from '../ui/Spinner';
 import { cn } from '../ui/cn';
 import {
   Sparkles, Archive, Trash, Tag, Pin, Search, Refresh, Inbox as InboxIcon,
-  Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard,
+  Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard, BellOff,
 } from '../ui/icons';
 
 // --- Action design tokens (static classes so Tailwind keeps them) ---
@@ -76,8 +76,8 @@ function Inbox() {
   const navigate = useNavigate();
   const toast = useToast();
   const {
-    emails, senders, suggestions, stats, pagination,
-    loading, loadingMore, fetchData, loadMoreEmails, removeSuggestion, removeSuggestions,
+    emails, senders, subscriptions, suggestions, stats, pagination,
+    loading, loadingMore, fetchData, loadMoreEmails, removeSuggestion, removeSuggestions, markUnsubscribed,
   } = useEmails();
 
   const [view, setView] = useState('emails');
@@ -90,6 +90,7 @@ function Inbox() {
   const [localSenders, setLocalSenders] = useState([]);
   const [analyzingSender, setAnalyzingSender] = useState(null);
   const [highConfOnly, setHighConfOnly] = useState(false);
+  const [unsubscribing, setUnsubscribing] = useState(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [gamify, setGamify] = useState(getStreakState);
@@ -336,6 +337,35 @@ function Inbox() {
     directAction(email, action);
   };
 
+  // One-click (or assisted) unsubscribe. Used by the reader and the subscriptions view.
+  const handleUnsubscribe = async ({ messageId, alsoArchive = false, key }) => {
+    if (!messageId) return;
+    setUnsubscribing(key || messageId);
+    try {
+      const { data } = await subscriptionService.unsubscribe(messageId, alsoArchive);
+      const archivedNote = data.archived ? ` · ${data.archived} email${data.archived > 1 ? 's' : ''} archivé${data.archived > 1 ? 's' : ''}` : '';
+      if (data.done) {
+        toast.success(`Désabonné en un clic${archivedNote}`);
+      } else if (data.url) {
+        window.open(data.url, '_blank', 'noopener,noreferrer');
+        toast.info(`Page de désabonnement ouverte dans un nouvel onglet${archivedNote}`);
+      } else if (data.mailto) {
+        window.location.href = data.mailto;
+        toast.info('Email de désabonnement préparé');
+      }
+      if (data.sender) markUnsubscribed(data.sender);
+      if (alsoArchive || data.archived) fetchData({ forceRefresh: true });
+    } catch (err) {
+      if (err.response?.status === 422) {
+        toast.error("Cet expéditeur ne propose pas de désabonnement automatique");
+      } else {
+        toast.error('Désabonnement impossible. Réessayez.');
+      }
+    } finally {
+      setUnsubscribing(null);
+    }
+  };
+
   const handleAnalyzeSender = async (sender) => {
     setAnalyzingSender(sender.senderEmail);
     try {
@@ -527,6 +557,7 @@ function Inbox() {
           {[
             { id: 'emails', label: 'Emails', Icon: InboxIcon },
             { id: 'senders', label: `Expéditeurs · ${localSenders.length}`, Icon: Users },
+            { id: 'subs', label: `Abonnements · ${subscriptions.filter((s) => !s.unsubscribed).length}`, Icon: BellOff },
           ].map(({ id, label, Icon }) => (
             <button
               key={id}
@@ -748,7 +779,7 @@ function Inbox() {
               </div>
             )}
           </div>
-        ) : (
+        ) : view === 'senders' ? (
           <div className="space-y-3">
             {localSenders.length === 0 ? (
               <div className="card flex flex-col items-center justify-center px-6 py-20 text-center">
@@ -808,6 +839,80 @@ function Inbox() {
               })
             )}
           </div>
+        ) : (
+          <div className="space-y-3">
+            {subscriptions.length === 0 ? (
+              <div className="card flex flex-col items-center justify-center px-6 py-20 text-center">
+                <span className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 text-amber-500">
+                  <BellOff size={32} />
+                </span>
+                <h3 className="text-lg font-bold text-ink-900">Aucun abonnement détecté</h3>
+                <p className="mt-1 max-w-xs text-sm text-ink-500">
+                  Synchronisez votre boîte : Mailsorter repère vos newsletters et listes de diffusion pour un désabonnement en un clic.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="card flex items-center gap-3 bg-amber-50/50 p-4">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-600">
+                    <BellOff size={20} />
+                  </span>
+                  <p className="text-sm text-ink-600">
+                    <span className="font-bold text-ink-900">
+                      {subscriptions.filter((s) => !s.unsubscribed).length} newsletter{subscriptions.filter((s) => !s.unsubscribed).length > 1 ? 's' : ''}
+                    </span>{' '}
+                    encombrent votre boîte. Coupez le robinet — et archivez le passé d'un seul geste.
+                  </p>
+                </div>
+                {subscriptions.map((sub) => {
+                  const busy = unsubscribing === sub.senderEmail;
+                  return (
+                    <div
+                      key={sub.senderEmail}
+                      className={cn('card flex flex-wrap items-center gap-4 p-4', sub.unsubscribed && 'opacity-60')}
+                    >
+                      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white', gradientFor(sub.senderEmail))}>
+                        {(sub.senderName || sub.senderEmail)[0]?.toUpperCase()}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmail.split('@')[0]}</div>
+                        <div className="truncate text-xs text-ink-400">{sub.senderEmail}</div>
+                      </div>
+                      <span className="chip bg-ink-100 text-ink-600">{sub.emailCount} email{sub.emailCount > 1 ? 's' : ''}</span>
+                      {sub.oneClick && !sub.unsubscribed && (
+                        <span className="chip bg-emerald-100 text-emerald-700" title="Désabonnement instantané supporté">
+                          <Bolt size={13} /> 1-clic
+                        </span>
+                      )}
+                      {sub.unsubscribed ? (
+                        <span className="chip bg-emerald-100 text-emerald-700">
+                          <Check size={13} /> Désabonné
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, key: sub.senderEmail })}
+                            disabled={busy}
+                            className="btn-secondary"
+                          >
+                            {busy ? <Spinner size={16} /> : <BellOff size={16} />} Se désabonner
+                          </button>
+                          <button
+                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, alsoArchive: true, key: sub.senderEmail })}
+                            disabled={busy}
+                            className="btn-ghost px-2.5"
+                            title="Se désabonner et archiver tous les emails de cet expéditeur"
+                          >
+                            <Archive size={18} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
         )}
 
         {selectedEmail && (
@@ -817,6 +922,8 @@ function Inbox() {
               onClose={() => setSelectedEmail(null)}
               onArchive={() => handleReaderAction(selectedEmail, 'archive')}
               onDelete={() => handleReaderAction(selectedEmail, 'delete')}
+              onUnsubscribe={() => handleUnsubscribe({ messageId: selectedEmail.messageId })}
+              unsubscribing={unsubscribing === selectedEmail.messageId}
             />
           </div>
         )}

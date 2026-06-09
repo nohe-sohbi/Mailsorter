@@ -41,10 +41,29 @@ Rendre le produit **addictif** et **fiable**.
 3. **Récap d'activité** — `GET /api/stats/activity` (7 derniers jours, par jour + par action) affiché en mini-graphe sur la page **Tarifs**.
 4. **Page Tarifs** — `/pricing` (Free vs Pro), jauge d'usage + récap, CTA liste d'attente Pro ; liée depuis le header et la landing.
 
+## ✅ Phase 4 — Feature-killer désabonnement (livrée)
+
+La fonctionnalité qui définit la catégorie « nettoyeur de boîte » (Unroll.me, Clean Email, Leave Me Alone) :
+
+1. **Détection des newsletters** — parsing des en-têtes `List-Unsubscribe` (RFC 2369) et `List-Unsubscribe-Post` (RFC 8058) à la volée dans `GET /api/emails` et au sync. Les champs `unsubUrl` / `unsubMailto` / `unsubOneClick` sont stockés sur l'email.
+2. **Désabonnement 1-clic serveur** — `POST /api/unsubscribe` exécute le POST RFC 8058 (`List-Unsubscribe=One-Click`) **côté serveur** quand l'expéditeur le supporte : l'utilisateur ne quitte jamais l'app. Repli automatique : ouverture du lien https ou du `mailto:`.
+3. **Vue « Abonnements »** — `GET /api/subscriptions` agrège les expéditeurs de type liste de diffusion (volume, dernier reçu, support 1-clic, déjà désabonné). Nouvel onglet dans le cockpit avec badge « 1-clic » et compteur d'emails.
+4. **Désabonner + archiver** — un seul geste coupe la source **et** vide le backlog de l'expéditeur (`alsoArchive`). Désabonnements idempotents (index unique `{userId, senderEmail}`), action proposée aussi depuis le lecteur d'email.
+
+## ✅ Phase 5 — Monétisation Stripe (livrée)
+
+Pro = analyses illimitées, branché sur l'enforcement `402` déjà en place.
+
+1. **Client Stripe sans dépendance** — `internal/billing` parle directement à l'API REST Stripe (création de Checkout Session + vérification de signature webhook HMAC-SHA256 avec tolérance anti-rejeu), dans le style « zéro dépendance lourde » du repo.
+2. **Checkout** — `POST /api/billing/checkout` crée une session d'abonnement (mode `subscription`, `client_reference_id` = email) et renvoie l'URL hébergée ; le front redirige.
+3. **Webhook** — `POST /api/billing/webhook` vérifie la signature puis synchronise le champ `plan` de l'utilisateur sur le cycle de vie de l'abonnement (`checkout.session.completed` → pro ; `customer.subscription.updated/deleted` → pro/free). Index sparse sur `stripeSubscriptionId`.
+4. **Enforcement plan** — `quotaExceeded` et `GET /api/usage` renvoient `limit: -1` (illimité) pour Pro ; la page **Tarifs** détecte `plan`/`billingOn`, déclenche le Checkout, et gère le retour `?checkout=success|cancel`.
+5. **Dégradé propre** — sans `STRIPE_SECRET_KEY`, l'endpoint répond `503` et l'UI bascule automatiquement sur la liste d'attente.
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.
-- **Stripe Checkout** — la jauge de quota et l'enforcement `402` sont prêts ; brancher Stripe (webhook → champ `plan` utilisateur) pour passer Pro = illimité.
+- **Portail de gestion d'abonnement** — brancher le Stripe Billing Portal (`/v1/billing_portal/sessions`) pour la résiliation self-service depuis l'app.
 - **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).
 - **Analytics produit** — instrumenter le funnel (connexion → 1ʳᵉ analyse → 1ʳᵉ application) vers PostHog/Segment.
 
@@ -55,6 +74,7 @@ Rendre le produit **addictif** et **fiable**.
 - [ ] `cp .env.example .env` puis renseigner `ENCRYPTION_KEY` (32+ car.) et `MISTRAL_API_KEY`.
 - [ ] OAuth Google : ajouter l'URI de prod aux *Authorized redirect URIs*.
 - [ ] CORS backend : domaine de prod présent dans `routes.go` (`AllowedOrigins`).
+- [ ] (Optionnel) Stripe : `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID` (Price récurrent), `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` ; webhook → `{backend}/api/billing/webhook` (events `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`).
 - [ ] `docker compose build && docker compose up -d`.
 - [ ] Vérifier `GET /health` → `{"status":"ok"}`.
-- [ ] Smoke test : connexion → *Trier ma boîte* → *Tout appliquer*.
+- [ ] Smoke test : connexion → *Trier ma boîte* → *Tout appliquer* → *Désabonnements* → (si Stripe) *Passer à Pro*.

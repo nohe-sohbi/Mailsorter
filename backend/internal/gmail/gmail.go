@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -313,6 +316,81 @@ func GetEmailBody(message *gmail.Message) string {
 	}
 	
 	return ""
+}
+
+// ParseUnsubscribe extracts the unsubscribe affordances a sender advertises via
+// the RFC 2369 `List-Unsubscribe` and RFC 8058 `List-Unsubscribe-Post` headers.
+// httpURL is the preferred https endpoint, mailto the fallback address, and
+// oneClick reports whether the sender supports a silent POST-based unsubscribe.
+func ParseUnsubscribe(message *gmail.Message) (httpURL, mailto string, oneClick bool) {
+	if message == nil || message.Payload == nil {
+		return
+	}
+	var listUnsub, listUnsubPost string
+	for _, hdr := range message.Payload.Headers {
+		switch strings.ToLower(hdr.Name) {
+		case "list-unsubscribe":
+			listUnsub = hdr.Value
+		case "list-unsubscribe-post":
+			listUnsubPost = hdr.Value
+		}
+	}
+	for _, token := range splitAngleList(listUnsub) {
+		low := strings.ToLower(token)
+		switch {
+		case (strings.HasPrefix(low, "https://") || strings.HasPrefix(low, "http://")) && httpURL == "":
+			httpURL = token
+		case strings.HasPrefix(low, "mailto:") && mailto == "":
+			mailto = token
+		}
+	}
+	oneClick = httpURL != "" && strings.Contains(strings.ToLower(listUnsubPost), "one-click")
+	return
+}
+
+// splitAngleList parses a comma-separated list of <...>-wrapped URIs.
+func splitAngleList(v string) []string {
+	out := make([]string, 0, 2)
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		part = strings.TrimPrefix(part, "<")
+		part = strings.TrimSuffix(part, ">")
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// OneClickUnsubscribe performs an RFC 8058 one-click unsubscribe: an HTTP POST to
+// the sender's https endpoint with the body `List-Unsubscribe=One-Click`. It must
+// only be used when ParseUnsubscribe reported oneClick == true.
+func (s *Service) OneClickUnsubscribe(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("unsupported unsubscribe scheme: %s", u.Scheme)
+	}
+
+	client := &http.Client{Timeout: 12 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, rawURL, strings.NewReader("List-Unsubscribe=One-Click"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mailsorter/1.0 (+unsubscribe)")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("unsubscribe endpoint returned %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func TokenToJSON(token *oauth2.Token) (string, error) {
