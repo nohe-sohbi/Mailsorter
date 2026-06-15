@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/api"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/billing"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/config"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
@@ -101,17 +105,46 @@ func main() {
 		log.Println("Warning: STRIPE_SECRET_KEY not set - billing disabled")
 	}
 
+	// Session/CSRF token manager, keyed off the server secret.
+	authManager := auth.NewManager(cfg.EncryptionKey)
+
 	// Initialize API handler
-	handler := api.NewHandler(db, gmailService, encryptor, aiClient, billingCfg)
+	handler := api.NewHandler(db, gmailService, encryptor, aiClient, billingCfg, authManager)
 
 	// Setup routes
 	router := handler.SetupRoutes()
 
-	// Start server
+	// Hardened HTTP server: bounded timeouts protect against slow-client and
+	// resource-exhaustion attacks that an unconfigured server is vulnerable to.
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	log.Printf("Starting server on %s", addr)
-
-	if err := http.ListenAndServe(addr, router); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      150 * time.Second, // long enough for synchronous AI analysis
+		IdleTimeout:       120 * time.Second,
 	}
+
+	// Run the server in the background so we can listen for shutdown signals.
+	go func() {
+		log.Printf("Starting server on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// Graceful shutdown: stop accepting new connections and let in-flight
+	// requests finish before exiting (e.g. on container redeploy).
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+	log.Println("Shutdown signal received, draining connections…")
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Graceful shutdown failed: %v", err)
+	}
+	log.Println("Server stopped")
 }

@@ -189,11 +189,14 @@ backend/
 
 ## Sécurité
 
-- **Authentification:** OAuth 2.0 avec Google
-- **Tokens:** Stockés en base de données, jamais exposés au frontend
-- **API:** Header `X-User-Email` pour identifier l'utilisateur
-- **CORS:** Configuré pour autoriser uniquement localhost en dev
-- **Secrets:** Stockés dans variables d'environnement
+- **Authentification:** OAuth 2.0 avec Google.
+- **Protection CSRF du login:** le paramètre `state` OAuth est **signé (HMAC-SHA256)** et expirant — la callback rejette tout `state` forgé ou périmé, sans stockage serveur (stateless).
+- **Session signée:** à la connexion, le serveur émet un **token de session HMAC** (porte l'email + une expiration). Le frontend l'envoie via `Authorization: Bearer …`. Le **token d'accès Gmail n'est jamais exposé** au navigateur.
+- **Identité vérifiée:** un middleware valide le token de session et **réinjecte lui-même** `X-User-Email` après avoir supprimé toute valeur fournie par le client — il n'est donc plus possible d'usurper un utilisateur en falsifiant l'en-tête.
+- **Robustesse HTTP:** chaîne de middlewares — *recover* (anti-crash), *request-id* + journalisation structurée, *rate limiting* par client (token bucket). Le serveur applique des timeouts et un arrêt gracieux (SIGTERM).
+- **Tokens Gmail:** stockés (chiffrés) en base, jamais exposés au frontend.
+- **CORS:** origines autorisées explicitement (localhost en dev, domaine de prod).
+- **Secrets:** stockés dans des variables d'environnement; le `ClientSecret` Gmail est chiffré au repos (AES-256-GCM).
 
 ## Performance
 

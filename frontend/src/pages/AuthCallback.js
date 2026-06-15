@@ -11,6 +11,7 @@ function AuthCallback() {
 
   useEffect(() => {
     const code = searchParams.get('code');
+    const state = searchParams.get('state');
     const errorParam = searchParams.get('error');
 
     if (errorParam) {
@@ -18,16 +19,16 @@ function AuthCallback() {
       return;
     }
     if (code) {
-      handleCallback(code);
+      handleCallback(code, state);
     } else {
       setError("Code d'autorisation manquant.");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  const handleCallback = async (code) => {
+  const handleCallback = async (code, state) => {
     try {
-      const response = await authService.handleCallback(code);
+      const response = await authService.handleCallback(code, state);
       localStorage.setItem('userEmail', response.data.userEmail);
       localStorage.setItem('accessToken', response.data.accessToken);
       navigate('/inbox');

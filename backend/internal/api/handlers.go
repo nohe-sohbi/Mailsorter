@@ -2,14 +2,13 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/billing"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
@@ -35,16 +34,18 @@ type Handler struct {
 	encryptor    *crypto.Encryptor
 	aiClient     *ai.MistralClient
 	billing      BillingConfig
+	auth         *auth.Manager
 	jobQueue     chan string
 }
 
-func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig) *Handler {
+func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig, authManager *auth.Manager) *Handler {
 	h := &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
 		aiClient:     aiClient,
 		billing:      billingCfg,
+		auth:         authManager,
 		jobQueue:     make(chan string, 256),
 	}
 	// Background pool that drains async analysis jobs.
@@ -60,10 +61,11 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 // Auth endpoints
 func (h *Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
-	// Generate a cryptographically secure random state to prevent CSRF attacks
-	state := generateRandomState()
+	// Signed, expiring state to prevent CSRF on the OAuth callback. It is
+	// stateless: the callback verifies the signature, no server storage needed.
+	state := h.auth.IssueState()
 	authURL := h.gmailService.GetAuthURL(state)
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models.AuthResponse{AuthURL: authURL})
 }
@@ -72,6 +74,14 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		http.Error(w, "No code provided", http.StatusBadRequest)
+		return
+	}
+
+	// Reject the callback unless it carries the signed state we issued — this is
+	// what stops a forged redirect (CSRF) from completing a login.
+	state := r.URL.Query().Get("state")
+	if err := h.auth.VerifyState(state); err != nil {
+		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
 		return
 	}
 
@@ -113,9 +123,13 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hand the browser our own signed session token — never the raw Gmail
+	// access token, which must stay server-side.
+	sessionToken := h.auth.IssueSession(userEmail)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models.TokenResponse{
-		AccessToken: token.AccessToken,
+		AccessToken: sessionToken,
 		UserEmail:   userEmail,
 	})
 }
@@ -568,13 +582,4 @@ func parseInt64(s string) (int64, error) {
 	var n int64
 	_, err := fmt.Sscanf(s, "%d", &n)
 	return n, err
-}
-
-func generateRandomState() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp-based state if random generation fails
-		return base64.URLEncoding.EncodeToString([]byte(time.Now().String()))
-	}
-	return base64.URLEncoding.EncodeToString(b)
 }

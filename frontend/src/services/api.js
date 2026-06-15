@@ -9,18 +9,39 @@ const apiClient = axios.create({
   },
 });
 
-// Add user email to requests if available
+// Authenticate requests with the signed session token issued at login.
+// The server derives the user identity from this token, so we no longer send a
+// (spoofable) X-User-Email header.
 apiClient.interceptors.request.use((config) => {
-  const userEmail = localStorage.getItem('userEmail');
-  if (userEmail) {
-    config.headers['X-User-Email'] = userEmail;
+  const token = localStorage.getItem('accessToken');
+  if (token) {
+    config.headers['Authorization'] = `Bearer ${token}`;
   }
   return config;
 });
 
+// On 401 the session is missing/expired: clear it and bounce to login.
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('userEmail');
+      if (window.location.pathname !== '/') {
+        window.location.assign('/');
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const authService = {
   getAuthUrl: () => apiClient.get('/api/auth/url'),
-  handleCallback: (code) => apiClient.get(`/api/auth/callback?code=${code}`),
+  handleCallback: (code, state) => {
+    const params = new URLSearchParams({ code });
+    if (state) params.set('state', state);
+    return apiClient.get(`/api/auth/callback?${params.toString()}`);
+  },
 };
 
 export const emailService = {
