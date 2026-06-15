@@ -61,6 +61,15 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/config/gmail", h.GetGmailConfig).Methods("GET")
 	r.HandleFunc("/api/config/gmail", h.SaveGmailConfig).Methods("POST")
 
+	// Middleware chain (applied to every matched route, innermost last):
+	// recover → request-id → logging → rate-limit → auth → handler.
+	rl := newRateLimiter(20, 40) // ~20 req/s sustained, burst 40, per client
+	r.Use(recoverMiddleware)
+	r.Use(requestIDMiddleware)
+	r.Use(loggingMiddleware)
+	r.Use(rl.middleware)
+	r.Use(h.authMiddleware)
+
 	// Setup CORS
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost", "https://mailsorter.sohbi.dev"},

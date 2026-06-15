@@ -4,11 +4,20 @@ Base URL: `http://localhost:8080`
 
 ## Authentication
 
-Most endpoints require authentication via the `X-User-Email` header containing the user's email address.
+Authenticated endpoints require a **session token** in the `Authorization` header.
+The token is issued by `GET /api/auth/callback` after a successful Google login;
+it is an HMAC-signed, expiring value that identifies the user.
 
 ```
-X-User-Email: user@gmail.com
+Authorization: Bearer <session-token>
 ```
+
+The server derives the user identity from this token; clients must **not** send a
+raw `X-User-Email` header (any client-supplied value is stripped server-side).
+Requests without a valid token receive `401 Unauthorized`.
+
+Public endpoints (no token needed): `/health`, `/api/auth/*`, `/api/config/*`,
+and `/api/billing/webhook` (which authenticates via its Stripe signature).
 
 ## Endpoints
 
@@ -33,12 +42,13 @@ Check if the API is running.
 
 #### GET /api/auth/url
 
-Get the Google OAuth authorization URL.
+Get the Google OAuth authorization URL. The URL embeds a signed, expiring
+`state` parameter used for CSRF protection on the callback.
 
 **Response:**
 ```json
 {
-  "authUrl": "https://accounts.google.com/o/oauth2/v2/auth?..."
+  "authUrl": "https://accounts.google.com/o/oauth2/v2/auth?...&state=..."
 }
 ```
 
@@ -46,18 +56,24 @@ Get the Google OAuth authorization URL.
 
 #### GET /api/auth/callback
 
-Exchange authorization code for access token.
+Validate the OAuth `state`, exchange the authorization code, and return a signed
+**session token** (used as `Authorization: Bearer …` on subsequent requests).
 
 **Query Parameters:**
 - `code` (required): Authorization code from Google
+- `state` (required): The signed state value returned by Google; rejected with
+  `400` if missing, forged, or expired
 
 **Response:**
 ```json
 {
-  "accessToken": "ya29.a0...",
+  "accessToken": "<session-token>",
   "userEmail": "user@gmail.com"
 }
 ```
+
+> `accessToken` is Mailsorter's own session token — **not** the Gmail access
+> token, which never leaves the server.
 
 **Error Responses:**
 - `400 Bad Request`: Missing code parameter
@@ -74,7 +90,7 @@ Exchange authorization code for access token.
 Get a list of emails.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Query Parameters:**
 - `q` (optional): Gmail search query (default: "in:inbox")
@@ -111,7 +127,7 @@ Get a list of emails.
 Synchronize emails from Gmail to database.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Response:**
 ```json
@@ -142,7 +158,7 @@ Aggregates the senders in the user's mailbox that advertise an unsubscribe link,
 ranked by volume.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Response:**
 ```json
@@ -169,7 +185,7 @@ Unsubscribes from the sender of a given message. When the sender supports RFC
 sender's backlog in the same call.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Request Body:**
 ```json
@@ -211,7 +227,7 @@ waitlist and `/api/billing/checkout` returns `503`.
 Creates a subscription Checkout Session and returns the hosted URL to redirect to.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Response:**
 ```json
@@ -252,7 +268,7 @@ header (HMAC-SHA256, 5-minute tolerance) before processing. Keeps the user's
 Get all sorting rules for a user.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Response:**
 ```json
@@ -290,7 +306,7 @@ Get all sorting rules for a user.
 Create a new sorting rule.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Request Body:**
 ```json
@@ -345,7 +361,7 @@ Create a new sorting rule.
 Update an existing sorting rule.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **URL Parameters:**
 - `id`: Rule ID
@@ -373,7 +389,7 @@ Update an existing sorting rule.
 Delete a sorting rule.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **URL Parameters:**
 - `id`: Rule ID
@@ -396,7 +412,7 @@ Delete a sorting rule.
 Get all Gmail labels for a user.
 
 **Headers:**
-- `X-User-Email` (required): User's email address
+- `Authorization: Bearer <session-token>` (required)
 
 **Response:**
 ```json

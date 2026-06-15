@@ -60,6 +60,14 @@ Pro = analyses illimitées, branché sur l'enforcement `402` déjà en place.
 4. **Enforcement plan** — `quotaExceeded` et `GET /api/usage` renvoient `limit: -1` (illimité) pour Pro ; la page **Tarifs** détecte `plan`/`billingOn`, déclenche le Checkout, et gère le retour `?checkout=success|cancel`.
 5. **Dégradé propre** — sans `STRIPE_SECRET_KEY`, l'endpoint répond `503` et l'UI bascule automatiquement sur la liste d'attente.
 
+## ✅ Phase 6 — Durcissement production (livrée)
+
+Trois axes pour passer d'un produit riche en features à un produit **prêt pour la production**.
+
+1. **Authentification réelle (sécurité critique)** — fin de la confiance aveugle en `X-User-Email`. Le login émet désormais un **token de session signé (HMAC-SHA256, expirant)** ; un middleware le valide sur chaque route protégée et **réinjecte** lui-même l'identité (toute valeur `X-User-Email` envoyée par le client est supprimée). Le `state` OAuth est **signé et vérifié** (anti-CSRF, stateless), et le **token d'accès Gmail n'est plus exposé** au navigateur — seul le token de session l'est. Côté front : `Authorization: Bearer …`, redirection automatique sur `401`.
+2. **Robustesse HTTP** — chaîne de middlewares : *recover* (un panic ne tue plus le process), *request-id* + journalisation structurée, *rate limiting* par client (token bucket en mémoire, sans dépendance). Le serveur applique des **timeouts** (read/write/idle) et un **arrêt gracieux** sur SIGTERM (drainage des requêtes en cours au redéploiement).
+3. **Tests + CI** — première suite de **tests unitaires Go** (tokens de session/CSRF, chiffrement, clés de cache, matching de labels, parsing expéditeur, en-têtes de désabonnement, rate limiter) et un **workflow GitHub Actions** (`vet` + `build` + `test -race` backend, build frontend) déclenché sur push/PR.
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.

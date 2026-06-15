@@ -50,15 +50,16 @@ function Login() {
       return;
     }
     const code = searchParams.get('code');
-    if (code) handleCallback(code);
+    const state = searchParams.get('state');
+    if (code) handleCallback(code, state);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, navigate]);
 
-  const handleCallback = async (code) => {
+  const handleCallback = async (code, state) => {
     setLoading(true);
     setError('');
     try {
-      const response = await authService.handleCallback(code);
+      const response = await authService.handleCallback(code, state);
       localStorage.setItem('userEmail', response.data.userEmail);
       localStorage.setItem('accessToken', response.data.accessToken);
       navigate('/inbox');
