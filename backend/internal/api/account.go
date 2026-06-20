@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -72,6 +73,65 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 		"plan":      plan,
 		"billingOn": h.billing.Client != nil && h.billing.PriceID != "",
 	})
+}
+
+// autoApplyRulesEnabled reports whether the user opted into running their
+// deterministic rules automatically on every sync.
+func (h *Handler) autoApplyRulesEnabled(ctx context.Context, userEmail string) bool {
+	var doc struct {
+		AutoApplyRules bool `bson:"autoApplyRules"`
+	}
+	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&doc); err != nil {
+		return false
+	}
+	return doc.AutoApplyRules
+}
+
+// GetSettings returns the caller's tunable account settings.
+func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models.UserSettings{
+		AutoApplyRules: h.autoApplyRulesEnabled(ctx, userEmail),
+	})
+}
+
+// UpdateSettings persists the caller's tunable account settings.
+func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	var in models.UserSettings
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := h.db.Users().UpdateOne(ctx,
+		bson.M{"email": userEmail},
+		bson.M{"$set": bson.M{"autoApplyRules": in.AutoApplyRules, "updatedAt": time.Now()}},
+	)
+	if err != nil {
+		http.Error(w, "Failed to update settings", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(in)
 }
 
 // GetActivity returns triage activity for the last 7 days: a per-day series and

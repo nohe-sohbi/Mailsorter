@@ -23,8 +23,10 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/stats", h.GetMailboxStats).Methods("GET")
 	r.HandleFunc("/api/stats/activity", h.GetActivity).Methods("GET")
 
-	// Account / usage
+	// Account / usage / settings
 	r.HandleFunc("/api/usage", h.GetUsage).Methods("GET")
+	r.HandleFunc("/api/account/settings", h.GetSettings).Methods("GET")
+	r.HandleFunc("/api/account/settings", h.UpdateSettings).Methods("PUT")
 
 	// Billing (Stripe)
 	r.HandleFunc("/api/billing/checkout", h.CreateCheckout).Methods("POST")
@@ -35,6 +37,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/rules", h.GetRules).Methods("GET")
 	r.HandleFunc("/api/rules", h.CreateRule).Methods("POST")
 	r.HandleFunc("/api/rules/apply", h.ApplyRules).Methods("POST")
+	r.HandleFunc("/api/rules/preview", h.PreviewRules).Methods("POST")
 	r.HandleFunc("/api/rules/{id}", h.UpdateRule).Methods("PUT")
 	r.HandleFunc("/api/rules/{id}", h.DeleteRule).Methods("DELETE")
 
@@ -58,6 +61,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 
 	// Senders routes
 	r.HandleFunc("/api/senders", h.GetSenders).Methods("GET")
+	r.HandleFunc("/api/senders/rule", h.CreateSenderRule).Methods("POST")
 	r.HandleFunc("/api/senders/{id}/preferences", h.UpdateSenderPreference).Methods("PUT")
 
 	// Smart Labels routes

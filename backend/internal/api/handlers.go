@@ -14,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
@@ -269,6 +270,16 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Autopilot: when the user opted in, run their deterministic rules over each
+	// freshly synced email — instant, AI-free, quota-free triage at sync time.
+	var autoRules []models.SortingRule
+	if h.autoApplyRulesEnabled(ctx, userEmail) {
+		autoRules = h.enabledRules(ctx, userEmail)
+	}
+	labelCache := map[string]string{}
+	byRule := map[string]int{}
+	rulesApplied := 0
+
 	syncCount := 0
 	for _, msg := range messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
@@ -300,12 +311,30 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			syncCount++
 		}
+
+		if len(autoRules) > 0 {
+			if match := rules.FirstMatch(email, autoRules); match != nil {
+				if err := h.applyRuleAction(ctx, gmailClient, userEmail, msg.Id, *match, labelCache); err == nil {
+					rulesApplied++
+					byRule[match.Name]++
+				}
+			}
+		}
+	}
+
+	// Persist per-rule application counts (best-effort).
+	for name, n := range byRule {
+		h.db.SortingRules().UpdateOne(ctx,
+			bson.M{"userId": userEmail, "name": name},
+			bson.M{"$inc": bson.M{"appliedCount": n}},
+		)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"synced": syncCount,
-		"total":  len(messages),
+		"synced":       syncCount,
+		"total":        len(messages),
+		"rulesApplied": rulesApplied,
 	})
 }
 

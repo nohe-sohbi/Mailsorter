@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { ruleService } from '../services/api';
+import { ruleService, accountService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
-import { Bolt, Archive, Trash, Tag, Pin, Mail, Check, X, Refresh } from '../ui/icons';
+import { Bolt, Archive, Trash, Tag, Pin, Mail, Check, X, Refresh, Search } from '../ui/icons';
 
 const FIELDS = [
   { value: 'from', label: 'Expéditeur' },
@@ -214,6 +214,9 @@ function Rules() {
   const [editing, setEditing] = useState(null); // rule object (with id) or 'new'
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState(null); // { scanned, willApply, byRule, samples }
+  const [autoApply, setAutoApply] = useState(false);
 
   const load = () => {
     ruleService
@@ -224,6 +227,10 @@ function Rules() {
 
   useEffect(() => {
     load();
+    accountService
+      .getSettings()
+      .then((r) => setAutoApply(!!r.data.autoApplyRules))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -267,11 +274,37 @@ function Rules() {
       const { data } = await ruleService.apply();
       if (data.applied > 0) toast.success(`${data.applied} email(s) traité(s) par vos règles. 🎯`);
       else toast.info(`Aucun email à traiter (${data.scanned} analysés).`);
+      setPreview(null);
       load();
     } catch {
       toast.error('Impossible d’appliquer les règles.');
     } finally {
       setApplying(false);
+    }
+  };
+
+  const runPreview = async () => {
+    setPreviewing(true);
+    try {
+      const { data } = await ruleService.preview();
+      setPreview(data);
+      if (data.willApply === 0) toast.info(`Aucun email concerné (${data.scanned} analysés).`);
+    } catch {
+      toast.error('Aperçu impossible.');
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const toggleAutoApply = async () => {
+    const next = !autoApply;
+    setAutoApply(next); // optimistic
+    try {
+      await accountService.updateSettings({ autoApplyRules: next });
+      toast.success(next ? 'Autopilote activé : vos règles s’appliqueront à chaque synchro.' : 'Autopilote désactivé.');
+    } catch {
+      setAutoApply(!next); // revert
+      toast.error('Mise à jour impossible.');
     }
   };
 
@@ -288,11 +321,78 @@ function Rules() {
           </p>
         </div>
         {rules && rules.length > 0 && (
-          <button onClick={applyNow} disabled={applying || enabledCount === 0} className="btn-primary shrink-0">
-            {applying ? <Spinner size={16} /> : <Refresh size={16} />} Appliquer maintenant
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button onClick={runPreview} disabled={previewing || enabledCount === 0} className="btn-secondary" title="Voir ce que feraient vos règles, sans rien modifier">
+              {previewing ? <Spinner size={16} /> : <Search size={16} />} Aperçu
+            </button>
+            <button onClick={applyNow} disabled={applying || enabledCount === 0} className="btn-primary">
+              {applying ? <Spinner size={16} /> : <Refresh size={16} />} Appliquer maintenant
+            </button>
+          </div>
         )}
       </div>
+
+      {rules && rules.length > 0 && (
+        <div className="card mb-5 flex flex-wrap items-center justify-between gap-3 p-4">
+          <div className="flex items-start gap-3">
+            <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', autoApply ? 'bg-brand-50 text-brand-600' : 'bg-ink-100 text-ink-400')}>
+              <Bolt size={18} />
+            </span>
+            <div>
+              <div className="text-sm font-bold text-ink-900">Autopilote au sync</div>
+              <p className="mt-0.5 max-w-md text-xs text-ink-500">
+                Appliquer automatiquement vos règles à chaque synchronisation de la boîte — sans IA, sans quota.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={toggleAutoApply}
+            className={cn('relative h-6 w-11 shrink-0 rounded-full transition-colors', autoApply ? 'bg-brand-500' : 'bg-ink-200')}
+            aria-label={autoApply ? 'Désactiver l’autopilote' : 'Activer l’autopilote'}
+            title={autoApply ? 'Désactiver l’autopilote' : 'Activer l’autopilote'}
+          >
+            <span className={cn('absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all', autoApply ? 'left-[22px]' : 'left-0.5')} />
+          </button>
+        </div>
+      )}
+
+      {preview && (
+        <div className="card mb-5 p-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="flex items-center gap-2 font-bold text-ink-900">
+              <Search size={16} className="text-brand-500" /> Aperçu — {preview.willApply} email{preview.willApply > 1 ? 's' : ''} sur {preview.scanned}
+            </h3>
+            <button onClick={() => setPreview(null)} className="btn-ghost px-2 text-ink-400" aria-label="Fermer l’aperçu">
+              <X size={16} />
+            </button>
+          </div>
+          {preview.willApply === 0 ? (
+            <p className="text-sm text-ink-500">Aucun email de votre boîte ne correspond à vos règles actives.</p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {(preview.byRule || []).map((h) => {
+                  const meta = actionMeta(h.action);
+                  return (
+                    <span key={h.ruleName} className={cn('chip', meta.tone)}>
+                      <meta.Icon size={13} /> {h.ruleName} · {h.matched}
+                    </span>
+                  );
+                })}
+              </div>
+              <ul className="mt-3 space-y-1.5 border-t border-ink-100 pt-3">
+                {(preview.samples || []).map((s, i) => (
+                  <li key={i} className="flex items-center gap-2 text-xs text-ink-500">
+                    <span className={cn('chip shrink-0', actionMeta(s.action).tone)}>{actionMeta(s.action).label}</span>
+                    <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> — {s.from}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-3 text-xs text-ink-400">Aperçu en lecture seule : rien n’a été modifié dans Gmail.</p>
+            </>
+          )}
+        </div>
+      )}
 
       {editing === 'new' && (
         <div className="mb-5">

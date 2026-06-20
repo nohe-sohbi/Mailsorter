@@ -412,6 +412,21 @@ function Inbox() {
     }
   };
 
+  // "Learn once, apply forever": create a permanent deterministic rule that
+  // archives every FUTURE email from this sender — for free, no AI, no quota.
+  const handleCreateSenderRule = async (sender) => {
+    try {
+      await senderService.createRule(sender.senderEmail, 'archive');
+      toast.action(
+        `Règle créée : les emails de ${sender.senderName || sender.senderEmail} seront archivés.`,
+        'Voir les règles',
+        () => navigate('/rules')
+      );
+    } catch (err) {
+      toast.error(err.response?.data?.trim() || 'Création de la règle impossible');
+    }
+  };
+
   // --- Keyboard shortcuts --------------------------------------------------
   useEffect(() => {
     const onKey = (e) => {
@@ -827,10 +842,13 @@ function Inbox() {
                       </button>
                     )}
                     <div className="flex items-center gap-1">
-                      <button onClick={() => handleApplyBulk(sender, 'archive')} className="btn-ghost px-2.5" title="Tout archiver">
+                      <button onClick={() => handleCreateSenderRule(sender)} className="btn-ghost px-2.5 text-brand-500 hover:bg-brand-50" title="Créer une règle : toujours archiver les futurs emails de cet expéditeur">
+                        <Bolt size={18} />
+                      </button>
+                      <button onClick={() => handleApplyBulk(sender, 'archive')} className="btn-ghost px-2.5" title="Tout archiver (emails existants)">
                         <Archive size={18} />
                       </button>
-                      <button onClick={() => handleApplyBulk(sender, 'delete')} className="btn-ghost px-2.5 text-rose-500 hover:bg-rose-50" title="Tout supprimer">
+                      <button onClick={() => handleApplyBulk(sender, 'delete')} className="btn-ghost px-2.5 text-rose-500 hover:bg-rose-50" title="Tout supprimer (emails existants)">
                         <Trash size={18} />
                       </button>
                     </div>
