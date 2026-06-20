@@ -89,6 +89,10 @@ func (d *Database) Unsubscribes() *mongo.Collection {
 	return d.DB.Collection("unsubscribes")
 }
 
+func (d *Database) SortingRules() *mongo.Collection {
+	return d.DB.Collection("sorting_rules")
+}
+
 // EnsureIndexes creates the indexes that keep hot queries fast at scale.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
@@ -105,6 +109,7 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.Usage(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "period", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Unsubscribes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Users(), mongo.IndexModel{Keys: bson.D{{Key: "stripeSubscriptionId", Value: 1}}, Options: options.Index().SetSparse(true)}},
+		{d.SortingRules(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "priority", Value: 1}}}},
 	}
 
 	var firstErr error

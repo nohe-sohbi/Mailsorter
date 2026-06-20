@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { cn } from '../ui/cn';
-import { Logo, Inbox, Settings, LogOut, Bolt } from '../ui/icons';
+import { Logo, Inbox, Settings, LogOut, Bolt, Tag } from '../ui/icons';
 
 function Header() {
   const navigate = useNavigate();
@@ -22,6 +22,7 @@ function Header() {
 
   const navItems = [
     { to: '/inbox', label: 'Boîte', Icon: Inbox },
+    { to: '/rules', label: 'Règles', Icon: Tag },
     { to: '/pricing', label: 'Tarifs', Icon: Bolt },
     { to: '/settings', label: 'Réglages', Icon: Settings },
   ];

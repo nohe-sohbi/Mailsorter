@@ -16,8 +16,20 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"golang.org/x/oauth2"
+	gmailapi "google.golang.org/api/gmail/v1"
 )
+
+// gmailClientFor returns an authenticated Gmail client for the user. It routes
+// through getUserToken, so the OAuth token is refreshed and persisted when
+// expired — previously this logic was copy-pasted across handlers (and missing
+// entirely from sync/labels, which would fail once the access token aged out).
+func (h *Handler) gmailClientFor(ctx context.Context, userEmail string) (*gmailapi.Service, error) {
+	token, err := h.getUserToken(ctx, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	return h.gmailService.GetClient(token), nil
+}
 
 // BillingConfig wires the Stripe client and its environment-derived settings
 // into the handler. Client is nil when Stripe is not configured.
@@ -145,37 +157,12 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Get user from database
-	var user models.User
-	err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
-	// Check if token is expired and refresh if needed
-	token := &oauth2.Token{
-		AccessToken:  user.AccessToken,
-		RefreshToken: user.RefreshToken,
-		Expiry:       user.TokenExpiry,
-	}
-
-	if token.Expiry.Before(time.Now()) && user.RefreshToken != "" {
-		newToken, err := h.gmailService.RefreshToken(user.RefreshToken)
-		if err == nil {
-			token = newToken
-			// Update token in database
-			h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail}, bson.M{
-				"$set": bson.M{
-					"accessToken": newToken.AccessToken,
-					"tokenExpiry": newToken.Expiry,
-					"updatedAt":   time.Now(),
-				},
-			})
-		}
-	}
-
-	gmailClient := h.gmailService.GetClient(token)
 	query := r.URL.Query().Get("q")
 	if query == "" {
 		query = "in:inbox"
@@ -244,34 +231,12 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	var user models.User
-	err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
-	token := &oauth2.Token{
-		AccessToken:  user.AccessToken,
-		RefreshToken: user.RefreshToken,
-		Expiry:       user.TokenExpiry,
-	}
-
-	if token.Expiry.Before(time.Now()) && user.RefreshToken != "" {
-		newToken, err := h.gmailService.RefreshToken(user.RefreshToken)
-		if err == nil {
-			token = newToken
-			h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail}, bson.M{
-				"$set": bson.M{
-					"accessToken": newToken.AccessToken,
-					"tokenExpiry": newToken.Expiry,
-					"updatedAt":   time.Now(),
-				},
-			})
-		}
-	}
-
-	gmailClient := h.gmailService.GetClient(token)
 	stats, err := h.gmailService.GetMailboxStats(gmailClient)
 	if err != nil {
 		http.Error(w, "Failed to get mailbox stats: "+err.Error(), http.StatusInternalServerError)
@@ -292,20 +257,12 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var user models.User
-	err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
-	token := &oauth2.Token{
-		AccessToken:  user.AccessToken,
-		RefreshToken: user.RefreshToken,
-		Expiry:       user.TokenExpiry,
-	}
-
-	gmailClient := h.gmailService.GetClient(token)
 	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 100)
 	if err != nil {
 		http.Error(w, "Failed to sync emails: "+err.Error(), http.StatusInternalServerError)
@@ -374,12 +331,11 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	token, err := h.getUserToken(ctx, userEmail)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
 		return
 	}
-	gmailClient := h.gmailService.GetClient(token)
 
 	switch req.Action {
 	case "archive":
@@ -419,20 +375,12 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var user models.User
-	err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
-	token := &oauth2.Token{
-		AccessToken:  user.AccessToken,
-		RefreshToken: user.RefreshToken,
-		Expiry:       user.TokenExpiry,
-	}
-
-	gmailClient := h.gmailService.GetClient(token)
 	labels, err := h.gmailService.ListLabels(gmailClient)
 	if err != nil {
 		http.Error(w, "Failed to fetch labels: "+err.Error(), http.StatusInternalServerError)

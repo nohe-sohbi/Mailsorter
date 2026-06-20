@@ -33,9 +33,9 @@ type Email struct {
 	ReceivedDate time.Time `json:"receivedDate" bson:"receivedDate"`
 	IsRead       bool      `json:"isRead" bson:"isRead"`
 	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.
-	UnsubURL      string `json:"unsubUrl,omitempty" bson:"unsubUrl,omitempty"`
-	UnsubMailto   string `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`
-	UnsubOneClick bool   `json:"unsubOneClick,omitempty" bson:"unsubOneClick,omitempty"`
+	UnsubURL      string    `json:"unsubUrl,omitempty" bson:"unsubUrl,omitempty"`
+	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`
+	UnsubOneClick bool      `json:"unsubOneClick,omitempty" bson:"unsubOneClick,omitempty"`
 	CreatedAt     time.Time `json:"createdAt" bson:"createdAt"`
 }
 
@@ -89,6 +89,49 @@ type GmailConfigInput struct {
 }
 
 // ============================================
+// Deterministic Sorting Rules
+// ============================================
+
+// RuleCondition is a single predicate evaluated against an email field.
+// Field is one of: from, subject, snippet, to, body.
+// Operator is one of: contains, equals, startsWith, endsWith, regex.
+type RuleCondition struct {
+	Field    string `json:"field" bson:"field"`
+	Operator string `json:"operator" bson:"operator"`
+	Value    string `json:"value" bson:"value"`
+}
+
+// SortingRule is a deterministic, AI-free triage rule. When its conditions
+// match an email, its action is applied directly via Gmail — no model call, no
+// quota consumed. Rules run before the AI so users can encode the obvious cases
+// once and have them handled instantly and predictably.
+type SortingRule struct {
+	ID           string          `json:"id" bson:"_id,omitempty"`
+	UserID       string          `json:"userId" bson:"userId"`
+	Name         string          `json:"name" bson:"name"`
+	Enabled      bool            `json:"enabled" bson:"enabled"`
+	MatchAll     bool            `json:"matchAll" bson:"matchAll"` // true = AND all conditions, false = OR any
+	Conditions   []RuleCondition `json:"conditions" bson:"conditions"`
+	Action       string          `json:"action" bson:"action"` // archive, trash, label, markRead, star
+	LabelName    string          `json:"labelName,omitempty" bson:"labelName,omitempty"`
+	Priority     int             `json:"priority" bson:"priority"` // lower runs first
+	AppliedCount int             `json:"appliedCount" bson:"appliedCount"`
+	CreatedAt    time.Time       `json:"createdAt" bson:"createdAt"`
+	UpdatedAt    time.Time       `json:"updatedAt" bson:"updatedAt"`
+}
+
+// SortingRuleInput is the request body for creating/updating a rule.
+type SortingRuleInput struct {
+	Name       string          `json:"name"`
+	Enabled    bool            `json:"enabled"`
+	MatchAll   bool            `json:"matchAll"`
+	Conditions []RuleCondition `json:"conditions"`
+	Action     string          `json:"action"`
+	LabelName  string          `json:"labelName"`
+	Priority   int             `json:"priority"`
+}
+
+// ============================================
 // AI Sorting Models
 // ============================================
 
@@ -124,15 +167,15 @@ type SenderPreference struct {
 
 // SmartLabel represents an AI-managed label category
 type SmartLabel struct {
-	ID          string    `json:"id" bson:"_id,omitempty"`
-	UserID      string    `json:"userId" bson:"userId"`
-	Name        string    `json:"name" bson:"name"`               // Label name (e.g., "E-commerce")
-	GmailLabelID string   `json:"gmailLabelId" bson:"gmailLabelId"` // Corresponding Gmail label ID
-	Description string    `json:"description" bson:"description"` // What this label represents
-	Keywords    []string  `json:"keywords" bson:"keywords"`       // Associated keywords for consistency
-	EmailCount  int       `json:"emailCount" bson:"emailCount"`   // Number of emails with this label
-	CreatedAt   time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt" bson:"updatedAt"`
+	ID           string    `json:"id" bson:"_id,omitempty"`
+	UserID       string    `json:"userId" bson:"userId"`
+	Name         string    `json:"name" bson:"name"`                 // Label name (e.g., "E-commerce")
+	GmailLabelID string    `json:"gmailLabelId" bson:"gmailLabelId"` // Corresponding Gmail label ID
+	Description  string    `json:"description" bson:"description"`   // What this label represents
+	Keywords     []string  `json:"keywords" bson:"keywords"`         // Associated keywords for consistency
+	EmailCount   int       `json:"emailCount" bson:"emailCount"`     // Number of emails with this label
+	CreatedAt    time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
 // AnalysisJob tracks an asynchronous batch-analysis run.

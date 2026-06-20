@@ -1,0 +1,339 @@
+import React, { useEffect, useState } from 'react';
+import { ruleService } from '../services/api';
+import { useToast } from '../ui/Toast';
+import { cn } from '../ui/cn';
+import Spinner from '../ui/Spinner';
+import { Bolt, Archive, Trash, Tag, Pin, Mail, Check, X, Refresh } from '../ui/icons';
+
+const FIELDS = [
+  { value: 'from', label: 'Expéditeur' },
+  { value: 'subject', label: 'Sujet' },
+  { value: 'snippet', label: 'Aperçu' },
+  { value: 'to', label: 'Destinataire' },
+  { value: 'body', label: 'Contenu' },
+];
+
+const OPERATORS = [
+  { value: 'contains', label: 'contient' },
+  { value: 'equals', label: 'est égal à' },
+  { value: 'startsWith', label: 'commence par' },
+  { value: 'endsWith', label: 'finit par' },
+  { value: 'regex', label: 'correspond à (regex)' },
+];
+
+const ACTIONS = [
+  { value: 'archive', label: 'Archiver', Icon: Archive, tone: 'text-sky-600 bg-sky-50' },
+  { value: 'trash', label: 'Supprimer', Icon: Trash, tone: 'text-rose-600 bg-rose-50' },
+  { value: 'label', label: 'Étiqueter', Icon: Tag, tone: 'text-violet-600 bg-violet-50' },
+  { value: 'markRead', label: 'Marquer comme lu', Icon: Mail, tone: 'text-emerald-600 bg-emerald-50' },
+  { value: 'star', label: 'Mettre en favori', Icon: Pin, tone: 'text-amber-600 bg-amber-50' },
+];
+
+const emptyRule = () => ({
+  name: '',
+  enabled: true,
+  matchAll: true,
+  conditions: [{ field: 'from', operator: 'contains', value: '' }],
+  action: 'archive',
+  labelName: '',
+  priority: 0,
+});
+
+const actionMeta = (value) => ACTIONS.find((a) => a.value === value) || ACTIONS[0];
+const fieldLabel = (v) => FIELDS.find((f) => f.value === v)?.label || v;
+const operatorLabel = (v) => OPERATORS.find((o) => o.value === v)?.label || v;
+
+function RuleEditor({ initial, onCancel, onSave, saving }) {
+  const [rule, setRule] = useState(initial);
+  const toast = useToast();
+
+  const set = (patch) => setRule((r) => ({ ...r, ...patch }));
+  const setCondition = (i, patch) =>
+    setRule((r) => ({ ...r, conditions: r.conditions.map((c, idx) => (idx === i ? { ...c, ...patch } : c)) }));
+  const addCondition = () =>
+    setRule((r) => ({ ...r, conditions: [...r.conditions, { field: 'subject', operator: 'contains', value: '' }] }));
+  const removeCondition = (i) =>
+    setRule((r) => ({ ...r, conditions: r.conditions.filter((_, idx) => idx !== i) }));
+
+  const submit = () => {
+    if (!rule.name.trim()) return toast.error('Donnez un nom à votre règle.');
+    if (rule.action === 'label' && !rule.labelName.trim()) return toast.error('Indiquez le libellé à appliquer.');
+    if (rule.conditions.some((c) => !c.value.trim())) return toast.error('Chaque condition doit avoir une valeur.');
+    onSave(rule);
+  };
+
+  return (
+    <div className="card space-y-5 p-6">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink-700">Nom de la règle</span>
+          <input
+            className="input"
+            placeholder="Ex. Archiver les newsletters Acme"
+            value={rule.name}
+            onChange={(e) => set({ name: e.target.value })}
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink-700">Priorité</span>
+          <input
+            type="number"
+            className="input"
+            value={rule.priority}
+            onChange={(e) => set({ priority: parseInt(e.target.value, 10) || 0 })}
+          />
+          <span className="mt-1 block text-xs text-ink-400">Plus le nombre est petit, plus la règle est prioritaire.</span>
+        </label>
+      </div>
+
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-sm font-semibold text-ink-700">Conditions</span>
+          <div className="flex items-center gap-1.5 text-xs">
+            <button
+              onClick={() => set({ matchAll: true })}
+              className={cn('rounded-md px-2 py-1 font-semibold', rule.matchAll ? 'bg-brand-50 text-brand-700' : 'text-ink-400 hover:bg-ink-100')}
+            >
+              Toutes
+            </button>
+            <button
+              onClick={() => set({ matchAll: false })}
+              className={cn('rounded-md px-2 py-1 font-semibold', !rule.matchAll ? 'bg-brand-50 text-brand-700' : 'text-ink-400 hover:bg-ink-100')}
+            >
+              Au moins une
+            </button>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {rule.conditions.map((c, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2">
+              <select className="input w-auto flex-none" value={c.field} onChange={(e) => setCondition(i, { field: e.target.value })}>
+                {FIELDS.map((f) => (
+                  <option key={f.value} value={f.value}>{f.label}</option>
+                ))}
+              </select>
+              <select className="input w-auto flex-none" value={c.operator} onChange={(e) => setCondition(i, { operator: e.target.value })}>
+                {OPERATORS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <input
+                className="input min-w-[140px] flex-1"
+                placeholder="Valeur…"
+                value={c.value}
+                onChange={(e) => setCondition(i, { value: e.target.value })}
+              />
+              {rule.conditions.length > 1 && (
+                <button onClick={() => removeCondition(i)} className="btn-ghost px-2 text-ink-400" aria-label="Retirer la condition">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        <button onClick={addCondition} className="mt-2 text-sm font-semibold text-brand-600 hover:text-brand-700">
+          + Ajouter une condition
+        </button>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block">
+          <span className="mb-1 block text-sm font-semibold text-ink-700">Action</span>
+          <select className="input" value={rule.action} onChange={(e) => set({ action: e.target.value })}>
+            {ACTIONS.map((a) => (
+              <option key={a.value} value={a.value}>{a.label}</option>
+            ))}
+          </select>
+        </label>
+        {rule.action === 'label' && (
+          <label className="block">
+            <span className="mb-1 block text-sm font-semibold text-ink-700">Libellé</span>
+            <input className="input" placeholder="Ex. Promotions" value={rule.labelName} onChange={(e) => set({ labelName: e.target.value })} />
+          </label>
+        )}
+      </div>
+
+      <div className="flex items-center justify-end gap-2">
+        <button onClick={onCancel} className="btn-secondary">Annuler</button>
+        <button onClick={submit} disabled={saving} className="btn-primary">
+          {saving ? <Spinner size={16} /> : <Check size={16} />} Enregistrer
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RuleCard({ rule, onToggle, onEdit, onDelete }) {
+  const meta = actionMeta(rule.action);
+  return (
+    <div className="card flex items-start justify-between gap-4 p-5">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2.5">
+          <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', meta.tone)}>
+            <meta.Icon size={16} />
+          </span>
+          <h3 className="truncate font-bold text-ink-900">{rule.name}</h3>
+          {!rule.enabled && <span className="chip bg-ink-100 text-ink-500">En pause</span>}
+        </div>
+        <p className="mt-2 text-sm text-ink-500">
+          <span className="font-medium text-ink-600">{rule.matchAll ? 'Si toutes' : 'Si au moins une'}</span> :{' '}
+          {rule.conditions.map((c, i) => (
+            <span key={i}>
+              {i > 0 && <span className="text-ink-300"> · </span>}
+              {fieldLabel(c.field)} {operatorLabel(c.operator)} «{c.value}»
+            </span>
+          ))}
+          <span className="text-ink-300"> → </span>
+          <span className="font-semibold text-ink-700">{meta.label}{rule.action === 'label' ? ` « ${rule.labelName} »` : ''}</span>
+        </p>
+        {rule.appliedCount > 0 && (
+          <p className="mt-1 text-xs text-ink-400">Appliquée {rule.appliedCount} fois</p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button
+          onClick={onToggle}
+          className={cn('relative h-6 w-11 rounded-full transition-colors', rule.enabled ? 'bg-brand-500' : 'bg-ink-200')}
+          aria-label={rule.enabled ? 'Désactiver' : 'Activer'}
+          title={rule.enabled ? 'Désactiver' : 'Activer'}
+        >
+          <span className={cn('absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all', rule.enabled ? 'left-[22px]' : 'left-0.5')} />
+        </button>
+        <button onClick={onEdit} className="btn-ghost px-2.5 text-sm font-semibold">Modifier</button>
+        <button onClick={onDelete} className="btn-ghost px-2 text-ink-400 hover:text-rose-600" aria-label="Supprimer la règle">
+          <Trash size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Rules() {
+  const toast = useToast();
+  const [rules, setRules] = useState(null);
+  const [editing, setEditing] = useState(null); // rule object (with id) or 'new'
+  const [saving, setSaving] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const load = () => {
+    ruleService
+      .getRules()
+      .then((r) => setRules(r.data.rules || []))
+      .catch(() => toast.error('Impossible de charger les règles.'));
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const save = async (rule) => {
+    setSaving(true);
+    try {
+      if (rule.id) await ruleService.updateRule(rule.id, rule);
+      else await ruleService.createRule(rule);
+      toast.success('Règle enregistrée.');
+      setEditing(null);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.trim() || 'Échec de l’enregistrement.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggle = async (rule) => {
+    try {
+      await ruleService.updateRule(rule.id, { ...rule, enabled: !rule.enabled });
+      load();
+    } catch {
+      toast.error('Échec de la mise à jour.');
+    }
+  };
+
+  const remove = async (rule) => {
+    try {
+      await ruleService.deleteRule(rule.id);
+      toast.success('Règle supprimée.');
+      load();
+    } catch {
+      toast.error('Échec de la suppression.');
+    }
+  };
+
+  const applyNow = async () => {
+    setApplying(true);
+    try {
+      const { data } = await ruleService.apply();
+      if (data.applied > 0) toast.success(`${data.applied} email(s) traité(s) par vos règles. 🎯`);
+      else toast.info(`Aucun email à traiter (${data.scanned} analysés).`);
+      load();
+    } catch {
+      toast.error('Impossible d’appliquer les règles.');
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const enabledCount = (rules || []).filter((r) => r.enabled).length;
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <span className="chip mb-2 bg-brand-50 text-brand-700"><Bolt size={14} /> Tri automatique, sans IA</span>
+          <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Règles de tri</h1>
+          <p className="mt-1 max-w-lg text-sm text-ink-500">
+            Encodez vos cas évidents une fois : les règles s’appliquent instantanément, gratuitement et sans consommer votre quota IA.
+          </p>
+        </div>
+        {rules && rules.length > 0 && (
+          <button onClick={applyNow} disabled={applying || enabledCount === 0} className="btn-primary shrink-0">
+            {applying ? <Spinner size={16} /> : <Refresh size={16} />} Appliquer maintenant
+          </button>
+        )}
+      </div>
+
+      {editing === 'new' && (
+        <div className="mb-5">
+          <RuleEditor initial={emptyRule()} saving={saving} onCancel={() => setEditing(null)} onSave={save} />
+        </div>
+      )}
+
+      {rules === null ? (
+        <div className="flex justify-center py-16"><Spinner size={24} className="text-brand-500" /></div>
+      ) : rules.length === 0 && editing !== 'new' ? (
+        <div className="card flex flex-col items-center gap-4 py-14 text-center">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-50 text-brand-600"><Bolt size={26} /></span>
+          <div>
+            <h3 className="font-bold text-ink-900">Aucune règle pour l’instant</h3>
+            <p className="mx-auto mt-1 max-w-sm text-sm text-ink-500">Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents.</p>
+          </div>
+          <button onClick={() => setEditing('new')} className="btn-primary">+ Créer une règle</button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rules.map((rule) =>
+            editing && editing.id === rule.id ? (
+              <RuleEditor key={rule.id} initial={rule} saving={saving} onCancel={() => setEditing(null)} onSave={save} />
+            ) : (
+              <RuleCard
+                key={rule.id}
+                rule={rule}
+                onToggle={() => toggle(rule)}
+                onEdit={() => setEditing(rule)}
+                onDelete={() => remove(rule)}
+              />
+            )
+          )}
+        </div>
+      )}
+
+      {rules && rules.length > 0 && editing !== 'new' && (
+        <button onClick={() => setEditing('new')} className="btn-secondary mt-4 w-full">+ Nouvelle règle</button>
+      )}
+    </div>
+  );
+}
+
+export default Rules;

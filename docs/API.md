@@ -259,147 +259,122 @@ header (HMAC-SHA256, 5-minute tolerance) before processing. Keeps the user's
 
 ---
 
+### Manage Subscription (Billing Portal)
+
+#### POST /api/billing/portal
+
+Creates a Stripe Billing Portal session for the current Pro user so they can
+update payment details, switch plans, or cancel — entirely self-service. Returns
+the hosted URL to redirect to.
+
+**Headers:**
+- `Authorization: Bearer <session-token>` (required)
+
+**Response:**
+```json
+{ "url": "https://billing.stripe.com/p/session/..." }
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Missing user email
+- `404 Not Found`: No subscription / Stripe customer to manage
+- `502 Bad Gateway`: Stripe call failed
+- `503 Service Unavailable`: Billing not configured
+
+---
+
 ## Sorting Rules Endpoints
+
+Deterministic, **AI-free** triage. A rule pairs conditions with an action; when
+the conditions match an email, the action is applied directly via Gmail — no
+model call, no quota consumed. Rules are the free, predictable complement to the
+AI suggestions.
+
+A rule has the shape:
+
+```json
+{
+  "id": "507f1f77bcf86cd799439011",
+  "userId": "user@gmail.com",
+  "name": "Archiver les newsletters Acme",
+  "enabled": true,
+  "matchAll": true,
+  "conditions": [
+    { "field": "from", "operator": "contains", "value": "acme.com" }
+  ],
+  "action": "archive",
+  "labelName": "",
+  "priority": 0,
+  "appliedCount": 12,
+  "createdAt": "2026-06-20T12:00:00Z",
+  "updatedAt": "2026-06-20T12:00:00Z"
+}
+```
+
+- **`matchAll`** — `true` ANDs every condition, `false` ORs them.
+- **Condition `field`** — `from`, `subject`, `snippet`, `to`, `body`.
+- **Condition `operator`** — `contains`, `equals`, `startsWith`, `endsWith`,
+  `regex` (all case-insensitive except `regex`).
+- **`action`** — `archive`, `trash`, `label` (requires `labelName`), `markRead`,
+  `star`.
+- **`priority`** — lower runs first; the first matching rule wins per email.
 
 ### Get Sorting Rules
 
 #### GET /api/rules
 
-Get all sorting rules for a user.
+Returns the caller's rules, ordered by priority.
 
-**Headers:**
-- `Authorization: Bearer <session-token>` (required)
-
-**Response:**
-```json
-[
-  {
-    "id": "507f1f77bcf86cd799439011",
-    "userId": "user@gmail.com",
-    "name": "Work Emails",
-    "description": "Sort work-related emails",
-    "conditions": [
-      {
-        "field": "from",
-        "operator": "contains",
-        "value": "@company.com"
-      }
-    ],
-    "actions": [
-      {
-        "type": "addLabel",
-        "value": "Work"
-      }
-    ],
-    "priority": 1,
-    "enabled": true,
-    "createdAt": "2024-01-01T12:00:00Z",
-    "updatedAt": "2024-01-01T12:00:00Z"
-  }
-]
-```
+**Response:** `{ "rules": [ <rule>, ... ] }`
 
 ### Create Sorting Rule
 
 #### POST /api/rules
 
-Create a new sorting rule.
+Validates and creates a rule. Returns the created rule. **Status:** `201 Created`.
 
-**Headers:**
-- `Authorization: Bearer <session-token>` (required)
+**Request Body:** rule fields without `id`/timestamps (see shape above).
 
-**Request Body:**
-```json
-{
-  "name": "Work Emails",
-  "description": "Sort work-related emails",
-  "conditions": [
-    {
-      "field": "from",
-      "operator": "contains",
-      "value": "@company.com"
-    }
-  ],
-  "actions": [
-    {
-      "type": "addLabel",
-      "value": "Work"
-    }
-  ],
-  "priority": 1,
-  "enabled": true
-}
-```
-
-**Condition Fields:**
-- `field`: `from`, `to`, `subject`, `body`
-- `operator`: `contains`, `equals`, `startsWith`, `endsWith`
-- `value`: String to match
-
-**Action Types:**
-- `addLabel`: Add a label (requires `value`)
-- `removeLabel`: Remove a label (requires `value`)
-- `markAsRead`: Mark as read (no `value` needed)
-- `archive`: Archive the email (no `value` needed)
-
-**Response:**
-```json
-{
-  "id": "507f1f77bcf86cd799439011",
-  "userId": "user@gmail.com",
-  "name": "Work Emails",
-  ...
-}
-```
-
-**Status:** `201 Created`
+**Error Responses:**
+- `400 Bad Request`: Invalid body or validation error (e.g. missing label for a
+  `label` action, invalid regex, unknown field/operator)
 
 ### Update Sorting Rule
 
 #### PUT /api/rules/:id
 
-Update an existing sorting rule.
-
-**Headers:**
-- `Authorization: Bearer <session-token>` (required)
-
-**URL Parameters:**
-- `id`: Rule ID
-
-**Request Body:** Same as Create Sorting Rule
-
-**Response:**
-```json
-{
-  "id": "507f1f77bcf86cd799439011",
-  "userId": "user@gmail.com",
-  ...
-}
-```
+Validates and updates an existing rule. **Response:** `{ "status": "updated" }`.
 
 **Error Responses:**
-- `400 Bad Request`: Invalid rule ID
+- `400 Bad Request`: Invalid rule ID or validation error
 - `404 Not Found`: Rule not found
-- `500 Internal Server Error`: Failed to update rule
 
 ### Delete Sorting Rule
 
 #### DELETE /api/rules/:id
 
-Delete a sorting rule.
-
-**Headers:**
-- `Authorization: Bearer <session-token>` (required)
-
-**URL Parameters:**
-- `id`: Rule ID
-
-**Response:** `204 No Content`
+Deletes a rule. **Response:** `{ "status": "deleted" }`.
 
 **Error Responses:**
 - `400 Bad Request`: Invalid rule ID
 - `404 Not Found`: Rule not found
-- `500 Internal Server Error`: Failed to delete rule
+
+### Apply Sorting Rules
+
+#### POST /api/rules/apply
+
+Runs every **enabled** rule across the current inbox (up to 200 messages). Each
+email is matched in priority order and the first match's action is applied. Never
+calls the AI, never consumes quota.
+
+**Response:**
+```json
+{
+  "applied": 18,
+  "scanned": 120,
+  "byRule": { "Archiver les newsletters Acme": 12, "Promos": 6 }
+}
+```
 
 ---
 

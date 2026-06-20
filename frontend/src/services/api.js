@@ -98,6 +98,15 @@ export const subscriptionService = {
 
 export const billingService = {
   checkout: () => apiClient.post('/api/billing/checkout'),
+  portal: () => apiClient.post('/api/billing/portal'),
+};
+
+export const ruleService = {
+  getRules: () => apiClient.get('/api/rules'),
+  createRule: (rule) => apiClient.post('/api/rules', rule),
+  updateRule: (id, rule) => apiClient.put(`/api/rules/${id}`, rule),
+  deleteRule: (id) => apiClient.delete(`/api/rules/${id}`),
+  apply: () => apiClient.post('/api/rules/apply'),
 };
 
 export const configService = {

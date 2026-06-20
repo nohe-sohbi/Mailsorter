@@ -69,6 +69,42 @@ func (h *Handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"url": url})
 }
 
+// CreatePortal starts a Stripe Billing Portal session so a subscribed user can
+// manage or cancel their plan without leaving the product, then returns the
+// hosted URL for the client to redirect to.
+func (h *Handler) CreatePortal(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+	if h.billing.Client == nil {
+		http.Error(w, "Billing not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	var u struct {
+		StripeCustomerID string `bson:"stripeCustomerId"`
+	}
+	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&u); err != nil || u.StripeCustomerID == "" {
+		http.Error(w, "Aucun abonnement à gérer.", http.StatusNotFound)
+		return
+	}
+
+	url, err := h.billing.Client.CreatePortalSession(u.StripeCustomerID, h.billing.AppBaseURL+"/pricing")
+	if err != nil {
+		log.Printf("stripe portal error: %v", err)
+		http.Error(w, "Impossible d'ouvrir le portail de facturation.", http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"url": url})
+}
+
 // StripeWebhook receives Stripe events, verifies their signature, and keeps the
 // user's plan in sync with their subscription lifecycle. It must read the raw
 // body before any parsing so the HMAC check is performed on the exact payload.

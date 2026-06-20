@@ -91,6 +91,47 @@ func (c *Client) CreateCheckoutSession(p CheckoutParams) (string, error) {
 	return out.URL, nil
 }
 
+// CreatePortalSession creates a Stripe Billing Portal session for an existing
+// customer and returns the hosted URL where they can update payment details,
+// switch plans, or cancel — Stripe handles the entire self-service flow. The
+// customer must already exist (it is created during the first Checkout).
+func (c *Client) CreatePortalSession(customerID, returnURL string) (string, error) {
+	form := url.Values{}
+	form.Set("customer", customerID)
+	if returnURL != "" {
+		form.Set("return_url", returnURL)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, stripeAPIBase+"/v1/billing_portal/sessions", strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth(c.secretKey, "")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("stripe portal failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var out struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", err
+	}
+	if out.URL == "" {
+		return "", fmt.Errorf("stripe returned an empty portal url")
+	}
+	return out.URL, nil
+}
+
 // Event is a minimally-decoded Stripe webhook event.
 type Event struct {
 	Type   string
