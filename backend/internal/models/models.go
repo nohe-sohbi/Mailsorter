@@ -15,8 +15,18 @@ type User struct {
 	StripeCustomerID     string    `json:"-" bson:"stripeCustomerId,omitempty"`
 	StripeSubscriptionID string    `json:"-" bson:"stripeSubscriptionId,omitempty"`
 	PlanUpdatedAt        time.Time `json:"-" bson:"planUpdatedAt,omitempty"`
-	CreatedAt            time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt            time.Time `json:"updatedAt" bson:"updatedAt"`
+	// AutoApplyRules, when true, runs the user's deterministic sorting rules
+	// automatically over every freshly synced inbox — no extra click, no AI, no
+	// quota. Off by default so syncing never mutates Gmail unexpectedly.
+	AutoApplyRules bool      `json:"autoApplyRules" bson:"autoApplyRules,omitempty"`
+	CreatedAt      time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt" bson:"updatedAt"`
+}
+
+// UserSettings is the user-tunable subset of the account, exposed via
+// GET/PUT /api/account/settings.
+type UserSettings struct {
+	AutoApplyRules bool `json:"autoApplyRules"`
 }
 
 type Email struct {
@@ -129,6 +139,15 @@ type SortingRuleInput struct {
 	Action     string          `json:"action"`
 	LabelName  string          `json:"labelName"`
 	Priority   int             `json:"priority"`
+}
+
+// CreateSenderRuleRequest is the request body for POST /api/senders/rule. It
+// turns the "learn once, apply forever" promise into a concrete deterministic
+// rule: every future email whose From contains SenderEmail gets Action.
+type CreateSenderRuleRequest struct {
+	SenderEmail string `json:"senderEmail"`
+	Action      string `json:"action"`    // archive, trash, label, markRead, star
+	LabelName   string `json:"labelName"` // required when Action == "label"
 }
 
 // ============================================

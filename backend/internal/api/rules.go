@@ -32,6 +32,23 @@ func (h *Handler) loadRules(ctx context.Context, userEmail string) ([]models.Sor
 	return out, nil
 }
 
+// enabledRules returns the caller's enabled rules, sorted by priority (loadRules
+// already sorts). Shared by the manual apply, the dry-run preview, and the
+// at-sync autopilot so all three see exactly the same ruleset.
+func (h *Handler) enabledRules(ctx context.Context, userEmail string) []models.SortingRule {
+	ruleset, err := h.loadRules(ctx, userEmail)
+	if err != nil {
+		return nil
+	}
+	enabled := make([]models.SortingRule, 0, len(ruleset))
+	for _, ru := range ruleset {
+		if ru.Enabled {
+			enabled = append(enabled, ru)
+		}
+	}
+	return enabled
+}
+
 // GetRules lists the caller's deterministic sorting rules.
 func (h *Handler) GetRules(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
@@ -192,18 +209,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	ruleset, err := h.loadRules(ctx, userEmail)
-	if err != nil {
-		http.Error(w, "Failed to load rules", http.StatusInternalServerError)
-		return
-	}
-	// Keep only enabled rules; loadRules already sorts by priority.
-	enabled := make([]models.SortingRule, 0, len(ruleset))
-	for _, ru := range ruleset {
-		if ru.Enabled {
-			enabled = append(enabled, ru)
-		}
-	}
+	enabled := h.enabledRules(ctx, userEmail)
 	if len(enabled) == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"applied": 0, "scanned": 0, "byRule": map[string]int{}})
@@ -234,6 +240,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 			To:           to,
 			Subject:      subject,
 			Snippet:      msg.Snippet,
+			Body:         gmail.GetEmailBody(msg),
 			ReceivedDate: date,
 		}
 
@@ -262,6 +269,140 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		"scanned": len(messages),
 		"byRule":  byRule,
 	})
+}
+
+// previewSampleCap bounds how many example emails the dry-run returns.
+const previewSampleCap = 12
+
+// PreviewRules is a DRY RUN: it reports which emails each rule WOULD act on,
+// without touching Gmail and without consuming quota. This lets users see the
+// blast radius of their ruleset (especially before enabling at-sync autopilot)
+// and build trust before any irreversible archive/trash happens.
+func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	enabled := h.enabledRules(ctx, userEmail)
+	if len(enabled) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"scanned": 0, "willApply": 0, "byRule": []rules.RuleHits{}, "samples": []rules.PreviewItem{},
+		})
+		return
+	}
+
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	if err != nil {
+		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		return
+	}
+
+	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 200)
+	if err != nil {
+		http.Error(w, "Failed to read inbox: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	emails := make([]models.Email, 0, len(messages))
+	for _, msg := range messages {
+		from, subject, to, date := gmail.ParseEmailHeaders(msg)
+		emails = append(emails, models.Email{
+			MessageID:    msg.Id,
+			From:         from,
+			To:           to,
+			Subject:      subject,
+			Snippet:      msg.Snippet,
+			Body:         gmail.GetEmailBody(msg),
+			ReceivedDate: date,
+		})
+	}
+
+	items, hits := rules.Preview(emails, enabled)
+
+	samples := items
+	if len(samples) > previewSampleCap {
+		samples = samples[:previewSampleCap]
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"scanned":   len(messages),
+		"willApply": len(items),
+		"byRule":    hits,
+		"samples":   samples,
+	})
+}
+
+// ruleForSender builds a deterministic "always do X to this sender" rule from a
+// sender address and action. Pure (no I/O) so it is cheap to test. The sender
+// is matched on From contains <address>, mirroring how the rest of the app
+// scopes per-sender operations.
+func ruleForSender(userEmail string, req models.CreateSenderRuleRequest) models.SortingRule {
+	addr := extractSenderAddress(req.SenderEmail)
+	now := time.Now()
+	return models.SortingRule{
+		UserID:   userEmail,
+		Name:     "Expéditeur : " + addr,
+		Enabled:  true,
+		MatchAll: true,
+		Conditions: []models.RuleCondition{
+			{Field: rules.FieldFrom, Operator: rules.OpContains, Value: addr},
+		},
+		Action:    req.Action,
+		LabelName: req.LabelName,
+		Priority:  0,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+// CreateSenderRule turns a sender into a permanent deterministic rule in one
+// click — the concrete form of "learn once, apply forever". The new rule then
+// runs for free on every manual apply and (if enabled) automatically at sync.
+func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	var req models.CreateSenderRuleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if extractSenderAddress(req.SenderEmail) == "" {
+		http.Error(w, "Adresse d'expéditeur requise", http.StatusBadRequest)
+		return
+	}
+
+	rule := ruleForSender(userEmail, req)
+	if err := rules.Validate(rule); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res, err := h.db.SortingRules().InsertOne(ctx, rule)
+	if err != nil {
+		http.Error(w, "Failed to save rule", http.StatusInternalServerError)
+		return
+	}
+	if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
+		rule.ID = oid.Hex()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(rule)
 }
 
 // applyRuleAction performs a single rule's action on one message.

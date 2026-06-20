@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,17 +21,41 @@ const (
 type MistralClient struct {
 	apiKey     string
 	model      string
+	baseURL    string
 	httpClient *http.Client
+
+	// Resilience knobs. maxRetries is the number of EXTRA attempts after the
+	// first (so total attempts = maxRetries+1). baseDelay seeds the exponential
+	// backoff; maxDelay caps any single wait so a hostile Retry-After can't stall
+	// a request past the server's write timeout. sleep is injectable for tests.
+	maxRetries int
+	baseDelay  time.Duration
+	maxDelay   time.Duration
+	sleep      func(time.Duration)
 }
 
 func NewMistralClient(apiKey, model string) *MistralClient {
 	return &MistralClient{
-		apiKey: apiKey,
-		model:  model,
+		apiKey:  apiKey,
+		model:   model,
+		baseURL: mistralAPIURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		maxRetries: 2,
+		baseDelay:  500 * time.Millisecond,
+		maxDelay:   8 * time.Second,
+		sleep:      time.Sleep,
 	}
+}
+
+// SetMaxRetries configures how many ADDITIONAL attempts a transient failure gets
+// after the first (total attempts = n+1). Negative values are clamped to 0.
+func (c *MistralClient) SetMaxRetries(n int) {
+	if n < 0 {
+		n = 0
+	}
+	c.maxRetries = n
 }
 
 // Mistral API request/response types
@@ -55,10 +81,10 @@ type chatResponse struct {
 
 // EmailAnalysis represents the AI's analysis of an email
 type EmailAnalysis struct {
-	Action     string  `json:"action"`      // "archive", "delete", "label", "keep"
-	LabelName  string  `json:"label_name"`  // Suggested label (if action = "label")
-	Confidence float64 `json:"confidence"`  // 0.0 to 1.0
-	Reasoning  string  `json:"reasoning"`   // Brief explanation
+	Action     string  `json:"action"`     // "archive", "delete", "label", "keep"
+	LabelName  string  `json:"label_name"` // Suggested label (if action = "label")
+	Confidence float64 `json:"confidence"` // 0.0 to 1.0
+	Reasoning  string  `json:"reasoning"`  // Brief explanation
 }
 
 // AnalyzeEmail analyzes a single email and returns a suggested action
@@ -346,7 +372,11 @@ func (c *MistralClient) chat(prompt string) (string, error) {
 	return c.chatTokens(prompt, 500)
 }
 
-// chatTokens sends a message to Mistral with an explicit max-tokens budget.
+// chatTokens sends a message to Mistral with an explicit max-tokens budget,
+// retrying transient failures (HTTP 429, any 5xx, and network errors) with
+// exponential backoff + jitter. Permanent failures (4xx other than 429, JSON
+// errors) fail fast. The LLM is the flakiest dependency in the request path, so
+// a single 429 no longer collapses a whole analysis batch down to "keep".
 func (c *MistralClient) chatTokens(prompt string, maxTokens int) (string, error) {
 	reqBody := chatRequest{
 		Model: c.model,
@@ -362,39 +392,88 @@ func (c *MistralClient) chatTokens(prompt string, maxTokens int) (string, error)
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", mistralAPIURL, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return "", err
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		content, retryable, retryAfter, err := c.doChat(jsonBody)
+		if err == nil {
+			return content, nil
+		}
+		lastErr = err
+		if !retryable || attempt >= c.maxRetries {
+			return "", lastErr
+		}
+		c.sleep(c.backoff(attempt, retryAfter))
 	}
+}
 
+// doChat performs a single Mistral call. It reports whether the failure is worth
+// retrying and any server-advised Retry-After delay.
+func (c *MistralClient) doChat(jsonBody []byte) (content string, retryable bool, retryAfter time.Duration, err error) {
+	req, err := http.NewRequest("POST", c.baseURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", false, 0, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		// Transport-level errors (timeouts, resets) are transient.
+		return "", true, 0, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", true, 0, err
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("mistral API returned status %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode == http.StatusOK {
+		var chatResp chatResponse
+		if err := json.Unmarshal(body, &chatResp); err != nil {
+			return "", false, 0, err
+		}
+		if len(chatResp.Choices) == 0 {
+			return "", false, 0, fmt.Errorf("no response from Mistral")
+		}
+		return chatResp.Choices[0].Message.Content, false, 0, nil
 	}
 
-	var chatResp chatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return "", err
-	}
+	// Rate limits and server errors are transient; everything else is permanent.
+	retryable = resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+	retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+	return "", retryable, retryAfter, fmt.Errorf("mistral API returned status %d: %s", resp.StatusCode, string(body))
+}
 
-	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no response from Mistral")
+// backoff computes the wait before the next attempt: exponential in the attempt
+// number with full jitter (random in [d/2, d]) to avoid synchronized retries,
+// never shorter than the server's Retry-After and never longer than maxDelay.
+func (c *MistralClient) backoff(attempt int, retryAfter time.Duration) time.Duration {
+	d := c.baseDelay << attempt // baseDelay * 2^attempt
+	if d > 0 {
+		half := d / 2
+		d = half + time.Duration(rand.Int63n(int64(half)+1))
 	}
+	if retryAfter > d {
+		d = retryAfter
+	}
+	if c.maxDelay > 0 && d > c.maxDelay {
+		d = c.maxDelay
+	}
+	return d
+}
 
-	return chatResp.Choices[0].Message.Content, nil
+// parseRetryAfter interprets the delta-seconds form of a Retry-After header (the
+// form Mistral and its CDN emit). Non-numeric or non-positive values yield 0.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
 }
 
 // Helper function to truncate strings

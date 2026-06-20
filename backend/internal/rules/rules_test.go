@@ -120,6 +120,56 @@ func TestFirstMatchHonorsOrder(t *testing.T) {
 	}
 }
 
+func TestPreview(t *testing.T) {
+	emails := []models.Email{
+		{MessageID: "1", From: "Acme Newsletter <news@acme.com>", Subject: "Weekly digest"},
+		{MessageID: "2", From: "Acme Newsletter <news@acme.com>", Subject: "Flash sale"},
+		{MessageID: "3", From: "bank@mybank.com", Subject: "Your statement"},
+		{MessageID: "4", From: "friend@example.com", Subject: "Lunch?"}, // matches nothing
+	}
+	ruleset := []models.SortingRule{
+		// Priority order is the caller's responsibility; here "acme" is first.
+		{Name: "Acme", Enabled: true, Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "acme")}},
+		{Name: "Bank", Enabled: true, Action: ActionLabel, LabelName: "Banque", Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "mybank")}},
+		{Name: "Disabled", Enabled: false, Action: ActionTrash, Conditions: []models.RuleCondition{cond(FieldSubject, OpContains, "Lunch")}},
+	}
+
+	items, hits := Preview(emails, ruleset)
+
+	if len(items) != 3 {
+		t.Fatalf("expected 3 matched items, got %d", len(items))
+	}
+	// The unmatched email must not appear.
+	for _, it := range items {
+		if it.MessageID == "4" {
+			t.Errorf("email 4 matches no enabled rule and must be absent from preview")
+		}
+	}
+	// Disabled rule must never contribute a hit even though subject "Lunch?" fits.
+	for _, h := range hits {
+		if h.RuleName == "Disabled" {
+			t.Errorf("disabled rule must not appear in preview hits")
+		}
+	}
+
+	byRule := map[string]int{}
+	for _, h := range hits {
+		byRule[h.RuleName] = h.Matched
+	}
+	if byRule["Acme"] != 2 {
+		t.Errorf("Acme should match 2 emails, got %d", byRule["Acme"])
+	}
+	if byRule["Bank"] != 1 {
+		t.Errorf("Bank should match 1 email, got %d", byRule["Bank"])
+	}
+
+	// Empty ruleset is a no-op, never a match-all.
+	none, noneHits := Preview(emails, nil)
+	if len(none) != 0 || len(noneHits) != 0 {
+		t.Errorf("preview with no rules must yield no items/hits, got %d/%d", len(none), len(noneHits))
+	}
+}
+
 func TestValidate(t *testing.T) {
 	valid := models.SortingRule{
 		Name:       "Archive Acme",

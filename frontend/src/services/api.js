@@ -78,6 +78,9 @@ export const aiService = {
 export const senderService = {
   getSenders: () => apiClient.get('/api/senders'),
   updatePreference: (id, preference) => apiClient.put(`/api/senders/${id}/preferences`, preference),
+  // Turn a sender into a permanent deterministic rule (learn once, apply forever).
+  createRule: (senderEmail, action, labelName = '') =>
+    apiClient.post('/api/senders/rule', { senderEmail, action, labelName }),
 };
 
 export const smartLabelService = {
@@ -88,6 +91,8 @@ export const smartLabelService = {
 export const accountService = {
   getUsage: () => apiClient.get('/api/usage'),
   getActivity: () => apiClient.get('/api/stats/activity'),
+  getSettings: () => apiClient.get('/api/account/settings'),
+  updateSettings: (settings) => apiClient.put('/api/account/settings', settings),
 };
 
 export const subscriptionService = {
@@ -107,6 +112,8 @@ export const ruleService = {
   updateRule: (id, rule) => apiClient.put(`/api/rules/${id}`, rule),
   deleteRule: (id) => apiClient.delete(`/api/rules/${id}`),
   apply: () => apiClient.post('/api/rules/apply'),
+  // Dry run: report what the rules WOULD do, without touching Gmail.
+  preview: () => apiClient.post('/api/rules/preview'),
 };
 
 export const configService = {

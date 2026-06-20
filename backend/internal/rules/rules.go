@@ -137,6 +137,64 @@ func FirstMatch(email models.Email, ruleset []models.SortingRule) *models.Sortin
 	return nil
 }
 
+// PreviewItem is the projected outcome for a single email under a ruleset: the
+// rule that would win and the action it would take. No side effect is implied.
+type PreviewItem struct {
+	MessageID string `json:"messageId"`
+	From      string `json:"from"`
+	Subject   string `json:"subject"`
+	RuleName  string `json:"ruleName"`
+	Action    string `json:"action"`
+	LabelName string `json:"labelName,omitempty"`
+}
+
+// RuleHits aggregates how many emails a single rule would act on.
+type RuleHits struct {
+	RuleName  string `json:"ruleName"`
+	Action    string `json:"action"`
+	LabelName string `json:"labelName,omitempty"`
+	Matched   int    `json:"matched"`
+}
+
+// Preview runs the ruleset over emails WITHOUT any side effect and reports what
+// would happen: one PreviewItem per matched email plus a per-rule tally. It
+// mirrors ApplyRules exactly — each email is attributed to its FirstMatch in
+// priority order — so the dry-run is a faithful forecast of a real apply.
+// Callers pass rules pre-sorted by priority (disabled rules are skipped by the
+// matcher). The hits slice preserves the order in which rules first match.
+func Preview(emails []models.Email, ruleset []models.SortingRule) ([]PreviewItem, []RuleHits) {
+	items := make([]PreviewItem, 0)
+	hits := make([]RuleHits, 0)
+	idx := map[string]int{} // rule name -> position in hits
+
+	for _, email := range emails {
+		match := FirstMatch(email, ruleset)
+		if match == nil {
+			continue
+		}
+		items = append(items, PreviewItem{
+			MessageID: email.MessageID,
+			From:      email.From,
+			Subject:   email.Subject,
+			RuleName:  match.Name,
+			Action:    match.Action,
+			LabelName: match.LabelName,
+		})
+		if i, ok := idx[match.Name]; ok {
+			hits[i].Matched++
+			continue
+		}
+		idx[match.Name] = len(hits)
+		hits = append(hits, RuleHits{
+			RuleName:  match.Name,
+			Action:    match.Action,
+			LabelName: match.LabelName,
+			Matched:   1,
+		})
+	}
+	return items, hits
+}
+
 // Validate checks a rule is well-formed before persistence, returning a
 // human-readable (French) error when it is not.
 func Validate(rule models.SortingRule) error {

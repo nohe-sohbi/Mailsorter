@@ -87,6 +87,7 @@ func main() {
 	var aiClient *ai.MistralClient
 	if cfg.MistralAPIKey != "" {
 		aiClient = ai.NewMistralClient(cfg.MistralAPIKey, cfg.MistralModel)
+		aiClient.SetMaxRetries(cfg.MistralMaxRetries)
 		log.Println("Mistral AI client initialized")
 	} else {
 		log.Println("Warning: MISTRAL_API_KEY not set - AI features disabled")

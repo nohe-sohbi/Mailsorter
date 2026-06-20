@@ -76,10 +76,17 @@ Trois axes d'amélioration majeurs : une feature qui élargit l'usage, une qui c
 2. **Portail de facturation Stripe (feature)** — `POST /api/billing/portal` ouvre une session **Stripe Billing Portal** (`/v1/billing_portal/sessions`) : les abonnés Pro mettent à jour leur moyen de paiement, changent de plan ou **résilient en self-service**, sans quitter l'app. Bouton « Gérer mon abonnement » sur la page Tarifs.
 3. **Fiabilité d'accès Gmail (amélioration)** — centralisation de l'obtention du client Gmail dans un unique helper `gmailClientFor` qui **rafraîchit et persiste** le token OAuth expiré. Corrige un bug latent : `SyncEmails` et `GetLabels` ne rafraîchissaient pas le token et échouaient une fois l'`access_token` périmé. ~100 lignes de duplication supprimées.
 
+## ✅ Phase 8 — Automatisation, confiance & résilience (livrée)
+
+Trois axes majeurs, dans la cadence du repo : une feature qui automatise, une qui rapproche la promesse « apprendre une fois », et un durcissement de la fiabilité.
+
+1. **Règles en autopilote + Aperçu (feature)** — les règles déterministes s'appliquent désormais **automatiquement à chaque synchronisation** (réglage `autoApplyRules` par utilisateur, exposé via `GET/PUT /api/account/settings`, **OFF par défaut** pour ne jamais modifier Gmail à l'improviste). En complément, un **dry-run** `POST /api/rules/preview` projette ce que les règles *feraient* (par règle + échantillon d'emails) **sans rien modifier ni consommer de quota** — la confiance avant l'action irréversible. Le forecast réutilise exactement la logique de `ApplyRules` (`rules.Preview`, pure et testée). Câble le point « Application automatique des règles à la synchro » laissé en attente.
+2. **« Apprendre une fois » en 1 clic (feature)** — depuis la vue *Expéditeurs*, un bouton transforme un expéditeur en **règle déterministe permanente** (`POST /api/senders/rule` → `from contains <adresse>` → action). La règle tourne ensuite gratuitement à chaque application/synchro. Concrétise la promesse phare du README (« Apprenez une fois, appliquez pour toujours ») en s'appuyant sur le moteur de règles existant.
+3. **Résilience des appels IA (amélioration)** — le client Mistral ne faisait qu'un seul essai : un simple `429` faisait s'effondrer un batch d'analyse vers « keep ». Il **réessaie** désormais les erreurs transitoires (429, 5xx, erreurs réseau) avec **backoff exponentiel + jitter**, en honorant l'en-tête `Retry-After` et plafonné pour rester dans les timeouts serveur. Les 4xx (hors 429) échouent vite. Nombre d'essais configurable (`MISTRAL_MAX_RETRIES`, défaut 2). Couvert par des tests `httptest`.
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.
-- **Application automatique des règles à la synchro** — le moteur et l'endpoint `/api/rules/apply` existent ; reste à câbler un déclenchement automatique au sync (worker) plutôt qu'à la demande.
 - **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).
 - **Analytics produit** — instrumenter le funnel (connexion → 1ʳᵉ analyse → 1ʳᵉ application) vers PostHog/Segment.
 

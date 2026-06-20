@@ -20,7 +20,8 @@ Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de col
 Mailsorter automatise tout ça :
 
 - **🧠 Tri par IA en un clic** — L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
-- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / égal / regex…) → action (archiver, supprimer, étiqueter, lire, favori).
+- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / égal / regex…) → action (archiver, supprimer, étiqueter, lire, favori). **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
+- **👤 Apprendre une fois, en 1 clic** — Depuis la vue *Expéditeurs*, transformez n'importe quel expéditeur en **règle permanente** : ses futurs emails sont rangés tout seuls, pour toujours.
 - **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
 - **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
 - **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
@@ -120,11 +121,15 @@ docker compose up -d        # ou : make up
 | `GET`   | `/api/stats`              | Statistiques de la boîte                      |
 | `GET`   | `/api/stats/activity`     | Récap d'activité (7 derniers jours)           |
 | `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
+| `GET`   | `/api/account/settings`   | Réglages du compte (ex. autopilote des règles) |
+| `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`)    |
 | `GET`   | `/api/rules`              | **Règles de tri** (liste, triées par priorité) |
 | `POST`  | `/api/rules`              | Crée une règle déterministe (validée serveur) |
 | `POST`  | `/api/rules/apply`        | **Applique les règles** sur la boîte (sans IA, sans quota) |
+| `POST`  | `/api/rules/preview`      | **Aperçu (dry-run)** : ce que feraient les règles, sans rien modifier |
 | `PUT`   | `/api/rules/{id}`         | Met à jour une règle                          |
 | `DELETE`| `/api/rules/{id}`         | Supprime une règle                            |
+| `POST`  | `/api/senders/rule`       | **Crée une règle en 1 clic** depuis un expéditeur |
 | `POST`  | `/api/billing/checkout`   | **Stripe Checkout** (passage à Pro = illimité) |
 | `POST`  | `/api/billing/portal`     | **Portail Stripe** (gérer/résilier en self-service) |
 | `POST`  | `/api/billing/webhook`    | Webhook Stripe (signature vérifiée, sync plan) |
