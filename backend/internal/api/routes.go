@@ -28,7 +28,15 @@ func (h *Handler) SetupRoutes() http.Handler {
 
 	// Billing (Stripe)
 	r.HandleFunc("/api/billing/checkout", h.CreateCheckout).Methods("POST")
+	r.HandleFunc("/api/billing/portal", h.CreatePortal).Methods("POST")
 	r.HandleFunc("/api/billing/webhook", h.StripeWebhook).Methods("POST")
+
+	// Deterministic sorting rules (AI-free triage)
+	r.HandleFunc("/api/rules", h.GetRules).Methods("GET")
+	r.HandleFunc("/api/rules", h.CreateRule).Methods("POST")
+	r.HandleFunc("/api/rules/apply", h.ApplyRules).Methods("POST")
+	r.HandleFunc("/api/rules/{id}", h.UpdateRule).Methods("PUT")
+	r.HandleFunc("/api/rules/{id}", h.DeleteRule).Methods("DELETE")
 
 	// Unsubscribe / subscriptions cleanup
 	r.HandleFunc("/api/subscriptions", h.GetSubscriptions).Methods("GET")

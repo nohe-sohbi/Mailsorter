@@ -55,6 +55,7 @@ function Pricing() {
   const [usage, setUsage] = useState(null);
   const [activity, setActivity] = useState(null);
   const [upgrading, setUpgrading] = useState(false);
+  const [managing, setManaging] = useState(false);
 
   const isPro = usage?.plan === 'pro';
   const billingOn = !!usage?.billingOn;
@@ -95,6 +96,19 @@ function Pricing() {
       else if (status === 409) toast.info('Vous êtes déjà abonné à Pro.');
       else toast.error('Impossible de démarrer le paiement. Réessayez.');
       setUpgrading(false);
+    }
+  };
+
+  const handleManage = async () => {
+    setManaging(true);
+    try {
+      const { data } = await billingService.portal();
+      window.location.href = data.url;
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 404) toast.info('Aucun abonnement à gérer pour le moment.');
+      else toast.error('Impossible d’ouvrir le portail de facturation.');
+      setManaging(false);
     }
   };
 
@@ -158,6 +172,12 @@ function Pricing() {
                   ? 'Analyses illimitées. Gérez votre abonnement à tout moment.'
                   : "Le cache et l'auto-pilote ne consomment pas votre quota."}
               </p>
+              {isPro && billingOn && (
+                <button onClick={handleManage} disabled={managing} className="btn-secondary mt-4 w-full">
+                  {managing ? <Spinner size={16} /> : <Shield size={16} />}
+                  {managing ? 'Redirection…' : 'Gérer mon abonnement'}
+                </button>
+              )}
             </div>
 
             <div className="card p-6">
@@ -227,9 +247,16 @@ function Pricing() {
               <div className="mt-7">
                 {plan.highlight ? (
                   isPro ? (
-                    <button disabled className="btn-primary w-full cursor-default opacity-80">
-                      <Check size={16} /> Votre plan
-                    </button>
+                    billingOn ? (
+                      <button onClick={handleManage} disabled={managing} className="btn-primary w-full">
+                        {managing ? <Spinner size={18} /> : <Shield size={16} />}
+                        {managing ? 'Redirection…' : 'Gérer mon abonnement'}
+                      </button>
+                    ) : (
+                      <button disabled className="btn-primary w-full cursor-default opacity-80">
+                        <Check size={16} /> Votre plan
+                      </button>
+                    )
                   ) : billingOn ? (
                     <button onClick={handleUpgrade} disabled={upgrading} className="btn-primary w-full">
                       {upgrading ? <Spinner size={18} /> : <Bolt size={16} />}

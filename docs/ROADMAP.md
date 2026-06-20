@@ -68,10 +68,18 @@ Trois axes pour passer d'un produit riche en features à un produit **prêt pour
 2. **Robustesse HTTP** — chaîne de middlewares : *recover* (un panic ne tue plus le process), *request-id* + journalisation structurée, *rate limiting* par client (token bucket en mémoire, sans dépendance). Le serveur applique des **timeouts** (read/write/idle) et un **arrêt gracieux** sur SIGTERM (drainage des requêtes en cours au redéploiement).
 3. **Tests + CI** — première suite de **tests unitaires Go** (tokens de session/CSRF, chiffrement, clés de cache, matching de labels, parsing expéditeur, en-têtes de désabonnement, rate limiter) et un **workflow GitHub Actions** (`vet` + `build` + `test -race` backend, build frontend) déclenché sur push/PR.
 
+## ✅ Phase 7 — Profondeur produit & fiabilité (livrée)
+
+Trois axes d'amélioration majeurs : une feature qui élargit l'usage, une qui complète la monétisation, et un durcissement de la fiabilité.
+
+1. **Moteur de règles déterministes (feature)** — une couche de tri **sans IA, gratuite et prévisible** qui s'exécute en amont du modèle. L'utilisateur définit des règles (conditions `contient`/`égal`/`commence par`/`finit par`/`regex` sur `from`/`subject`/`snippet`/`to`/`body`) → une action (`archive`/`trash`/`label`/`markRead`/`star`), priorisées (la première qui matche gagne). Endpoints CRUD `/api/rules` + `POST /api/rules/apply` (jusqu'à 200 emails, **ne consomme pas le quota**). Le matcher vit dans `internal/rules` (pur, sans I/O) et est couvert par une suite de tests exhaustive. Nouvelle page **Règles** dans le cockpit.
+2. **Portail de facturation Stripe (feature)** — `POST /api/billing/portal` ouvre une session **Stripe Billing Portal** (`/v1/billing_portal/sessions`) : les abonnés Pro mettent à jour leur moyen de paiement, changent de plan ou **résilient en self-service**, sans quitter l'app. Bouton « Gérer mon abonnement » sur la page Tarifs.
+3. **Fiabilité d'accès Gmail (amélioration)** — centralisation de l'obtention du client Gmail dans un unique helper `gmailClientFor` qui **rafraîchit et persiste** le token OAuth expiré. Corrige un bug latent : `SyncEmails` et `GetLabels` ne rafraîchissaient pas le token et échouaient une fois l'`access_token` périmé. ~100 lignes de duplication supprimées.
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.
-- **Portail de gestion d'abonnement** — brancher le Stripe Billing Portal (`/v1/billing_portal/sessions`) pour la résiliation self-service depuis l'app.
+- **Application automatique des règles à la synchro** — le moteur et l'endpoint `/api/rules/apply` existent ; reste à câbler un déclenchement automatique au sync (worker) plutôt qu'à la demande.
 - **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).
 - **Analytics produit** — instrumenter le funnel (connexion → 1ʳᵉ analyse → 1ʳᵉ application) vers PostHog/Segment.
 

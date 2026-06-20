@@ -20,6 +20,7 @@ Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de col
 Mailsorter automatise tout ça :
 
 - **🧠 Tri par IA en un clic** — L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
+- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / égal / regex…) → action (archiver, supprimer, étiqueter, lire, favori).
 - **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
 - **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
 - **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
@@ -119,7 +120,13 @@ docker compose up -d        # ou : make up
 | `GET`   | `/api/stats`              | Statistiques de la boîte                      |
 | `GET`   | `/api/stats/activity`     | Récap d'activité (7 derniers jours)           |
 | `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
+| `GET`   | `/api/rules`              | **Règles de tri** (liste, triées par priorité) |
+| `POST`  | `/api/rules`              | Crée une règle déterministe (validée serveur) |
+| `POST`  | `/api/rules/apply`        | **Applique les règles** sur la boîte (sans IA, sans quota) |
+| `PUT`   | `/api/rules/{id}`         | Met à jour une règle                          |
+| `DELETE`| `/api/rules/{id}`         | Supprime une règle                            |
 | `POST`  | `/api/billing/checkout`   | **Stripe Checkout** (passage à Pro = illimité) |
+| `POST`  | `/api/billing/portal`     | **Portail Stripe** (gérer/résilier en self-service) |
 | `POST`  | `/api/billing/webhook`    | Webhook Stripe (signature vérifiée, sync plan) |
 
 Documentation complète : [`docs/API.md`](docs/API.md) · Architecture : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Roadmap : [`docs/ROADMAP.md`](docs/ROADMAP.md)
