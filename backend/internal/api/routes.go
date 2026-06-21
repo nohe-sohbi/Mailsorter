@@ -23,6 +23,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/emails/snooze", h.Snooze).Methods("POST")
 	r.HandleFunc("/api/stats", h.GetMailboxStats).Methods("GET")
 	r.HandleFunc("/api/stats/activity", h.GetActivity).Methods("GET")
+	r.HandleFunc("/api/stats/digest", h.GetDigest).Methods("GET")
 
 	// Snooze ("Reporter") — return-to-inbox scheduling
 	r.HandleFunc("/api/snoozes", h.GetSnoozes).Methods("GET")
