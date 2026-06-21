@@ -25,12 +25,40 @@ and `/api/billing/webhook` (which authenticates via its Stripe signature).
 
 #### GET /health
 
-Check if the API is running.
+Readiness probe: verifies the process can still reach MongoDB (not just that the
+HTTP server is up) and reports the running build and uptime. Public (no auth).
+
+**Response:** `200 OK` when healthy, `503 Service Unavailable` when the datastore
+ping fails (so an orchestrator can pull the instance from rotation).
+```json
+{
+  "status": "ok",
+  "version": "dev",
+  "uptimeSeconds": 4211,
+  "checks": { "mongo": true }
+}
+```
+
+### Ops Metrics
+
+#### GET /metrics
+
+In-process request meter. Aggregate-only (no user data), so it can be scraped
+without authentication. Counters are bucketed by HTTP method and status **class**
+to keep cardinality bounded.
 
 **Response:**
 ```json
 {
-  "status": "ok"
+  "version": "dev",
+  "metrics": {
+    "uptimeSeconds": 4211,
+    "totalRequests": 1820,
+    "byMethod": { "GET": 1500, "POST": 320 },
+    "byStatusClass": { "2xx": 1789, "4xx": 28, "5xx": 3 },
+    "avgLatencyMs": 42.7,
+    "maxLatencyMs": 1503.2
+  }
 }
 ```
 
@@ -305,9 +333,9 @@ Returns the 7-day series plus breakdowns by action and by source:
 #### GET /api/stats/digest
 
 Renders the same 7-day recap into a ready-to-send email digest (subject +
-plain-text body + HTML body). This is the content payload for the "Digest
-quotidien par email"; actual delivery still needs a `gmail.send` scope (or SMTP)
-and a scheduler.
+plain-text body + HTML body). This is the content payload also used by the daily
+digest scheduler (see Account Settings). Delivery uses the `gmail.send` scope; a
+background loop emails opted-in users once a day at their chosen UTC hour.
 
 ```json
 {
@@ -316,6 +344,37 @@ and a scheduler.
   "html": "<div style=\"…\"><h2>3 emails triés aujourd'hui</h2>…</div>"
 }
 ```
+
+---
+
+## Account Settings
+
+### Get Settings
+
+#### GET /api/account/settings
+
+Returns the caller's tunable settings.
+
+```json
+{
+  "autoApplyRules": false,
+  "digestEnabled": true,
+  "digestHourUTC": 7
+}
+```
+
+### Update Settings
+
+#### PUT /api/account/settings
+
+Persists the settings. `digestHourUTC` is clamped to `0–23` (out-of-range falls
+back to the server default `DIGEST_HOUR_UTC`). When `digestEnabled` is true, a
+background scheduler emails the 7-day recap once a day at `digestHourUTC` (UTC).
+
+> Accounts connected before the digest feature must **reconnect Gmail** to grant
+> the `gmail.send` scope before delivery can succeed.
+
+**Request Body:** `{ "autoApplyRules": bool, "digestEnabled": bool, "digestHourUTC": int }`
 
 ---
 
@@ -418,8 +477,11 @@ A rule has the shape:
 
 - **`matchAll`** — `true` ANDs every condition, `false` ORs them.
 - **Condition `field`** — `from`, `subject`, `snippet`, `to`, `body`.
-- **Condition `operator`** — `contains`, `equals`, `startsWith`, `endsWith`,
-  `regex` (all case-insensitive except `regex`).
+- **Condition `operator`** — text: `contains`, `notContains`, `equals`,
+  `notEquals`, `startsWith`, `endsWith`, `regex` (all case-insensitive except
+  `regex`); temporal: `olderThan` / `newerThan`, whose `value` is a **number of
+  days** compared against the email's received date (an undated email never
+  matches a temporal condition).
 - **`action`** — `archive`, `trash`, `label` (requires `labelName`), `markRead`,
   `star`.
 - **`priority`** — lower runs first; the first matching rule wins per email.

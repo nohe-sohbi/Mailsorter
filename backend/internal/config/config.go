@@ -19,6 +19,8 @@ type Config struct {
 	StripePriceID       string
 	StripeWebhookSecret string
 	AppBaseURL          string
+	BuildVersion        string
+	DigestHourUTC       int
 }
 
 func Load() *Config {
@@ -36,6 +38,8 @@ func Load() *Config {
 		StripePriceID:       getEnv("STRIPE_PRICE_ID", ""),
 		StripeWebhookSecret: getEnv("STRIPE_WEBHOOK_SECRET", ""),
 		AppBaseURL:          getEnv("APP_BASE_URL", "http://localhost:3000"),
+		BuildVersion:        getEnv("BUILD_VERSION", "dev"),
+		DigestHourUTC:       getEnvInt("DIGEST_HOUR_UTC", 7),
 	}
 }
 

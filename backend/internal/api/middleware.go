@@ -22,6 +22,7 @@ const requestIDKey ctxKey = "requestID"
 // webhook (which authenticates itself via its HMAC signature).
 var publicPrefixes = []string{
 	"/health",
+	"/metrics",
 	"/api/auth/",
 	"/api/config/",
 	"/api/billing/webhook",
@@ -212,7 +213,7 @@ func (rl *rateLimiter) sweep() {
 // otherwise remote IP). The webhook is exempt — Stripe controls its own rate.
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/billing/webhook") || r.URL.Path == "/health" {
+		if strings.HasPrefix(r.URL.Path, "/api/billing/webhook") || r.URL.Path == "/health" || r.URL.Path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}

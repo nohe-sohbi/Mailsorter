@@ -11,7 +11,9 @@ package rules
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 )
@@ -27,12 +29,23 @@ const (
 
 // Supported operators.
 const (
-	OpContains   = "contains"
-	OpEquals     = "equals"
-	OpStartsWith = "startsWith"
-	OpEndsWith   = "endsWith"
-	OpRegex      = "regex"
+	OpContains    = "contains"
+	OpEquals      = "equals"
+	OpStartsWith  = "startsWith"
+	OpEndsWith    = "endsWith"
+	OpRegex       = "regex"
+	OpNotContains = "notContains" // text operators, negated
+	OpNotEquals   = "notEquals"
+	OpOlderThan   = "olderThan" // value = age in days; matches mail received before now-N days
+	OpNewerThan   = "newerThan" // value = age in days; matches mail received within the last N days
 )
+
+// textOperators compare a string field; temporalOperators compare ReceivedDate
+// against a relative age in days. The two families are validated differently
+// (a temporal value must be a positive integer) so they are tracked separately.
+var temporalOperators = map[string]bool{
+	OpOlderThan: true, OpNewerThan: true,
+}
 
 // Supported actions.
 const (
@@ -49,6 +62,7 @@ var validFields = map[string]bool{
 
 var validOperators = map[string]bool{
 	OpContains: true, OpEquals: true, OpStartsWith: true, OpEndsWith: true, OpRegex: true,
+	OpNotContains: true, OpNotEquals: true, OpOlderThan: true, OpNewerThan: true,
 }
 
 var validActions = map[string]bool{
@@ -73,12 +87,23 @@ func fieldValue(email models.Email, field string) string {
 	}
 }
 
-// matchCondition reports whether a single condition holds for the email.
-// All operators are case-insensitive except regex, which honors the pattern as
-// written. An empty field or value never matches.
+// matchCondition reports whether a single condition holds for the email,
+// evaluating temporal operators against the current time.
 func matchCondition(email models.Email, c models.RuleCondition) bool {
+	return matchConditionAt(email, c, time.Now())
+}
+
+// matchConditionAt reports whether a single condition holds for the email at the
+// given reference time. All text operators are case-insensitive except regex,
+// which honors the pattern as written. An empty field or value never matches.
+// Temporal operators (olderThan / newerThan) compare the email's received date
+// against `now` minus the configured number of days.
+func matchConditionAt(email models.Email, c models.RuleCondition, now time.Time) bool {
 	if strings.TrimSpace(c.Value) == "" || c.Field == "" {
 		return false
+	}
+	if temporalOperators[c.Operator] {
+		return matchTemporal(email, c, now)
 	}
 	actual := fieldValue(email, c.Field)
 	switch c.Operator {
@@ -96,28 +121,63 @@ func matchCondition(email models.Email, c models.RuleCondition) bool {
 			return false
 		}
 		return re.MatchString(actual)
+	case OpNotContains:
+		return !strings.Contains(strings.ToLower(actual), strings.ToLower(c.Value))
+	case OpNotEquals:
+		return !strings.EqualFold(strings.TrimSpace(actual), strings.TrimSpace(c.Value))
 	default:
 		return false
 	}
 }
 
-// Matches reports whether the rule applies to the email. A disabled rule, or a
-// rule with no conditions, never matches (so an empty rule can't silently act
-// on everything). With MatchAll the conditions are AND-ed; otherwise OR-ed.
+// matchTemporal evaluates an age-based condition. The condition value is a
+// number of days; a malformed value never matches. An email with no received
+// date (zero time) never matches a temporal rule, so age conditions can't
+// silently act on undated mail.
+func matchTemporal(email models.Email, c models.RuleCondition, now time.Time) bool {
+	days, err := strconv.Atoi(strings.TrimSpace(c.Value))
+	if err != nil || days < 0 {
+		return false
+	}
+	if email.ReceivedDate.IsZero() {
+		return false
+	}
+	cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
+	switch c.Operator {
+	case OpOlderThan:
+		return email.ReceivedDate.Before(cutoff)
+	case OpNewerThan:
+		return !email.ReceivedDate.Before(cutoff)
+	default:
+		return false
+	}
+}
+
+// Matches reports whether the rule applies to the email, resolving temporal
+// conditions against the current time.
 func Matches(email models.Email, rule models.SortingRule) bool {
+	return MatchesAt(email, rule, time.Now())
+}
+
+// MatchesAt reports whether the rule applies to the email at reference time
+// `now`. A disabled rule, or a rule with no conditions, never matches (so an
+// empty rule can't silently act on everything). With MatchAll the conditions
+// are AND-ed; otherwise OR-ed. Injecting `now` keeps temporal matching pure and
+// deterministic to test.
+func MatchesAt(email models.Email, rule models.SortingRule, now time.Time) bool {
 	if !rule.Enabled || len(rule.Conditions) == 0 {
 		return false
 	}
 	if rule.MatchAll {
 		for _, c := range rule.Conditions {
-			if !matchCondition(email, c) {
+			if !matchConditionAt(email, c, now) {
 				return false
 			}
 		}
 		return true
 	}
 	for _, c := range rule.Conditions {
-		if matchCondition(email, c) {
+		if matchConditionAt(email, c, now) {
 			return true
 		}
 	}
@@ -125,12 +185,18 @@ func Matches(email models.Email, rule models.SortingRule) bool {
 }
 
 // FirstMatch returns the first rule in slice order that matches the email, or
-// nil. Callers pass rules pre-sorted by priority (lower number = higher
-// priority) so the winning action is deterministic. Returning a pointer into
-// the slice lets the caller cheaply update per-rule stats.
+// nil, resolving temporal conditions against the current time.
 func FirstMatch(email models.Email, ruleset []models.SortingRule) *models.SortingRule {
+	return FirstMatchAt(email, ruleset, time.Now())
+}
+
+// FirstMatchAt returns the first rule in slice order that matches the email at
+// reference time `now`, or nil. Callers pass rules pre-sorted by priority (lower
+// number = higher priority) so the winning action is deterministic. Returning a
+// pointer into the slice lets the caller cheaply update per-rule stats.
+func FirstMatchAt(email models.Email, ruleset []models.SortingRule, now time.Time) *models.SortingRule {
 	for i := range ruleset {
-		if Matches(email, ruleset[i]) {
+		if MatchesAt(email, ruleset[i], now) {
 			return &ruleset[i]
 		}
 	}
@@ -163,12 +229,18 @@ type RuleHits struct {
 // Callers pass rules pre-sorted by priority (disabled rules are skipped by the
 // matcher). The hits slice preserves the order in which rules first match.
 func Preview(emails []models.Email, ruleset []models.SortingRule) ([]PreviewItem, []RuleHits) {
+	return PreviewAt(emails, ruleset, time.Now())
+}
+
+// PreviewAt is Preview evaluated at reference time `now`, so temporal rules can
+// be forecast deterministically.
+func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Time) ([]PreviewItem, []RuleHits) {
 	items := make([]PreviewItem, 0)
 	hits := make([]RuleHits, 0)
 	idx := map[string]int{} // rule name -> position in hits
 
 	for _, email := range emails {
-		match := FirstMatch(email, ruleset)
+		match := FirstMatchAt(email, ruleset, now)
 		if match == nil {
 			continue
 		}
@@ -220,9 +292,14 @@ func Validate(rule models.SortingRule) error {
 		if strings.TrimSpace(c.Value) == "" {
 			return fmt.Errorf("condition %d : la valeur est requise", i+1)
 		}
-		if strings.ToLower(c.Operator) == OpRegex {
+		if c.Operator == OpRegex {
 			if _, err := regexp.Compile(c.Value); err != nil {
 				return fmt.Errorf("condition %d : expression régulière invalide : %v", i+1, err)
+			}
+		}
+		if temporalOperators[c.Operator] {
+			if n, err := strconv.Atoi(strings.TrimSpace(c.Value)); err != nil || n < 0 {
+				return fmt.Errorf("condition %d : un nombre de jours (≥ 0) est requis pour cet opérateur", i+1)
 			}
 		}
 	}

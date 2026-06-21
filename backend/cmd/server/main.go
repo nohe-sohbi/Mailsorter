@@ -109,6 +109,10 @@ func main() {
 	// Session/CSRF token manager, keyed off the server secret.
 	authManager := auth.NewManager(cfg.EncryptionKey)
 
+	// Surface the running build and the default digest hour to the API layer.
+	api.Version = cfg.BuildVersion
+	api.DefaultDigestHourUTC = cfg.DigestHourUTC
+
 	// Initialize API handler
 	handler := api.NewHandler(db, gmailService, encryptor, aiClient, billingCfg, authManager)
 

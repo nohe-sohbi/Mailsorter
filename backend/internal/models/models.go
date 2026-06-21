@@ -18,15 +18,23 @@ type User struct {
 	// AutoApplyRules, when true, runs the user's deterministic sorting rules
 	// automatically over every freshly synced inbox — no extra click, no AI, no
 	// quota. Off by default so syncing never mutates Gmail unexpectedly.
-	AutoApplyRules bool      `json:"autoApplyRules" bson:"autoApplyRules,omitempty"`
-	CreatedAt      time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt" bson:"updatedAt"`
+	AutoApplyRules bool `json:"autoApplyRules" bson:"autoApplyRules,omitempty"`
+	// Daily digest — when DigestEnabled is true, a background scheduler emails a
+	// recap of the last 7 days once a day at DigestHourUTC (0–23, UTC).
+	// DigestLastSentAt stamps the last attempt so we send at most once per day.
+	DigestEnabled    bool      `json:"digestEnabled" bson:"digestEnabled,omitempty"`
+	DigestHourUTC    int       `json:"digestHourUTC" bson:"digestHourUTC,omitempty"`
+	DigestLastSentAt time.Time `json:"-" bson:"digestLastSentAt,omitempty"`
+	CreatedAt        time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
 // UserSettings is the user-tunable subset of the account, exposed via
 // GET/PUT /api/account/settings.
 type UserSettings struct {
 	AutoApplyRules bool `json:"autoApplyRules"`
+	DigestEnabled  bool `json:"digestEnabled"`
+	DigestHourUTC  int  `json:"digestHourUTC"`
 }
 
 type Email struct {

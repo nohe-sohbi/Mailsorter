@@ -32,6 +32,7 @@ func NewService(clientID, clientSecret, redirectURL string) *Service {
 				gmail.GmailReadonlyScope,
 				gmail.GmailModifyScope,
 				gmail.GmailLabelsScope,
+				gmail.GmailSendScope, // send the daily recap digest as the user
 			},
 			Endpoint: google.Endpoint,
 		}
@@ -55,6 +56,7 @@ func (s *Service) UpdateConfig(clientID, clientSecret, redirectURL string) {
 			gmail.GmailReadonlyScope,
 			gmail.GmailModifyScope,
 			gmail.GmailLabelsScope,
+			gmail.GmailSendScope, // send the daily recap digest as the user
 		},
 		Endpoint: google.Endpoint,
 	}
@@ -157,6 +159,13 @@ func (s *Service) ModifyMessage(gmailService *gmail.Service, messageID string, a
 	return err
 }
 
+// SendMessage sends a pre-built RFC 2822, base64url-encoded message (see
+// internal/mailer.BuildRaw) as the authenticated user. Used for the daily digest.
+func (s *Service) SendMessage(gmailService *gmail.Service, raw string) error {
+	_, err := gmailService.Users.Messages.Send("me", &gmail.Message{Raw: raw}).Do()
+	return err
+}
+
 func (s *Service) ListLabels(gmailService *gmail.Service) ([]*gmail.Label, error) {
 	response, err := gmailService.Users.Labels.List("me").Do()
 	if err != nil {
@@ -206,25 +215,25 @@ func (s *Service) GetUserProfile(gmailService *gmail.Service) (string, error) {
 
 // MailboxStats contains statistics about the user's mailbox
 type MailboxStats struct {
-	TotalMessages   int64            `json:"totalMessages"`
-	TotalThreads    int64            `json:"totalThreads"`
-	UnreadCount     uint64           `json:"unreadCount"`
-	InboxCount      uint64           `json:"inboxCount"`
-	SentCount       uint64           `json:"sentCount"`
-	DraftCount      uint64           `json:"draftCount"`
-	SpamCount       uint64           `json:"spamCount"`
-	TrashCount      uint64           `json:"trashCount"`
-	LabelStats      []LabelStat      `json:"labelStats"`
+	TotalMessages int64       `json:"totalMessages"`
+	TotalThreads  int64       `json:"totalThreads"`
+	UnreadCount   uint64      `json:"unreadCount"`
+	InboxCount    uint64      `json:"inboxCount"`
+	SentCount     uint64      `json:"sentCount"`
+	DraftCount    uint64      `json:"draftCount"`
+	SpamCount     uint64      `json:"spamCount"`
+	TrashCount    uint64      `json:"trashCount"`
+	LabelStats    []LabelStat `json:"labelStats"`
 }
 
 // LabelStat contains message count for a specific label
 type LabelStat struct {
-	LabelID       string `json:"labelId"`
-	LabelName     string `json:"labelName"`
-	MessagesTotal int64  `json:"messagesTotal"`
-	MessagesUnread int64 `json:"messagesUnread"`
-	ThreadsTotal  int64  `json:"threadsTotal"`
-	Type          string `json:"type"`
+	LabelID        string `json:"labelId"`
+	LabelName      string `json:"labelName"`
+	MessagesTotal  int64  `json:"messagesTotal"`
+	MessagesUnread int64  `json:"messagesUnread"`
+	ThreadsTotal   int64  `json:"threadsTotal"`
+	Type           string `json:"type"`
 }
 
 // GetMailboxStats retrieves comprehensive mailbox statistics
@@ -306,7 +315,7 @@ func GetEmailBody(message *gmail.Message) string {
 	if message.Payload.Body.Data != "" {
 		return message.Payload.Body.Data
 	}
-	
+
 	for _, part := range message.Payload.Parts {
 		if part.MimeType == "text/plain" || part.MimeType == "text/html" {
 			if part.Body.Data != "" {
@@ -314,7 +323,7 @@ func GetEmailBody(message *gmail.Message) string {
 			}
 		}
 	}
-	
+
 	return ""
 }
 
