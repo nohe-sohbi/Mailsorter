@@ -56,6 +56,19 @@ export const emailService = {
   syncEmails: () => apiClient.post('/api/emails/sync'),
   action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
   getStats: () => apiClient.get('/api/stats'),
+  // Snooze: pull a message out of the inbox until a preset (or explicit) time.
+  snooze: (messageId, preset) => apiClient.post('/api/emails/snooze', { messageId, preset }),
+};
+
+export const snoozeService = {
+  list: (status = 'scheduled') => apiClient.get(`/api/snoozes?status=${status}`),
+  wake: (id) => apiClient.post(`/api/snoozes/${id}/wake`),
+};
+
+export const protectService = {
+  list: () => apiClient.get('/api/protected'),
+  add: (value, note = '') => apiClient.post('/api/protected', { value, note }),
+  remove: (id) => apiClient.delete(`/api/protected/${id}`),
 };
 
 export const labelService = {

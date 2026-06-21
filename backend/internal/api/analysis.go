@@ -41,6 +41,7 @@ func (h *Handler) runAnalysis(
 	suggestions := make([]models.AISuggestion, 0)
 
 	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
+	protectedList := h.protectedValues(ctx, userEmail)
 
 	emails := make([]models.Email, 0, len(emailIDs))
 	for _, id := range emailIDs {
@@ -76,7 +77,10 @@ func (h *Handler) runAnalysis(
 				"senderEmail": email.From,
 				"autoApply":   true,
 			}).Decode(&pref)
-			if err == nil && pref.DefaultAction != "" && h.autoApplySender(ctx, gmailClient, userEmail, email, pref) {
+			// A protected sender is never auto-archived/trashed by the sender
+			// auto-pilot; their mail falls through to a (non-destructive) suggestion.
+			if err == nil && pref.DefaultAction != "" && allows(pref.DefaultAction, email.From, protectedList) &&
+				h.autoApplySender(ctx, gmailClient, userEmail, email, pref) {
 				p.AutoApplied++
 				p.Processed++
 				report()
@@ -86,6 +90,7 @@ func (h *Handler) runAnalysis(
 
 		key := analysisCacheKey(email.From, email.Subject)
 		if cached, ok := h.cacheLookup(ctx, key); ok {
+			cached = protectAnalysis(cached, email.From, protectedList)
 			if s, inserted := h.persistSuggestion(ctx, userEmail, email, cached, existingLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
@@ -138,11 +143,14 @@ func (h *Handler) runAnalysis(
 			}
 
 			p.Analyzed++
+			// Cache the model's raw verdict, but never persist a destructive
+			// suggestion for a protected sender.
+			h.cacheStore(ctx, analysisCacheKey(email.From, email.Subject), a)
+			a = protectAnalysis(a, email.From, protectedList)
 			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, existingLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
-			h.cacheStore(ctx, analysisCacheKey(email.From, email.Subject), a)
 			p.Processed++
 			report()
 		}
@@ -152,6 +160,22 @@ func (h *Handler) runAnalysis(
 	h.incrUsage(ctx, userEmail, p.Analyzed)
 
 	return p, suggestions, nil
+}
+
+// protectAnalysis downgrades a destructive AI verdict to "keep" when the sender
+// is on the user's protected list, so a VIP's mail is never suggested for
+// archive/trash. Non-destructive verdicts (label/keep) pass through untouched.
+func protectAnalysis(a ai.EmailAnalysis, from string, protectedList []string) ai.EmailAnalysis {
+	if allows(a.Action, from, protectedList) {
+		return a
+	}
+	a.Action = "keep"
+	a.LabelName = ""
+	a.Reasoning = "Expéditeur protégé — conservé en boîte"
+	if a.Confidence < 0.9 {
+		a.Confidence = 0.9
+	}
+	return a
 }
 
 // persistSuggestion resolves the label, inserts a pending suggestion and returns it.

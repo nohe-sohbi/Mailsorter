@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -134,8 +135,11 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(in)
 }
 
-// GetActivity returns triage activity for the last 7 days: a per-day series and
-// a breakdown by action. Powers the in-app weekly recap.
+// GetActivity returns triage activity for the last 7 days from the action
+// ledger: a per-day series plus breakdowns by action and by source. Reading the
+// ledger (rather than only applied AI suggestions) means the recap now counts
+// every mutation — direct actions, rules, bulk sweeps, snoozes, unsubscribes —
+// not just the ones the AI suggested.
 func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -148,45 +152,28 @@ func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 
 	since := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -6)
 
-	cursor, err := h.db.AISuggestions().Find(ctx, bson.M{
+	cursor, err := h.db.ActionLog().Find(ctx, bson.M{
 		"userId":    userEmail,
-		"status":    "applied",
-		"appliedAt": bson.M{"$gte": since},
-	}, options.Find().SetLimit(5000))
+		"createdAt": bson.M{"$gte": since},
+	}, options.Find().SetLimit(20000))
 	if err != nil {
 		http.Error(w, "Failed to load activity", http.StatusInternalServerError)
 		return
 	}
 	defer cursor.Close(ctx)
 
-	var rows []struct {
-		AppliedAt time.Time `bson:"appliedAt"`
-		Action    string    `bson:"action"`
-	}
-	if err := cursor.All(ctx, &rows); err != nil {
+	var logs []models.ActionLog
+	if err := cursor.All(ctx, &logs); err != nil {
 		http.Error(w, "Failed to decode activity", http.StatusInternalServerError)
 		return
 	}
 
-	dayCounts := map[string]int{}
-	byAction := map[string]int{"archive": 0, "delete": 0, "label": 0, "keep": 0}
-	total := 0
-	for _, row := range rows {
-		dayCounts[row.AppliedAt.UTC().Format("2006-01-02")]++
-		byAction[row.Action]++
-		total++
+	rows := make([]activity.Row, 0, len(logs))
+	for _, l := range logs {
+		rows = append(rows, activity.Row{At: l.CreatedAt, Action: l.Action, Source: l.Source})
 	}
-
-	days := make([]map[string]interface{}, 0, 7)
-	for i := 6; i >= 0; i-- {
-		key := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -i).Format("2006-01-02")
-		days = append(days, map[string]interface{}{"date": key, "count": dayCounts[key]})
-	}
+	summary := activity.Summarize(rows, time.Now())
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"total":    total,
-		"days":     days,
-		"byAction": byAction,
-	})
+	json.NewEncoder(w).Encode(summary)
 }

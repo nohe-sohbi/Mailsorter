@@ -84,6 +84,43 @@ Trois axes majeurs, dans la cadence du repo : une feature qui automatise, une qu
 2. **« Apprendre une fois » en 1 clic (feature)** — depuis la vue *Expéditeurs*, un bouton transforme un expéditeur en **règle déterministe permanente** (`POST /api/senders/rule` → `from contains <adresse>` → action). La règle tourne ensuite gratuitement à chaque application/synchro. Concrétise la promesse phare du README (« Apprenez une fois, appliquez pour toujours ») en s'appuyant sur le moteur de règles existant.
 3. **Résilience des appels IA (amélioration)** — le client Mistral ne faisait qu'un seul essai : un simple `429` faisait s'effondrer un batch d'analyse vers « keep ». Il **réessaie** désormais les erreurs transitoires (429, 5xx, erreurs réseau) avec **backoff exponentiel + jitter**, en honorant l'en-tête `Retry-After` et plafonné pour rester dans les timeouts serveur. Les 4xx (hors 429) échouent vite. Nombre d'essais configurable (`MISTRAL_MAX_RETRIES`, défaut 2). Couvert par des tests `httptest`.
 
+## ✅ Phase 9 — Confiance, productivité & vérité des données (livrée)
+
+Trois axes majeurs, dans la cadence du repo : une feature qui renforce la
+confiance, une qui élargit l'usage, et un durcissement de l'observabilité.
+
+1. **Liste de protection — expéditeurs VIP (feature, sécurité)** — un garde-fou
+   par utilisateur : tant qu'un expéditeur (adresse complète **ou domaine
+   entier**, sous-domaines compris) est protégé, **aucun passage automatisé** ne
+   peut l'archiver, le mettre à la corbeille ou le supprimer — ni l'IA, ni les
+   règles déterministes, ni l'auto-pilote par expéditeur, ni une action en
+   masse. Les actions non destructives (libellé, favori, marquer lu) restent
+   permises, et l'utilisateur garde la main en manuel. Concrètement : une
+   suggestion IA destructrice est **rétrogradée en « garder »** dès sa
+   génération ; les balayages en masse et l'autopilote **sautent** les protégés
+   (avec un compteur `protectedSkipped`). La logique vit dans un package pur
+   `internal/protect` (`Match`, `Allowed`, normalisation adresse/domaine) couvert
+   par des tests exhaustifs. CRUD `/api/protected` + bouton « Protéger » dans le
+   lecteur et gestion dans les Réglages. Concrétise la promesse « vos emails ne
+   quittent jamais votre contrôle ».
+2. **Reporter / Snooze (feature, productivité)** — la fonctionnalité reine après
+   le désabonnement : sortez un email de la boîte d'un geste et faites-le
+   **revenir tout seul**, marqué non lu, au moment choisi. Presets résolus
+   serveur (« plus tard », « ce soir », « demain matin », « ce week-end »,
+   « semaine prochaine ») via un package pur `internal/snooze` testé au cas par
+   cas. L'email est archivé + étiqueté `Mailsorter/Reporté` ; un **balayeur de
+   fond** (ticker 1 min) le ramène à échéance, résilient aux pannes par message.
+   Endpoints `POST /api/emails/snooze`, `GET /api/snoozes`,
+   `POST /api/snoozes/{id}/wake`. Nouvelle page **Reporté** + menu de report dans
+   le lecteur.
+3. **Journal d'actions & récap véridique (amélioration, observabilité)** — un
+   **ledger append-only** (`action_log`) capture désormais *chaque* mutation
+   Gmail avec sa **source** (`direct`, `rule`, `ai`, `ai-auto`, `bulk`, `snooze`,
+   `unsubscribe`). `GET /api/stats/activity` se calcule sur ce ledger via un
+   agrégateur pur `internal/activity` (testé), au lieu des seules suggestions IA
+   appliquées : le récap 7 jours devient **complet et vrai** (toutes les sources,
+   plus une ventilation `bySource`), peu importe ce que le client a observé.
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.

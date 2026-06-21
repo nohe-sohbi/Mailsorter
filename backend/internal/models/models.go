@@ -151,6 +151,74 @@ type CreateSenderRuleRequest struct {
 }
 
 // ============================================
+// Protected senders (VIP safety net)
+// ============================================
+
+// ProtectedSender shields a sender from automated destructive triage. While a
+// sender (a full address or a whole domain) is protected, no automated pass —
+// AI suggestion, deterministic rule, sender auto-pilot or bulk action — may
+// archive, trash or delete their emails. Non-destructive actions (label, star,
+// mark read) are unaffected, and the user can still act manually.
+type ProtectedSender struct {
+	ID        string    `json:"id" bson:"_id,omitempty"`
+	UserID    string    `json:"userId" bson:"userId"`
+	Value     string    `json:"value" bson:"value"` // normalized address or domain
+	Kind      string    `json:"kind" bson:"kind"`   // "address" | "domain"
+	Note      string    `json:"note,omitempty" bson:"note,omitempty"`
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+}
+
+// ProtectedSenderInput is the request body for POST /api/protected.
+type ProtectedSenderInput struct {
+	Value string `json:"value"`
+	Note  string `json:"note"`
+}
+
+// ============================================
+// Snooze ("Reporter")
+// ============================================
+
+// Snooze records an email pulled out of the inbox until WakeAt, when it is
+// brought back (marked unread). It is keyed by (userId, messageId) while
+// scheduled so a message is only snoozed once at a time.
+type Snooze struct {
+	ID        string    `json:"id" bson:"_id,omitempty"`
+	UserID    string    `json:"userId" bson:"userId"`
+	MessageID string    `json:"messageId" bson:"messageId"`
+	ThreadID  string    `json:"threadId,omitempty" bson:"threadId,omitempty"`
+	From      string    `json:"from" bson:"from"`
+	Subject   string    `json:"subject" bson:"subject"`
+	WakeAt    time.Time `json:"wakeAt" bson:"wakeAt"`
+	Status    string    `json:"status" bson:"status"` // "scheduled", "done", "cancelled"
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+}
+
+// SnoozeRequest is the request body for POST /api/emails/snooze. Either Preset
+// (resolved server-side) or an explicit WakeAt (RFC 3339) must be provided.
+type SnoozeRequest struct {
+	MessageID string    `json:"messageId"`
+	Preset    string    `json:"preset"`
+	WakeAt    time.Time `json:"wakeAt"`
+}
+
+// ============================================
+// Action ledger (audit / activity)
+// ============================================
+
+// ActionLog is one append-only entry in the action ledger. Every mutating Gmail
+// action Mailsorter performs is recorded here with its originating Source, which
+// powers a truthful activity recap independent of what the client observed.
+type ActionLog struct {
+	ID        string    `json:"id" bson:"_id,omitempty"`
+	UserID    string    `json:"userId" bson:"userId"`
+	MessageID string    `json:"messageId" bson:"messageId"`
+	Action    string    `json:"action" bson:"action"`
+	Source    string    `json:"source" bson:"source"` // direct, rule, ai, ai-auto, bulk, snooze, unsubscribe
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+}
+
+// ============================================
 // AI Sorting Models
 // ============================================
 

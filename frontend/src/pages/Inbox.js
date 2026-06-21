@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useEmails } from '../contexts/EmailContext';
-import { aiService, senderService, emailService, subscriptionService } from '../services/api';
+import { aiService, senderService, emailService, subscriptionService, protectService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
@@ -335,6 +335,34 @@ function Inbox() {
   const handleReaderAction = (email, action) => {
     setSelectedEmail(null);
     directAction(email, action);
+  };
+
+  // Snooze: pull the email out of the inbox until the chosen preset, then it
+  // returns on its own (marked unread).
+  const handleSnooze = async (email, preset) => {
+    setSelectedEmail(null);
+    try {
+      await emailService.snooze(email.messageId, preset);
+      bumpGamify(1);
+      toast.success('Email reporté — il reviendra au bon moment');
+      fetchData({ forceRefresh: true });
+    } catch (err) {
+      toast.error('Report impossible. Réessayez.');
+    }
+  };
+
+  // Protect: shield a sender so no automated pass ever archives/deletes them.
+  const handleProtect = async (email) => {
+    try {
+      const { data } = await protectService.add(email.from);
+      toast.action(
+        `${data.value} est désormais protégé.`,
+        'Gérer',
+        () => navigate('/settings')
+      );
+    } catch (err) {
+      toast.error(err.response?.data?.trim() || 'Protection impossible.');
+    }
   };
 
   // One-click (or assisted) unsubscribe. Used by the reader and the subscriptions view.
@@ -940,6 +968,8 @@ function Inbox() {
               onClose={() => setSelectedEmail(null)}
               onArchive={() => handleReaderAction(selectedEmail, 'archive')}
               onDelete={() => handleReaderAction(selectedEmail, 'delete')}
+              onSnooze={(preset) => handleSnooze(selectedEmail, preset)}
+              onProtect={() => handleProtect(selectedEmail)}
               onUnsubscribe={() => handleUnsubscribe({ messageId: selectedEmail.messageId })}
               unsubscribing={unsubscribing === selectedEmail.messageId}
             />

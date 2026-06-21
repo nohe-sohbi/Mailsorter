@@ -131,6 +131,7 @@ func (h *Handler) archiveBySender(ctx context.Context, gmailClient *gmailapi.Ser
 	for _, e := range emails {
 		if err := h.gmailService.ModifyMessage(gmailClient, e.MessageID, nil, []string{"INBOX"}); err == nil {
 			n++
+			h.logAction(ctx, userEmail, e.MessageID, "archive", SourceUnsubscribe)
 		}
 	}
 	return n

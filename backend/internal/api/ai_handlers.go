@@ -102,6 +102,7 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 	}
 
 	h.db.AISuggestions().InsertOne(ctx, suggestion)
+	h.logAction(ctx, userEmail, email.MessageID, pref.DefaultAction, SourceAIAuto)
 	return true
 }
 
@@ -269,6 +270,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 			"labelId":   suggestion.LabelID,
 		}},
 	)
+	h.logAction(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "applied"})
@@ -304,9 +306,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	gmailClient := h.gmailService.GetClient(token)
 
+	protectedList := h.protectedValues(ctx, userEmail)
 	applied := 0
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
 	failed := 0
+	protectedSkipped := 0
 
 	for _, id := range req.SuggestionIDs {
 		objectID, err := primitive.ObjectIDFromHex(id)
@@ -321,6 +325,13 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			"userId": userEmail,
 		}).Decode(&suggestion); err != nil {
 			failed++
+			continue
+		}
+
+		// Shield protected senders from a bulk "apply all" that would archive
+		// or trash their mail. The suggestion is left pending, untouched.
+		if len(protectedList) > 0 && !allows(suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
+			protectedSkipped++
 			continue
 		}
 
@@ -355,16 +366,18 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 				"labelId":   suggestion.LabelID,
 			}},
 		)
+		h.logAction(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI)
 		applied++
 		appliedIDs = append(appliedIDs, id)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"applied":    applied,
-		"failed":     failed,
-		"total":      len(req.SuggestionIDs),
-		"appliedIds": appliedIDs,
+		"applied":          applied,
+		"failed":           failed,
+		"total":            len(req.SuggestionIDs),
+		"appliedIds":       appliedIDs,
+		"protectedSkipped": protectedSkipped,
 	})
 }
 
@@ -421,9 +434,16 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply action to each email
+	// Apply action to each email, shielding protected senders from destructive
+	// sweeps (a protected sender can still be labelled in bulk).
+	protectedList := h.protectedValues(ctx, userEmail)
 	appliedCount := 0
+	protectedSkipped := 0
 	for _, email := range emails {
+		if !allows(req.Action, email.From, protectedList) {
+			protectedSkipped++
+			continue
+		}
 		var applyErr error
 		switch req.Action {
 		case "archive":
@@ -435,13 +455,15 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		if applyErr == nil {
 			appliedCount++
+			h.logAction(ctx, userEmail, email.MessageID, req.Action, SourceBulk)
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"applied": appliedCount,
-		"total":   len(emails),
+		"applied":          appliedCount,
+		"total":            len(emails),
+		"protectedSkipped": protectedSkipped,
 	})
 }
 
@@ -737,6 +759,17 @@ func (h *Handler) getSmartLabelNames(ctx context.Context, userEmail string) ([]s
 		names[i] = l.Name
 	}
 	return names, nil
+}
+
+// senderOf returns the stored From of a message, or "" if unknown. Used to
+// consult the protected list when applying AI suggestions, which don't carry the
+// sender themselves.
+func (h *Handler) senderOf(ctx context.Context, userEmail, messageID string) string {
+	var e models.Email
+	if err := h.db.Emails().FindOne(ctx, bson.M{"userId": userEmail, "messageId": messageID}).Decode(&e); err == nil {
+		return e.From
+	}
+	return ""
 }
 
 func (h *Handler) getUserToken(ctx context.Context, userEmail string) (*oauth2.Token, error) {

@@ -228,9 +228,11 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	protectedList := h.protectedValues(ctx, userEmail)
 	labelCache := map[string]string{} // labelName -> Gmail label ID
 	byRule := map[string]int{}        // rule name -> count applied
 	applied := 0
+	protectedSkipped := 0
 
 	for _, msg := range messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
@@ -248,11 +250,17 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		if match == nil {
 			continue
 		}
+		// A protected sender is shielded from automated destructive rules.
+		if !allows(match.Action, email.From, protectedList) {
+			protectedSkipped++
+			continue
+		}
 		if err := h.applyRuleAction(ctx, gmailClient, userEmail, msg.Id, *match, labelCache); err != nil {
 			continue
 		}
 		applied++
 		byRule[match.Name]++
+		h.logAction(ctx, userEmail, msg.Id, match.Action, SourceRule)
 	}
 
 	// Persist per-rule application counts (best-effort).
@@ -265,9 +273,10 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"applied": applied,
-		"scanned": len(messages),
-		"byRule":  byRule,
+		"applied":          applied,
+		"scanned":          len(messages),
+		"byRule":           byRule,
+		"protectedSkipped": protectedSkipped,
 	})
 }
 

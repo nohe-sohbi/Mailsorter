@@ -144,6 +144,71 @@ Synchronize emails from Gmail to database.
 
 ---
 
+## Snooze Endpoints ("Reporter")
+
+Pull a message out of the inbox until a chosen time, then have it return on its
+own (marked unread). Wake time is resolved from a friendly preset server-side.
+
+### Snooze an email
+
+#### POST /api/emails/snooze
+
+**Body:**
+```json
+{ "messageId": "msg-id", "preset": "tomorrow" }
+```
+`preset` is one of `laterToday`, `thisEvening`, `tomorrow`, `weekend`,
+`nextWeek`. Alternatively pass an explicit `wakeAt` (RFC 3339, must be future).
+
+**Response:**
+```json
+{ "status": "snoozed", "wakeAt": "2026-06-22T08:00:00Z" }
+```
+
+### List snoozes
+
+#### GET /api/snoozes?status=scheduled
+
+Returns `{ "snoozes": [ … ] }`, soonest wake first.
+
+### Wake a snooze now
+
+#### POST /api/snoozes/{id}/wake
+
+Brings the email back to the inbox immediately, marked unread.
+
+---
+
+## Protected Senders Endpoints (VIP)
+
+A per-user safety net: while a sender (full address or whole domain, subdomains
+included) is protected, no automated pass — AI suggestion, deterministic rule,
+sender auto-pilot or bulk action — may archive, trash or delete their mail.
+Non-destructive actions (label, star, mark read) are unaffected.
+
+### List protected senders
+
+#### GET /api/protected
+
+Returns `{ "protected": [ { "id", "value", "kind", "note", "createdAt" } ] }`.
+
+### Add a protected sender
+
+#### POST /api/protected
+
+**Body:**
+```json
+{ "value": "boss@corp.com", "note": "" }
+```
+The value is normalized and classified server-side (`kind`: `address` or
+`domain`). A raw `Name <addr>` header is accepted; the bare address is stored.
+
+### Remove a protected sender
+
+#### DELETE /api/protected/{id}
+
+---
+
 ## Unsubscribe Endpoints
 
 Detects mailing-list senders via the `List-Unsubscribe` (RFC 2369) and

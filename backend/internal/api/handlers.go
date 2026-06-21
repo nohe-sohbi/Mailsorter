@@ -63,6 +63,8 @@ func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *c
 	}
 	// Background pool that drains async analysis jobs.
 	h.startAnalysisWorkers(3)
+	// Background sweeper that returns due snoozed emails to the inbox.
+	h.startSnoozeLoop()
 	return h
 }
 
@@ -273,8 +275,10 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	// Autopilot: when the user opted in, run their deterministic rules over each
 	// freshly synced email — instant, AI-free, quota-free triage at sync time.
 	var autoRules []models.SortingRule
+	var protectedList []string
 	if h.autoApplyRulesEnabled(ctx, userEmail) {
 		autoRules = h.enabledRules(ctx, userEmail)
+		protectedList = h.protectedValues(ctx, userEmail)
 	}
 	labelCache := map[string]string{}
 	byRule := map[string]int{}
@@ -313,10 +317,11 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(autoRules) > 0 {
-			if match := rules.FirstMatch(email, autoRules); match != nil {
+			if match := rules.FirstMatch(email, autoRules); match != nil && allows(match.Action, email.From, protectedList) {
 				if err := h.applyRuleAction(ctx, gmailClient, userEmail, msg.Id, *match, labelCache); err == nil {
 					rulesApplied++
 					byRule[match.Name]++
+					h.logAction(ctx, userEmail, msg.Id, match.Action, SourceRule)
 				}
 			}
 		}
@@ -387,6 +392,16 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to apply action: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Record forward triage actions in the ledger (undo actions are not counted).
+	switch req.Action {
+	case "archive":
+		h.logAction(ctx, userEmail, req.MessageID, "archive", SourceDirect)
+	case "delete", "trash":
+		h.logAction(ctx, userEmail, req.MessageID, "delete", SourceDirect)
+	case "read":
+		h.logAction(ctx, userEmail, req.MessageID, "read", SourceDirect)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
