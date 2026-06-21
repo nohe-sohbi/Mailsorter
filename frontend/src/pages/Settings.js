@@ -1,8 +1,120 @@
 import React, { useEffect, useState } from 'react';
-import { configService } from '../services/api';
+import { configService, protectService } from '../services/api';
 import { useToast } from '../ui/Toast';
-import { Settings as SettingsIcon, Shield, Check } from '../ui/icons';
+import { Settings as SettingsIcon, Shield, Check, X } from '../ui/icons';
 import Spinner from '../ui/Spinner';
+
+// Manage the protected-senders list: addresses or whole domains that no
+// automated pass (AI, rules, auto-pilot, bulk) may ever archive, trash or
+// delete. A safety net for your VIPs.
+function ProtectedSenders() {
+  const toast = useToast();
+  const [items, setItems] = useState([]);
+  const [value, setValue] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+
+  const load = async () => {
+    try {
+      const { data } = await protectService.list();
+      setItems(data.protected || []);
+    } catch (err) {
+      // Silent: the card still renders with an empty list.
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleAdd = async (e) => {
+    e.preventDefault();
+    const v = value.trim();
+    if (!v) return;
+    setAdding(true);
+    try {
+      const { data } = await protectService.add(v);
+      setItems((prev) => [data, ...prev.filter((i) => i.value !== data.value)]);
+      setValue('');
+      toast.success(`${data.value} protégé`);
+    } catch (err) {
+      toast.error(err.response?.data?.trim() || 'Ajout impossible.');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleRemove = async (item) => {
+    setItems((prev) => prev.filter((i) => i.id !== item.id));
+    try {
+      await protectService.remove(item.id);
+    } catch (err) {
+      toast.error('Suppression impossible.');
+      load();
+    }
+  };
+
+  return (
+    <div className="card animate-fade-up mt-6 p-7">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+          <Shield size={18} />
+        </span>
+        <h2 className="text-lg font-bold text-ink-900">Expéditeurs protégés</h2>
+      </div>
+      <p className="mb-5 text-sm text-ink-500">
+        Leurs emails ne seront <span className="font-semibold text-ink-700">jamais archivés ni supprimés automatiquement</span> —
+        ni par l'IA, ni par les règles, ni en masse. Ajoutez une adresse (<span className="font-mono text-xs">boss@corp.com</span>)
+        ou un domaine entier (<span className="font-mono text-xs">corp.com</span>).
+      </p>
+
+      <form onSubmit={handleAdd} className="mb-5 flex gap-2">
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="input flex-1"
+          placeholder="adresse@exemple.com ou exemple.com"
+        />
+        <button type="submit" disabled={adding} className="btn-primary shrink-0">
+          {adding ? <Spinner size={18} /> : <Shield size={16} />} Protéger
+        </button>
+      </form>
+
+      {loading ? (
+        <div className="flex justify-center py-6">
+          <Spinner size={22} className="text-brand-500" />
+        </div>
+      ) : items.length === 0 ? (
+        <p className="rounded-xl bg-ink-50 px-4 py-3 text-sm text-ink-400">
+          Aucun expéditeur protégé pour l'instant.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {items.map((item) => (
+            <span
+              key={item.id || item.value}
+              className="chip group bg-emerald-50 text-emerald-700"
+              title={item.kind === 'domain' ? 'Domaine entier' : 'Adresse'}
+            >
+              <Shield size={13} />
+              <span className="font-mono text-xs">{item.value}</span>
+              <button
+                onClick={() => handleRemove(item)}
+                className="ml-0.5 rounded-full p-0.5 text-emerald-500 hover:bg-emerald-100 hover:text-emerald-700"
+                aria-label="Retirer"
+              >
+                <X size={13} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Settings() {
   const toast = useToast();
@@ -70,7 +182,7 @@ function Settings() {
         </span>
         <div>
           <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
-          <p className="text-sm text-ink-500">Gérez la connexion à l'API Gmail.</p>
+          <p className="text-sm text-ink-500">Connexion à l'API Gmail et expéditeurs protégés.</p>
         </div>
       </div>
 
@@ -152,6 +264,8 @@ function Settings() {
           </div>
         </form>
       </div>
+
+      <ProtectedSenders />
     </div>
   );
 }

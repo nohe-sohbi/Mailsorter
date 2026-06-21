@@ -5,6 +5,7 @@ import Inbox from './pages/Inbox';
 import Setup from './pages/Setup';
 import Settings from './pages/Settings';
 import Rules from './pages/Rules';
+import Snoozed from './pages/Snoozed';
 import Pricing from './pages/Pricing';
 import AuthCallback from './pages/AuthCallback';
 import Header from './components/Header';
@@ -90,6 +91,7 @@ function App() {
               <Route path="/" element={isConfigured ? <Login /> : <Navigate to="/setup" replace />} />
               <Route path="/inbox" element={isConfigured ? <Inbox /> : <Navigate to="/setup" replace />} />
               <Route path="/rules" element={isConfigured ? <Rules /> : <Navigate to="/setup" replace />} />
+              <Route path="/snoozed" element={isConfigured ? <Snoozed /> : <Navigate to="/setup" replace />} />
               <Route path="/settings" element={isConfigured ? <Settings /> : <Navigate to="/setup" replace />} />
               <Route path="/pricing" element={<Pricing />} />
               <Route path="/auth/callback" element={<AuthCallback />} />

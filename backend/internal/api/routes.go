@@ -20,8 +20,18 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/emails", h.GetEmails).Methods("GET")
 	r.HandleFunc("/api/emails/sync", h.SyncEmails).Methods("POST")
 	r.HandleFunc("/api/emails/action", h.EmailAction).Methods("POST")
+	r.HandleFunc("/api/emails/snooze", h.Snooze).Methods("POST")
 	r.HandleFunc("/api/stats", h.GetMailboxStats).Methods("GET")
 	r.HandleFunc("/api/stats/activity", h.GetActivity).Methods("GET")
+
+	// Snooze ("Reporter") — return-to-inbox scheduling
+	r.HandleFunc("/api/snoozes", h.GetSnoozes).Methods("GET")
+	r.HandleFunc("/api/snoozes/{id}/wake", h.WakeSnooze).Methods("POST")
+
+	// Protected senders (VIP) — never auto-archived/trashed/deleted
+	r.HandleFunc("/api/protected", h.GetProtected).Methods("GET")
+	r.HandleFunc("/api/protected", h.CreateProtected).Methods("POST")
+	r.HandleFunc("/api/protected/{id}", h.DeleteProtected).Methods("DELETE")
 
 	// Account / usage / settings
 	r.HandleFunc("/api/usage", h.GetUsage).Methods("GET")

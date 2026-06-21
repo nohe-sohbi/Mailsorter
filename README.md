@@ -23,6 +23,8 @@ Mailsorter automatise tout ça :
 - **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / égal / regex…) → action (archiver, supprimer, étiqueter, lire, favori). **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
 - **👤 Apprendre une fois, en 1 clic** — Depuis la vue *Expéditeurs*, transformez n'importe quel expéditeur en **règle permanente** : ses futurs emails sont rangés tout seuls, pour toujours.
 - **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
+- **🛡️ Expéditeurs protégés (VIP)** — Marquez une adresse ou un domaine entier comme **protégé** : ses emails ne seront **jamais** archivés ni supprimés automatiquement (ni par l'IA, ni par les règles, ni en masse). Le filet de sécurité de l'Inbox Zero.
+- **⏰ Reporter (snooze)** — Sortez un email de la boîte d'un geste ; il **revient tout seul**, marqué non lu, au moment que vous choisissez (ce soir, demain, ce week-end…).
 - **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
 - **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
 - **🏷️ Libellés intelligents** — Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
@@ -110,6 +112,12 @@ docker compose up -d        # ou : make up
 | ------- | ------------------------- | --------------------------------------------- |
 | `GET`   | `/api/emails`             | Liste paginée de la boîte                     |
 | `POST`  | `/api/emails/action`      | Action directe (archive/trash/read) sur 1 msg |
+| `POST`  | `/api/emails/snooze`      | **Reporter** un email (preset ou date) → revient tout seul |
+| `GET`   | `/api/snoozes`            | Emails reportés (programmés)                   |
+| `POST`  | `/api/snoozes/{id}/wake`  | **Réactiver** un email reporté maintenant      |
+| `GET`   | `/api/protected`          | **Expéditeurs protégés** (VIP)                 |
+| `POST`  | `/api/protected`          | Protège une adresse ou un domaine entier       |
+| `DELETE`| `/api/protected/{id}`     | Retire une protection                          |
 | `POST`  | `/api/ai/analyze`         | Génère des suggestions (synchrone, cache+batch) |
 | `POST`  | `/api/ai/analyze-async`   | **Lance un job d'analyse** (worker, non bloquant) |
 | `GET`   | `/api/ai/jobs/{id}`       | Statut/progression d'un job d'analyse         |
@@ -119,7 +127,7 @@ docker compose up -d        # ou : make up
 | `GET`   | `/api/subscriptions`      | **Newsletters détectées** (agrégées par expéditeur) |
 | `POST`  | `/api/unsubscribe`        | **Désabonnement 1-clic** (+ archivage optionnel) |
 | `GET`   | `/api/stats`              | Statistiques de la boîte                      |
-| `GET`   | `/api/stats/activity`     | Récap d'activité (7 derniers jours)           |
+| `GET`   | `/api/stats/activity`     | Récap d'activité (7 j, par jour/action/**source**, depuis le journal d'actions) |
 | `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
 | `GET`   | `/api/account/settings`   | Réglages du compte (ex. autopilote des règles) |
 | `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`)    |

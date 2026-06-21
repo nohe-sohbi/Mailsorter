@@ -1,7 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
 import DOMPurify from 'dompurify';
-import { X, Archive, Trash, Mail, BellOff } from '../ui/icons';
+import { X, Archive, Trash, Mail, BellOff, Clock, Shield } from '../ui/icons';
 import Spinner from '../ui/Spinner';
+
+// Friendly snooze presets, resolved to concrete wake times server-side.
+const SNOOZE_PRESETS = [
+  ['laterToday', 'Plus tard'],
+  ['thisEvening', 'Ce soir'],
+  ['tomorrow', 'Demain matin'],
+  ['weekend', 'Ce week-end'],
+  ['nextWeek', 'Semaine prochaine'],
+];
 
 const AVATAR_GRADIENTS = [
   'from-brand-500 to-fuchsia-500',
@@ -26,10 +35,16 @@ function extractName(from) {
   return match ? match[1].replace(/"/g, '').trim() : from;
 }
 
-function EmailReader({ email, onClose, onArchive, onDelete, onUnsubscribe, unsubscribing }) {
+function EmailReader({ email, onClose, onArchive, onDelete, onUnsubscribe, onSnooze, onProtect, unsubscribing }) {
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
   if (!email) return null;
 
   const canUnsubscribe = Boolean(email.unsubUrl || email.unsubMailto);
+
+  const handleSnooze = (preset) => {
+    setSnoozeOpen(false);
+    onSnooze?.(preset);
+  };
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '';
@@ -55,6 +70,43 @@ function EmailReader({ email, onClose, onArchive, onDelete, onUnsubscribe, unsub
           <X size={18} />
         </button>
         <div className="flex items-center gap-1">
+          {onSnooze && (
+            <div className="relative">
+              <button
+                onClick={() => setSnoozeOpen((v) => !v)}
+                className="btn-ghost px-2.5"
+                title="Reporter (sortir de la boîte et revenir plus tard)"
+              >
+                <Clock size={18} />
+              </button>
+              {snoozeOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setSnoozeOpen(false)} />
+                  <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-xl border border-ink-200 bg-white py-1 shadow-lg animate-fade-up">
+                    <div className="px-3 py-1.5 text-xs font-semibold text-ink-400">Reporter jusqu'à…</div>
+                    {SNOOZE_PRESETS.map(([value, label]) => (
+                      <button
+                        key={value}
+                        onClick={() => handleSnooze(value)}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-700 hover:bg-ink-50"
+                      >
+                        <Clock size={15} className="text-ink-400" /> {label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {onProtect && (
+            <button
+              onClick={onProtect}
+              className="btn-ghost px-2.5 text-emerald-600 hover:bg-emerald-50"
+              title="Protéger cet expéditeur (jamais archivé/supprimé automatiquement)"
+            >
+              <Shield size={18} />
+            </button>
+          )}
           <button onClick={onArchive} className="btn-ghost px-2.5" title="Archiver">
             <Archive size={18} />
           </button>

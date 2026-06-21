@@ -93,6 +93,18 @@ func (d *Database) SortingRules() *mongo.Collection {
 	return d.DB.Collection("sorting_rules")
 }
 
+func (d *Database) ProtectedSenders() *mongo.Collection {
+	return d.DB.Collection("protected_senders")
+}
+
+func (d *Database) Snoozes() *mongo.Collection {
+	return d.DB.Collection("snoozes")
+}
+
+func (d *Database) ActionLog() *mongo.Collection {
+	return d.DB.Collection("action_log")
+}
+
 // EnsureIndexes creates the indexes that keep hot queries fast at scale.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
@@ -110,6 +122,10 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.Unsubscribes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Users(), mongo.IndexModel{Keys: bson.D{{Key: "stripeSubscriptionId", Value: 1}}, Options: options.Index().SetSparse(true)}},
 		{d.SortingRules(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "priority", Value: 1}}}},
+		{d.ProtectedSenders(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "value", Value: 1}}, Options: options.Index().SetUnique(true)}},
+		{d.Snoozes(), mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "wakeAt", Value: 1}}}},
+		{d.Snoozes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "status", Value: 1}}}},
+		{d.ActionLog(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "createdAt", Value: -1}}}},
 	}
 
 	var firstErr error
