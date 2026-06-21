@@ -279,6 +279,46 @@ sender's backlog in the same call.
 
 ---
 
+## Stats Endpoints
+
+The recap is computed from the append-only action ledger (`action_log`), so it
+counts every Gmail mutation — direct actions, rules, bulk sweeps, snoozes,
+unsubscribes — over the trailing 7 days, not just applied AI suggestions.
+
+### Get Activity Recap
+
+#### GET /api/stats/activity
+
+Returns the 7-day series plus breakdowns by action and by source:
+
+```json
+{
+  "total": 42,
+  "days": [{ "date": "2026-06-15", "count": 3 }, "…7 entries, oldest first…"],
+  "byAction": { "archive": 18, "delete": 9, "label": 12, "keep": 3 },
+  "bySource": { "direct": 20, "rule": 12, "ai": 10 }
+}
+```
+
+### Get Daily Digest
+
+#### GET /api/stats/digest
+
+Renders the same 7-day recap into a ready-to-send email digest (subject +
+plain-text body + HTML body). This is the content payload for the "Digest
+quotidien par email"; actual delivery still needs a `gmail.send` scope (or SMTP)
+and a scheduler.
+
+```json
+{
+  "subject": "Mailsorter — 3 emails triés aujourd'hui",
+  "text": "Votre récap Mailsorter — 21/06/2026\n\nAujourd'hui : 3 emails triés.\n…",
+  "html": "<div style=\"…\"><h2>3 emails triés aujourd'hui</h2>…</div>"
+}
+```
+
+---
+
 ## Billing Endpoints (Stripe)
 
 Pro unlocks unlimited AI analyses. These endpoints are active only when

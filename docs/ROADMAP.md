@@ -123,7 +123,7 @@ confiance, une qui élargit l'usage, et un durcissement de l'observabilité.
 
 ### Reste à brancher (dépend d'infra externe)
 
-- **Digest quotidien par email** — la donnée existe (`/api/stats/activity`) ; il manque un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) pour l'envoi réel.
+- **Digest quotidien par email** — le **contenu est désormais rendu** : `GET /api/stats/digest` renvoie un digest prêt à envoyer (objet + corps texte + corps HTML) calculé sur le même récap 7 jours que `/api/stats/activity`, via un package pur `internal/digest` (testé). Reste à brancher l'**envoi réel** : un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) qui appelle ce rendu et l'expédie.
 - **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).
 - **Analytics produit** — instrumenter le funnel (connexion → 1ʳᵉ analyse → 1ʳᵉ application) vers PostHog/Segment.
 

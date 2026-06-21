@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/digest"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -150,6 +151,20 @@ func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	summary, err := h.activitySummary(ctx, userEmail)
+	if err != nil {
+		http.Error(w, "Failed to load activity", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(summary)
+}
+
+// activitySummary loads the trailing-7-day action ledger for a user and folds
+// it into the recap. Shared by GetActivity and GetDigest so both render from
+// the exact same numbers.
+func (h *Handler) activitySummary(ctx context.Context, userEmail string) (activity.Summary, error) {
 	since := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -6)
 
 	cursor, err := h.db.ActionLog().Find(ctx, bson.M{
@@ -157,23 +172,42 @@ func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 		"createdAt": bson.M{"$gte": since},
 	}, options.Find().SetLimit(20000))
 	if err != nil {
-		http.Error(w, "Failed to load activity", http.StatusInternalServerError)
-		return
+		return activity.Summary{}, err
 	}
 	defer cursor.Close(ctx)
 
 	var logs []models.ActionLog
 	if err := cursor.All(ctx, &logs); err != nil {
-		http.Error(w, "Failed to decode activity", http.StatusInternalServerError)
-		return
+		return activity.Summary{}, err
 	}
 
 	rows := make([]activity.Row, 0, len(logs))
 	for _, l := range logs {
 		rows = append(rows, activity.Row{At: l.CreatedAt, Action: l.Action, Source: l.Source})
 	}
-	summary := activity.Summarize(rows, time.Now())
+	return activity.Summarize(rows, time.Now()), nil
+}
+
+// GetDigest renders the same 7-day recap as GetActivity into a ready-to-send
+// email digest (subject + plain-text body + HTML body). This is the "Digest
+// quotidien par email" content: previewable now, and the payload a scheduler
+// would hand to a gmail.send (or SMTP) sender once that scope is wired.
+func (h *Handler) GetDigest(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	summary, err := h.activitySummary(ctx, userEmail)
+	if err != nil {
+		http.Error(w, "Failed to load activity", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(summary)
+	json.NewEncoder(w).Encode(digest.Render(summary, time.Now()))
 }
