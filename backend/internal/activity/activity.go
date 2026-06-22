@@ -32,6 +32,25 @@ type Summary struct {
 	BySource map[string]int `json:"bySource"`
 }
 
+// Inverse returns the action that reverses a forward triage action, and whether
+// the action is reversible at all. Only the stateful triage actions Mailsorter
+// records have a clean, safe inverse: archive↔unarchive, delete/trash↔untrash,
+// read↔unread. Additive actions (label, star) and "keep" have no automatic undo
+// here. Keeping this pure makes the action-history "Annuler" affordance trivial
+// to test and impossible to drift from what the ledger stores.
+func Inverse(action string) (string, bool) {
+	switch action {
+	case "archive":
+		return "unarchive", true
+	case "delete", "trash":
+		return "untrash", true
+	case "read", "markRead":
+		return "unread", true
+	default:
+		return "", false
+	}
+}
+
 // canonicalAction folds the various action vocabularies onto the four buckets
 // the UI renders, so "trash" and "delete" (and "markRead"/"read") read as one.
 func canonicalAction(a string) string {
@@ -50,7 +69,7 @@ func canonicalAction(a string) string {
 // gaps. ByAction is seeded with the headline triage actions so the UI can rely
 // on their presence. Rows outside the window are ignored.
 func Summarize(rows []Row, now time.Time) Summary {
-	startDay := now.UTC().Truncate(24 * time.Hour).AddDate(0, 0, -6)
+	startDay := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -6)
 
 	dayCounts := map[string]int{}
 	byAction := map[string]int{"archive": 0, "delete": 0, "label": 0, "keep": 0}
@@ -72,7 +91,7 @@ func Summarize(rows []Row, now time.Time) Summary {
 
 	days := make([]DayCount, 0, 7)
 	for i := 6; i >= 0; i-- {
-		key := now.UTC().Truncate(24 * time.Hour).AddDate(0, 0, -i).Format("2006-01-02")
+		key := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -i).Format("2006-01-02")
 		days = append(days, DayCount{Date: key, Count: dayCounts[key]})
 	}
 

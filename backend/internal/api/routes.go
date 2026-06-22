@@ -26,6 +26,10 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/stats/activity", h.GetActivity).Methods("GET")
 	r.HandleFunc("/api/stats/digest", h.GetDigest).Methods("GET")
 
+	// Action history (audit trail) + one-click undo of automated actions.
+	r.HandleFunc("/api/activity/log", h.GetActionLog).Methods("GET")
+	r.HandleFunc("/api/activity/undo", h.UndoAction).Methods("POST")
+
 	// Snooze ("Reporter") — return-to-inbox scheduling
 	r.HandleFunc("/api/snoozes", h.GetSnoozes).Methods("GET")
 	r.HandleFunc("/api/snoozes/{id}/wake", h.WakeSnooze).Methods("POST")

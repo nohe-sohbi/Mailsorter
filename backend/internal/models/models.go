@@ -19,6 +19,13 @@ type User struct {
 	// automatically over every freshly synced inbox — no extra click, no AI, no
 	// quota. Off by default so syncing never mutates Gmail unexpectedly.
 	AutoApplyRules bool `json:"autoApplyRules" bson:"autoApplyRules,omitempty"`
+	// AutoSyncEnabled, when true, lets a background scheduler periodically sync the
+	// user's inbox (and, if AutoApplyRules is on, run their rules) with no manual
+	// click — the hands-free path to "Inbox Zero, forever". LastAutoSyncAt stamps
+	// the last run so the scheduler honors a minimum interval between syncs.
+	// Off by default so Mailsorter never touches Gmail unprompted.
+	AutoSyncEnabled bool      `json:"autoSyncEnabled" bson:"autoSyncEnabled,omitempty"`
+	LastAutoSyncAt  time.Time `json:"-" bson:"lastAutoSyncAt,omitempty"`
 	// Daily digest — when DigestEnabled is true, a background scheduler emails a
 	// recap of the last 7 days once a day at DigestHourUTC (0–23, UTC).
 	// DigestLastSentAt stamps the last attempt so we send at most once per day.
@@ -32,9 +39,22 @@ type User struct {
 // UserSettings is the user-tunable subset of the account, exposed via
 // GET/PUT /api/account/settings.
 type UserSettings struct {
-	AutoApplyRules bool `json:"autoApplyRules"`
-	DigestEnabled  bool `json:"digestEnabled"`
-	DigestHourUTC  int  `json:"digestHourUTC"`
+	AutoApplyRules  bool `json:"autoApplyRules"`
+	AutoSyncEnabled bool `json:"autoSyncEnabled"`
+	DigestEnabled   bool `json:"digestEnabled"`
+	DigestHourUTC   int  `json:"digestHourUTC"`
+}
+
+// SettingsUpdate is the request body for PUT /api/account/settings. Every field
+// is a pointer so the server can tell "set this to false" apart from "field not
+// sent" and merge only what the client included — letting different screens
+// (the Rules toggle, the digest card) update their own setting without
+// clobbering the others.
+type SettingsUpdate struct {
+	AutoApplyRules  *bool `json:"autoApplyRules"`
+	AutoSyncEnabled *bool `json:"autoSyncEnabled"`
+	DigestEnabled   *bool `json:"digestEnabled"`
+	DigestHourUTC   *int  `json:"digestHourUTC"`
 }
 
 type Email struct {
@@ -235,11 +255,15 @@ type SnoozeRequest struct {
 // action Mailsorter performs is recorded here with its originating Source, which
 // powers a truthful activity recap independent of what the client observed.
 type ActionLog struct {
-	ID        string    `json:"id" bson:"_id,omitempty"`
-	UserID    string    `json:"userId" bson:"userId"`
-	MessageID string    `json:"messageId" bson:"messageId"`
-	Action    string    `json:"action" bson:"action"`
-	Source    string    `json:"source" bson:"source"` // direct, rule, ai, ai-auto, bulk, snooze, unsubscribe
+	ID        string `json:"id" bson:"_id,omitempty"`
+	UserID    string `json:"userId" bson:"userId"`
+	MessageID string `json:"messageId" bson:"messageId"`
+	Action    string `json:"action" bson:"action"`
+	Source    string `json:"source" bson:"source"` // direct, rule, ai, ai-auto, bulk, snooze, unsubscribe, undo
+	// Undone is set when the user reverses this entry from the action history
+	// (e.g. un-archiving a mail a rule archived). UndoneAt stamps when.
+	Undone    bool      `json:"undone,omitempty" bson:"undone,omitempty"`
+	UndoneAt  time.Time `json:"undoneAt,omitempty" bson:"undoneAt,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 }
 

@@ -79,8 +79,7 @@ func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in models.SortingRuleInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &in) {
 		return
 	}
 
@@ -124,8 +123,7 @@ func (h *Handler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in models.SortingRuleInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &in) {
 		return
 	}
 
@@ -386,8 +384,7 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.CreateSenderRuleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if extractSenderAddress(req.SenderEmail) == "" {

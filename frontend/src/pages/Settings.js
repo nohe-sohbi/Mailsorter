@@ -1,8 +1,80 @@
 import React, { useEffect, useState } from 'react';
 import { configService, protectService, accountService } from '../services/api';
 import { useToast } from '../ui/Toast';
-import { Settings as SettingsIcon, Shield, Check, X, Mail, Trash, Alert } from '../ui/icons';
+import { Settings as SettingsIcon, Shield, Check, X, Mail, Trash, Alert, Refresh } from '../ui/icons';
 import Spinner from '../ui/Spinner';
+
+// Opt in to hands-free background syncing: a scheduler periodically pulls the
+// inbox and (when rule autopilot is on) applies the user's deterministic rules,
+// with no manual click. Off by default so Mailsorter never touches Gmail
+// unprompted.
+function AutoSyncSettings() {
+  const toast = useToast();
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await accountService.getSettings();
+        setEnabled(!!data.autoSyncEnabled);
+      } catch (err) {
+        // Silent: the card still renders with defaults.
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const persist = async (next) => {
+    setSaving(true);
+    try {
+      const { data } = await accountService.updateSettings({ autoSyncEnabled: next });
+      setEnabled(!!data.autoSyncEnabled);
+      toast.success(next ? 'Synchronisation automatique activée.' : 'Synchronisation automatique désactivée.');
+    } catch (err) {
+      toast.error('Enregistrement impossible.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card animate-fade-up mt-6 p-7">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+          <Refresh size={18} />
+        </span>
+        <h2 className="text-lg font-bold text-ink-900">Synchronisation automatique</h2>
+      </div>
+      <p className="mb-5 text-sm text-ink-500">
+        Laissez Mailsorter <span className="font-semibold text-ink-700">synchroniser votre boîte en arrière-plan</span>,
+        sans aucun clic. Si l'<span className="font-semibold text-ink-700">application automatique des règles</span> est
+        activée (page Règles), vos règles déterministes trient aussi vos nouveaux emails toutes seules — le chemin
+        mains-libres vers l'Inbox Zero.
+      </p>
+
+      {loading ? (
+        <div className="flex justify-center py-6">
+          <Spinner size={22} className="text-brand-500" />
+        </div>
+      ) : (
+        <label className="flex items-center gap-2 text-sm font-semibold text-ink-700">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-brand-600"
+            checked={enabled}
+            disabled={saving}
+            onChange={(e) => persist(e.target.checked)}
+          />
+          Synchroniser ma boîte automatiquement
+          {saving && <Spinner size={16} className="ml-1 text-brand-500" />}
+        </label>
+      )}
+    </div>
+  );
+}
 
 // Opt in to the daily email digest: a once-a-day recap of the last 7 days of
 // triage, sent to the user's own inbox at a chosen UTC hour.
@@ -370,7 +442,7 @@ function Settings() {
         </span>
         <div>
           <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
-          <p className="text-sm text-ink-500">Connexion à l'API Gmail, digest quotidien et expéditeurs protégés.</p>
+          <p className="text-sm text-ink-500">Connexion à l'API Gmail, synchronisation automatique, digest quotidien et expéditeurs protégés.</p>
         </div>
       </div>
 
@@ -453,6 +525,7 @@ function Settings() {
         </form>
       </div>
 
+      <AutoSyncSettings />
       <DigestSettings />
       <ProtectedSenders />
       <PrivacyData />

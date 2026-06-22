@@ -26,6 +26,8 @@ Mailsorter automatise tout ça :
 - **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
 - **🛡️ Expéditeurs protégés (VIP)** — Marquez une adresse ou un domaine entier comme **protégé** : ses emails ne seront **jamais** archivés ni supprimés automatiquement (ni par l'IA, ni par les règles, ni en masse). Le filet de sécurité de l'Inbox Zero.
 - **⏰ Reporter (snooze)** — Sortez un email de la boîte d'un geste ; il **revient tout seul**, marqué non lu, au moment que vous choisissez (ce soir, demain, ce week-end…).
+- **🕓 Historique & annulation** — Un **journal transparent** de tout ce que Mailsorter a fait à votre place (par source : règle, IA, en masse…), avec un bouton **Annuler** qui rejoue l'inverse Gmail (désarchiver, restaurer, marquer non lu). Le filet de sécurité ultime.
+- **🔄 Synchronisation automatique** — Activez l'auto-sync : Mailsorter **synchronise votre boîte en arrière-plan** et, si l'autopilote des règles est actif, trie vos nouveaux emails **sans aucun clic**. Inbox Zero, en pilote automatique.
 - **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
 - **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
 - **🏷️ Libellés intelligents** — Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
@@ -130,9 +132,11 @@ docker compose up -d        # ou : make up
 | `POST`  | `/api/unsubscribe`        | **Désabonnement 1-clic** (+ archivage optionnel) |
 | `GET`   | `/api/stats`              | Statistiques de la boîte                      |
 | `GET`   | `/api/stats/activity`     | Récap d'activité (7 j, par jour/action/**source**, depuis le journal d'actions) |
+| `GET`   | `/api/activity/log`       | **Historique** des actions (journal, filtrable par source, flag *réversible*) |
+| `POST`  | `/api/activity/undo`      | **Annule** une action automatisée (rejoue l'inverse Gmail)    |
 | `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
 | `GET`   | `/api/account/settings`   | Réglages du compte (ex. autopilote des règles) |
-| `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`)    |
+| `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`, `autoSyncEnabled`, digest) — **merge partiel** |
 | `GET`   | `/api/account/export`     | **Export RGPD** : toutes vos données Mailsorter en un JSON |
 | `DELETE`| `/api/account`            | **Suppression RGPD** : efface le compte et toutes les données |
 | `GET`   | `/api/rules`              | **Règles de tri** (liste, triées par priorité) |

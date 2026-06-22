@@ -77,6 +77,8 @@ func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *c
 	h.startSnoozeLoop()
 	// Background scheduler that sends the daily email digest to opted-in users.
 	h.startDigestLoop()
+	// Background scheduler that periodically syncs opted-in users' inboxes.
+	h.startAutoSyncLoop()
 	return h
 }
 
@@ -315,16 +317,35 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
+	if err != nil {
+		http.Error(w, "Failed to sync emails: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"synced":       synced,
+		"total":        total,
+		"rulesApplied": rulesApplied,
+	})
+}
+
+// syncInbox pulls the user's inbox into MongoDB and, when the user opted into
+// rule autopilot, applies their deterministic rules to each freshly synced email
+// (instant, AI-free, quota-free). It is shared by the manual SyncEmails handler
+// and the background auto-sync scheduler so both behave identically. It returns
+// how many emails were persisted, how many were seen, and how many had a rule
+// applied.
+func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
-		return
+		return 0, 0, 0, err
 	}
 
 	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 100)
 	if err != nil {
-		http.Error(w, "Failed to sync emails: "+err.Error(), http.StatusInternalServerError)
-		return
+		return 0, 0, 0, err
 	}
 
 	// Autopilot: when the user opted in, run their deterministic rules over each
@@ -337,9 +358,7 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	}
 	labelCache := map[string]string{}
 	byRule := map[string]int{}
-	rulesApplied := 0
 
-	syncCount := 0
 	for _, msg := range messages {
 		from, subject, to, date := gmail.ParseEmailHeaders(msg)
 		body := gmail.GetEmailBody(msg)
@@ -366,9 +385,8 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		filter := bson.M{"messageId": msg.Id, "userId": userEmail}
 		update := bson.M{"$set": email}
 		opts := options.Update().SetUpsert(true)
-		_, err := h.db.Emails().UpdateOne(ctx, filter, update, opts)
-		if err == nil {
-			syncCount++
+		if _, uErr := h.db.Emails().UpdateOne(ctx, filter, update, opts); uErr == nil {
+			synced++
 		}
 
 		if len(autoRules) > 0 {
@@ -393,12 +411,7 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"synced":       syncCount,
-		"total":        len(messages),
-		"rulesApplied": rulesApplied,
-	})
+	return synced, len(messages), rulesApplied, nil
 }
 
 // EmailAction performs a direct action on a single Gmail message
@@ -411,8 +424,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.EmailActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.MessageID == "" {
@@ -539,8 +551,7 @@ func (h *Handler) GetGmailConfig(w http.ResponseWriter, r *http.Request) {
 // SaveGmailConfig saves the Gmail credentials (encrypted)
 func (h *Handler) SaveGmailConfig(w http.ResponseWriter, r *http.Request) {
 	var input models.GmailConfigInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 

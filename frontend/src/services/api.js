@@ -106,6 +106,15 @@ export const accountService = {
   getActivity: () => apiClient.get('/api/stats/activity'),
   getSettings: () => apiClient.get('/api/account/settings'),
   updateSettings: (settings) => apiClient.put('/api/account/settings', settings),
+  // Action history (audit trail) + one-click undo of an automated action.
+  getActionLog: (params = {}) => {
+    const qs = new URLSearchParams();
+    if (params.source) qs.set('source', params.source);
+    if (params.limit) qs.set('limit', params.limit);
+    const s = qs.toString();
+    return apiClient.get(`/api/activity/log${s ? `?${s}` : ''}`);
+  },
+  undoAction: (id) => apiClient.post('/api/activity/undo', { id }),
   // RGPD: export everything Mailsorter stores about the user, and erase it.
   exportData: () => apiClient.get('/api/account/export'),
   deleteAccount: () => apiClient.delete('/api/account'),

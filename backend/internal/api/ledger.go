@@ -17,6 +17,7 @@ const (
 	SourceBulk        = "bulk"        // bulk action across a sender
 	SourceSnooze      = "snooze"      // snooze out of / back into the inbox
 	SourceUnsubscribe = "unsubscribe" // archive triggered by an unsubscribe sweep
+	SourceUndo        = "undo"        // a reversal performed from the action history
 )
 
 // logAction appends one entry to the action ledger. Best-effort: a ledger
