@@ -39,6 +39,9 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/usage", h.GetUsage).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.GetSettings).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.UpdateSettings).Methods("PUT")
+	// RGPD — data portability (export) and right to erasure (delete).
+	r.HandleFunc("/api/account/export", h.ExportAccount).Methods("GET")
+	r.HandleFunc("/api/account", h.DeleteAccount).Methods("DELETE")
 
 	// Billing (Stripe)
 	r.HandleFunc("/api/billing/checkout", h.CreateCheckout).Methods("POST")

@@ -20,7 +20,7 @@ Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de col
 Mailsorter automatise tout ça :
 
 - **🧠 Tri par IA en un clic** — L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
-- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / **ne contient pas** / égal / **différent** / commence / finit / regex / **plus vieux que** / **plus récent que** *N* jours) → action (archiver, supprimer, étiqueter, lire, favori). **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
+- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / **ne contient pas** / égal / **différent** / commence / finit / regex / **plus vieux que** / **plus récent que** *N* jours) → **une ou plusieurs actions enchaînées** (ex. *étiqueter* **puis** *archiver*) : archiver, supprimer, étiqueter, lire, favori. **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
 - **📰 Digest quotidien par email** — Un récap de votre tri des 7 derniers jours, envoyé **chaque jour dans votre boîte** à l'heure (UTC) que vous choisissez. Activez-le en un clic depuis les *Réglages*.
 - **👤 Apprendre une fois, en 1 clic** — Depuis la vue *Expéditeurs*, transformez n'importe quel expéditeur en **règle permanente** : ses futurs emails sont rangés tout seuls, pour toujours.
 - **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
@@ -29,6 +29,7 @@ Mailsorter automatise tout ça :
 - **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
 - **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
 - **🏷️ Libellés intelligents** — Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
+- **📦 Export & suppression RGPD** — Récupérez **tout ce que Mailsorter stocke** à votre sujet (règles, protections, reports, historique, réglages) en un fichier JSON, ou **effacez définitivement** votre compte et toutes vos données en un geste — sans jamais toucher à votre boîte Gmail.
 - **🔒 Zéro mot de passe stocké** — OAuth Google natif. Le secret API est chiffré au repos. Vos emails ne quittent jamais votre contrôle.
 
 ---
@@ -132,6 +133,8 @@ docker compose up -d        # ou : make up
 | `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
 | `GET`   | `/api/account/settings`   | Réglages du compte (ex. autopilote des règles) |
 | `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`)    |
+| `GET`   | `/api/account/export`     | **Export RGPD** : toutes vos données Mailsorter en un JSON |
+| `DELETE`| `/api/account`            | **Suppression RGPD** : efface le compte et toutes les données |
 | `GET`   | `/api/rules`              | **Règles de tri** (liste, triées par priorité) |
 | `POST`  | `/api/rules`              | Crée une règle déterministe (validée serveur) |
 | `POST`  | `/api/rules/apply`        | **Applique les règles** sur la boîte (sans IA, sans quota) |

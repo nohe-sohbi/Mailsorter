@@ -19,6 +19,8 @@ import (
 type Service struct {
 	config *oauth2.Config
 	mu     sync.RWMutex
+	// retry resilience knobs, applied to every Gmail API call (see retry.go).
+	retry retryConfig
 }
 
 func NewService(clientID, clientSecret, redirectURL string) *Service {
@@ -40,6 +42,7 @@ func NewService(clientID, clientSecret, redirectURL string) *Service {
 
 	return &Service{
 		config: config,
+		retry:  defaultRetryConfig(),
 	}
 }
 
@@ -117,22 +120,25 @@ func (s *Service) ListMessages(gmailService *gmail.Service, query string, maxRes
 func (s *Service) ListMessagesWithPagination(gmailService *gmail.Service, query string, maxResults int64, pageToken string) (*ListMessagesResponse, error) {
 	user := "me"
 
-	call := gmailService.Users.Messages.List(user).Q(query)
-	if maxResults > 0 {
-		call = call.MaxResults(maxResults)
-	}
-	if pageToken != "" {
-		call = call.PageToken(pageToken)
-	}
-
-	response, err := call.Do()
+	response, err := withRetry(s.retry, func() (*gmail.ListMessagesResponse, error) {
+		call := gmailService.Users.Messages.List(user).Q(query)
+		if maxResults > 0 {
+			call = call.MaxResults(maxResults)
+		}
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+		return call.Do()
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	messages := make([]*gmail.Message, 0, len(response.Messages))
 	for _, m := range response.Messages {
-		msg, err := gmailService.Users.Messages.Get(user, m.Id).Format("full").Do()
+		msg, err := withRetry(s.retry, func() (*gmail.Message, error) {
+			return gmailService.Users.Messages.Get(user, m.Id).Format("full").Do()
+		})
 		if err != nil {
 			continue
 		}
@@ -147,7 +153,9 @@ func (s *Service) ListMessagesWithPagination(gmailService *gmail.Service, query 
 }
 
 func (s *Service) GetMessage(gmailService *gmail.Service, messageID string) (*gmail.Message, error) {
-	return gmailService.Users.Messages.Get("me", messageID).Format("full").Do()
+	return withRetry(s.retry, func() (*gmail.Message, error) {
+		return gmailService.Users.Messages.Get("me", messageID).Format("full").Do()
+	})
 }
 
 func (s *Service) ModifyMessage(gmailService *gmail.Service, messageID string, addLabels, removeLabels []string) error {
@@ -155,19 +163,25 @@ func (s *Service) ModifyMessage(gmailService *gmail.Service, messageID string, a
 		AddLabelIds:    addLabels,
 		RemoveLabelIds: removeLabels,
 	}
-	_, err := gmailService.Users.Messages.Modify("me", messageID, modifyRequest).Do()
-	return err
+	return s.retryErr(func() error {
+		_, err := gmailService.Users.Messages.Modify("me", messageID, modifyRequest).Do()
+		return err
+	})
 }
 
 // SendMessage sends a pre-built RFC 2822, base64url-encoded message (see
 // internal/mailer.BuildRaw) as the authenticated user. Used for the daily digest.
 func (s *Service) SendMessage(gmailService *gmail.Service, raw string) error {
-	_, err := gmailService.Users.Messages.Send("me", &gmail.Message{Raw: raw}).Do()
-	return err
+	return s.retryErr(func() error {
+		_, err := gmailService.Users.Messages.Send("me", &gmail.Message{Raw: raw}).Do()
+		return err
+	})
 }
 
 func (s *Service) ListLabels(gmailService *gmail.Service) ([]*gmail.Label, error) {
-	response, err := gmailService.Users.Labels.List("me").Do()
+	response, err := withRetry(s.retry, func() (*gmail.ListLabelsResponse, error) {
+		return gmailService.Users.Labels.List("me").Do()
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +211,9 @@ func (s *Service) CreateLabel(gmailService interface{}, name string) (string, er
 		MessageListVisibility: "show",
 	}
 
-	created, err := srv.Users.Labels.Create("me", label).Do()
+	created, err := withRetry(s.retry, func() (*gmail.Label, error) {
+		return srv.Users.Labels.Create("me", label).Do()
+	})
 	if err != nil {
 		return "", err
 	}
@@ -206,7 +222,9 @@ func (s *Service) CreateLabel(gmailService interface{}, name string) (string, er
 }
 
 func (s *Service) GetUserProfile(gmailService *gmail.Service) (string, error) {
-	profile, err := gmailService.Users.GetProfile("me").Do()
+	profile, err := withRetry(s.retry, func() (*gmail.Profile, error) {
+		return gmailService.Users.GetProfile("me").Do()
+	})
 	if err != nil {
 		return "", err
 	}
@@ -241,7 +259,9 @@ func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, e
 	user := "me"
 
 	// Get user profile for total counts
-	profile, err := gmailService.Users.GetProfile(user).Do()
+	profile, err := withRetry(s.retry, func() (*gmail.Profile, error) {
+		return gmailService.Users.GetProfile(user).Do()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get profile: %w", err)
 	}
@@ -253,14 +273,18 @@ func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, e
 	}
 
 	// Get all labels with their stats
-	labels, err := gmailService.Users.Labels.List(user).Do()
+	labels, err := withRetry(s.retry, func() (*gmail.ListLabelsResponse, error) {
+		return gmailService.Users.Labels.List(user).Do()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list labels: %w", err)
 	}
 
 	for _, label := range labels.Labels {
 		// Get detailed label info including message counts
-		labelDetail, err := gmailService.Users.Labels.Get(user, label.Id).Do()
+		labelDetail, err := withRetry(s.retry, func() (*gmail.Label, error) {
+			return gmailService.Users.Labels.Get(user, label.Id).Do()
+		})
 		if err != nil {
 			continue
 		}

@@ -372,11 +372,14 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(autoRules) > 0 {
-			if match := rules.FirstMatch(email, autoRules); match != nil && allows(match.Action, email.From, protectedList) {
-				if err := h.applyRuleAction(ctx, gmailClient, userEmail, msg.Id, *match, labelCache); err == nil {
+			if match := rules.FirstMatch(email, autoRules); match != nil {
+				appliedActs, _ := h.applyRuleToMessage(ctx, gmailClient, userEmail, msg.Id, email.From, *match, protectedList, labelCache)
+				if len(appliedActs) > 0 {
 					rulesApplied++
 					byRule[match.Name]++
-					h.logAction(ctx, userEmail, msg.Id, match.Action, SourceRule)
+					for _, act := range appliedActs {
+						h.logAction(ctx, userEmail, msg.Id, act, SourceRule)
+					}
 				}
 			}
 		}

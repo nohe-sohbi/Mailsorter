@@ -376,6 +376,40 @@ background scheduler emails the 7-day recap once a day at `digestHourUTC` (UTC).
 
 **Request Body:** `{ "autoApplyRules": bool, "digestEnabled": bool, "digestHourUTC": int }`
 
+### Export account data (RGPD / data portability)
+
+#### GET /api/account/export
+
+Returns a single JSON document with everything Mailsorter stores about the
+caller: a **redacted** account profile (never the OAuth tokens or Stripe IDs)
+plus every user-owned dataset (rules, protected senders, snoozes, suggestions,
+sender preferences, smart labels, unsubscribes, usage, action log, analysis
+jobs). Served as a downloadable attachment. The user's Gmail mailbox is not
+included — those emails live in Gmail and never leave the user's control.
+
+```json
+{
+  "exportedAt": "2026-06-22T10:00:00Z",
+  "account": { "email": "you@example.com", "plan": "free", "autoApplyRules": false, "digestEnabled": true, "digestHourUTC": 7 },
+  "settings": { "autoApplyRules": false, "digestEnabled": true, "digestHourUTC": 7 },
+  "rules": [ ... ],
+  "protectedSenders": [ ... ],
+  "actionLog": [ ... ]
+}
+```
+
+### Delete account (RGPD / right to erasure)
+
+#### DELETE /api/account
+
+Permanently erases the caller's account record and **all** user-owned datasets
+(the same catalog the export covers). Irreversible; the UI gates it behind a
+typed confirmation. Gmail is never touched. Returns per-dataset deletion counts.
+
+```json
+{ "status": "deleted", "deleted": { "rules": 4, "protectedSenders": 2, "actionLog": 137, "account": 1 } }
+```
+
 ---
 
 ## Billing Endpoints (Stripe)
@@ -466,8 +500,12 @@ A rule has the shape:
   "conditions": [
     { "field": "from", "operator": "contains", "value": "acme.com" }
   ],
-  "action": "archive",
-  "labelName": "",
+  "actions": [
+    { "type": "label", "labelName": "Newsletters" },
+    { "type": "archive" }
+  ],
+  "action": "label",
+  "labelName": "Newsletters",
   "priority": 0,
   "appliedCount": 12,
   "createdAt": "2026-06-20T12:00:00Z",
@@ -482,8 +520,15 @@ A rule has the shape:
   `regex`); temporal: `olderThan` / `newerThan`, whose `value` is a **number of
   days** compared against the email's received date (an undated email never
   matches a temporal condition).
-- **`action`** — `archive`, `trash`, `label` (requires `labelName`), `markRead`,
-  `star`.
+- **`actions`** — an **ordered list** of actions applied in sequence (e.g.
+  *label* then *archive*). Each is `{ "type": ..., "labelName": ... }` where
+  `type` is `archive`, `trash`, `label` (requires `labelName`), `markRead` or
+  `star`. A protected (VIP) sender has destructive actions (archive/trash)
+  skipped while non-destructive actions in the same rule still run.
+- **`action` / `labelName`** — legacy single-action fields, kept for backward
+  compatibility. A client may send either shape; the server normalizes them and
+  mirrors the primary (first) action onto these fields. Rules created before
+  multi-action, and one-click sender rules, use only these.
 - **`priority`** — lower runs first; the first matching rule wins per email.
 
 ### Get Sorting Rules

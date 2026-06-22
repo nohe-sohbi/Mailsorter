@@ -161,6 +161,52 @@ restée en attente**, une feature qui **donne plus de contrôle**, et un
    utilisateur ⇒ scrappable sans auth). Le build est configurable via
    `BUILD_VERSION`. Registry et middleware testés.
 
+## ✅ Phase 11 — Profondeur, confiance & robustesse (livrée)
+
+Trois axes majeurs, dans la cadence du repo : une feature qui **approfondit** le
+moteur de règles, une feature qui **renforce la confiance** (RGPD), et un
+**durcissement de la fiabilité** réseau.
+
+1. **Règles multi-actions (feature).** Une règle déterministe pouvait jusqu'ici
+   appliquer **une seule** action ; le cas canonique « *étiqueter* **puis**
+   *archiver* une newsletter » était impossible. Une règle porte désormais une
+   **liste ordonnée d'actions** (`Actions []RuleAction`), exécutées dans l'ordre.
+   Le cœur reste **pur et rétrocompatible** : `rules.EffectiveActions` présente
+   les anciennes règles (champ `action`/`labelName`) et les règles 1-clic par
+   expéditeur comme une liste à un élément, et le champ legacy est rempli avec
+   l'action primaire (premier de la liste) pour les lecteurs historiques. La
+   **protection VIP** se fait par action : un expéditeur protégé voit ses actions
+   destructrices (archive/corbeille) sautées, mais les actions non destructrices
+   (libellé/favori/lu) de la même règle s'appliquent quand même. Le dry-run
+   `preview` remonte la liste complète. Page **Règles** : éditeur d'actions
+   multiples (anti-doublon). Tests exhaustifs (`EffectiveActions`, validation
+   multi-actions, preview).
+2. **Export & suppression de compte — RGPD (feature, confiance).** Concrétise la
+   promesse « vos emails ne quittent jamais votre contrôle » côté **droits sur
+   les données**. `GET /api/account/export` renvoie **un seul JSON** avec un profil
+   de compte **expurgé** (jamais les tokens OAuth ni les identifiants Stripe) et
+   **chaque dataset appartenant à l'utilisateur** (règles, protections, reports,
+   suggestions, préférences, libellés, désabonnements, usage, journal d'actions,
+   jobs). `DELETE /api/account` **efface définitivement** le compte et tous ces
+   datasets (la boîte Gmail n'est jamais touchée), et renvoie les compteurs de
+   suppression. Un package pur `internal/account` tient le **catalogue unique**
+   des données (`Datasets`) qui pilote **à la fois** l'export et la suppression —
+   impossible d'exporter une donnée qu'on ne sait pas effacer, ou d'effacer une
+   donnée qu'on n'a pas divulguée — plus la redaction `RedactUser`. Section
+   **Données & confidentialité** dans les *Réglages* : export téléchargeable +
+   *zone de danger* avec confirmation tapée. Tests sur le catalogue et la
+   redaction.
+3. **Résilience des appels Gmail (amélioration, fiabilité).** Symétrique du
+   durcissement Mistral (Phase 8) : Gmail **rate-limite agressivement** (429 +
+   `Retry-After`) et a des 5xx ponctuels, et jusqu'ici un seul 429 en plein sync
+   pouvait avorter la lecture de la boîte ou perdre une application de règle.
+   Chaque appel Gmail (list/get messages, modify, send, labels, profil, stats)
+   passe désormais par un wrapper qui **réessaie** les erreurs transitoires
+   (429, 5xx, erreurs réseau) avec **backoff exponentiel + jitter**, en honorant
+   `Retry-After` et plafonné pour rester dans les timeouts serveur. Les 4xx (hors
+   429) et les annulations de contexte échouent vite. Le classifieur et le calcul
+   de backoff sont **purs** (`internal/gmail/retry.go`) et couverts par des tests.
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).
