@@ -53,13 +53,14 @@ func Datasets() []Dataset {
 // export. It deliberately omits OAuth tokens and Stripe identifiers — secrets a
 // user's own data export must never leak, even to the user.
 type Profile struct {
-	Email          string    `json:"email"`
-	Plan           string    `json:"plan"`
-	AutoApplyRules bool      `json:"autoApplyRules"`
-	DigestEnabled  bool      `json:"digestEnabled"`
-	DigestHourUTC  int       `json:"digestHourUTC"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	Email           string    `json:"email"`
+	Plan            string    `json:"plan"`
+	AutoApplyRules  bool      `json:"autoApplyRules"`
+	AutoSyncEnabled bool      `json:"autoSyncEnabled"`
+	DigestEnabled   bool      `json:"digestEnabled"`
+	DigestHourUTC   int       `json:"digestHourUTC"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // RedactUser projects a stored User onto the safe Profile, dropping the OAuth
@@ -70,12 +71,13 @@ func RedactUser(u models.User) Profile {
 		plan = "free"
 	}
 	return Profile{
-		Email:          u.Email,
-		Plan:           plan,
-		AutoApplyRules: u.AutoApplyRules,
-		DigestEnabled:  u.DigestEnabled,
-		DigestHourUTC:  u.DigestHourUTC,
-		CreatedAt:      u.CreatedAt,
-		UpdatedAt:      u.UpdatedAt,
+		Email:           u.Email,
+		Plan:            plan,
+		AutoApplyRules:  u.AutoApplyRules,
+		AutoSyncEnabled: u.AutoSyncEnabled,
+		DigestEnabled:   u.DigestEnabled,
+		DigestHourUTC:   u.DigestHourUTC,
+		CreatedAt:       u.CreatedAt,
+		UpdatedAt:       u.UpdatedAt,
 	}
 }

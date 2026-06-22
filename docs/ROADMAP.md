@@ -207,6 +207,49 @@ moteur de règles, une feature qui **renforce la confiance** (RGPD), et un
    429) et les annulations de contexte échouent vite. Le classifieur et le calcul
    de backoff sont **purs** (`internal/gmail/retry.go`) et couverts par des tests.
 
+## ✅ Phase 12 — Contrôle, automatisation & robustesse (livrée)
+
+Trois axes majeurs, dans la cadence du repo : une feature qui **rend le contrôle**
+à l'utilisateur, une feature qui **automatise** la promesse Inbox Zero, et un
+**durcissement de la robustesse** des entrées HTTP.
+
+1. **Journal d'actions & annulation (feature, confiance/contrôle).** Le ledger
+   append-only (`action_log`) était déjà la source de vérité du récap ; il devient
+   désormais une **histoire visible et actionnable**. `GET /api/activity/log`
+   expose les dernières mutations (par page bornée, filtrables par **source** :
+   règle, IA, en masse, report, désabonnement…), chacune marquée *réversible* ou
+   non. `POST /api/activity/undo` **annule** une action automatisée destructrice en
+   rejouant son inverse Gmail (archive→désarchive, corbeille→restaure,
+   lu→non lu), marque l'entrée *annulée* et **journalise la réversion** (source
+   `undo`) pour que l'audit reste vrai. La table d'inversion vit dans le package
+   pur `internal/activity` (`Inverse`, testée) — impossible de proposer une
+   annulation qu'on ne sait pas exécuter. Nouvelle page **Historique** dans le
+   cockpit. Concrétise « vos emails ne quittent jamais votre contrôle » côté
+   *réversibilité*.
+2. **Auto-sync en arrière-plan (feature, automatisation).** Jusqu'ici l'autopilote
+   des règles ne tournait qu'à la **synchro manuelle** ; un nouveau **scheduler de
+   fond** (ticker, dans la lignée des boucles snooze/digest) synchronise
+   périodiquement la boîte des utilisateurs opté-in **sans aucun clic** et, si
+   l'application automatique des règles est active, trie leurs nouveaux emails tout
+   seul — le chemin **mains-libres** vers l'Inbox Zero. La logique de synchro est
+   factorisée (`syncInbox`) et partagée par le handler et la boucle (comportement
+   identique). La cadence par utilisateur est une décision **pure** (package
+   `internal/schedule`, `Due`, testée) : un intervalle minimum est honoré, et
+   chaque utilisateur est *stampé avant* la tentative pour éviter les tempêtes de
+   reprise. Réglage `autoSyncEnabled` (**OFF par défaut**) exposé via
+   `GET/PUT /api/account/settings` et piloté depuis les **Réglages**.
+3. **Robustesse des entrées HTTP (amélioration, sécurité).** Tous les corps de
+   requête JSON sont désormais **bornés** (`http.MaxBytesReader`, plafond 1 Mio) via
+   un helper unique `decodeJSON` — un payload géant est rejeté en `413` sans être
+   chargé en mémoire (vecteur d'épuisement de ressources fermé) — et les erreurs
+   passent par une **enveloppe JSON cohérente** (`{"error":…,"status":n}`,
+   `writeError`) au lieu de texte brut, parsable uniformément côté client. Au
+   passage, `PUT /api/account/settings` devient un **merge partiel** (champs en
+   pointeurs) : la bascule *autopilote des règles* (page Règles) et la carte
+   *digest* (Réglages) ne **s'écrasent plus mutuellement** — un bug latent où
+   enregistrer un réglage réinitialisait silencieusement les autres. Helpers
+   couverts par des tests (`httptest`).
+
 ### Reste à brancher (dépend d'infra externe)
 
 - **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).

@@ -149,6 +149,14 @@ export const Clock = make(
   </>
 );
 
+export const History = make(
+  <>
+    <path d="M3 3v5h5" />
+    <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" />
+    <path d="M12 7v5l4 2" />
+  </>
+);
+
 export const BellOff = make(
   <>
     <path d="M8.7 3.6A6 6 0 0 1 18 8c0 2 .4 3.6 1 5" />

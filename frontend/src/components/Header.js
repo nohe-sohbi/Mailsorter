@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { cn } from '../ui/cn';
-import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock } from '../ui/icons';
+import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock, History } from '../ui/icons';
 
 function Header() {
   const navigate = useNavigate();
@@ -24,6 +24,7 @@ function Header() {
     { to: '/inbox', label: 'Boîte', Icon: Inbox },
     { to: '/rules', label: 'Règles', Icon: Tag },
     { to: '/snoozed', label: 'Reporté', Icon: Clock },
+    { to: '/history', label: 'Historique', Icon: History },
     { to: '/pricing', label: 'Tarifs', Icon: Bolt },
     { to: '/settings', label: 'Réglages', Icon: Settings },
   ];

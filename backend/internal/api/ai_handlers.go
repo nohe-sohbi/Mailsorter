@@ -31,8 +31,7 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.AnalyzeEmailsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.EmailIDs) == 0 {
@@ -120,8 +119,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.AnalyzeSenderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -203,8 +201,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.ApplySuggestionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -287,8 +284,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.ApplyBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.SuggestionIDs) == 0 {
@@ -390,8 +386,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.ApplyBulkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -625,8 +620,7 @@ func (h *Handler) UpdateSenderPreference(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req models.UpdateSenderPreferenceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -693,8 +687,7 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var label models.SmartLabel
-	if err := json.NewDecoder(r.Body).Decode(&label); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &label) {
 		return
 	}
 

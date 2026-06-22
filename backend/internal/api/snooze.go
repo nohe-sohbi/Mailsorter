@@ -37,8 +37,7 @@ func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.SnoozeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.MessageID == "" {

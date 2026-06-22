@@ -9,11 +9,11 @@ func TestSummarizeBucketsAndWindow(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC) // Sunday noon
 	rows := []Row{
 		{At: now, Action: "archive", Source: "direct"},
-		{At: now.Add(-1 * time.Hour), Action: "trash", Source: "rule"},     // folds to delete
-		{At: now.AddDate(0, 0, -1), Action: "label", Source: "ai"},         // yesterday
-		{At: now.AddDate(0, 0, -6), Action: "keep", Source: "ai"},          // oldest in window
-		{At: now.AddDate(0, 0, -7), Action: "archive", Source: "direct"},   // out of window
-		{At: now.AddDate(0, 0, -30), Action: "delete", Source: "bulk"},     // out of window
+		{At: now.Add(-1 * time.Hour), Action: "trash", Source: "rule"},      // folds to delete
+		{At: now.AddDate(0, 0, -1), Action: "label", Source: "ai"},          // yesterday
+		{At: now.AddDate(0, 0, -6), Action: "keep", Source: "ai"},           // oldest in window
+		{At: now.AddDate(0, 0, -7), Action: "archive", Source: "direct"},    // out of window
+		{At: now.AddDate(0, 0, -30), Action: "delete", Source: "bulk"},      // out of window
 		{At: now.Add(-2 * time.Hour), Action: "markRead", Source: "snooze"}, // folds to read
 	}
 
@@ -64,5 +64,32 @@ func TestSummarizeEmpty(t *testing.T) {
 		if d.Count != 0 {
 			t.Errorf("empty summary day %s has count %d", d.Date, d.Count)
 		}
+	}
+}
+
+func TestInverse(t *testing.T) {
+	cases := []struct {
+		action      string
+		wantInverse string
+		wantOK      bool
+	}{
+		{"archive", "unarchive", true},
+		{"delete", "untrash", true},
+		{"trash", "untrash", true},
+		{"read", "unread", true},
+		{"markRead", "unread", true},
+		{"label", "", false},
+		{"star", "", false},
+		{"keep", "", false},
+		{"", "", false},
+		{"unarchive", "", false}, // an inverse is not itself re-invertible here
+	}
+	for _, c := range cases {
+		t.Run(c.action, func(t *testing.T) {
+			got, ok := Inverse(c.action)
+			if ok != c.wantOK || got != c.wantInverse {
+				t.Fatalf("Inverse(%q) = (%q, %v), want (%q, %v)", c.action, got, ok, c.wantInverse, c.wantOK)
+			}
+		})
 	}
 }

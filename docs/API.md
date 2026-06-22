@@ -347,6 +347,53 @@ background loop emails opted-in users once a day at their chosen UTC hour.
 
 ---
 
+## Action History Endpoints
+
+The same append-only ledger that powers the recap is exposed as a transparent,
+actionable history. Forward triage actions and their reversals (recorded with
+source `undo`) both appear.
+
+### Get action history
+
+#### GET /api/activity/log?source=&limit=
+
+Returns the caller's most recent ledger entries, newest first. `source` is an
+optional filter (`direct`, `rule`, `ai`, `ai-auto`, `bulk`, `snooze`,
+`unsubscribe`, `undo`); `limit` defaults to `50` and is capped at `200`. Each
+entry is flagged `undoable` (it has a clean inverse and has not been undone yet).
+
+```json
+{
+  "entries": [
+    {
+      "id": "665…",
+      "messageId": "18f…",
+      "action": "archive",
+      "source": "rule",
+      "undone": false,
+      "createdAt": "2026-06-22T09:14:00Z",
+      "undoable": true
+    }
+  ]
+}
+```
+
+### Undo an action
+
+#### POST /api/activity/undo
+
+Reverses one recorded action by replaying its inverse Gmail mutation
+(`archive`→`unarchive`, `delete`/`trash`→`untrash`, `read`→`unread`). The entry
+is marked `undone` and the reversal is itself appended to the ledger (source
+`undo`). Only stateful triage actions are reversible; others return `400`.
+
+**Request Body:** `{ "id": "665…" }`
+
+**Responses:** `200 { "status": "undone", "action": "unarchive" }` ·
+`400` not reversible · `404` not found · `409` already undone.
+
+---
+
 ## Account Settings
 
 ### Get Settings
@@ -358,6 +405,7 @@ Returns the caller's tunable settings.
 ```json
 {
   "autoApplyRules": false,
+  "autoSyncEnabled": false,
   "digestEnabled": true,
   "digestHourUTC": 7
 }
@@ -367,14 +415,19 @@ Returns the caller's tunable settings.
 
 #### PUT /api/account/settings
 
-Persists the settings. `digestHourUTC` is clamped to `0–23` (out-of-range falls
-back to the server default `DIGEST_HOUR_UTC`). When `digestEnabled` is true, a
-background scheduler emails the 7-day recap once a day at `digestHourUTC` (UTC).
+Persists the settings. **Partial merge:** every field is optional and only the
+fields present in the body are updated, so one screen can toggle its setting
+without clobbering the others. `digestHourUTC` is clamped to `0–23` (out-of-range
+falls back to the server default `DIGEST_HOUR_UTC`). When `digestEnabled` is
+true, a background scheduler emails the 7-day recap once a day at `digestHourUTC`
+(UTC). When `autoSyncEnabled` is true, a background scheduler periodically syncs
+the inbox (and applies rules when `autoApplyRules` is on) with no manual click.
+Returns the full, merged settings.
 
 > Accounts connected before the digest feature must **reconnect Gmail** to grant
 > the `gmail.send` scope before delivery can succeed.
 
-**Request Body:** `{ "autoApplyRules": bool, "digestEnabled": bool, "digestHourUTC": int }`
+**Request Body (all optional):** `{ "autoApplyRules": bool, "autoSyncEnabled": bool, "digestEnabled": bool, "digestHourUTC": int }`
 
 ### Export account data (RGPD / data portability)
 

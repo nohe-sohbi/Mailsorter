@@ -83,8 +83,7 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in models.ProtectedSenderInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &in) {
 		return
 	}
 

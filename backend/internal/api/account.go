@@ -88,9 +88,10 @@ func (h *Handler) autoApplyRulesEnabled(ctx context.Context, userEmail string) b
 // "unset" rather than midnight, which is rarely what a user means).
 func (h *Handler) userSettings(ctx context.Context, userEmail string) models.UserSettings {
 	var doc struct {
-		AutoApplyRules bool `bson:"autoApplyRules"`
-		DigestEnabled  bool `bson:"digestEnabled"`
-		DigestHourUTC  int  `bson:"digestHourUTC"`
+		AutoApplyRules  bool `bson:"autoApplyRules"`
+		AutoSyncEnabled bool `bson:"autoSyncEnabled"`
+		DigestEnabled   bool `bson:"digestEnabled"`
+		DigestHourUTC   int  `bson:"digestHourUTC"`
 	}
 	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&doc); err != nil {
 		return models.UserSettings{DigestHourUTC: defaultDigestHour()}
@@ -100,9 +101,10 @@ func (h *Handler) userSettings(ctx context.Context, userEmail string) models.Use
 		hour = defaultDigestHour()
 	}
 	return models.UserSettings{
-		AutoApplyRules: doc.AutoApplyRules,
-		DigestEnabled:  doc.DigestEnabled,
-		DigestHourUTC:  hour,
+		AutoApplyRules:  doc.AutoApplyRules,
+		AutoSyncEnabled: doc.AutoSyncEnabled,
+		DigestEnabled:   doc.DigestEnabled,
+		DigestHourUTC:   hour,
 	}
 }
 
@@ -121,46 +123,54 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(h.userSettings(ctx, userEmail))
 }
 
-// UpdateSettings persists the caller's tunable account settings.
+// UpdateSettings persists the caller's tunable account settings. It merges only
+// the fields the client actually sent (each is a pointer): the Rules screen can
+// toggle autoApplyRules and the digest card can change the digest hour without
+// either silently resetting the other — the bug a full-document overwrite caused.
 func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	var in models.UserSettings
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	var in models.SettingsUpdate
+	if !decodeJSON(w, r, &in) {
 		return
 	}
 
-	// A digest hour must be a valid hour of day; fall back to the server default.
-	hour := in.DigestHourUTC
-	if hour < 0 || hour > 23 {
-		hour = defaultDigestHour()
+	set := bson.M{"updatedAt": time.Now()}
+	if in.AutoApplyRules != nil {
+		set["autoApplyRules"] = *in.AutoApplyRules
 	}
-	in.DigestHourUTC = hour
+	if in.AutoSyncEnabled != nil {
+		set["autoSyncEnabled"] = *in.AutoSyncEnabled
+	}
+	if in.DigestEnabled != nil {
+		set["digestEnabled"] = *in.DigestEnabled
+	}
+	if in.DigestHourUTC != nil {
+		// A digest hour must be a valid hour of day; fall back to the server default.
+		hour := *in.DigestHourUTC
+		if hour < 0 || hour > 23 {
+			hour = defaultDigestHour()
+		}
+		set["digestHourUTC"] = hour
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := h.db.Users().UpdateOne(ctx,
+	if _, err := h.db.Users().UpdateOne(ctx,
 		bson.M{"email": userEmail},
-		bson.M{"$set": bson.M{
-			"autoApplyRules": in.AutoApplyRules,
-			"digestEnabled":  in.DigestEnabled,
-			"digestHourUTC":  in.DigestHourUTC,
-			"updatedAt":      time.Now(),
-		}},
-	)
-	if err != nil {
-		http.Error(w, "Failed to update settings", http.StatusInternalServerError)
+		bson.M{"$set": set},
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update settings")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(in)
+	// Return the full, merged settings so the client reflects the true state.
+	writeJSON(w, http.StatusOK, h.userSettings(ctx, userEmail))
 }
 
 // GetActivity returns triage activity for the last 7 days from the action
