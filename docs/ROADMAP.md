@@ -121,9 +121,48 @@ confiance, une qui élargit l'usage, et un durcissement de l'observabilité.
    appliquées : le récap 7 jours devient **complet et vrai** (toutes les sources,
    plus une ventilation `bySource`), peu importe ce que le client a observé.
 
+## ✅ Phase 10 — Livraison, contrôle & observabilité (livrée)
+
+Trois axes majeurs, dans la cadence du repo : une feature qui **tient une promesse
+restée en attente**, une feature qui **donne plus de contrôle**, et un
+**durcissement de l'observabilité**.
+
+1. **Digest quotidien — réellement envoyé (feature).** Le contenu était déjà
+   rendu (`internal/digest`) ; ce qui manquait, c'était l'**envoi**. Désormais :
+   le scope **`gmail.send`** est demandé à la connexion, un package pur
+   `internal/mailer` construit le message **MIME multipart (texte + HTML),
+   base64url** prêt pour l'API Gmail (`BuildRaw`) et décide **purement** si un
+   digest est dû (`DueAt` — au plus une fois par jour, à l'heure UTC choisie), et
+   un **scheduler de fond** (`startDigestLoop`, ticker 15 min) envoie à chaque
+   utilisateur opté-in son récap des 7 derniers jours. Résilient par
+   utilisateur, idempotent (horodatage `digestLastSentAt`), et propre quand il
+   n'y a rien à dire (semaine vide ⇒ pas d'email). Réglages par utilisateur
+   (`digestEnabled`, `digestHourUTC`) exposés via `GET/PUT /api/account/settings`
+   et pilotés depuis la page **Réglages**. `BuildRaw`/`DueAt` couverts par des
+   tests. *Note : les comptes connectés avant cette phase doivent **reconnecter
+   Gmail** pour accorder le scope d'envoi.*
+2. **Règles — négation & conditions temporelles (feature).** Le moteur
+   déterministe gagne quatre opérateurs : `notContains` / `notEquals` (cibler ce
+   qui **n'**est **pas** là) et surtout `olderThan` / `newerThan` (un **âge en
+   jours** comparé à la date de réception). « Archiver les newsletters de plus de
+   30 jours » devient une règle gratuite et prévisible. Le matcher reste **pur** :
+   `now` est injecté (`MatchesAt` / `FirstMatchAt` / `PreviewAt`), les entrées
+   publiques historiques délèguent à `time.Now()` (zéro changement d'appelant), un
+   email sans date ne matche jamais une règle temporelle, et la validation exige
+   un nombre de jours ≥ 0. Nouveaux opérateurs exposés dans la page **Règles**
+   (saisie numérique pour l'âge). Tests exhaustifs.
+3. **Observabilité — `/health` profond + `/metrics` (amélioration).** Le health
+   check **vérifie réellement MongoDB** (ping) et renvoie le **build** et
+   l'**uptime** — `503` si le datastore est injoignable, pour qu'un orchestrateur
+   sorte l'instance de la rotation. Un nouveau package pur `internal/metrics`
+   (concurrence-safe, **cardinalité bornée** : compteurs par méthode et **classe**
+   de statut, latence moyenne/max, uptime) est alimenté par un middleware sur le
+   hot-path et exposé en `GET /metrics` (agrégats seuls, sans donnée
+   utilisateur ⇒ scrappable sans auth). Le build est configurable via
+   `BUILD_VERSION`. Registry et middleware testés.
+
 ### Reste à brancher (dépend d'infra externe)
 
-- **Digest quotidien par email** — le **contenu est désormais rendu** : `GET /api/stats/digest` renvoie un digest prêt à envoyer (objet + corps texte + corps HTML) calculé sur le même récap 7 jours que `/api/stats/activity`, via un package pur `internal/digest` (testé). Reste à brancher l'**envoi réel** : un scope `gmail.send` (ou SMTP) + un scheduler (cron/worker) qui appelle ce rendu et l'expédie.
 - **Multi-comptes Gmail** — nécessite un modèle `account` lié au `user` (refactor du `X-User-Email`).
 - **Analytics produit** — instrumenter le funnel (connexion → 1ʳᵉ analyse → 1ʳᵉ application) vers PostHog/Segment.
 

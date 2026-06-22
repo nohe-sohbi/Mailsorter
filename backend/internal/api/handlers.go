@@ -13,6 +13,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
@@ -41,6 +42,11 @@ type BillingConfig struct {
 	AppBaseURL    string
 }
 
+// Version identifies the running build. It defaults to "dev" and is overridden
+// from configuration (BUILD_VERSION) at startup so /health and /metrics can
+// report exactly which build is live.
+var Version = "dev"
+
 type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
@@ -49,6 +55,8 @@ type Handler struct {
 	billing      BillingConfig
 	auth         *auth.Manager
 	jobQueue     chan string
+	metrics      *metrics.Registry
+	startedAt    time.Time
 }
 
 func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig, authManager *auth.Manager) *Handler {
@@ -60,18 +68,65 @@ func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *c
 		billing:      billingCfg,
 		auth:         authManager,
 		jobQueue:     make(chan string, 256),
+		metrics:      metrics.New(),
+		startedAt:    time.Now(),
 	}
 	// Background pool that drains async analysis jobs.
 	h.startAnalysisWorkers(3)
 	// Background sweeper that returns due snoozed emails to the inbox.
 	h.startSnoozeLoop()
+	// Background scheduler that sends the daily email digest to opted-in users.
+	h.startDigestLoop()
 	return h
 }
 
-// Health check
+// HealthCheck is a readiness probe: it verifies the process can still reach
+// MongoDB (not just that the HTTP server is up) and reports the running build
+// and uptime. A failed datastore ping yields 503 so an orchestrator can pull
+// the instance out of rotation instead of routing traffic it can't serve.
 func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	status := "ok"
+	code := http.StatusOK
+	dbOK := h.db.Client.Ping(ctx, nil) == nil
+	if !dbOK {
+		status = "degraded"
+		code = http.StatusServiceUnavailable
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        status,
+		"version":       Version,
+		"uptimeSeconds": int64(time.Since(h.startedAt).Seconds()),
+		"checks":        map[string]bool{"mongo": dbOK},
+	})
+}
+
+// Metrics exposes the in-process request meter (counts by method and status
+// class, latency, uptime). It is intentionally aggregate-only — no user data —
+// so it can be scraped without authentication, the way an ops endpoint expects.
+func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
+	snap := h.metrics.Snapshot()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"version": Version,
+		"metrics": snap,
+	})
+}
+
+// metricsMiddleware records each completed request into the registry. It runs
+// inside the chain so it sees the final status code captured by the recorder.
+func (h *Handler) metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		h.metrics.Observe(r.Method, rec.status, time.Since(start))
+	})
 }
 
 // Auth endpoints

@@ -80,13 +80,30 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 // autoApplyRulesEnabled reports whether the user opted into running their
 // deterministic rules automatically on every sync.
 func (h *Handler) autoApplyRulesEnabled(ctx context.Context, userEmail string) bool {
+	return h.userSettings(ctx, userEmail).AutoApplyRules
+}
+
+// userSettings loads the caller's tunable settings, applying the server default
+// digest hour when the user has not picked one (a stored 0 is treated as
+// "unset" rather than midnight, which is rarely what a user means).
+func (h *Handler) userSettings(ctx context.Context, userEmail string) models.UserSettings {
 	var doc struct {
 		AutoApplyRules bool `bson:"autoApplyRules"`
+		DigestEnabled  bool `bson:"digestEnabled"`
+		DigestHourUTC  int  `bson:"digestHourUTC"`
 	}
 	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&doc); err != nil {
-		return false
+		return models.UserSettings{DigestHourUTC: defaultDigestHour()}
 	}
-	return doc.AutoApplyRules
+	hour := doc.DigestHourUTC
+	if hour <= 0 || hour > 23 {
+		hour = defaultDigestHour()
+	}
+	return models.UserSettings{
+		AutoApplyRules: doc.AutoApplyRules,
+		DigestEnabled:  doc.DigestEnabled,
+		DigestHourUTC:  hour,
+	}
 }
 
 // GetSettings returns the caller's tunable account settings.
@@ -101,9 +118,7 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.UserSettings{
-		AutoApplyRules: h.autoApplyRulesEnabled(ctx, userEmail),
-	})
+	json.NewEncoder(w).Encode(h.userSettings(ctx, userEmail))
 }
 
 // UpdateSettings persists the caller's tunable account settings.
@@ -120,12 +135,24 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A digest hour must be a valid hour of day; fall back to the server default.
+	hour := in.DigestHourUTC
+	if hour < 0 || hour > 23 {
+		hour = defaultDigestHour()
+	}
+	in.DigestHourUTC = hour
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := h.db.Users().UpdateOne(ctx,
 		bson.M{"email": userEmail},
-		bson.M{"$set": bson.M{"autoApplyRules": in.AutoApplyRules, "updatedAt": time.Now()}},
+		bson.M{"$set": bson.M{
+			"autoApplyRules": in.AutoApplyRules,
+			"digestEnabled":  in.DigestEnabled,
+			"digestHourUTC":  in.DigestHourUTC,
+			"updatedAt":      time.Now(),
+		}},
 	)
 	if err != nil {
 		http.Error(w, "Failed to update settings", http.StatusInternalServerError)

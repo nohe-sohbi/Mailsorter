@@ -9,8 +9,9 @@ import (
 func (h *Handler) SetupRoutes() http.Handler {
 	r := mux.NewRouter()
 
-	// Health check
+	// Health check + ops metrics
 	r.HandleFunc("/health", h.HealthCheck).Methods("GET")
+	r.HandleFunc("/metrics", h.Metrics).Methods("GET")
 
 	// Auth routes
 	r.HandleFunc("/api/auth/url", h.GetAuthURL).Methods("GET")
@@ -85,10 +86,11 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/config/gmail", h.SaveGmailConfig).Methods("POST")
 
 	// Middleware chain (applied to every matched route, innermost last):
-	// recover → request-id → logging → rate-limit → auth → handler.
+	// recover → request-id → metrics → logging → rate-limit → auth → handler.
 	rl := newRateLimiter(20, 40) // ~20 req/s sustained, burst 40, per client
 	r.Use(recoverMiddleware)
 	r.Use(requestIDMiddleware)
+	r.Use(h.metricsMiddleware)
 	r.Use(loggingMiddleware)
 	r.Use(rl.middleware)
 	r.Use(h.authMiddleware)

@@ -1,8 +1,102 @@
 import React, { useEffect, useState } from 'react';
-import { configService, protectService } from '../services/api';
+import { configService, protectService, accountService } from '../services/api';
 import { useToast } from '../ui/Toast';
-import { Settings as SettingsIcon, Shield, Check, X } from '../ui/icons';
+import { Settings as SettingsIcon, Shield, Check, X, Mail } from '../ui/icons';
 import Spinner from '../ui/Spinner';
+
+// Opt in to the daily email digest: a once-a-day recap of the last 7 days of
+// triage, sent to the user's own inbox at a chosen UTC hour.
+function DigestSettings() {
+  const toast = useToast();
+  const [enabled, setEnabled] = useState(false);
+  const [hour, setHour] = useState(7);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await accountService.getSettings();
+        setEnabled(!!data.digestEnabled);
+        setHour(typeof data.digestHourUTC === 'number' && data.digestHourUTC > 0 ? data.digestHourUTC : 7);
+      } catch (err) {
+        // Silent: the card still renders with defaults.
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const persist = async (next) => {
+    setSaving(true);
+    try {
+      const { data } = await accountService.updateSettings({
+        digestEnabled: next.enabled,
+        digestHourUTC: next.hour,
+      });
+      setEnabled(!!data.digestEnabled);
+      setHour(data.digestHourUTC || 7);
+      toast.success(next.enabled ? 'Digest quotidien activé.' : 'Réglages du digest enregistrés.');
+    } catch (err) {
+      toast.error('Enregistrement impossible.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card animate-fade-up mt-6 p-7">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+          <Mail size={18} />
+        </span>
+        <h2 className="text-lg font-bold text-ink-900">Digest quotidien</h2>
+      </div>
+      <p className="mb-5 text-sm text-ink-500">
+        Recevez chaque jour un <span className="font-semibold text-ink-700">récap de votre tri des 7 derniers jours</span>,
+        directement dans votre boîte. Envoyé à l'heure choisie (UTC).
+        <span className="mt-1 block text-xs text-ink-400">
+          Astuce : si rien n'arrive, reconnectez Gmail pour autoriser l'envoi.
+        </span>
+      </p>
+
+      {loading ? (
+        <div className="flex justify-center py-6">
+          <Spinner size={22} className="text-brand-500" />
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-sm font-semibold text-ink-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-brand-600"
+              checked={enabled}
+              disabled={saving}
+              onChange={(e) => persist({ enabled: e.target.checked, hour })}
+            />
+            Activer l'envoi quotidien
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-ink-600">
+            Heure (UTC)
+            <select
+              className="input w-auto"
+              value={hour}
+              disabled={saving || !enabled}
+              onChange={(e) => persist({ enabled, hour: parseInt(e.target.value, 10) })}
+            >
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+              ))}
+            </select>
+          </label>
+
+          {saving && <Spinner size={18} className="text-brand-500" />}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Manage the protected-senders list: addresses or whole domains that no
 // automated pass (AI, rules, auto-pilot, bulk) may ever archive, trash or
@@ -182,7 +276,7 @@ function Settings() {
         </span>
         <div>
           <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
-          <p className="text-sm text-ink-500">Connexion à l'API Gmail et expéditeurs protégés.</p>
+          <p className="text-sm text-ink-500">Connexion à l'API Gmail, digest quotidien et expéditeurs protégés.</p>
         </div>
       </div>
 
@@ -265,6 +359,7 @@ function Settings() {
         </form>
       </div>
 
+      <DigestSettings />
       <ProtectedSenders />
     </div>
   );

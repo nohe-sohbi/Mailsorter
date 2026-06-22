@@ -20,7 +20,8 @@ Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de col
 Mailsorter automatise tout ça :
 
 - **🧠 Tri par IA en un clic** — L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
-- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / égal / regex…) → action (archiver, supprimer, étiqueter, lire, favori). **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
+- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / **ne contient pas** / égal / **différent** / commence / finit / regex / **plus vieux que** / **plus récent que** *N* jours) → action (archiver, supprimer, étiqueter, lire, favori). **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
+- **📰 Digest quotidien par email** — Un récap de votre tri des 7 derniers jours, envoyé **chaque jour dans votre boîte** à l'heure (UTC) que vous choisissez. Activez-le en un clic depuis les *Réglages*.
 - **👤 Apprendre une fois, en 1 clic** — Depuis la vue *Expéditeurs*, transformez n'importe quel expéditeur en **règle permanente** : ses futurs emails sont rangés tout seuls, pour toujours.
 - **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
 - **🛡️ Expéditeurs protégés (VIP)** — Marquez une adresse ou un domaine entier comme **protégé** : ses emails ne seront **jamais** archivés ni supprimés automatiquement (ni par l'IA, ni par les règles, ni en masse). Le filet de sécurité de l'Inbox Zero.
@@ -141,6 +142,8 @@ docker compose up -d        # ou : make up
 | `POST`  | `/api/billing/checkout`   | **Stripe Checkout** (passage à Pro = illimité) |
 | `POST`  | `/api/billing/portal`     | **Portail Stripe** (gérer/résilier en self-service) |
 | `POST`  | `/api/billing/webhook`    | Webhook Stripe (signature vérifiée, sync plan) |
+| `GET`   | `/health`                 | Liveness/readiness : **ping MongoDB**, build, uptime (`503` si DB KO) |
+| `GET`   | `/metrics`                | **Métriques d'exploitation** (req. par méthode/classe de statut, latence, uptime) |
 
 Documentation complète : [`docs/API.md`](docs/API.md) · Architecture : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Roadmap : [`docs/ROADMAP.md`](docs/ROADMAP.md)
 

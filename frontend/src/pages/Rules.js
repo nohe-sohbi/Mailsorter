@@ -15,11 +15,19 @@ const FIELDS = [
 
 const OPERATORS = [
   { value: 'contains', label: 'contient' },
+  { value: 'notContains', label: 'ne contient pas' },
   { value: 'equals', label: 'est égal à' },
+  { value: 'notEquals', label: 'est différent de' },
   { value: 'startsWith', label: 'commence par' },
   { value: 'endsWith', label: 'finit par' },
   { value: 'regex', label: 'correspond à (regex)' },
+  { value: 'olderThan', label: 'plus vieux que (jours)' },
+  { value: 'newerThan', label: 'plus récent que (jours)' },
 ];
+
+// Temporal operators compare the email's age, so their value is a number of days
+// rather than free text.
+const isTemporalOperator = (op) => op === 'olderThan' || op === 'newerThan';
 
 const ACTIONS = [
   { value: 'archive', label: 'Archiver', Icon: Archive, tone: 'text-sky-600 bg-sky-50' },
@@ -119,7 +127,9 @@ function RuleEditor({ initial, onCancel, onSave, saving }) {
               </select>
               <input
                 className="input min-w-[140px] flex-1"
-                placeholder="Valeur…"
+                type={isTemporalOperator(c.operator) ? 'number' : 'text'}
+                min={isTemporalOperator(c.operator) ? 0 : undefined}
+                placeholder={isTemporalOperator(c.operator) ? 'Nombre de jours…' : 'Valeur…'}
                 value={c.value}
                 onChange={(e) => setCondition(i, { value: e.target.value })}
               />

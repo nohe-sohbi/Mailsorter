@@ -205,6 +205,23 @@ backend/
 - **Pagination:** Support de la pagination pour grandes listes
 - **Async:** Synchronisation asynchrone des emails
 
+## Observabilité
+
+- **`/health` (readiness):** ping MongoDB + build (`BUILD_VERSION`) + uptime ;
+  `503` si le datastore est injoignable.
+- **`/metrics`:** compteurs en mémoire alimentés par un middleware sur le
+  hot-path (requêtes par méthode et **classe** de statut, latence moyenne/max,
+  uptime). Cardinalité bornée, agrégats seuls, sans dépendance externe
+  (`internal/metrics`).
+
+## Tâches de fond (workers)
+
+- **Analyse asynchrone** — pool de workers drainant la file de jobs IA.
+- **Réveil des snoozes** — ticker 1 min qui ramène les emails reportés échus.
+- **Digest quotidien** — ticker 15 min qui envoie (scope `gmail.send`) le récap
+  des 7 derniers jours aux utilisateurs opté-in, au plus une fois par jour
+  (logique pure `internal/mailer`).
+
 ## Extensibilité
 
 L'architecture permet facilement d'ajouter :
