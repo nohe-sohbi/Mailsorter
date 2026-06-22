@@ -119,10 +119,23 @@ type RuleCondition struct {
 	Value    string `json:"value" bson:"value"`
 }
 
+// RuleAction is a single thing a rule does to a matching email. A rule can
+// carry several actions (e.g. label "Newsletters" AND archive), applied in
+// order — the canonical newsletter cleanup that a single action couldn't express.
+type RuleAction struct {
+	Type      string `json:"type" bson:"type"`                               // archive, trash, label, markRead, star
+	LabelName string `json:"labelName,omitempty" bson:"labelName,omitempty"` // required when Type == "label"
+}
+
 // SortingRule is a deterministic, AI-free triage rule. When its conditions
-// match an email, its action is applied directly via Gmail — no model call, no
-// quota consumed. Rules run before the AI so users can encode the obvious cases
-// once and have them handled instantly and predictably.
+// match an email, its action(s) are applied directly via Gmail — no model call,
+// no quota consumed. Rules run before the AI so users can encode the obvious
+// cases once and have them handled instantly and predictably.
+//
+// Actions carries the ordered list of actions a rule performs. The legacy
+// Action/LabelName pair is kept for backward compatibility: rules created before
+// multi-action (and the one-click sender rules) populate it instead, and it
+// always mirrors the primary (first) action so older readers still work.
 type SortingRule struct {
 	ID           string          `json:"id" bson:"_id,omitempty"`
 	UserID       string          `json:"userId" bson:"userId"`
@@ -130,15 +143,18 @@ type SortingRule struct {
 	Enabled      bool            `json:"enabled" bson:"enabled"`
 	MatchAll     bool            `json:"matchAll" bson:"matchAll"` // true = AND all conditions, false = OR any
 	Conditions   []RuleCondition `json:"conditions" bson:"conditions"`
-	Action       string          `json:"action" bson:"action"` // archive, trash, label, markRead, star
+	Action       string          `json:"action" bson:"action"` // primary action (mirrors Actions[0])
 	LabelName    string          `json:"labelName,omitempty" bson:"labelName,omitempty"`
-	Priority     int             `json:"priority" bson:"priority"` // lower runs first
+	Actions      []RuleAction    `json:"actions,omitempty" bson:"actions,omitempty"` // full ordered action list
+	Priority     int             `json:"priority" bson:"priority"`                   // lower runs first
 	AppliedCount int             `json:"appliedCount" bson:"appliedCount"`
 	CreatedAt    time.Time       `json:"createdAt" bson:"createdAt"`
 	UpdatedAt    time.Time       `json:"updatedAt" bson:"updatedAt"`
 }
 
-// SortingRuleInput is the request body for creating/updating a rule.
+// SortingRuleInput is the request body for creating/updating a rule. A client
+// may send either the multi-action Actions list or the legacy Action/LabelName
+// pair; the server normalizes one into the other.
 type SortingRuleInput struct {
 	Name       string          `json:"name"`
 	Enabled    bool            `json:"enabled"`
@@ -146,6 +162,7 @@ type SortingRuleInput struct {
 	Conditions []RuleCondition `json:"conditions"`
 	Action     string          `json:"action"`
 	LabelName  string          `json:"labelName"`
+	Actions    []RuleAction    `json:"actions"`
 	Priority   int             `json:"priority"`
 }
 

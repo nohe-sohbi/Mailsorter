@@ -206,3 +206,82 @@ func TestValidate(t *testing.T) {
 		t.Errorf("label rule with name should be valid, got: %v", err)
 	}
 }
+
+func act(t, label string) models.RuleAction { return models.RuleAction{Type: t, LabelName: label} }
+
+func TestEffectiveActions(t *testing.T) {
+	// Multi-action rule returns its explicit list, in order.
+	multi := models.SortingRule{Actions: []models.RuleAction{act(ActionLabel, "Newsletters"), act(ActionArchive, "")}}
+	got := EffectiveActions(multi)
+	if len(got) != 2 || got[0].Type != ActionLabel || got[0].LabelName != "Newsletters" || got[1].Type != ActionArchive {
+		t.Fatalf("multi-action mismatch: %+v", got)
+	}
+
+	// Legacy single-action rule is surfaced as a one-element list.
+	legacy := models.SortingRule{Action: ActionTrash}
+	got = EffectiveActions(legacy)
+	if len(got) != 1 || got[0].Type != ActionTrash {
+		t.Fatalf("legacy single-action mismatch: %+v", got)
+	}
+
+	// A rule with neither yields nil.
+	if got := EffectiveActions(models.SortingRule{}); got != nil {
+		t.Errorf("empty rule should yield nil actions, got %+v", got)
+	}
+
+	// Actions takes precedence over a stray legacy Action.
+	both := models.SortingRule{Action: ActionStar, Actions: []models.RuleAction{act(ActionArchive, "")}}
+	if got := EffectiveActions(both); len(got) != 1 || got[0].Type != ActionArchive {
+		t.Errorf("Actions must win over legacy Action, got %+v", got)
+	}
+}
+
+func TestValidateMultiAction(t *testing.T) {
+	base := []models.RuleCondition{cond(FieldFrom, OpContains, "acme")}
+
+	valid := models.SortingRule{
+		Name:       "Clean newsletters",
+		Conditions: base,
+		Actions:    []models.RuleAction{act(ActionLabel, "Newsletters"), act(ActionArchive, "")},
+	}
+	if err := Validate(valid); err != nil {
+		t.Errorf("valid multi-action rule rejected: %v", err)
+	}
+
+	bad := []models.SortingRule{
+		// label action without a name
+		{Name: "n", Conditions: base, Actions: []models.RuleAction{act(ActionLabel, "")}},
+		// an invalid action type anywhere in the list
+		{Name: "n", Conditions: base, Actions: []models.RuleAction{act(ActionArchive, ""), act("explode", "")}},
+		// empty actions list and no legacy action
+		{Name: "n", Conditions: base},
+	}
+	for i, r := range bad {
+		if err := Validate(r); err == nil {
+			t.Errorf("bad multi-action rule %d should be invalid", i)
+		}
+	}
+}
+
+func TestPreviewSurfacesAllActions(t *testing.T) {
+	emails := []models.Email{{MessageID: "1", From: "news@acme.com", Subject: "Digest"}}
+	ruleset := []models.SortingRule{{
+		Name:       "Clean",
+		Enabled:    true,
+		Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "acme")},
+		Actions:    []models.RuleAction{act(ActionLabel, "Newsletters"), act(ActionArchive, "")},
+	}}
+	items, hits := Preview(emails, ruleset)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Action != ActionLabel || items[0].LabelName != "Newsletters" {
+		t.Errorf("primary action should be the first one, got %q/%q", items[0].Action, items[0].LabelName)
+	}
+	if len(items[0].Actions) != 2 || items[0].Actions[1].Type != ActionArchive {
+		t.Errorf("preview item should carry the full action list, got %+v", items[0].Actions)
+	}
+	if len(hits) != 1 || len(hits[0].Actions) != 2 {
+		t.Errorf("rule hits should carry the full action list, got %+v", hits)
+	}
+}

@@ -69,6 +69,35 @@ var validActions = map[string]bool{
 	ActionArchive: true, ActionTrash: true, ActionLabel: true, ActionMarkRead: true, ActionStar: true,
 }
 
+// EffectiveActions returns the ordered list of actions a rule performs, giving
+// every caller a single uniform view regardless of how the rule was authored.
+// Multi-action rules carry an explicit Actions slice; legacy rules (and the
+// one-click sender rules) carry a single Action/LabelName pair, surfaced here as
+// a one-element list. A rule with neither yields nil (and is rejected by
+// Validate). This is the seam that lets a rule "label AND archive" in one pass.
+func EffectiveActions(rule models.SortingRule) []models.RuleAction {
+	if len(rule.Actions) > 0 {
+		out := make([]models.RuleAction, 0, len(rule.Actions))
+		for _, a := range rule.Actions {
+			out = append(out, models.RuleAction{Type: a.Type, LabelName: a.LabelName})
+		}
+		return out
+	}
+	if strings.TrimSpace(rule.Action) == "" {
+		return nil
+	}
+	return []models.RuleAction{{Type: rule.Action, LabelName: rule.LabelName}}
+}
+
+// primaryAction returns the type and label of the first action, used to populate
+// the legacy single-action fields for back-compat. Empty for an empty list.
+func primaryAction(acts []models.RuleAction) (action, labelName string) {
+	if len(acts) == 0 {
+		return "", ""
+	}
+	return acts[0].Type, acts[0].LabelName
+}
+
 // fieldValue extracts the comparable string for a condition field from an email.
 func fieldValue(email models.Email, field string) string {
 	switch strings.ToLower(field) {
@@ -204,22 +233,26 @@ func FirstMatchAt(email models.Email, ruleset []models.SortingRule, now time.Tim
 }
 
 // PreviewItem is the projected outcome for a single email under a ruleset: the
-// rule that would win and the action it would take. No side effect is implied.
+// rule that would win and the action(s) it would take. No side effect is
+// implied. Action/LabelName mirror the primary action for back-compat; Actions
+// carries the full ordered list so the dry-run reflects multi-action rules.
 type PreviewItem struct {
-	MessageID string `json:"messageId"`
-	From      string `json:"from"`
-	Subject   string `json:"subject"`
-	RuleName  string `json:"ruleName"`
-	Action    string `json:"action"`
-	LabelName string `json:"labelName,omitempty"`
+	MessageID string              `json:"messageId"`
+	From      string              `json:"from"`
+	Subject   string              `json:"subject"`
+	RuleName  string              `json:"ruleName"`
+	Action    string              `json:"action"`
+	LabelName string              `json:"labelName,omitempty"`
+	Actions   []models.RuleAction `json:"actions,omitempty"`
 }
 
 // RuleHits aggregates how many emails a single rule would act on.
 type RuleHits struct {
-	RuleName  string `json:"ruleName"`
-	Action    string `json:"action"`
-	LabelName string `json:"labelName,omitempty"`
-	Matched   int    `json:"matched"`
+	RuleName  string              `json:"ruleName"`
+	Action    string              `json:"action"`
+	LabelName string              `json:"labelName,omitempty"`
+	Actions   []models.RuleAction `json:"actions,omitempty"`
+	Matched   int                 `json:"matched"`
 }
 
 // Preview runs the ruleset over emails WITHOUT any side effect and reports what
@@ -244,13 +277,16 @@ func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Tim
 		if match == nil {
 			continue
 		}
+		acts := EffectiveActions(*match)
+		primary, primaryLabel := primaryAction(acts)
 		items = append(items, PreviewItem{
 			MessageID: email.MessageID,
 			From:      email.From,
 			Subject:   email.Subject,
 			RuleName:  match.Name,
-			Action:    match.Action,
-			LabelName: match.LabelName,
+			Action:    primary,
+			LabelName: primaryLabel,
+			Actions:   acts,
 		})
 		if i, ok := idx[match.Name]; ok {
 			hits[i].Matched++
@@ -259,8 +295,9 @@ func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Tim
 		idx[match.Name] = len(hits)
 		hits = append(hits, RuleHits{
 			RuleName:  match.Name,
-			Action:    match.Action,
-			LabelName: match.LabelName,
+			Action:    primary,
+			LabelName: primaryLabel,
+			Actions:   acts,
 			Matched:   1,
 		})
 	}
@@ -273,11 +310,17 @@ func Validate(rule models.SortingRule) error {
 	if strings.TrimSpace(rule.Name) == "" {
 		return fmt.Errorf("le nom de la règle est requis")
 	}
-	if !validActions[rule.Action] {
-		return fmt.Errorf("action invalide : %q", rule.Action)
+	acts := EffectiveActions(rule)
+	if len(acts) == 0 {
+		return fmt.Errorf("au moins une action est requise")
 	}
-	if rule.Action == ActionLabel && strings.TrimSpace(rule.LabelName) == "" {
-		return fmt.Errorf("un libellé est requis pour l'action \"label\"")
+	for _, a := range acts {
+		if !validActions[a.Type] {
+			return fmt.Errorf("action invalide : %q", a.Type)
+		}
+		if a.Type == ActionLabel && strings.TrimSpace(a.LabelName) == "" {
+			return fmt.Errorf("un libellé est requis pour l'action \"label\"")
+		}
 	}
 	if len(rule.Conditions) == 0 {
 		return fmt.Errorf("au moins une condition est requise")

@@ -106,6 +106,9 @@ export const accountService = {
   getActivity: () => apiClient.get('/api/stats/activity'),
   getSettings: () => apiClient.get('/api/account/settings'),
   updateSettings: (settings) => apiClient.put('/api/account/settings', settings),
+  // RGPD: export everything Mailsorter stores about the user, and erase it.
+  exportData: () => apiClient.get('/api/account/export'),
+  deleteAccount: () => apiClient.delete('/api/account'),
 };
 
 export const subscriptionService = {

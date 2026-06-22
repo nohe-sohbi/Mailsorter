@@ -147,6 +147,7 @@ func (h *Handler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 			"conditions": rule.Conditions,
 			"action":     rule.Action,
 			"labelName":  rule.LabelName,
+			"actions":    rule.Actions,
 			"priority":   rule.Priority,
 			"updatedAt":  time.Now(),
 		}},
@@ -250,17 +251,20 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		if match == nil {
 			continue
 		}
-		// A protected sender is shielded from automated destructive rules.
-		if !allows(match.Action, email.From, protectedList) {
-			protectedSkipped++
-			continue
-		}
-		if err := h.applyRuleAction(ctx, gmailClient, userEmail, msg.Id, *match, labelCache); err != nil {
+		// A protected sender is shielded from destructive actions, but
+		// non-destructive actions in the same rule still run.
+		appliedActs, skipped := h.applyRuleToMessage(ctx, gmailClient, userEmail, msg.Id, email.From, *match, protectedList, labelCache)
+		if len(appliedActs) == 0 {
+			if skipped {
+				protectedSkipped++
+			}
 			continue
 		}
 		applied++
 		byRule[match.Name]++
-		h.logAction(ctx, userEmail, msg.Id, match.Action, SourceRule)
+		for _, act := range appliedActs {
+			h.logAction(ctx, userEmail, msg.Id, act, SourceRule)
+		}
 	}
 
 	// Persist per-rule application counts (best-effort).
@@ -414,10 +418,29 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(rule)
 }
 
-// applyRuleAction performs a single rule's action on one message.
-func (h *Handler) applyRuleAction(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID string, rule models.SortingRule, labelCache map[string]string) error {
+// applyRuleToMessage runs every action of a matched rule on one message, in
+// order. A protected (VIP) sender shields against destructive actions only:
+// archive/trash are skipped, but a non-destructive action in the same rule
+// (label/star/markRead) still runs. It returns the action types actually applied
+// (for the ledger) and whether a destructive action was skipped for protection.
+func (h *Handler) applyRuleToMessage(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID, from string, rule models.SortingRule, protectedList []string, labelCache map[string]string) (applied []string, protectedSkip bool) {
+	for _, a := range rules.EffectiveActions(rule) {
+		if !allows(a.Type, from, protectedList) {
+			protectedSkip = true
+			continue
+		}
+		if err := h.applyOneAction(ctx, gmailClient, userEmail, messageID, a, labelCache); err != nil {
+			continue
+		}
+		applied = append(applied, a.Type)
+	}
+	return applied, protectedSkip
+}
+
+// applyOneAction performs a single rule action on one message.
+func (h *Handler) applyOneAction(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID string, a models.RuleAction, labelCache map[string]string) error {
 	svc := h.gmailService
-	switch rule.Action {
+	switch a.Type {
 	case rules.ActionArchive:
 		return svc.ModifyMessage(gmailClient, messageID, nil, []string{"INBOX"})
 	case rules.ActionTrash:
@@ -427,23 +450,26 @@ func (h *Handler) applyRuleAction(ctx context.Context, gmailClient *gmailapi.Ser
 	case rules.ActionStar:
 		return svc.ModifyMessage(gmailClient, messageID, []string{"STARRED"}, nil)
 	case rules.ActionLabel:
-		labelID, ok := labelCache[rule.LabelName]
+		labelID, ok := labelCache[a.LabelName]
 		if !ok {
-			id, err := h.ensureLabel(ctx, gmailClient, userEmail, rule.LabelName)
+			id, err := h.ensureLabel(ctx, gmailClient, userEmail, a.LabelName)
 			if err != nil {
 				return err
 			}
 			labelID = id
-			labelCache[rule.LabelName] = id
+			labelCache[a.LabelName] = id
 		}
 		return svc.ModifyMessage(gmailClient, messageID, []string{labelID}, nil)
 	}
 	return nil
 }
 
-// ruleFromInput maps an input payload onto a SortingRule owned by the caller.
+// ruleFromInput maps an input payload onto a SortingRule owned by the caller. It
+// normalizes the two authoring shapes into one: when a client sends the
+// multi-action Actions list, the legacy Action/LabelName fields are backfilled
+// with the primary action so older readers (and per-rule stats) keep working.
 func ruleFromInput(userEmail string, in models.SortingRuleInput) models.SortingRule {
-	return models.SortingRule{
+	rule := models.SortingRule{
 		UserID:     userEmail,
 		Name:       in.Name,
 		Enabled:    in.Enabled,
@@ -451,6 +477,12 @@ func ruleFromInput(userEmail string, in models.SortingRuleInput) models.SortingR
 		Conditions: in.Conditions,
 		Action:     in.Action,
 		LabelName:  in.LabelName,
+		Actions:    in.Actions,
 		Priority:   in.Priority,
 	}
+	if len(rule.Actions) > 0 {
+		rule.Action = rule.Actions[0].Type
+		rule.LabelName = rule.Actions[0].LabelName
+	}
+	return rule
 }

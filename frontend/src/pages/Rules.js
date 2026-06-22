@@ -42,14 +42,24 @@ const emptyRule = () => ({
   enabled: true,
   matchAll: true,
   conditions: [{ field: 'from', operator: 'contains', value: '' }],
-  action: 'archive',
-  labelName: '',
+  actions: [{ type: 'archive', labelName: '' }],
   priority: 0,
 });
 
 const actionMeta = (value) => ACTIONS.find((a) => a.value === value) || ACTIONS[0];
 const fieldLabel = (v) => FIELDS.find((f) => f.value === v)?.label || v;
 const operatorLabel = (v) => OPERATORS.find((o) => o.value === v)?.label || v;
+
+// effectiveActions gives a uniform action list for a rule from either shape: the
+// new multi-action `actions` array, or the legacy single `action`/`labelName`.
+const effectiveActions = (rule) =>
+  rule.actions && rule.actions.length
+    ? rule.actions
+    : [{ type: rule.action || 'archive', labelName: rule.labelName || '' }];
+
+// normalizeForEdit ensures a rule loaded from the API always has an `actions`
+// array the editor can mutate, regardless of how it was stored.
+const normalizeForEdit = (rule) => ({ ...rule, actions: effectiveActions(rule) });
 
 function RuleEditor({ initial, onCancel, onSave, saving }) {
   const [rule, setRule] = useState(initial);
@@ -63,12 +73,25 @@ function RuleEditor({ initial, onCancel, onSave, saving }) {
   const removeCondition = (i) =>
     setRule((r) => ({ ...r, conditions: r.conditions.filter((_, idx) => idx !== i) }));
 
+  const setAction = (i, patch) =>
+    setRule((r) => ({ ...r, actions: r.actions.map((a, idx) => (idx === i ? { ...a, ...patch } : a)) }));
+  const addAction = () =>
+    setRule((r) => ({ ...r, actions: [...r.actions, { type: 'label', labelName: '' }] }));
+  const removeAction = (i) =>
+    setRule((r) => ({ ...r, actions: r.actions.filter((_, idx) => idx !== i) }));
+
   const submit = () => {
     if (!rule.name.trim()) return toast.error('Donnez un nom à votre règle.');
-    if (rule.action === 'label' && !rule.labelName.trim()) return toast.error('Indiquez le libellé à appliquer.');
+    if (!rule.actions.length) return toast.error('Ajoutez au moins une action.');
+    if (rule.actions.some((a) => a.type === 'label' && !a.labelName.trim()))
+      return toast.error('Indiquez le libellé à appliquer.');
     if (rule.conditions.some((c) => !c.value.trim())) return toast.error('Chaque condition doit avoir une valeur.');
     onSave(rule);
   };
+
+  // Actions already chosen can't be picked again (except "label", which can
+  // repeat with different names) — keeps the combo meaningful.
+  const usedTypes = new Set(rule.actions.map((a) => a.type));
 
   return (
     <div className="card space-y-5 p-6">
@@ -146,20 +169,41 @@ function RuleEditor({ initial, onCancel, onSave, saving }) {
         </button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="block">
-          <span className="mb-1 block text-sm font-semibold text-ink-700">Action</span>
-          <select className="input" value={rule.action} onChange={(e) => set({ action: e.target.value })}>
-            {ACTIONS.map((a) => (
-              <option key={a.value} value={a.value}>{a.label}</option>
-            ))}
-          </select>
-        </label>
-        {rule.action === 'label' && (
-          <label className="block">
-            <span className="mb-1 block text-sm font-semibold text-ink-700">Libellé</span>
-            <input className="input" placeholder="Ex. Promotions" value={rule.labelName} onChange={(e) => set({ labelName: e.target.value })} />
-          </label>
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-sm font-semibold text-ink-700">Actions</span>
+          <span className="text-xs text-ink-400">Exécutées dans l’ordre — ex. <em>Étiqueter</em> puis <em>Archiver</em></span>
+        </div>
+        <div className="space-y-2">
+          {rule.actions.map((a, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2">
+              <select className="input w-auto flex-none" value={a.type} onChange={(e) => setAction(i, { type: e.target.value })}>
+                {ACTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value} disabled={opt.value !== 'label' && opt.value !== a.type && usedTypes.has(opt.value)}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {a.type === 'label' && (
+                <input
+                  className="input min-w-[140px] flex-1"
+                  placeholder="Nom du libellé…"
+                  value={a.labelName}
+                  onChange={(e) => setAction(i, { labelName: e.target.value })}
+                />
+              )}
+              {rule.actions.length > 1 && (
+                <button onClick={() => removeAction(i)} className="btn-ghost px-2 text-ink-400" aria-label="Retirer l’action">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {rule.actions.length < ACTIONS.length && (
+          <button onClick={addAction} className="mt-2 text-sm font-semibold text-brand-600 hover:text-brand-700">
+            + Ajouter une action
+          </button>
         )}
       </div>
 
@@ -174,7 +218,8 @@ function RuleEditor({ initial, onCancel, onSave, saving }) {
 }
 
 function RuleCard({ rule, onToggle, onEdit, onDelete }) {
-  const meta = actionMeta(rule.action);
+  const actions = effectiveActions(rule);
+  const meta = actionMeta(actions[0].type);
   return (
     <div className="card flex items-start justify-between gap-4 p-5">
       <div className="min-w-0">
@@ -194,7 +239,12 @@ function RuleCard({ rule, onToggle, onEdit, onDelete }) {
             </span>
           ))}
           <span className="text-ink-300"> → </span>
-          <span className="font-semibold text-ink-700">{meta.label}{rule.action === 'label' ? ` « ${rule.labelName} »` : ''}</span>
+          {actions.map((a, i) => (
+            <span key={i} className="font-semibold text-ink-700">
+              {i > 0 && <span className="font-normal text-ink-300"> + </span>}
+              {actionMeta(a.type).label}{a.type === 'label' ? ` « ${a.labelName} »` : ''}
+            </span>
+          ))}
         </p>
         {rule.appliedCount > 0 && (
           <p className="mt-1 text-xs text-ink-400">Appliquée {rule.appliedCount} fois</p>
@@ -393,7 +443,9 @@ function Rules() {
               <ul className="mt-3 space-y-1.5 border-t border-ink-100 pt-3">
                 {(preview.samples || []).map((s, i) => (
                   <li key={i} className="flex items-center gap-2 text-xs text-ink-500">
-                    <span className={cn('chip shrink-0', actionMeta(s.action).tone)}>{actionMeta(s.action).label}</span>
+                    {effectiveActions(s).map((a, j) => (
+                      <span key={j} className={cn('chip shrink-0', actionMeta(a.type).tone)}>{actionMeta(a.type).label}</span>
+                    ))}
                     <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> — {s.from}</span>
                   </li>
                 ))}
@@ -425,7 +477,7 @@ function Rules() {
         <div className="space-y-3">
           {rules.map((rule) =>
             editing && editing.id === rule.id ? (
-              <RuleEditor key={rule.id} initial={rule} saving={saving} onCancel={() => setEditing(null)} onSave={save} />
+              <RuleEditor key={rule.id} initial={normalizeForEdit(rule)} saving={saving} onCancel={() => setEditing(null)} onSave={save} />
             ) : (
               <RuleCard
                 key={rule.id}
