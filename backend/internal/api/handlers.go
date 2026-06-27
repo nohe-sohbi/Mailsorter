@@ -47,6 +47,15 @@ type BillingConfig struct {
 // report exactly which build is live.
 var Version = "dev"
 
+// AllowedOrigins is the CORS allow-list applied by SetupRoutes. It defaults to
+// the local-dev + public origins and is overridden from configuration
+// (ALLOWED_ORIGINS) at startup, so deploying on a new domain needs no rebuild.
+var AllowedOrigins = []string{
+	"http://localhost:3000",
+	"http://localhost",
+	"https://mailsorter.sohbi.dev",
+}
+
 type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
