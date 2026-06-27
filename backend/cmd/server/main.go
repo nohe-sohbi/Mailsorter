@@ -26,6 +26,12 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
+	// Fail fast on insecure/missing configuration rather than booting in a
+	// vulnerable state (e.g. the default encryption key).
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+
 	// Initialize database
 	db, err := database.NewDatabase(cfg.MongoDBURI)
 	if err != nil {
@@ -109,9 +115,11 @@ func main() {
 	// Session/CSRF token manager, keyed off the server secret.
 	authManager := auth.NewManager(cfg.EncryptionKey)
 
-	// Surface the running build and the default digest hour to the API layer.
+	// Surface the running build, default digest hour and CORS allow-list to the
+	// API layer.
 	api.Version = cfg.BuildVersion
 	api.DefaultDigestHourUTC = cfg.DigestHourUTC
+	api.AllowedOrigins = cfg.AllowedOrigins
 
 	// Initialize API handler
 	handler := api.NewHandler(db, gmailService, encryptor, aiClient, billingCfg, authManager)

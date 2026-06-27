@@ -102,9 +102,9 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.Use(rl.middleware)
 	r.Use(h.authMiddleware)
 
-	// Setup CORS
+	// Setup CORS (allow-list configurable via ALLOWED_ORIGINS at startup)
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost", "https://mailsorter.sohbi.dev"},
+		AllowedOrigins:   AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-User-Email"},
 		AllowCredentials: true,
