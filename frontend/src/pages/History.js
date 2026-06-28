@@ -11,7 +11,7 @@ const ACTION_META = {
   archive: { label: 'Archivé', Icon: Archive, tone: 'bg-sky-50 text-sky-700' },
   delete: { label: 'Supprimé', Icon: Trash, tone: 'bg-rose-50 text-rose-700' },
   trash: { label: 'Supprimé', Icon: Trash, tone: 'bg-rose-50 text-rose-700' },
-  label: { label: 'Étiqueté', Icon: Tag, tone: 'bg-violet-50 text-violet-700' },
+  label: { label: 'Étiqueté', Icon: Tag, tone: 'bg-amber-50 text-amber-700' },
   star: { label: 'Favori', Icon: Tag, tone: 'bg-amber-50 text-amber-700' },
   read: { label: 'Lu', Icon: Mail, tone: 'bg-ink-100 text-ink-600' },
   unarchive: { label: 'Désarchivé', Icon: Undo, tone: 'bg-emerald-50 text-emerald-700' },

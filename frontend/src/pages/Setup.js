@@ -43,7 +43,7 @@ function Setup({ onComplete }) {
   };
 
   return (
-    <div className="min-h-screen bg-ink-50 bg-mesh px-4 py-12">
+    <div className="min-h-screen bg-ink-50 px-4 py-12">
       <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
         {/* Form */}
         <div className="card animate-fade-up p-8">
@@ -135,7 +135,7 @@ function Setup({ onComplete }) {
           <ol className="mt-5 space-y-4">
             {GUIDE.map((step, i) => (
               <li key={i} className="flex gap-3">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-gradient text-xs font-bold text-white">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
                   {i + 1}
                 </span>
                 <p className="pt-0.5 text-sm leading-relaxed text-ink-600">

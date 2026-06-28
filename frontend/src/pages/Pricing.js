@@ -42,7 +42,7 @@ const PLANS = [
 const ACTION_COLORS = {
   archive: 'bg-sky-500',
   delete: 'bg-rose-500',
-  label: 'bg-violet-500',
+  label: 'bg-amber-500',
   keep: 'bg-emerald-500',
 };
 const ACTION_LABELS = { archive: 'Archivés', delete: 'Supprimés', label: 'Étiquetés', keep: 'Gardés' };
@@ -121,7 +121,7 @@ function Pricing() {
   const maxDay = activity ? Math.max(1, ...activity.days.map((d) => d.count)) : 1;
 
   return (
-    <div className="min-h-screen bg-ink-50 bg-mesh">
+    <div className="min-h-screen bg-ink-50">
       <div className="mx-auto max-w-5xl px-4 py-12 sm:px-6">
         <button onClick={() => navigate(loggedIn ? '/inbox' : '/')} className="mb-8 flex items-center gap-2.5 transition-opacity hover:opacity-80">
           <Logo size={30} />
@@ -148,7 +148,7 @@ function Pricing() {
             <div className="card p-6">
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="font-bold text-ink-900">Usage du mois</h3>
-                <span className={cn('chip', isPro ? 'bg-brand-gradient text-white' : 'bg-ink-100 text-ink-600')}>
+                <span className={cn('chip', isPro ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-600')}>
                   {isPro ? <><Bolt size={13} /> Plan Pro</> : 'Plan Free'}
                 </span>
               </div>
@@ -162,7 +162,7 @@ function Pricing() {
                 <div
                   className={cn(
                     'h-full rounded-full transition-all duration-500',
-                    isPro ? 'bg-gradient-to-r from-emerald-400 to-teal-500' : usedPct >= 100 ? 'bg-rose-500' : 'bg-brand-gradient'
+                    isPro ? 'bg-emerald-500' : usedPct >= 100 ? 'bg-rose-500' : 'bg-brand-600'
                   )}
                   style={{ width: isPro ? '100%' : `${usedPct}%` }}
                 />
@@ -190,7 +190,7 @@ function Pricing() {
                 {(activity?.days || Array.from({ length: 7 })).map((d, i) => (
                   <div key={i} className="flex flex-1 flex-col items-center gap-1">
                     <div
-                      className="w-full rounded-md bg-brand-gradient transition-all"
+                      className="w-full rounded-md bg-brand-600 transition-all"
                       style={{ height: `${d ? Math.max(6, (d.count / maxDay) * 100) : 6}%`, opacity: d && d.count ? 1 : 0.25 }}
                       title={d ? `${d.count} le ${d.date}` : ''}
                     />
@@ -220,11 +220,11 @@ function Pricing() {
               key={plan.name}
               className={cn(
                 'card relative flex flex-col p-7',
-                plan.highlight && 'ring-2 ring-brand-500 shadow-glow'
+                plan.highlight && 'ring-2 ring-brand-500 shadow-card'
               )}
             >
               {plan.highlight && (
-                <span className="absolute -top-3 left-7 chip bg-brand-gradient text-white shadow-soft">
+                <span className="absolute -top-3 left-7 chip bg-brand-600 text-white shadow-soft">
                   <Bolt size={13} /> Le plus populaire
                 </span>
               )}

@@ -46,3 +46,7 @@ frontend/package-lock.json
 backend/mailsorter
 backend/token.json
 backend/credentials.json
+
+# Recette / scratch
+.playwright-mcp/
+_scratch/

@@ -6,8 +6,8 @@ import Spinner from '../ui/Spinner';
 import { cn } from '../ui/cn';
 
 const AVATAR_GRADIENTS = [
-  'from-brand-500 to-fuchsia-500', 'from-sky-500 to-indigo-500',
-  'from-emerald-500 to-teal-500', 'from-amber-500 to-orange-500', 'from-rose-500 to-pink-500',
+  'bg-brand-500', 'bg-sky-500',
+  'bg-emerald-500', 'bg-amber-500', 'bg-rose-500',
 ];
 const gradientFor = (seed = '') => {
   let h = 0;
@@ -92,7 +92,7 @@ function Snoozed() {
         <div className="space-y-3">
           {snoozes.map((s) => (
             <div key={s.id} className="card flex flex-wrap items-center gap-4 p-4 animate-fade-up">
-              <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white', gradientFor(s.from))}>
+              <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', gradientFor(s.from))}>
                 {senderName(s.from)[0]?.toUpperCase() || '?'}
               </span>
               <div className="min-w-0 flex-1">
