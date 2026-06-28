@@ -35,6 +35,9 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      BUILD_VERSION: ${BUILD_VERSION:-dev}
+      DIGEST_HOUR_UTC: ${DIGEST_HOUR_UTC:-7}
+      MISTRAL_MAX_RETRIES: ${MISTRAL_MAX_RETRIES:-2}
     depends_on:
       mongodb:
         condition: service_healthy
@@ -50,7 +53,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8080}
+        # "/" => the SPA calls the API same-origin via the nginx proxy
+        # (location /api -> backend:8080). No CORS, no host-specific build.
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-/}
     restart: unless-stopped
     depends_on:
       backend:
