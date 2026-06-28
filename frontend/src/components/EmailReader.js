@@ -13,11 +13,11 @@ const SNOOZE_PRESETS = [
 ];
 
 const AVATAR_GRADIENTS = [
-  'from-brand-500 to-fuchsia-500',
-  'from-sky-500 to-indigo-500',
-  'from-emerald-500 to-teal-500',
-  'from-amber-500 to-orange-500',
-  'from-rose-500 to-pink-500',
+  'bg-brand-500',
+  'bg-sky-500',
+  'bg-emerald-500',
+  'bg-amber-500',
+  'bg-rose-500',
 ];
 
 function gradientFor(seed = '') {
@@ -121,7 +121,7 @@ function EmailReader({ email, onClose, onArchive, onDelete, onUnsubscribe, onSno
 
         <div className="mt-5 flex items-center gap-3">
           <span
-            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-base font-bold text-white ${gradientFor(
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-base font-bold text-white ${gradientFor(
               email.from
             )}`}
           >

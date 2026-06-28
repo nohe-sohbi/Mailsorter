@@ -64,7 +64,7 @@ function Header() {
 
         <div className="flex items-center gap-3">
           <div className="hidden items-center gap-2.5 rounded-full border border-ink-200 bg-white py-1 pl-1 pr-3 shadow-soft sm:flex">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-gradient text-xs font-bold text-white">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
               {initial}
             </span>
             <span className="max-w-[180px] truncate text-sm font-medium text-ink-600">{userEmail}</span>

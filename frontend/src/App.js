@@ -18,7 +18,7 @@ import Spinner from './ui/Spinner';
 
 function BootScreen({ children }) {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-ink-50 bg-mesh px-6 text-center">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-ink-50 px-6 text-center">
       {children}
     </div>
   );
@@ -46,7 +46,7 @@ function App() {
   if (isConfigured === null) {
     return (
       <BootScreen>
-        <div className="animate-float">
+        <div className="animate-fade-up">
           <Logo size={56} />
         </div>
         <div className="flex items-center gap-3 text-ink-500">

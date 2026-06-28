@@ -16,7 +16,7 @@ import {
 const ACTIONS = {
   archive: { label: 'Archiver', Icon: Archive, badge: 'bg-sky-50 text-sky-600', ring: '#0ea5e9' },
   delete: { label: 'Supprimer', Icon: Trash, badge: 'bg-rose-50 text-rose-600', ring: '#f43f5e' },
-  label: { label: 'Libellé', Icon: Tag, badge: 'bg-violet-50 text-violet-600', ring: '#8b5cf6' },
+  label: { label: 'Libellé', Icon: Tag, badge: 'bg-amber-50 text-amber-700', ring: '#d97706' },
   keep: { label: 'Garder', Icon: Pin, badge: 'bg-emerald-50 text-emerald-600', ring: '#10b981' },
 };
 const actionMeta = (a) => ACTIONS[a] || ACTIONS.keep;
@@ -36,8 +36,8 @@ const SHORTCUTS = [
 ];
 
 const AVATAR_GRADIENTS = [
-  'from-brand-500 to-fuchsia-500', 'from-sky-500 to-indigo-500',
-  'from-emerald-500 to-teal-500', 'from-amber-500 to-orange-500', 'from-rose-500 to-pink-500',
+  'bg-brand-500', 'bg-sky-500',
+  'bg-emerald-500', 'bg-amber-500', 'bg-rose-500',
 ];
 const gradientFor = (seed = '') => {
   let h = 0;
@@ -45,7 +45,7 @@ const gradientFor = (seed = '') => {
   return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
 };
 
-function ConfidenceRing({ value = 0, color = '#6366f1' }) {
+function ConfidenceRing({ value = 0, color = '#2563eb' }) {
   const pct = Math.round((value || 0) * 100);
   const r = 13;
   const c = 2 * Math.PI * r;
@@ -547,7 +547,7 @@ function Inbox() {
       {/* Daily progress + streak */}
       <div className="card mb-6 flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:gap-6">
         <div className="flex items-center gap-3">
-          <span className={cn('flex h-12 w-12 items-center justify-center rounded-2xl text-white', gamify.streak > 0 ? 'bg-gradient-to-br from-amber-400 to-orange-500' : 'bg-ink-200')}>
+          <span className={cn('flex h-12 w-12 items-center justify-center rounded-2xl text-white', gamify.streak > 0 ? 'bg-amber-500' : 'bg-ink-200')}>
             <Flame size={24} />
           </span>
           <div>
@@ -568,7 +568,7 @@ function Inbox() {
           </div>
           <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
             <div
-              className={cn('h-full rounded-full transition-all duration-500', goalHit ? 'bg-gradient-to-r from-emerald-400 to-teal-500' : 'bg-brand-gradient')}
+              className={cn('h-full rounded-full transition-all duration-500', goalHit ? 'bg-emerald-500' : 'bg-brand-600')}
               style={{ width: `${progressPct}%` }}
             />
           </div>
@@ -607,7 +607,7 @@ function Inbox() {
               onClick={() => setView(id)}
               className={cn(
                 'flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition-all',
-                view === id ? 'bg-brand-gradient text-white shadow-soft' : 'text-ink-500 hover:text-ink-900'
+                view === id ? 'bg-brand-600 text-white shadow-soft' : 'text-ink-500 hover:text-ink-900'
               )}
             >
               <Icon size={16} /> {label}
@@ -656,7 +656,7 @@ function Inbox() {
           <div className="flex-1">
             <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
               <div
-                className="h-full rounded-full bg-brand-gradient transition-all duration-500"
+                className="h-full rounded-full bg-brand-600 transition-all duration-500"
                 style={{ width: `${job.total ? Math.round(((job.processed || 0) / job.total) * 100) : 5}%` }}
               />
             </div>
@@ -667,7 +667,7 @@ function Inbox() {
       {/* Suggestions panel */}
       {visibleSuggestions.length > 0 && view === 'emails' && (
         <div className="card mb-6 overflow-hidden animate-fade-up">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 bg-gradient-to-r from-brand-50/60 to-fuchsia-50/40 px-5 py-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 bg-brand-50/50 px-5 py-3.5">
             <div className="flex items-center gap-2">
               <Sparkles size={18} className="text-brand-600" />
               <span className="font-bold text-ink-900">Suggestions IA</span>
@@ -785,7 +785,7 @@ function Inbox() {
                       >
                         {isChecked && <Check size={13} />}
                       </button>
-                      <span className={cn('relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white', gradientFor(email.from))}>
+                      <span className={cn('relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', gradientFor(email.from))}>
                         {name[0]?.toUpperCase() || '?'}
                         {!email.isRead && (
                           <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-white bg-brand-500" />
@@ -837,7 +837,7 @@ function Inbox() {
                 const pref = sender.preference;
                 return (
                   <div key={sender.senderEmail} className="card flex flex-wrap items-center gap-4 p-4">
-                    <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white', gradientFor(sender.senderEmail))}>
+                    <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', gradientFor(sender.senderEmail))}>
                       {(sender.senderName || sender.senderEmail)[0]?.toUpperCase()}
                     </span>
                     <div className="min-w-0 flex-1">
@@ -917,7 +917,7 @@ function Inbox() {
                       key={sub.senderEmail}
                       className={cn('card flex flex-wrap items-center gap-4 p-4', sub.unsubscribed && 'opacity-60')}
                     >
-                      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white', gradientFor(sub.senderEmail))}>
+                      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', gradientFor(sub.senderEmail))}>
                         {(sub.senderName || sub.senderEmail)[0]?.toUpperCase()}
                       </span>
                       <div className="min-w-0 flex-1">
@@ -981,7 +981,7 @@ function Inbox() {
       {showWelcome && (
         <div className="fixed inset-0 z-[95] flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm">
           <div className="card w-full max-w-lg animate-scale-in overflow-hidden">
-            <div className="bg-brand-gradient px-7 py-8 text-center text-white">
+            <div className="bg-brand-600 px-7 py-8 text-center text-white">
               <span className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-white/15">
                 <Sparkles size={28} />
               </span>

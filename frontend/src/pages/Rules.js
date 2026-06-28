@@ -32,7 +32,7 @@ const isTemporalOperator = (op) => op === 'olderThan' || op === 'newerThan';
 const ACTIONS = [
   { value: 'archive', label: 'Archiver', Icon: Archive, tone: 'text-sky-600 bg-sky-50' },
   { value: 'trash', label: 'Supprimer', Icon: Trash, tone: 'text-rose-600 bg-rose-50' },
-  { value: 'label', label: 'Étiqueter', Icon: Tag, tone: 'text-violet-600 bg-violet-50' },
+  { value: 'label', label: 'Étiqueter', Icon: Tag, tone: 'text-amber-700 bg-amber-50' },
   { value: 'markRead', label: 'Marquer comme lu', Icon: Mail, tone: 'text-emerald-600 bg-emerald-50' },
   { value: 'star', label: 'Mettre en favori', Icon: Pin, tone: 'text-amber-600 bg-amber-50' },
 ];
