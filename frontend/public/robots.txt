@@ -1,0 +1,4 @@
+# Mailsorter n'est pas encore lancé publiquement — on ne veut pas être indexé.
+# À assouplir au lancement (autoriser la landing, garder l'app privée).
+User-agent: *
+Disallow: /
