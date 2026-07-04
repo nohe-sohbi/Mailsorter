@@ -1,12 +1,18 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { cn } from '../ui/cn';
-import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock, History } from '../ui/icons';
+import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock, History, Menu, X } from '../ui/icons';
 
 function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const userEmail = localStorage.getItem('userEmail');
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Close the mobile menu whenever the route changes.
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
 
   const handleLogout = () => {
     localStorage.removeItem('userEmail');
@@ -71,14 +77,75 @@ function Header() {
           </div>
           <button
             onClick={handleLogout}
-            className="btn-ghost px-2.5"
+            className="btn-ghost hidden px-2.5 sm:inline-flex"
             title="Se déconnecter"
             aria-label="Se déconnecter"
           >
             <LogOut size={18} />
           </button>
+
+          {/* Mobile menu toggle */}
+          <button
+            onClick={() => setMobileOpen((o) => !o)}
+            className="btn-ghost px-2.5 sm:hidden"
+            aria-label={mobileOpen ? 'Fermer le menu' : 'Ouvrir le menu'}
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-nav"
+          >
+            {mobileOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
         </div>
       </div>
+
+      {/* Mobile navigation drawer */}
+      {mobileOpen && (
+        <div className="sm:hidden">
+          {/* Backdrop */}
+          <button
+            className="fixed inset-0 top-16 z-30 cursor-default bg-ink-900/20 backdrop-blur-sm"
+            aria-label="Fermer le menu"
+            onClick={() => setMobileOpen(false)}
+          />
+          <nav
+            id="mobile-nav"
+            className="relative z-40 space-y-1 border-t border-ink-200/70 bg-white px-4 pb-4 pt-3 shadow-card"
+          >
+            {navItems.map(({ to, label, Icon }) => {
+              const active = location.pathname === to;
+              return (
+                <button
+                  key={to}
+                  onClick={() => navigate(to)}
+                  className={cn(
+                    'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold transition-colors',
+                    active ? 'bg-brand-50 text-brand-700' : 'text-ink-600 hover:bg-ink-100 hover:text-ink-900'
+                  )}
+                >
+                  <Icon size={19} />
+                  {label}
+                </button>
+              );
+            })}
+
+            <div className="mt-3 flex items-center justify-between gap-3 border-t border-ink-200/70 pt-3">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
+                  {initial}
+                </span>
+                <span className="truncate text-sm font-medium text-ink-600">{userEmail}</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="btn-ghost shrink-0 px-2.5"
+                title="Se déconnecter"
+                aria-label="Se déconnecter"
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
+          </nav>
+        </div>
+      )}
     </header>
   );
 }
