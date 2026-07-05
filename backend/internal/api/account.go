@@ -227,8 +227,9 @@ func (h *Handler) activitySummary(ctx context.Context, userEmail string) (activi
 
 // GetDigest renders the same 7-day recap as GetActivity into a ready-to-send
 // email digest (subject + plain-text body + HTML body). This is the "Digest
-// quotidien par email" content: previewable now, and the payload a scheduler
-// would hand to a gmail.send (or SMTP) sender once that scope is wired.
+// quotidien par email" content, exposed as a preview endpoint; the same payload
+// is sent for real by the background digest scheduler (startDigestLoop) via the
+// wired gmail.send scope.
 func (h *Handler) GetDigest(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
