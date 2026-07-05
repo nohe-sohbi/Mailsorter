@@ -71,10 +71,6 @@ export const protectService = {
   remove: (id) => apiClient.delete(`/api/protected/${id}`),
 };
 
-export const labelService = {
-  getLabels: () => apiClient.get('/api/labels'),
-};
-
 export const aiService = {
   analyzeEmails: (emailIds) => apiClient.post('/api/ai/analyze', { emailIds }),
   analyzeAsync: (emailIds) => apiClient.post('/api/ai/analyze-async', { emailIds }),
@@ -94,11 +90,6 @@ export const senderService = {
   // Turn a sender into a permanent deterministic rule (learn once, apply forever).
   createRule: (senderEmail, action, labelName = '') =>
     apiClient.post('/api/senders/rule', { senderEmail, action, labelName }),
-};
-
-export const smartLabelService = {
-  getLabels: () => apiClient.get('/api/smart-labels'),
-  createLabel: (label) => apiClient.post('/api/smart-labels', label),
 };
 
 export const accountService = {

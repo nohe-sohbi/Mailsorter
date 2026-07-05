@@ -31,11 +31,8 @@ export function EmailProvider({ children }) {
 
     // Return cached data if valid and not forcing refresh
     if (!forceRefresh && isCacheValid() && emails.length > 0) {
-      console.log('[Cache] Using cached data');
       return { emails, senders, suggestions, stats };
     }
-
-    console.log('[Cache] Fetching fresh data...');
 
     setLoading(true);
     setError('');
@@ -45,7 +42,6 @@ export function EmailProvider({ children }) {
       const now = Date.now();
       if (!lastSyncRef.current || (now - lastSyncRef.current) > CACHE_DURATION) {
         try {
-          console.log('[Cache] Syncing with Gmail...');
           await emailService.syncEmails();
           lastSyncRef.current = now;
         } catch (syncErr) {
@@ -57,7 +53,6 @@ export function EmailProvider({ children }) {
       let newStats = stats;
       if (!lastStatsRef.current || (now - lastStatsRef.current) > CACHE_DURATION || forceRefresh) {
         try {
-          console.log('[Cache] Fetching mailbox stats...');
           const statsRes = await emailService.getStats();
           newStats = statsRes.data;
           setStats(newStats);

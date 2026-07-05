@@ -132,7 +132,9 @@ type GmailConfigInput struct {
 
 // RuleCondition is a single predicate evaluated against an email field.
 // Field is one of: from, subject, snippet, to, body.
-// Operator is one of: contains, equals, startsWith, endsWith, regex.
+// Operator is one of: contains, equals, startsWith, endsWith, regex,
+// notContains, notEquals, and the temporal olderThan / newerThan (Value is an
+// age in days compared against the email's received date).
 type RuleCondition struct {
 	Field    string `json:"field" bson:"field"`
 	Operator string `json:"operator" bson:"operator"`
