@@ -241,10 +241,12 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	case "delete":
 		err = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{"TRASH"}, nil)
 	case "label":
-		// Ensure label exists and get its ID
-		labelID, err := h.ensureLabel(ctx, gmailClient, userEmail, suggestion.LabelName)
-		if err != nil {
-			http.Error(w, "Failed to create label: "+err.Error(), http.StatusInternalServerError)
+		// Ensure label exists and get its ID. Use a distinct error name so the
+		// ModifyMessage failure below assigns to the outer `err` (checked after
+		// the switch) instead of a variable shadowed by `:=`.
+		labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, suggestion.LabelName)
+		if lerr != nil {
+			http.Error(w, "Failed to create label: "+lerr.Error(), http.StatusInternalServerError)
 			return
 		}
 		err = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{labelID}, nil)
