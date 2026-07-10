@@ -236,7 +236,8 @@ type Snooze struct {
 	From      string    `json:"from" bson:"from"`
 	Subject   string    `json:"subject" bson:"subject"`
 	WakeAt    time.Time `json:"wakeAt" bson:"wakeAt"`
-	Status    string    `json:"status" bson:"status"` // "scheduled", "done", "cancelled"
+	Status    string    `json:"status" bson:"status"` // "scheduled", "done", "cancelled", "failed"
+	Attempts  int       `json:"attempts,omitempty" bson:"attempts,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
 }
