@@ -228,7 +228,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	// Get user token
 	token, err := h.getUserToken(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -299,7 +299,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.getUserToken(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 	gmailClient := h.gmailService.GetClient(token)
@@ -398,7 +398,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	// Get user token
 	token, err := h.getUserToken(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -704,7 +704,7 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 	// Get user token to create Gmail label
 	token, err := h.getUserToken(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -780,19 +780,26 @@ func (h *Handler) getUserToken(ctx context.Context, userEmail string) (*oauth2.T
 		Expiry:       user.TokenExpiry,
 	}
 
-	// Refresh if expired
-	if token.Expiry.Before(time.Now()) && user.RefreshToken != "" {
-		newToken, err := h.gmailService.RefreshToken(user.RefreshToken)
-		if err == nil {
-			token = newToken
-			h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail}, bson.M{
-				"$set": bson.M{
-					"accessToken": newToken.AccessToken,
-					"tokenExpiry": newToken.Expiry,
-					"updatedAt":   time.Now(),
-				},
-			})
+	// Refresh if expired. If we can't mint a fresh token (no refresh token, or the
+	// refresh was rejected), surface errReauthRequired so callers answer 401 and
+	// the SPA restarts OAuth — returning the dead token here would instead yield a
+	// stream of opaque 500s the user can never escape.
+	if token.Expiry.Before(time.Now()) {
+		if user.RefreshToken == "" {
+			return nil, errReauthRequired
 		}
+		newToken, rerr := h.gmailService.RefreshToken(user.RefreshToken)
+		if rerr != nil {
+			return nil, errReauthRequired
+		}
+		token = newToken
+		h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail}, bson.M{
+			"$set": bson.M{
+				"accessToken": newToken.AccessToken,
+				"tokenExpiry": newToken.Expiry,
+				"updatedAt":   time.Now(),
+			},
+		})
 	}
 
 	return token, nil

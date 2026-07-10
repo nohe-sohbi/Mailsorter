@@ -2,10 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 func TestDecodeJSONValid(t *testing.T) {
@@ -57,6 +61,35 @@ func TestDecodeJSONTooLarge(t *testing.T) {
 	}
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestWriteAuthError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"reauth required", errReauthRequired, http.StatusUnauthorized},
+		{"wrapped reauth", fmt.Errorf("get token: %w", errReauthRequired), http.StatusUnauthorized},
+		{"user gone", mongo.ErrNoDocuments, http.StatusNotFound},
+		{"other", errors.New("boom"), http.StatusInternalServerError},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeAuthError(w, c.err)
+			if w.Code != c.want {
+				t.Fatalf("status = %d, want %d", w.Code, c.want)
+			}
+			var env map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("not JSON: %v", err)
+			}
+			if env["error"] == nil {
+				t.Fatalf("missing error field: %s", w.Body.String())
+			}
+		})
 	}
 }
 

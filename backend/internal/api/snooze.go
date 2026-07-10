@@ -66,7 +66,7 @@ func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -176,7 +176,7 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 

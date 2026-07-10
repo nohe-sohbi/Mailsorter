@@ -125,7 +125,7 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to get user credentials")
+		writeAuthError(w, err)
 		return
 	}
 
