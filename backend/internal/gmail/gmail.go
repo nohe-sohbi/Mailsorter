@@ -2,6 +2,7 @@ package gmail
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -337,18 +338,33 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 
 func GetEmailBody(message *gmail.Message) string {
 	if message.Payload.Body.Data != "" {
-		return message.Payload.Body.Data
+		return decodeBodyData(message.Payload.Body.Data)
 	}
 
 	for _, part := range message.Payload.Parts {
 		if part.MimeType == "text/plain" || part.MimeType == "text/html" {
 			if part.Body.Data != "" {
-				return part.Body.Data
+				return decodeBodyData(part.Body.Data)
 			}
 		}
 	}
 
 	return ""
+}
+
+// decodeBodyData decodes the base64url payload the Gmail API returns for message
+// bodies (RFC 4648 URL-safe alphabet, padding optional). Downstream code compares
+// the body as plaintext (deterministic rules), so returning the raw base64 would
+// make those comparisons match only by accident. If decoding fails the raw value
+// is returned unchanged rather than dropped.
+func decodeBodyData(data string) string {
+	if decoded, err := base64.URLEncoding.DecodeString(data); err == nil {
+		return string(decoded)
+	}
+	if decoded, err := base64.RawURLEncoding.DecodeString(data); err == nil {
+		return string(decoded)
+	}
+	return data
 }
 
 // ParseUnsubscribe extracts the unsubscribe affordances a sender advertises via
