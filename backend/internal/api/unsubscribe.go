@@ -40,7 +40,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.getUserToken(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 	gmailClient := h.gmailService.GetClient(token)

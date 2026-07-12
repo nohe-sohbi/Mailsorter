@@ -25,6 +25,11 @@ const snoozeLabelName = "Mailsorter/Reporté"
 // snooze has elapsed and brings them back.
 const snoozeSweepInterval = time.Minute
 
+// maxSnoozeWakeAttempts caps how many times a due snooze is retried before it is
+// parked as "failed". Without it, a wake that can never succeed (e.g. the message
+// was hard deleted) would be re-attempted on every sweep indefinitely.
+const maxSnoozeWakeAttempts = 5
+
 // Snooze pulls a message out of the inbox until a chosen wake time. It resolves
 // the wake time from a friendly preset (or an explicit timestamp), archives the
 // message (removing INBOX) and tags it with the snooze label so it is easy to
@@ -66,7 +71,7 @@ func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -176,7 +181,7 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -253,7 +258,20 @@ func (h *Handler) wakeDueSnoozes() {
 		}
 
 		if err := h.restoreSnoozed(ctx, client, s.UserID, s.MessageID); err != nil {
-			log.Printf("snooze: failed to restore %s for %s: %v", s.MessageID, s.UserID, err)
+			log.Printf("snooze: failed to restore %s for %s (attempt %d): %v", s.MessageID, s.UserID, s.Attempts+1, err)
+			oid, _ := primitive.ObjectIDFromHex(s.ID)
+			// Cap retries: a permanently-failing wake (e.g. the message was hard
+			// deleted) would otherwise be re-attempted on every 60s sweep forever.
+			// After maxSnoozeWakeAttempts, park it as "failed" so it drops out of
+			// the scheduled query.
+			update := bson.M{"$inc": bson.M{"attempts": 1}, "$set": bson.M{"updatedAt": time.Now()}}
+			if s.Attempts+1 >= maxSnoozeWakeAttempts {
+				update = bson.M{
+					"$inc": bson.M{"attempts": 1},
+					"$set": bson.M{"status": "failed", "updatedAt": time.Now()},
+				}
+			}
+			h.db.Snoozes().UpdateOne(ctx, bson.M{"_id": oid}, update)
 			continue
 		}
 		oid, _ := primitive.ObjectIDFromHex(s.ID)

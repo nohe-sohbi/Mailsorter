@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -228,7 +229,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -302,7 +303,7 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -328,6 +329,10 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 
 	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
+		if errors.Is(err, errReauthRequired) {
+			writeAuthError(w, err)
+			return
+		}
 		http.Error(w, "Failed to sync emails: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -446,7 +451,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to get user credentials", http.StatusInternalServerError)
+		writeAuthError(w, err)
 		return
 	}
 
@@ -500,7 +505,7 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
+		writeAuthError(w, err)
 		return
 	}
 

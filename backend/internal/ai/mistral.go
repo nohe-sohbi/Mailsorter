@@ -317,56 +317,6 @@ Réponds UNIQUEMENT avec un TABLEAU JSON de %d objets, dans le MÊME ORDRE que l
 	return results[:len(emails)], nil
 }
 
-// FindMatchingLabel checks if a suggested label matches an existing one
-func (c *MistralClient) FindMatchingLabel(suggestedLabel string, existingLabels []string) (string, bool, error) {
-	if len(existingLabels) == 0 {
-		return suggestedLabel, false, nil
-	}
-
-	prompt := fmt.Sprintf(`Tu dois déterminer si un label suggéré correspond à un label existant.
-
-Label suggéré: "%s"
-Labels existants: %s
-
-Réponds UNIQUEMENT en JSON valide:
-{
-  "matches_existing": true ou false,
-  "matched_label": "nom du label existant qui correspond, ou le label suggéré si pas de correspondance"
-}
-
-Règles:
-- "E-commerce" et "Shopping" sont équivalents
-- "Newsletters" et "Newsletter" sont équivalents
-- Ignore les différences de casse
-- Si aucun label existant ne correspond, renvoie le label suggéré`,
-		suggestedLabel, strings.Join(existingLabels, ", "))
-
-	response, err := c.chat(prompt)
-	if err != nil {
-		return suggestedLabel, false, nil // Fallback to suggested label
-	}
-
-	var result struct {
-		MatchesExisting bool   `json:"matches_existing"`
-		MatchedLabel    string `json:"matched_label"`
-	}
-
-	if err := json.Unmarshal([]byte(response), &result); err != nil {
-		jsonStart := strings.Index(response, "{")
-		jsonEnd := strings.LastIndex(response, "}")
-		if jsonStart >= 0 && jsonEnd > jsonStart {
-			cleanJSON := response[jsonStart : jsonEnd+1]
-			if err := json.Unmarshal([]byte(cleanJSON), &result); err != nil {
-				return suggestedLabel, false, nil
-			}
-		} else {
-			return suggestedLabel, false, nil
-		}
-	}
-
-	return result.MatchedLabel, result.MatchesExisting, nil
-}
-
 // chat sends a message to Mistral and returns the response (default token budget).
 func (c *MistralClient) chat(prompt string) (string, error) {
 	return c.chatTokens(prompt, 500)

@@ -44,8 +44,17 @@ const ACTION_COLORS = {
   delete: 'bg-rose-500',
   label: 'bg-amber-500',
   keep: 'bg-emerald-500',
+  read: 'bg-violet-500',
+  star: 'bg-yellow-400',
 };
-const ACTION_LABELS = { archive: 'Archivés', delete: 'Supprimés', label: 'Étiquetés', keep: 'Gardés' };
+const ACTION_LABELS = {
+  archive: 'Archivés',
+  delete: 'Supprimés',
+  label: 'Étiquetés',
+  keep: 'Gardés',
+  read: 'Lus',
+  star: 'Favoris',
+};
 
 function Pricing() {
   const navigate = useNavigate();
@@ -203,8 +212,8 @@ function Pricing() {
                     .filter(([, v]) => v > 0)
                     .map(([k, v]) => (
                       <span key={k} className="flex items-center gap-1.5 text-xs text-ink-500">
-                        <span className={cn('h-2.5 w-2.5 rounded-full', ACTION_COLORS[k])} />
-                        {ACTION_LABELS[k]} · {v}
+                        <span className={cn('h-2.5 w-2.5 rounded-full', ACTION_COLORS[k] || 'bg-ink-300')} />
+                        {ACTION_LABELS[k] || k} · {v}
                       </span>
                     ))}
                 </div>

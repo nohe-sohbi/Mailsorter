@@ -2,6 +2,7 @@ package gmail
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -319,7 +320,36 @@ func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, e
 	return stats, nil
 }
 
+// dateHeaderLayouts covers the RFC 5322 variants Gmail actually emits: with or
+// without a leading weekday, single- or double-digit day, and numeric or named
+// time zones. time.RFC1123Z alone rejects the single-digit-day and named-zone
+// forms, silently zeroing the date.
+var dateHeaderLayouts = []string{
+	time.RFC1123Z,                    // Mon, 02 Jan 2006 15:04:05 -0700
+	time.RFC1123,                     // Mon, 02 Jan 2006 15:04:05 MST
+	"Mon, 2 Jan 2006 15:04:05 -0700", // single-digit day
+	"Mon, 2 Jan 2006 15:04:05 MST",   // single-digit day, named zone
+	"2 Jan 2006 15:04:05 -0700",      // no weekday
+	"2 Jan 2006 15:04:05 MST",        // no weekday, named zone
+}
+
+// parseDateHeader parses a Date header across the layouts above and, on failure,
+// falls back to Gmail's canonical InternalDate (epoch millis). Returns the zero
+// time only when neither source yields a value.
+func parseDateHeader(value string, internalDateMs int64) time.Time {
+	for _, layout := range dateHeaderLayouts {
+		if t, err := time.Parse(layout, strings.TrimSpace(value)); err == nil {
+			return t
+		}
+	}
+	if internalDateMs > 0 {
+		return time.UnixMilli(internalDateMs).UTC()
+	}
+	return time.Time{}
+}
+
 func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []string, date time.Time) {
+	var dateHeader string
 	for _, header := range message.Payload.Headers {
 		switch header.Name {
 		case "From":
@@ -329,26 +359,42 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 		case "To":
 			to = append(to, header.Value)
 		case "Date":
-			date, _ = time.Parse(time.RFC1123Z, header.Value)
+			dateHeader = header.Value
 		}
 	}
+	date = parseDateHeader(dateHeader, message.InternalDate)
 	return
 }
 
 func GetEmailBody(message *gmail.Message) string {
 	if message.Payload.Body.Data != "" {
-		return message.Payload.Body.Data
+		return decodeBodyData(message.Payload.Body.Data)
 	}
 
 	for _, part := range message.Payload.Parts {
 		if part.MimeType == "text/plain" || part.MimeType == "text/html" {
 			if part.Body.Data != "" {
-				return part.Body.Data
+				return decodeBodyData(part.Body.Data)
 			}
 		}
 	}
 
 	return ""
+}
+
+// decodeBodyData decodes the base64url payload the Gmail API returns for message
+// bodies (RFC 4648 URL-safe alphabet, padding optional). Downstream code compares
+// the body as plaintext (deterministic rules), so returning the raw base64 would
+// make those comparisons match only by accident. If decoding fails the raw value
+// is returned unchanged rather than dropped.
+func decodeBodyData(data string) string {
+	if decoded, err := base64.URLEncoding.DecodeString(data); err == nil {
+		return string(decoded)
+	}
+	if decoded, err := base64.RawURLEncoding.DecodeString(data); err == nil {
+		return string(decoded)
+	}
+	return data
 }
 
 // ParseUnsubscribe extracts the unsubscribe affordances a sender advertises via

@@ -170,6 +170,34 @@ Synchronize emails from Gmail to database.
 - `404 Not Found`: User not found
 - `500 Internal Server Error`: Failed to sync emails
 
+### Direct action on a message
+
+#### POST /api/emails/action
+
+Apply a single, direct action to one message via Gmail — no AI, no rule. Used by
+the inbox for one-off triage.
+
+**Headers:**
+- `Authorization: Bearer <session-token>` (required)
+
+**Request body:**
+```json
+{ "messageId": "18c...", "action": "archive" }
+```
+`action` is one of `archive`, `delete` (alias `trash`), `unarchive`, `untrash`,
+`read`, `unread`. Forward triage actions (`archive`/`delete`/`read`) are recorded
+in the action ledger; the inverse actions are not.
+
+**Response:** `200 OK`
+```json
+{ "status": "ok", "action": "archive" }
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing `messageId` or unsupported `action`
+- `401 Unauthorized`: Missing user email
+- `500 Internal Server Error`: Gmail call failed
+
 ---
 
 ## Snooze Endpoints ("Reporter")
@@ -312,6 +340,21 @@ sender's backlog in the same call.
 The recap is computed from the append-only action ledger (`action_log`), so it
 counts every Gmail mutation — direct actions, rules, bulk sweeps, snoozes,
 unsubscribes — over the trailing 7 days, not just applied AI suggestions.
+
+### Get mailbox stats
+
+#### GET /api/stats
+
+Live counts pulled from Gmail for the current mailbox.
+
+**Response:** `200 OK` (a `MailboxStats`)
+```json
+{
+  "totalMessages": 10432, "totalThreads": 8210, "unreadCount": 57,
+  "inboxCount": 120, "sentCount": 900, "draftCount": 3,
+  "spamCount": 12, "trashCount": 40, "labelStats": []
+}
+```
 
 ### Get Activity Recap
 
@@ -534,6 +577,199 @@ the hosted URL to redirect to.
 
 ---
 
+## AI Sorting Endpoints
+
+The AI triage surface. Every email is classified into an action
+(`archive` / `delete` / `label` / `keep`) with a confidence score and a short
+reasoning, persisted as a pending suggestion the user reviews and applies.
+
+> All endpoints in this section require the AI to be configured (`MISTRAL_API_KEY`)
+> and answer `503 Service Unavailable` otherwise. On the free plan they answer
+> `402 Payment Required` once the monthly quota is exhausted (see `GET /api/usage`).
+
+### Analyze (synchronous)
+
+#### POST /api/ai/analyze
+
+Analyze a set of Gmail message IDs now. Resolves sender auto-pilot and the content
+cache first, batches the rest to Mistral, and stores one pending suggestion per
+email. Auto-applied senders are applied inline.
+
+**Request body:**
+```json
+{ "emailIds": ["18c...", "18d..."] }
+```
+
+**Response:** `200 OK`
+```json
+{
+  "suggestions": [
+    {
+      "id": "662...", "emailId": "18c...", "action": "archive",
+      "labelName": "", "labelId": "", "confidence": 0.92,
+      "reasoning": "Promotional newsletter", "status": "pending"
+    }
+  ],
+  "autoApplied": 3,
+  "cachedHits": 5
+}
+```
+
+### Analyze (asynchronous job)
+
+#### POST /api/ai/analyze-async
+
+Enqueue the same analysis as a background job — preferred for large batches. The
+email-ID list is capped server-side.
+
+**Request body:** `{ "emailIds": ["18c...", "18d..."] }`
+
+**Response:** `202 Accepted`
+```json
+{ "jobId": "662...", "status": "queued" }
+```
+
+### Job status
+
+#### GET /api/ai/jobs/{id}
+
+Poll an analysis job.
+
+**Response:** `200 OK` (an `AnalysisJob`)
+```json
+{
+  "id": "662...", "status": "running", "total": 120, "processed": 40,
+  "autoApplied": 6, "suggestionsCreated": 30, "cachedHits": 4
+}
+```
+`status` is one of `queued`, `running`, `done`, `error` (with an `error` field).
+
+### Learn a sender
+
+#### POST /api/ai/analyze-sender
+
+Analyze a sender's recent emails and persist a `SenderPreference` (default action,
+optional auto-apply).
+
+**Request body:** `{ "senderEmail": "news@acme.com" }`
+
+**Response:** `200 OK`
+```json
+{ "analysis": { "...": "AI verdict" }, "emailCount": 12, "preference": { "...": "SenderPreference" } }
+```
+
+### Apply one suggestion
+
+#### POST /api/ai/apply
+
+Apply a single pending suggestion to Gmail, mark it `applied`, and log it. A
+protected (VIP) sender is never auto-archived/trashed.
+
+**Request body:** `{ "suggestionId": "662..." }`
+
+**Response:** `200 OK` → `{ "status": "applied" }`
+
+### Apply many suggestions
+
+#### POST /api/ai/apply-batch
+
+Apply a list of suggestions in one request (token refreshed once, looped
+server-side).
+
+**Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
+
+**Response:** `200 OK`
+```json
+{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1 }
+```
+
+### Apply in bulk for a sender
+
+#### POST /api/ai/apply-bulk
+
+Apply one action to every stored email from a sender ("learn once, clean up
+everything").
+
+**Request body:**
+```json
+{ "senderEmail": "news@acme.com", "action": "archive", "labelName": "" }
+```
+
+**Response:** `200 OK`
+```json
+{ "applied": 34, "total": 40, "protectedSkipped": 0 }
+```
+
+### List suggestions
+
+#### GET /api/ai/suggestions?status=pending
+
+List the caller's suggestions, filtered by `status` (default `pending`).
+
+**Response:** `200 OK` — an array of `AISuggestion`.
+
+### Reject a suggestion
+
+#### POST /api/ai/suggestions/{id}/reject
+
+Reject a pending suggestion. Marks it `rejected`; nothing changes in Gmail.
+
+**Response:** `204 No Content`
+
+---
+
+## Senders Endpoints
+
+Learn-once triage keyed by sender.
+
+### List senders
+
+#### GET /api/senders
+
+Inbox senders aggregated with their email counts and any learned preference.
+
+**Response:** `200 OK` — an array of `SenderStats`:
+```json
+[
+  {
+    "senderEmail": "news@acme.com", "senderDomain": "acme.com",
+    "senderName": "Acme", "emailCount": 12,
+    "preference": { "autoApply": true, "defaultAction": "archive", "defaultLabel": "" }
+  }
+]
+```
+`preference` is omitted when the sender has none.
+
+### Create a rule from a sender
+
+#### POST /api/senders/rule
+
+Turn a sender into a permanent deterministic rule: every future email whose
+`From` contains the sender gets the action.
+
+**Request body:**
+```json
+{ "senderEmail": "news@acme.com", "action": "archive", "labelName": "" }
+```
+`action` is one of `archive`, `trash`, `label`, `markRead`, `star`; `labelName`
+is required when `action` is `label`.
+
+**Response:** `201 Created` — the created `SortingRule` (see the Sorting Rules
+section for its shape).
+
+### Update a sender preference
+
+#### PUT /api/senders/{id}/preferences
+
+**Request body:**
+```json
+{ "autoApply": true, "defaultAction": "archive", "defaultLabel": "" }
+```
+
+**Response:** `200 OK` → `{ "status": "updated" }`
+
+---
+
 ## Sorting Rules Endpoints
 
 Deterministic, **AI-free** triage. A rule pairs conditions with an action; when
@@ -637,9 +873,36 @@ calls the AI, never consumes quota.
 {
   "applied": 18,
   "scanned": 120,
-  "byRule": { "Archiver les newsletters Acme": 12, "Promos": 6 }
+  "byRule": { "Archiver les newsletters Acme": 12, "Promos": 6 },
+  "protectedSkipped": 0
 }
 ```
+
+### Preview Sorting Rules (dry run)
+
+#### POST /api/rules/preview
+
+Reports what the rules **would** do over the current inbox without touching Gmail
+— the safe way to check a ruleset before applying it.
+
+**Response:** `200 OK`
+```json
+{
+  "scanned": 120,
+  "willApply": 18,
+  "byRule": [
+    { "ruleName": "Archiver les newsletters Acme", "action": "archive", "matched": 12 }
+  ],
+  "samples": [
+    {
+      "messageId": "18c...", "from": "news@acme.com", "subject": "…",
+      "ruleName": "Archiver les newsletters Acme", "action": "archive"
+    }
+  ]
+}
+```
+`samples` is capped server-side. When the user has no rules, `willApply` is `0`
+and the arrays are empty.
 
 ---
 
@@ -682,6 +945,49 @@ Get all Gmail labels for a user.
 - `401 Unauthorized`: Missing user email
 - `404 Not Found`: User not found
 - `500 Internal Server Error`: Failed to fetch labels
+
+---
+
+## Config Endpoints
+
+Bootstrap endpoints for first-run Gmail OAuth setup. These are **public** (no
+session token) so the Setup page works before anyone has logged in.
+
+### Configuration status
+
+#### GET /api/config/status
+
+**Response:** `200 OK` → `{ "isConfigured": true }` — whether Gmail OAuth
+credentials are present (in env or database).
+
+### Get Gmail config (masked)
+
+#### GET /api/config/gmail
+
+**Response:** `200 OK` — the stored client ID and redirect URL, with the secret
+masked:
+```json
+{ "clientId": "123...apps.googleusercontent.com", "clientSecret": "••••••••", "redirectUrl": "http://localhost:3000/auth/callback" }
+```
+
+### Save Gmail config
+
+#### POST /api/config/gmail
+
+Persist Gmail OAuth credentials (encrypted at rest) and hot-reload the OAuth
+client.
+
+**Request body:**
+```json
+{ "clientId": "123...apps.googleusercontent.com", "clientSecret": "GOCSPX-…", "redirectUrl": "http://localhost:3000/auth/callback" }
+```
+`clientSecret` may be omitted when updating an already-saved config.
+
+**Response:** `200 OK` → `{ "success": true }`
+
+**Error Responses:**
+- `400 Bad Request`: Missing Client ID (or Client Secret on first save)
+- `500 Internal Server Error`: Failed to encrypt or persist credentials
 
 ---
 

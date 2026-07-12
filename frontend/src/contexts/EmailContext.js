@@ -135,15 +135,6 @@ export function EmailProvider({ children }) {
     }
   }, [pagination.nextPageToken, loadingMore]);
 
-  const refreshSuggestions = useCallback(async () => {
-    try {
-      const res = await aiService.getSuggestions('pending');
-      setSuggestions(res.data || []);
-    } catch (err) {
-      console.warn('Failed to refresh suggestions:', err);
-    }
-  }, []);
-
   const removeSuggestion = useCallback((suggestionId) => {
     setSuggestions(prev => prev.filter(s => (s.id || s._id) !== suggestionId));
   }, []);
@@ -159,18 +150,6 @@ export function EmailProvider({ children }) {
     );
   }, []);
 
-  const clearCache = useCallback(() => {
-    setEmails([]);
-    setSenders([]);
-    setSubscriptions([]);
-    setSuggestions([]);
-    setStats(null);
-    setPagination({ nextPageToken: null, resultSizeEstimate: 0 });
-    lastFetchRef.current = null;
-    lastSyncRef.current = null;
-    lastStatsRef.current = null;
-  }, []);
-
   const value = {
     emails,
     senders,
@@ -184,11 +163,9 @@ export function EmailProvider({ children }) {
     setError,
     fetchData,
     loadMoreEmails,
-    refreshSuggestions,
     removeSuggestion,
     removeSuggestions,
     markUnsubscribed,
-    clearCache,
     isCacheValid,
   };
 

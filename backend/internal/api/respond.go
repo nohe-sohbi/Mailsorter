@@ -4,7 +4,29 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
+
+// errReauthRequired signals that the user's Google authorization can no longer
+// mint a valid access token (no refresh token on file, or the refresh was
+// rejected — typically a revoked grant). Handlers map it to 401 so the SPA
+// clears the session and restarts OAuth instead of looping on opaque 500s.
+var errReauthRequired = errors.New("gmail authorization expired; re-authentication required")
+
+// writeAuthError maps a getUserToken / gmailClientFor failure to the right
+// status: 401 when the grant is dead (SPA re-runs OAuth), 404 when the account
+// row is gone, 500 for anything else.
+func writeAuthError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errReauthRequired):
+		writeError(w, http.StatusUnauthorized, "Gmail authorization expired. Please reconnect your account.")
+	case errors.Is(err, mongo.ErrNoDocuments):
+		writeError(w, http.StatusNotFound, "User not found")
+	default:
+		writeError(w, http.StatusInternalServerError, "Failed to get user credentials")
+	}
+}
 
 // maxRequestBody caps the size of a JSON request body Mailsorter will read. None
 // of our payloads (an action, a rule, a settings toggle) come close to 1 MiB, so
