@@ -107,7 +107,7 @@ Validate the OAuth `state`, exchange the authorization code, and return a signed
 }
 ```
 
-> `accessToken` is Mailsorter's own session token — **not** the Gmail access
+> `accessToken` is Mailsorter's own session token, **not** the Gmail access
 > token, which never leaves the server.
 
 **Error Responses:**
@@ -245,8 +245,8 @@ Brings the email back to the inbox immediately, marked unread.
 ## Protected Senders Endpoints (VIP)
 
 A per-user safety net: while a sender (full address or whole domain, subdomains
-included) is protected, no automated pass — AI suggestion, deterministic rule,
-sender auto-pilot or bulk action — may archive, trash or delete their mail.
+included) is protected, no automated pass (AI suggestion, deterministic rule,
+sender auto-pilot or bulk action) may archive, trash or delete their mail.
 Non-destructive actions (label, star, mark read) are unaffected.
 
 ### List protected senders
@@ -275,7 +275,7 @@ The value is normalized and classified server-side (`kind`: `address` or
 ## Unsubscribe Endpoints
 
 Detects mailing-list senders via the `List-Unsubscribe` (RFC 2369) and
-`List-Unsubscribe-Post` (RFC 8058) headers, and unsubscribes the user — either
+`List-Unsubscribe-Post` (RFC 8058) headers, and unsubscribes the user, either
 silently server-side (one-click) or by handing back the link to open.
 
 ### Get Subscriptions
@@ -345,8 +345,8 @@ sender's backlog in the same call.
 ## Stats Endpoints
 
 The recap is computed from the append-only action ledger (`action_log`), so it
-counts every Gmail mutation — direct actions, rules, bulk sweeps, snoozes,
-unsubscribes — over the trailing 7 days, not just applied AI suggestions.
+counts every Gmail mutation (direct actions, rules, bulk sweeps, snoozes,
+unsubscribes) over the trailing 7 days, not just applied AI suggestions.
 
 ### Get mailbox stats
 
@@ -389,8 +389,8 @@ background loop emails opted-in users once a day at their chosen UTC hour.
 
 ```json
 {
-  "subject": "Mailsorter — 3 emails triés aujourd'hui",
-  "text": "Votre récap Mailsorter — 21/06/2026\n\nAujourd'hui : 3 emails triés.\n…",
+  "subject": "Mailsorter : 3 emails triés aujourd'hui",
+  "text": "Votre récap Mailsorter du 21/06/2026\n\nAujourd'hui : 3 emails triés.\n…",
   "html": "<div style=\"…\"><h2>3 emails triés aujourd'hui</h2>…</div>"
 }
 ```
@@ -467,7 +467,7 @@ Returns the caller's tunable settings.
 
 Persists the settings. **Partial merge:** every field is optional and only the
 fields present in the body are updated, so one screen can toggle its setting
-without clobbering the others. `digestHourUTC` is clamped to `0–23` (out-of-range
+without clobbering the others. `digestHourUTC` is clamped to `0-23` (out-of-range
 falls back to the server default `DIGEST_HOUR_UTC`). When `digestEnabled` is
 true, a background scheduler emails the 7-day recap once a day at `digestHourUTC`
 (UTC). When `autoSyncEnabled` is true, a background scheduler periodically syncs
@@ -488,7 +488,7 @@ caller: a **redacted** account profile (never the OAuth tokens or Stripe IDs)
 plus every user-owned dataset (rules, protected senders, snoozes, suggestions,
 sender preferences, smart labels, unsubscribes, usage, action log, analysis
 jobs). Served as a downloadable attachment. The user's Gmail mailbox is not
-included — those emails live in Gmail and never leave the user's control.
+included: those emails live in Gmail and never leave the user's control.
 
 ```json
 {
@@ -565,7 +565,7 @@ header (HMAC-SHA256, 5-minute tolerance) before processing. Keeps the user's
 #### POST /api/billing/portal
 
 Creates a Stripe Billing Portal session for the current Pro user so they can
-update payment details, switch plans, or cancel — entirely self-service. Returns
+update payment details, switch plans, or cancel, entirely self-service. Returns
 the hosted URL to redirect to.
 
 **Headers:**
@@ -780,7 +780,7 @@ section for its shape).
 ## Sorting Rules Endpoints
 
 Deterministic, **AI-free** triage. A rule pairs conditions with an action; when
-the conditions match an email, the action is applied directly via Gmail — no
+the conditions match an email, the action is applied directly via Gmail: no
 model call, no quota consumed. Rules are the free, predictable complement to the
 AI suggestions.
 
@@ -809,23 +809,23 @@ A rule has the shape:
 }
 ```
 
-- **`matchAll`** — `true` ANDs every condition, `false` ORs them.
-- **Condition `field`** — `from`, `subject`, `snippet`, `to`, `body`.
-- **Condition `operator`** — text: `contains`, `notContains`, `equals`,
+- **`matchAll`** : `true` ANDs every condition, `false` ORs them.
+- **Condition `field`** : `from`, `subject`, `snippet`, `to`, `body`.
+- **Condition `operator`** : text: `contains`, `notContains`, `equals`,
   `notEquals`, `startsWith`, `endsWith`, `regex` (all case-insensitive except
   `regex`); temporal: `olderThan` / `newerThan`, whose `value` is a **number of
   days** compared against the email's received date (an undated email never
   matches a temporal condition).
-- **`actions`** — an **ordered list** of actions applied in sequence (e.g.
+- **`actions`** : an **ordered list** of actions applied in sequence (e.g.
   *label* then *archive*). Each is `{ "type": ..., "labelName": ... }` where
   `type` is `archive`, `trash`, `label` (requires `labelName`), `markRead` or
   `star`. A protected (VIP) sender has destructive actions (archive/trash)
   skipped while non-destructive actions in the same rule still run.
-- **`action` / `labelName`** — legacy single-action fields, kept for backward
+- **`action` / `labelName`** : legacy single-action fields, kept for backward
   compatibility. A client may send either shape; the server normalizes them and
   mirrors the primary (first) action onto these fields. Rules created before
   multi-action, and one-click sender rules, use only these.
-- **`priority`** — lower runs first; the first matching rule wins per email.
+- **`priority`** : lower runs first; the first matching rule wins per email.
 
 ### Get Sorting Rules
 

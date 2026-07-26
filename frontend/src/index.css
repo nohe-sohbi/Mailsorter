@@ -47,7 +47,7 @@
       transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50
       focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 select-none;
   }
-  /* One primary action per screen — solid ink-blue, no gradient, no glow. */
+  /* One primary action per screen: solid ink-blue, no gradient, no glow. */
   .btn-primary {
     @apply btn bg-brand-600 text-white shadow-soft hover:bg-brand-700 active:bg-brand-800;
   }

@@ -24,7 +24,7 @@ import (
 
 // gmailClientFor returns an authenticated Gmail client for the user. It routes
 // through getUserToken, so the OAuth token is refreshed and persisted when
-// expired — previously this logic was copy-pasted across handlers (and missing
+// expired. Previously this logic was copy-pasted across handlers (and missing
 // entirely from sync/labels, which would fail once the access token aged out).
 func (h *Handler) gmailClientFor(ctx context.Context, userEmail string) (*gmailapi.Service, error) {
 	token, err := h.getUserToken(ctx, userEmail)
@@ -119,7 +119,7 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // Metrics exposes the in-process request meter (counts by method and status
-// class, latency, uptime). It is intentionally aggregate-only — no user data —
+// class, latency, uptime). It is intentionally aggregate-only (no user data),
 // so it can be scraped without authentication, the way an ops endpoint expects.
 func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 	snap := h.metrics.Snapshot()
@@ -159,7 +159,7 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject the callback unless it carries the signed state we issued — this is
+	// Reject the callback unless it carries the signed state we issued. This is
 	// what stops a forged redirect (CSRF) from completing a login.
 	state := r.URL.Query().Get("state")
 	if err := h.auth.VerifyState(state); err != nil {
@@ -205,7 +205,7 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hand the browser our own signed session token — never the raw Gmail
+	// Hand the browser our own signed session token, never the raw Gmail
 	// access token, which must stay server-side.
 	sessionToken := h.auth.IssueSession(userEmail)
 
@@ -363,7 +363,7 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 	}
 
 	// Autopilot: when the user opted in, run their deterministic rules over each
-	// freshly synced email — instant, AI-free, quota-free triage at sync time.
+	// freshly synced email: instant, AI-free, quota-free triage at sync time.
 	var autoRules []models.SortingRule
 	var protectedList []string
 	if h.autoApplyRulesEnabled(ctx, userEmail) {
@@ -524,7 +524,7 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 // GetConfigStatus reports whether the instance holds usable Gmail credentials.
 //
 // It answers from the live OAuth client rather than from the database, so it
-// reflects what the server is actually able to do — whichever source those
+// reflects what the server is actually able to do, whichever source those
 // credentials came from at boot (environment variables first, legacy stored
 // document as fallback). The credentials themselves are never readable or
 // writable over HTTP; see cmd/server/main.go for how they are loaded.

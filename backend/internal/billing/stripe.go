@@ -93,7 +93,7 @@ func (c *Client) CreateCheckoutSession(p CheckoutParams) (string, error) {
 
 // CreatePortalSession creates a Stripe Billing Portal session for an existing
 // customer and returns the hosted URL where they can update payment details,
-// switch plans, or cancel — Stripe handles the entire self-service flow. The
+// switch plans, or cancel: Stripe handles the entire self-service flow. The
 // customer must already exist (it is created during the first Checkout).
 func (c *Client) CreatePortalSession(customerID, returnURL string) (string, error) {
 	form := url.Values{}

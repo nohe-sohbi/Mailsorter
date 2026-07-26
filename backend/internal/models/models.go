@@ -10,24 +10,24 @@ type User struct {
 	AccessToken  string    `json:"-" bson:"accessToken"`
 	RefreshToken string    `json:"-" bson:"refreshToken"`
 	TokenExpiry  time.Time `json:"-" bson:"tokenExpiry"`
-	// Billing — Plan is "free" (default/empty) or "pro".
+	// Billing. Plan is "free" (default/empty) or "pro".
 	Plan                 string    `json:"plan" bson:"plan,omitempty"`
 	StripeCustomerID     string    `json:"-" bson:"stripeCustomerId,omitempty"`
 	StripeSubscriptionID string    `json:"-" bson:"stripeSubscriptionId,omitempty"`
 	PlanUpdatedAt        time.Time `json:"-" bson:"planUpdatedAt,omitempty"`
 	// AutoApplyRules, when true, runs the user's deterministic sorting rules
-	// automatically over every freshly synced inbox — no extra click, no AI, no
+	// automatically over every freshly synced inbox: no extra click, no AI, no
 	// quota. Off by default so syncing never mutates Gmail unexpectedly.
 	AutoApplyRules bool `json:"autoApplyRules" bson:"autoApplyRules,omitempty"`
 	// AutoSyncEnabled, when true, lets a background scheduler periodically sync the
 	// user's inbox (and, if AutoApplyRules is on, run their rules) with no manual
-	// click — the hands-free path to "Inbox Zero, forever". LastAutoSyncAt stamps
+	// click, the hands-free path to "Inbox Zero, forever". LastAutoSyncAt stamps
 	// the last run so the scheduler honors a minimum interval between syncs.
 	// Off by default so Mailsorter never touches Gmail unprompted.
 	AutoSyncEnabled bool      `json:"autoSyncEnabled" bson:"autoSyncEnabled,omitempty"`
 	LastAutoSyncAt  time.Time `json:"-" bson:"lastAutoSyncAt,omitempty"`
-	// Daily digest — when DigestEnabled is true, a background scheduler emails a
-	// recap of the last 7 days once a day at DigestHourUTC (0–23, UTC).
+	// Daily digest. When DigestEnabled is true, a background scheduler emails a
+	// recap of the last 7 days once a day at DigestHourUTC (0-23, UTC).
 	// DigestLastSentAt stamps the last attempt so we send at most once per day.
 	DigestEnabled    bool      `json:"digestEnabled" bson:"digestEnabled,omitempty"`
 	DigestHourUTC    int       `json:"digestHourUTC" bson:"digestHourUTC,omitempty"`
@@ -47,7 +47,7 @@ type UserSettings struct {
 
 // SettingsUpdate is the request body for PUT /api/account/settings. Every field
 // is a pointer so the server can tell "set this to false" apart from "field not
-// sent" and merge only what the client included — letting different screens
+// sent" and merge only what the client included, letting different screens
 // (the Rules toggle, the digest card) update their own setting without
 // clobbering the others.
 type SettingsUpdate struct {
@@ -137,14 +137,14 @@ type RuleCondition struct {
 
 // RuleAction is a single thing a rule does to a matching email. A rule can
 // carry several actions (e.g. label "Newsletters" AND archive), applied in
-// order — the canonical newsletter cleanup that a single action couldn't express.
+// order: the canonical newsletter cleanup that a single action couldn't express.
 type RuleAction struct {
 	Type      string `json:"type" bson:"type"`                               // archive, trash, label, markRead, star
 	LabelName string `json:"labelName,omitempty" bson:"labelName,omitempty"` // required when Type == "label"
 }
 
 // SortingRule is a deterministic, AI-free triage rule. When its conditions
-// match an email, its action(s) are applied directly via Gmail — no model call,
+// match an email, its action(s) are applied directly via Gmail: no model call,
 // no quota consumed. Rules run before the AI so users can encode the obvious
 // cases once and have them handled instantly and predictably.
 //
@@ -196,8 +196,8 @@ type CreateSenderRuleRequest struct {
 // ============================================
 
 // ProtectedSender shields a sender from automated destructive triage. While a
-// sender (a full address or a whole domain) is protected, no automated pass —
-// AI suggestion, deterministic rule, sender auto-pilot or bulk action — may
+// sender (a full address or a whole domain) is protected, no automated pass
+// (AI suggestion, deterministic rule, sender auto-pilot or bulk action) may
 // archive, trash or delete their emails. Non-destructive actions (label, star,
 // mark read) are unaffected, and the user can still act manually.
 type ProtectedSender struct {

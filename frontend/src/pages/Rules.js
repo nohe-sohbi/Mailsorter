@@ -90,7 +90,7 @@ function RuleEditor({ initial, onCancel, onSave, saving }) {
   };
 
   // Actions already chosen can't be picked again (except "label", which can
-  // repeat with different names) — keeps the combo meaningful.
+  // repeat with different names), which keeps the combo meaningful.
   const usedTypes = new Set(rule.actions.map((a) => a.type));
 
   return (
@@ -172,7 +172,7 @@ function RuleEditor({ initial, onCancel, onSave, saving }) {
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold text-ink-700">Actions</span>
-          <span className="text-xs text-ink-400">Exécutées dans l’ordre — ex. <em>Étiqueter</em> puis <em>Archiver</em></span>
+          <span className="text-xs text-ink-400">Exécutées dans l’ordre, ex. <em>Étiqueter</em> puis <em>Archiver</em></span>
         </div>
         <div className="space-y-2">
           {rule.actions.map((a, i) => (
@@ -401,7 +401,7 @@ function Rules() {
             <div>
               <div className="text-sm font-bold text-ink-900">Autopilote au sync</div>
               <p className="mt-0.5 max-w-md text-xs text-ink-500">
-                Appliquer automatiquement vos règles à chaque synchronisation de la boîte — sans IA, sans quota.
+                Appliquer automatiquement vos règles à chaque synchronisation de la boîte, sans IA et sans quota.
               </p>
             </div>
           </div>
@@ -420,7 +420,7 @@ function Rules() {
         <div className="card mb-5 p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="flex items-center gap-2 font-bold text-ink-900">
-              <Search size={16} className="text-brand-500" /> Aperçu — {preview.willApply} email{preview.willApply > 1 ? 's' : ''} sur {preview.scanned}
+              <Search size={16} className="text-brand-500" /> Aperçu : {preview.willApply} email{preview.willApply > 1 ? 's' : ''} sur {preview.scanned}
             </h3>
             <button onClick={() => setPreview(null)} className="btn-ghost px-2 text-ink-400" aria-label="Fermer l’aperçu">
               <X size={16} />
@@ -446,7 +446,7 @@ function Rules() {
                     {effectiveActions(s).map((a, j) => (
                       <span key={j} className={cn('chip shrink-0', actionMeta(a.type).tone)}>{actionMeta(a.type).label}</span>
                     ))}
-                    <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> — {s.from}</span>
+                    <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> · {s.from}</span>
                   </li>
                 ))}
               </ul>

@@ -54,7 +54,7 @@ function Snoozed() {
     try {
       await snoozeService.wake(snooze.id);
       setSnoozes((prev) => prev.filter((s) => s.id !== snooze.id));
-      toast.success('Email réactivé — de retour dans votre boîte');
+      toast.success('Email réactivé, de retour dans votre boîte');
     } catch (err) {
       toast.error('Réactivation impossible. Réessayez.');
     } finally {

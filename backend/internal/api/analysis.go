@@ -128,7 +128,7 @@ func (h *Handler) runAnalysis(
 			case analyses != nil && j < len(analyses):
 				a = analyses[j]
 			case h.aiClient != nil:
-				// Batch failed to align — fall back to a single-email call.
+				// Batch failed to align, fall back to a single-email call.
 				single, err := h.aiClient.AnalyzeEmail(email, existingLabels)
 				if err != nil {
 					p.Processed++
@@ -171,7 +171,7 @@ func protectAnalysis(a ai.EmailAnalysis, from string, protectedList []string) ai
 	}
 	a.Action = "keep"
 	a.LabelName = ""
-	a.Reasoning = "Expéditeur protégé — conservé en boîte"
+	a.Reasoning = "Expéditeur protégé, conservé en boîte"
 	if a.Confidence < 0.9 {
 		a.Confidence = 0.9
 	}

@@ -1,7 +1,7 @@
 // Package rules implements Mailsorter's deterministic, AI-free triage engine.
 //
 // A SortingRule pairs a set of conditions with an action. When the conditions
-// match an email, the action is applied directly — without ever calling the
+// match an email, the action is applied directly, without ever calling the
 // language model. This gives users instant, predictable, free handling of the
 // obvious cases (a noisy sender, a recurring subject), and lets the AI focus on
 // the genuinely ambiguous mail. The matcher here is pure (no I/O) so it is
@@ -257,8 +257,8 @@ type RuleHits struct {
 
 // Preview runs the ruleset over emails WITHOUT any side effect and reports what
 // would happen: one PreviewItem per matched email plus a per-rule tally. It
-// mirrors ApplyRules exactly — each email is attributed to its FirstMatch in
-// priority order — so the dry-run is a faithful forecast of a real apply.
+// mirrors ApplyRules exactly (each email is attributed to its FirstMatch in
+// priority order), so the dry-run is a faithful forecast of a real apply.
 // Callers pass rules pre-sorted by priority (disabled rules are skipped by the
 // matcher). The hits slice preserves the order in which rules first match.
 func Preview(emails []models.Email, ruleset []models.SortingRule) ([]PreviewItem, []RuleHits) {

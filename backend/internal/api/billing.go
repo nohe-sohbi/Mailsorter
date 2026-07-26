@@ -46,7 +46,7 @@ func (h *Handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	// Already Pro — nothing to buy.
+	// Already Pro, nothing to buy.
 	if h.getPlan(ctx, userEmail) == PlanPro {
 		http.Error(w, "Vous êtes déjà abonné à Pro.", http.StatusConflict)
 		return

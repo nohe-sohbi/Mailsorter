@@ -49,7 +49,7 @@ func isPublicPath(path string) bool {
 // Crucially, it ALWAYS strips any client-supplied X-User-Email header first and
 // only re-sets it after verifying the bearer token. Downstream handlers keep
 // reading X-User-Email, but its value is now server-vouched rather than blindly
-// trusted from the request — closing the impersonation hole.
+// trusted from the request, closing the impersonation hole.
 //
 // On public routes it still identifies the caller when it can: a valid token
 // gets X-User-Email set, an absent or bad one is simply not an error. That lets
@@ -229,7 +229,7 @@ func (rl *rateLimiter) sweep() {
 }
 
 // rateLimitMiddleware throttles requests per client (session token if present,
-// otherwise remote IP). The webhook is exempt — Stripe controls its own rate.
+// otherwise remote IP). The webhook is exempt: Stripe controls its own rate.
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/billing/webhook") || r.URL.Path == "/health" || r.URL.Path == "/metrics" {

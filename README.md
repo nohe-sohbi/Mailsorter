@@ -5,7 +5,7 @@
 ### Inbox Zero, propulsé par l'IA.
 
 **Mailsorter lit, comprend et range vos emails Gmail à votre place.**
-Stop au scroll infini — atteignez l'Inbox Zero en quelques clics, et gardez-la propre pour toujours.
+Stop au scroll infini : atteignez l'Inbox Zero en quelques clics, et gardez-la propre pour toujours.
 
 `React + Tailwind` · `Go` · `MongoDB` · `Mistral AI`
 
@@ -15,24 +15,24 @@ Stop au scroll infini — atteignez l'Inbox Zero en quelques clics, et gardez-la
 
 ## ⚡ Pourquoi Mailsorter
 
-Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de colis noient les messages importants, le spam passe entre les mailles. Le tri manuel prend des heures — et recommence chaque semaine.
+Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de colis noient les messages importants, le spam passe entre les mailles. Le tri manuel prend des heures, et recommence chaque semaine.
 
 Mailsorter automatise tout ça :
 
-- **🧠 Tri par IA en un clic** — L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
-- **⚙️ Règles de tri déterministes** — Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / **ne contient pas** / égal / **différent** / commence / finit / regex / **plus vieux que** / **plus récent que** *N* jours) → **une ou plusieurs actions enchaînées** (ex. *étiqueter* **puis** *archiver*) : archiver, supprimer, étiqueter, lire, favori. **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
-- **📰 Digest quotidien par email** — Un récap de votre tri des 7 derniers jours, envoyé **chaque jour dans votre boîte** à l'heure (UTC) que vous choisissez. Activez-le en un clic depuis les *Réglages*.
-- **👤 Apprendre une fois, en 1 clic** — Depuis la vue *Expéditeurs*, transformez n'importe quel expéditeur en **règle permanente** : ses futurs emails sont rangés tout seuls, pour toujours.
-- **🔕 Désabonnement en 1 clic** — Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app** — puis archive tout le backlog de l'expéditeur d'un geste.
-- **🛡️ Expéditeurs protégés (VIP)** — Marquez une adresse ou un domaine entier comme **protégé** : ses emails ne seront **jamais** archivés ni supprimés automatiquement (ni par l'IA, ni par les règles, ni en masse). Le filet de sécurité de l'Inbox Zero.
-- **⏰ Reporter (snooze)** — Sortez un email de la boîte d'un geste ; il **revient tout seul**, marqué non lu, au moment que vous choisissez (ce soir, demain, ce week-end…).
-- **🕓 Historique & annulation** — Un **journal transparent** de tout ce que Mailsorter a fait à votre place (par source : règle, IA, en masse…), avec un bouton **Annuler** qui rejoue l'inverse Gmail (désarchiver, restaurer, marquer non lu). Le filet de sécurité ultime.
-- **🔄 Synchronisation automatique** — Activez l'auto-sync : Mailsorter **synchronise votre boîte en arrière-plan** et, si l'autopilote des règles est actif, trie vos nouveaux emails **sans aucun clic**. Inbox Zero, en pilote automatique.
-- **⚡ Auto-pilote « Tout appliquer »** — Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
-- **👥 Règles par expéditeur** — Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
-- **🏷️ Libellés intelligents** — Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
-- **📦 Export & suppression RGPD** — Récupérez **tout ce que Mailsorter stocke** à votre sujet (règles, protections, reports, historique, réglages) en un fichier JSON, ou **effacez définitivement** votre compte et toutes vos données en un geste — sans jamais toucher à votre boîte Gmail.
-- **🔒 Zéro mot de passe stocké** — OAuth Google natif. Le secret API est chiffré au repos. Vos emails ne quittent jamais votre contrôle.
+- **🧠 Tri par IA en un clic** : L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
+- **⚙️ Règles de tri déterministes** : Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / **ne contient pas** / égal / **différent** / commence / finit / regex / **plus vieux que** / **plus récent que** *N* jours) → **une ou plusieurs actions enchaînées** (ex. *étiqueter* **puis** *archiver*) : archiver, supprimer, étiqueter, lire, favori. **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
+- **📰 Digest quotidien par email** : Un récap de votre tri des 7 derniers jours, envoyé **chaque jour dans votre boîte** à l'heure (UTC) que vous choisissez. Activez-le en un clic depuis les *Réglages*.
+- **👤 Apprendre une fois, en 1 clic** : Depuis la vue *Expéditeurs*, transformez n'importe quel expéditeur en **règle permanente** : ses futurs emails sont rangés tout seuls, pour toujours.
+- **🔕 Désabonnement en 1 clic** : Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app**, puis archive tout le backlog de l'expéditeur d'un geste.
+- **🛡️ Expéditeurs protégés (VIP)** : Marquez une adresse ou un domaine entier comme **protégé** : ses emails ne seront **jamais** archivés ni supprimés automatiquement (ni par l'IA, ni par les règles, ni en masse). Le filet de sécurité de l'Inbox Zero.
+- **⏰ Reporter (snooze)** : Sortez un email de la boîte d'un geste ; il **revient tout seul**, marqué non lu, au moment que vous choisissez (ce soir, demain, ce week-end…).
+- **🕓 Historique & annulation** : Un **journal transparent** de tout ce que Mailsorter a fait à votre place (par source : règle, IA, en masse…), avec un bouton **Annuler** qui rejoue l'inverse Gmail (désarchiver, restaurer, marquer non lu). Le filet de sécurité ultime.
+- **🔄 Synchronisation automatique** : Activez l'auto-sync : Mailsorter **synchronise votre boîte en arrière-plan** et, si l'autopilote des règles est actif, trie vos nouveaux emails **sans aucun clic**. Inbox Zero, en pilote automatique.
+- **⚡ Auto-pilote « Tout appliquer »** : Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
+- **👥 Règles par expéditeur** : Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
+- **🏷️ Libellés intelligents** : Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
+- **📦 Export & suppression RGPD** : Récupérez **tout ce que Mailsorter stocke** à votre sujet (règles, protections, reports, historique, réglages) en un fichier JSON, ou **effacez définitivement** votre compte et toutes vos données en un geste, sans jamais toucher à votre boîte Gmail.
+- **🔒 Zéro mot de passe stocké** : OAuth Google natif. Le secret API est chiffré au repos. Vos emails ne quittent jamais votre contrôle.
 
 ---
 
@@ -106,10 +106,10 @@ docker compose up -d        # ou : make up
 
 ## 🧭 Le flow utilisateur
 
-1. **Connectez Gmail** — un clic, OAuth Google sécurisé.
-2. **Lancez « Trier ma boîte »** — l'IA analyse vos emails et empile ses suggestions.
-3. **Validez** — *Tout appliquer* pour l'auto-pilote, ou tranchez au cas par cas. Filtrez sur *haute confiance* pour aller encore plus vite.
-4. **Industrialisez** — passez en vue *Expéditeurs* pour archiver/supprimer en masse et mémoriser vos préférences.
+1. **Connectez Gmail** : un clic, OAuth Google sécurisé.
+2. **Lancez « Trier ma boîte »** : l'IA analyse vos emails et empile ses suggestions.
+3. **Validez** : *Tout appliquer* pour l'auto-pilote, ou tranchez au cas par cas. Filtrez sur *haute confiance* pour aller encore plus vite.
+4. **Industrialisez** : passez en vue *Expéditeurs* pour archiver/supprimer en masse et mémoriser vos préférences.
 
 ---
 
@@ -139,7 +139,7 @@ docker compose up -d        # ou : make up
 | `POST`  | `/api/activity/undo`      | **Annule** une action automatisée (rejoue l'inverse Gmail)    |
 | `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
 | `GET`   | `/api/account/settings`   | Réglages du compte (ex. autopilote des règles) |
-| `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`, `autoSyncEnabled`, digest) — **merge partiel** |
+| `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`, `autoSyncEnabled`, digest), **merge partiel** |
 | `GET`   | `/api/account/export`     | **Export RGPD** : toutes vos données Mailsorter en un JSON |
 | `DELETE`| `/api/account`            | **Suppression RGPD** : efface le compte et toutes les données |
 | `GET`   | `/api/rules`              | **Règles de tri** (liste, triées par priorité) |

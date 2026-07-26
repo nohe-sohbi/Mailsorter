@@ -3,7 +3,7 @@
 // "Reporter" (snooze) is a classic, beloved inbox feature: pull an email out of
 // the way now and have it resurface, marked unread, at a moment that suits you.
 // The only tricky part is turning a friendly preset ("ce soir", "demain",
-// "ce week-end") into a concrete wake time relative to now — and that is pure,
+// "ce week-end") into a concrete wake time relative to now, and that is pure,
 // so it lives here and is tested exhaustively, independent of any storage.
 package snooze
 

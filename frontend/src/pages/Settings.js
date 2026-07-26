@@ -51,7 +51,7 @@ function AutoSyncSettings() {
       <p className="mb-5 text-sm text-ink-500">
         Laissez Mailsorter <span className="font-semibold text-ink-700">synchroniser votre boîte en arrière-plan</span>,
         sans aucun clic. Si l'<span className="font-semibold text-ink-700">application automatique des règles</span> est
-        activée (page Règles), vos règles déterministes trient aussi vos nouveaux emails toutes seules — le chemin
+        activée (page Règles), vos règles déterministes trient aussi vos nouveaux emails toutes seules, le chemin
         mains-libres vers l'Inbox Zero.
       </p>
 
@@ -232,7 +232,7 @@ function ProtectedSenders() {
         <h2 className="text-lg font-bold text-ink-900">Expéditeurs protégés</h2>
       </div>
       <p className="mb-5 text-sm text-ink-500">
-        Leurs emails ne seront <span className="font-semibold text-ink-700">jamais archivés ni supprimés automatiquement</span> —
+        Leurs emails ne seront <span className="font-semibold text-ink-700">jamais archivés ni supprimés automatiquement</span>,
         ni par l'IA, ni par les règles, ni en masse. Ajoutez une adresse (<span className="font-mono text-xs">boss@corp.com</span>)
         ou un domaine entier (<span className="font-mono text-xs">corp.com</span>).
       </p>

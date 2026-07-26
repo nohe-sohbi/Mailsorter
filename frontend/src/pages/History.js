@@ -19,7 +19,7 @@ const ACTION_META = {
   unread: { label: 'Marqué non lu', Icon: Mail, tone: 'bg-ink-100 text-ink-600' },
 };
 
-// Where an action came from — the ledger's truthful attribution.
+// Where an action came from: the ledger's truthful attribution.
 const SOURCE_LABELS = {
   direct: 'Action directe',
   rule: 'Règle',
@@ -82,7 +82,7 @@ function History() {
       await accountService.undoAction(entry.id);
       // Reflect the reversal locally: this entry is now undone (no longer undoable).
       setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true, undoable: false } : e)));
-      toast.success('Action annulée — email restauré.');
+      toast.success('Action annulée, email restauré.');
     } catch (err) {
       toast.error(err.response?.data?.error || 'Annulation impossible.');
     } finally {
@@ -99,7 +99,7 @@ function History() {
         <div>
           <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Historique</h1>
           <p className="text-sm text-ink-500">
-            Tout ce que Mailsorter a fait à votre place — et un bouton pour l'annuler.
+            Tout ce que Mailsorter a fait à votre place, et un bouton pour l'annuler.
           </p>
         </div>
       </div>
@@ -130,7 +130,7 @@ function History() {
           </span>
           <h3 className="text-lg font-bold text-ink-900">Aucune action pour l'instant</h3>
           <p className="mt-1 max-w-xs text-sm text-ink-500">
-            Dès que vous (ou l'auto-pilote) triez un email, l'action apparaîtra ici — avec une option pour la défaire.
+            Dès que vous (ou l'auto-pilote) triez un email, l'action apparaîtra ici, avec une option pour la défaire.
           </p>
         </div>
       ) : (

@@ -65,7 +65,7 @@ func TestThisEveningRollsToTomorrowWhenPast(t *testing.T) {
 }
 
 func TestWeekendRollsAFullWeekOnSaturdayMorning(t *testing.T) {
-	// Saturday 2026-06-20 at 09:00 — 08:00 has passed, so next Saturday.
+	// Saturday 2026-06-20 at 09:00: 08:00 has passed, so next Saturday.
 	now := time.Date(2026, 6, 20, 9, 0, 0, 0, time.UTC)
 	got, err := Resolve(PresetThisWeekend, now)
 	if err != nil {

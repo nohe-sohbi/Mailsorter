@@ -18,7 +18,7 @@ func TestNegationOperators(t *testing.T) {
 		{"notContains miss (present term)", cond(FieldFrom, OpNotContains, "acme"), false},
 		{"notEquals hit", cond(FieldSubject, OpNotEquals, "something else"), true},
 		{"notEquals miss (folds+trims)", cond(FieldSubject, OpNotEquals, "  your weekly digest is here  "), false},
-		// An empty value never matches, even for a negated operator — otherwise a
+		// An empty value never matches, even for a negated operator, otherwise a
 		// blank rule would "not contain" everything and act on the whole inbox.
 		{"empty value never matches", cond(FieldFrom, OpNotContains, "  "), false},
 	}
