@@ -140,12 +140,18 @@ function Header() {
             })}
 
             <div className="mt-3 flex items-center justify-between gap-3 border-t border-ink-200/70 pt-3">
-              <div className="flex min-w-0 items-center gap-2.5">
+              {/* The desktop identity chip links to /account, so the mobile one
+                  must too, otherwise the profile is unreachable on a phone. */}
+              <button
+                onClick={() => navigate('/account')}
+                className="flex min-w-0 items-center gap-2.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-ink-100"
+                aria-label="Mon compte"
+              >
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
                   {initial}
                 </span>
                 <span className="truncate text-sm font-medium text-ink-600">{userEmail}</span>
-              </div>
+              </button>
               <button
                 onClick={handleLogout}
                 className="btn-ghost shrink-0 px-2.5"
