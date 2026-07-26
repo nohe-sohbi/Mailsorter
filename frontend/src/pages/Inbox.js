@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useEmails } from '../contexts/EmailContext';
 import { aiService, senderService, emailService, subscriptionService, protectService } from '../services/api';
 import { useToast } from '../ui/Toast';
+import { track } from '../lib/analytics';
 import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
 import Spinner from '../ui/Spinner';
@@ -172,6 +173,7 @@ function Inbox() {
     setSyncing(true);
     await fetchData({ forceRefresh: true });
     setSyncing(false);
+    track('inbox_sync');
     toast.success('Boîte synchronisée');
   };
 
@@ -194,7 +196,9 @@ function Inbox() {
       toast.error('Aucun email à analyser');
       return;
     }
-    if (ids.length > ASYNC_THRESHOLD) {
+    const async = ids.length > ASYNC_THRESHOLD;
+    track('ai_analyze', { mode: async ? 'async' : 'sync', count: ids.length });
+    if (async) {
       runAsyncAnalyze(ids);
     } else {
       runSyncAnalyze(ids);
@@ -278,6 +282,7 @@ function Inbox() {
     removeSuggestion(id);
     try {
       await aiService.applySuggestion(id);
+      track('suggestion_applied', { action: act });
       bumpGamify(1);
       const msg = `${actionMeta(act).label} appliqué`;
       if (isReversible(act)) undoToast(suggestion.emailId, act, msg);
@@ -302,6 +307,7 @@ function Inbox() {
       const res = await aiService.applyBatch(ids);
       const appliedIds = res.data?.appliedIds || ids;
       removeSuggestions(appliedIds);
+      track('apply_all', { applied: res.data?.applied ?? appliedIds.length });
       bumpGamify(res.data?.applied ?? appliedIds.length);
       toast.success(`${res.data?.applied ?? appliedIds.length} action${appliedIds.length > 1 ? 's' : ''} appliquée${appliedIds.length > 1 ? 's' : ''}`);
       if (res.data?.failed) toast.error(`${res.data.failed} action(s) ont échoué`);
@@ -343,6 +349,7 @@ function Inbox() {
     setSelectedEmail(null);
     try {
       await emailService.snooze(email.messageId, preset);
+      track('snooze', { preset });
       bumpGamify(1);
       toast.success('Email reporté, il reviendra au bon moment');
       fetchData({ forceRefresh: true });
@@ -373,11 +380,14 @@ function Inbox() {
       const { data } = await subscriptionService.unsubscribe(messageId, alsoArchive);
       const archivedNote = data.archived ? ` · ${data.archived} email${data.archived > 1 ? 's' : ''} archivé${data.archived > 1 ? 's' : ''}` : '';
       if (data.done) {
+        track('unsubscribe', { mode: 'oneclick' });
         toast.success(`Désabonné en un clic${archivedNote}`);
       } else if (data.url) {
+        track('unsubscribe', { mode: 'url' });
         window.open(data.url, '_blank', 'noopener,noreferrer');
         toast.info(`Page de désabonnement ouverte dans un nouvel onglet${archivedNote}`);
       } else if (data.mailto) {
+        track('unsubscribe', { mode: 'mailto' });
         window.location.href = data.mailto;
         toast.info('Email de désabonnement préparé');
       }
@@ -432,6 +442,7 @@ function Inbox() {
   const handleApplyBulk = async (sender, action) => {
     try {
       const response = await aiService.applyBulk(sender.senderEmail, action, sender.preference?.defaultLabel || '');
+      track('bulk_by_sender', { action, applied: response.data.applied || 0 });
       bumpGamify(response.data.applied || 0);
       toast.success(`${response.data.applied} email${response.data.applied > 1 ? 's' : ''} traité${response.data.applied > 1 ? 's' : ''}`);
       fetchData({ forceRefresh: true });
@@ -445,6 +456,7 @@ function Inbox() {
   const handleCreateSenderRule = async (sender) => {
     try {
       await senderService.createRule(sender.senderEmail, 'archive');
+      track('rule_created', { source: 'sender' });
       toast.action(
         `Règle créée : les emails de ${sender.senderName || sender.senderEmail} seront archivés.`,
         'Voir les règles',

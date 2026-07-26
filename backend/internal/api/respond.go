@@ -10,7 +10,7 @@ import (
 
 // errReauthRequired signals that the user's Google authorization can no longer
 // mint a valid access token (no refresh token on file, or the refresh was
-// rejected — typically a revoked grant). Handlers map it to 401 so the SPA
+// rejected, typically a revoked grant). Handlers map it to 401 so the SPA
 // clears the session and restarts OAuth instead of looping on opaque 500s.
 var errReauthRequired = errors.New("gmail authorization expired; re-authentication required")
 

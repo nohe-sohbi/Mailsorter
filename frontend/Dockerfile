@@ -20,6 +20,11 @@ COPY . .
 ARG REACT_APP_API_URL=/
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
 
+# Umami website id, also inlined at build time. Left empty, the tracker is
+# simply never injected, which is the right default for local builds.
+ARG REACT_APP_UMAMI_WEBSITE_ID=
+ENV REACT_APP_UMAMI_WEBSITE_ID=$REACT_APP_UMAMI_WEBSITE_ID
+
 # Build the app
 RUN npm run build
 

@@ -782,7 +782,7 @@ func (h *Handler) getUserToken(ctx context.Context, userEmail string) (*oauth2.T
 
 	// Refresh if expired. If we can't mint a fresh token (no refresh token, or the
 	// refresh was rejected), surface errReauthRequired so callers answer 401 and
-	// the SPA restarts OAuth — returning the dead token here would instead yield a
+	// the SPA restarts OAuth. Returning the dead token here would instead yield a
 	// stream of opaque 500s the user can never escape.
 	if token.Expiry.Before(time.Now()) {
 		if user.RefreshToken == "" {
