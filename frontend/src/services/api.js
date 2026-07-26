@@ -132,10 +132,11 @@ export const ruleService = {
   preview: () => apiClient.post('/api/rules/preview'),
 };
 
+// The Gmail credentials are an instance-wide OAuth app set through environment
+// variables, so there is nothing to read or write here: only a boot probe that
+// tells the app whether the deployment is wired up.
 export const configService = {
   getStatus: () => apiClient.get('/api/config/status'),
-  getGmailConfig: () => apiClient.get('/api/config/gmail'),
-  saveGmailConfig: (config) => apiClient.post('/api/config/gmail', config),
 };
 
 export default apiClient;

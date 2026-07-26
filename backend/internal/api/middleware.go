@@ -18,13 +18,18 @@ type ctxKey string
 const requestIDKey ctxKey = "requestID"
 
 // publicPrefixes are the routes reachable without a session token: health,
-// the OAuth handshake, the first-run configuration endpoints, and the Stripe
+// the OAuth handshake, the boot-time configuration probe, and the Stripe
 // webhook (which authenticates itself via its HMAC signature).
+//
+// Only /api/config/status is public, never the whole /api/config/ prefix: the
+// Gmail credentials are a single instance-wide config, so an unauthenticated
+// write there would hijack the OAuth flow for every user. They now live in
+// environment variables and have no HTTP surface at all.
 var publicPrefixes = []string{
 	"/health",
 	"/metrics",
 	"/api/auth/",
-	"/api/config/",
+	"/api/config/status",
 	"/api/billing/webhook",
 }
 

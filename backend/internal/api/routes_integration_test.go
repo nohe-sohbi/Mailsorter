@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -27,10 +29,11 @@ func newRoutedTestServer(t *testing.T) *httptest.Server {
 		t.Fatalf("connect (no dial yet): %v", err)
 	}
 	h := &Handler{
-		db:        &database.Database{Client: cli},
-		auth:      auth.NewManager("integration-test-secret-key-1234567890"),
-		metrics:   metrics.New(),
-		startedAt: time.Now(),
+		db:           &database.Database{Client: cli},
+		gmailService: gmail.NewService("", "", ""),
+		auth:         auth.NewManager("integration-test-secret-key-1234567890"),
+		metrics:      metrics.New(),
+		startedAt:    time.Now(),
 	}
 	srv := httptest.NewServer(h.SetupRoutes())
 	t.Cleanup(srv.Close)
@@ -102,6 +105,61 @@ func TestProtectedRouteRejectsMissingSession(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Errorf("protected route without a session token = %d, want 401", res.StatusCode)
+	}
+}
+
+// The Gmail credentials are a single instance-wide OAuth app. When they were
+// editable over HTTP under the public /api/config/ prefix, any anonymous
+// visitor could rewrite them and hot-reload the client, hijacking the login
+// flow for every user. They now come from the environment and must have no
+// HTTP surface: both verbs have to be gone from the router, not merely gated.
+func TestGmailCredentialsHaveNoHTTPSurface(t *testing.T) {
+	srv := newRoutedTestServer(t)
+
+	res, err := http.Get(srv.URL + "/api/config/gmail")
+	if err != nil {
+		t.Fatalf("GET /api/config/gmail: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /api/config/gmail = %d, want 404 (credentials must not be readable)", res.StatusCode)
+	}
+
+	res, err = http.Post(srv.URL+"/api/config/gmail", "application/json",
+		strings.NewReader(`{"clientId":"attacker","clientSecret":"attacker","redirectUrl":"https://evil.example/callback"}`))
+	if err != nil {
+		t.Fatalf("POST /api/config/gmail: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("POST /api/config/gmail = %d, want 404 (credentials must not be writable)", res.StatusCode)
+	}
+}
+
+// The boot probe stays public: the SPA calls it before any login to decide
+// whether to show the setup instructions. It must leak nothing beyond a bool.
+func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
+	srv := newRoutedTestServer(t)
+
+	res, err := http.Get(srv.URL + "/api/config/status")
+	if err != nil {
+		t.Fatalf("GET /api/config/status: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("/api/config/status = %d, want 200 without a session token", res.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /api/config/status: %v", err)
+	}
+	if len(body) != 1 {
+		t.Errorf("status payload = %#v, want only isConfigured", body)
+	}
+	// The test server has no credentials loaded, so it must report false.
+	if configured, ok := body["isConfigured"].(bool); !ok || configured {
+		t.Errorf("isConfigured = %#v, want false on an unconfigured instance", body["isConfigured"])
 	}
 }
 

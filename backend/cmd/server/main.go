@@ -56,36 +56,40 @@ func main() {
 	// Initialize Gmail service (may be empty if not configured)
 	gmailService := gmail.NewService("", "", "")
 
-	// Try to load existing config from database
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	var storedConfig models.GmailConfig
-	err = db.GmailConfig().FindOne(ctx, bson.M{}).Decode(&storedConfig)
-	cancel()
-
-	if err == nil && storedConfig.IsConfigured {
-		// Decrypt and initialize Gmail service
-		clientSecret, err := encryptor.Decrypt(storedConfig.ClientSecretEncrypted)
-		if err == nil {
-			gmailService.UpdateConfig(
-				storedConfig.ClientID,
-				clientSecret,
-				storedConfig.RedirectURL,
-			)
-			log.Println("Gmail service initialized from stored configuration")
-		} else {
-			log.Printf("Warning: Failed to decrypt stored credentials: %v", err)
-		}
+	// The Gmail credentials are a single instance-wide OAuth app, not per-user
+	// data, so they belong to the deployment environment. Environment variables
+	// are the source of truth and win outright.
+	if cfg.GmailClientID != "" && cfg.GmailClientSecret != "" {
+		gmailService.UpdateConfig(
+			cfg.GmailClientID,
+			cfg.GmailClientSecret,
+			cfg.GmailRedirectURL,
+		)
+		log.Println("Gmail service initialized from environment variables")
 	} else {
-		// Try using environment variables as fallback
-		if cfg.GmailClientID != "" && cfg.GmailClientSecret != "" {
-			gmailService.UpdateConfig(
-				cfg.GmailClientID,
-				cfg.GmailClientSecret,
-				cfg.GmailRedirectURL,
-			)
-			log.Println("Gmail service initialized from environment variables")
+		// Fallback for instances configured through the old setup screen, kept
+		// read-only so an upgrade never drops a working OAuth config. Nothing
+		// writes this document anymore.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var storedConfig models.GmailConfig
+		err = db.GmailConfig().FindOne(ctx, bson.M{}).Decode(&storedConfig)
+		cancel()
+
+		if err == nil && storedConfig.IsConfigured {
+			clientSecret, decErr := encryptor.Decrypt(storedConfig.ClientSecretEncrypted)
+			if decErr == nil {
+				gmailService.UpdateConfig(
+					storedConfig.ClientID,
+					clientSecret,
+					storedConfig.RedirectURL,
+				)
+				log.Println("Gmail service initialized from the legacy stored configuration; " +
+					"set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET and GMAIL_REDIRECT_URL to migrate")
+			} else {
+				log.Printf("Warning: Failed to decrypt stored credentials: %v", decErr)
+			}
 		} else {
-			log.Println("Gmail credentials not configured - setup required via UI")
+			log.Println("Gmail credentials not configured: set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET and GMAIL_REDIRECT_URL")
 		}
 	}
 
