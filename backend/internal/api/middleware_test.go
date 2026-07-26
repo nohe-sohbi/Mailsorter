@@ -2,7 +2,10 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
 )
 
 func TestIsPublicPath(t *testing.T) {
@@ -11,6 +14,8 @@ func TestIsPublicPath(t *testing.T) {
 		"/api/auth/url",
 		"/api/auth/callback",
 		"/api/config/status",
+		// Cold traffic has no session, and capturing it is the whole point.
+		"/api/waitlist",
 		"/api/billing/webhook",
 	}
 	for _, p := range public {
@@ -81,5 +86,76 @@ func TestRateLimiterIsolatesClients(t *testing.T) {
 	}
 	if rl.allow("a") {
 		t.Fatal("client a should be exhausted after its single token")
+	}
+}
+
+// A public route must never demand a session, but it should still know who the
+// caller is when they happen to have one: the waitlist uses that to tell an
+// existing user apart from an anonymous visitor. Anything less than a valid
+// signature must leave the request anonymous rather than reject it.
+func TestAuthMiddlewareIdentifiesOnPublicRoutesWithoutRequiringIt(t *testing.T) {
+	mgr := auth.NewManager("middleware-test-secret-key-1234567890")
+	h := &Handler{auth: mgr}
+
+	var seen string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("X-User-Email")
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := h.authMiddleware(next)
+
+	cases := []struct {
+		name       string
+		authHeader string
+		spoof      string
+		wantEmail  string
+		wantStatus int
+	}{
+		{"no token stays anonymous", "", "", "", http.StatusOK},
+		{"valid token is identified", "Bearer " + mgr.IssueSession("nohe@example.com"), "", "nohe@example.com", http.StatusOK},
+		{"garbage token stays anonymous", "Bearer not-a-real-token", "", "", http.StatusOK},
+		{"spoofed header is dropped", "", "attacker@example.com", "", http.StatusOK},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seen = "sentinel"
+			req := httptest.NewRequest(http.MethodPost, "/api/waitlist", nil)
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+			if tc.spoof != "" {
+				req.Header.Set("X-User-Email", tc.spoof)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			if seen != tc.wantEmail {
+				t.Errorf("X-User-Email seen by handler = %q, want %q", seen, tc.wantEmail)
+			}
+		})
+	}
+}
+
+// The same leniency must NOT leak onto protected routes.
+func TestAuthMiddlewareStillRejectsProtectedRoutes(t *testing.T) {
+	h := &Handler{auth: auth.NewManager("middleware-test-secret-key-1234567890")}
+	handler := h.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler must not be reached without a session")
+	}))
+
+	for _, header := range []string{"", "Bearer not-a-real-token"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/usage", nil)
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("Authorization=%q -> %d, want 401", header, rec.Code)
+		}
 	}
 }

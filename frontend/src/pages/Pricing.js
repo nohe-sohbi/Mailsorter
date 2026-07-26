@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { accountService, billingService } from '../services/api';
+import { accountService, billingService, configService, waitlistService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
@@ -56,6 +56,11 @@ const ACTION_LABELS = {
   star: 'Favoris',
 };
 
+// Local hint that this browser already signed up, so we show the confirmed
+// state instead of the form. The server is the real record: signing up again
+// from another device is an idempotent upsert, not a duplicate.
+const WAITLIST_KEY = 'mailsorter_pro_waitlist';
+
 function Pricing() {
   const navigate = useNavigate();
   const toast = useToast();
@@ -65,9 +70,27 @@ function Pricing() {
   const [activity, setActivity] = useState(null);
   const [upgrading, setUpgrading] = useState(false);
   const [managing, setManaging] = useState(false);
+  const [instance, setInstance] = useState(null);
+  const [joined, setJoined] = useState(() => localStorage.getItem(WAITLIST_KEY) === '1');
+  const [waitlistEmail, setWaitlistEmail] = useState('');
+  const [joining, setJoining] = useState(false);
 
   const isPro = usage?.plan === 'pro';
-  const billingOn = !!usage?.billingOn;
+  // Whether Pro can actually be bought comes from the PUBLIC instance probe,
+  // not from /api/usage: logged-out visitors have no usage payload, and reading
+  // billing state off a failed request would silently show the waitlist to
+  // everyone. null means "not answered yet", which is why the CTA waits rather
+  // than flashing the wrong button.
+  const billingOn = instance === null ? null : !!instance.billingOn;
+
+  useEffect(() => {
+    configService
+      .getStatus()
+      .then((r) => setInstance(r.data))
+      // Unreachable API: fall back to pre-launch, the state that cannot promise
+      // a checkout we may not be able to honour.
+      .catch(() => setInstance({ billingOn: false }));
+  }, []);
 
   useEffect(() => {
     if (!loggedIn) return;
@@ -121,9 +144,27 @@ function Pricing() {
     }
   };
 
-  const handleWaitlist = () => {
-    localStorage.setItem('mailsorter_pro_waitlist', '1');
-    toast.success('Vous y êtes ! On vous prévient dès l’ouverture de Pro. 🚀');
+  // Logged-in visitors sign up with the address they already gave us; cold
+  // traffic types one. Either way the address reaches the server, which is the
+  // whole point: a waitlist nobody can read is not a waitlist.
+  const handleWaitlist = async (e) => {
+    if (e) e.preventDefault();
+    const email = loggedIn ? localStorage.getItem('userEmail') : waitlistEmail.trim();
+    if (!email) return;
+
+    setJoining(true);
+    try {
+      await waitlistService.join(email);
+      localStorage.setItem(WAITLIST_KEY, '1');
+      setJoined(true);
+      setWaitlistEmail('');
+      toast.success('C’est noté. On vous écrit dès l’ouverture de Pro. 🚀');
+    } catch (err) {
+      if (err.response?.status === 400) toast.error('Cette adresse email n’est pas valide.');
+      else toast.error('Inscription impossible pour le moment. Réessayez.');
+    } finally {
+      setJoining(false);
+    }
   };
 
   const usedPct = usage && usage.limit > 0 ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : 0;
@@ -255,7 +296,13 @@ function Pricing() {
               </ul>
               <div className="mt-7">
                 {plan.highlight ? (
-                  isPro ? (
+                  billingOn === null ? (
+                    // Hold the slot until we know whether checkout is open, so
+                    // the button never flips from waitlist to upgrade mid-read.
+                    <button disabled className="btn-primary w-full cursor-default opacity-60">
+                      <Spinner size={18} />
+                    </button>
+                  ) : isPro ? (
                     billingOn ? (
                       <button onClick={handleManage} disabled={managing} className="btn-primary w-full">
                         {managing ? <Spinner size={18} /> : <Shield size={16} />}
@@ -267,18 +314,42 @@ function Pricing() {
                       </button>
                     )
                   ) : billingOn ? (
-                    <button onClick={handleUpgrade} disabled={upgrading} className="btn-primary w-full">
-                      {upgrading ? <Spinner size={18} /> : <Bolt size={16} />}
-                      {upgrading ? 'Redirection…' : 'Passer à Pro'}
+                    loggedIn ? (
+                      <button onClick={handleUpgrade} disabled={upgrading} className="btn-primary w-full">
+                        {upgrading ? <Spinner size={18} /> : <Bolt size={16} />}
+                        {upgrading ? 'Redirection…' : 'Passer à Pro'}
+                      </button>
+                    ) : (
+                      <button onClick={() => navigate('/')} className="btn-primary w-full">
+                        <Google size={16} /> Commencer gratuitement
+                      </button>
+                    )
+                  ) : joined ? (
+                    <button disabled className="btn-primary w-full cursor-default opacity-80">
+                      <Check size={16} /> Vous êtes sur la liste
                     </button>
                   ) : loggedIn ? (
-                    <button onClick={handleWaitlist} className="btn-primary w-full">
-                      {plan.cta}
+                    <button onClick={handleWaitlist} disabled={joining} className="btn-primary w-full">
+                      {joining ? <Spinner size={18} /> : <Sparkles size={16} />} {plan.cta}
                     </button>
                   ) : (
-                    <button onClick={() => navigate('/')} className="btn-primary w-full">
-                      <Google size={16} /> Commencer gratuitement
-                    </button>
+                    <form onSubmit={handleWaitlist} className="space-y-2">
+                      <label htmlFor="waitlist-email" className="sr-only">
+                        Votre adresse email
+                      </label>
+                      <input
+                        id="waitlist-email"
+                        type="email"
+                        required
+                        value={waitlistEmail}
+                        onChange={(e) => setWaitlistEmail(e.target.value)}
+                        placeholder="vous@exemple.com"
+                        className="input"
+                      />
+                      <button type="submit" disabled={joining} className="btn-primary w-full">
+                        {joining ? <Spinner size={18} /> : <Sparkles size={16} />} {plan.cta}
+                      </button>
+                    </form>
                   )
                 ) : loggedIn ? (
                   <button disabled className="btn-secondary w-full cursor-default opacity-70">

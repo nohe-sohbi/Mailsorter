@@ -105,6 +105,13 @@ func (d *Database) ActionLog() *mongo.Collection {
 	return d.DB.Collection("action_log")
 }
 
+// Waitlist holds the people who asked to be told when Pro opens. It is the only
+// collection not scoped by userId: signups come from logged-out visitors too,
+// and the email address is the identity.
+func (d *Database) Waitlist() *mongo.Collection {
+	return d.DB.Collection("waitlist")
+}
+
 // EnsureIndexes creates the indexes that keep hot queries fast at scale.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
@@ -126,6 +133,9 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.Snoozes(), mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "wakeAt", Value: 1}}}},
 		{d.Snoozes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "status", Value: 1}}}},
 		{d.ActionLog(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "createdAt", Value: -1}}}},
+		// Unique on email so a visitor clicking twice (or across devices) is one
+		// signup, not two: the count has to mean something.
+		{d.Waitlist(), mongo.IndexModel{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)}},
 	}
 
 	var firstErr error

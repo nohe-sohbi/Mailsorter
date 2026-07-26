@@ -87,6 +87,10 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/smart-labels", h.GetSmartLabels).Methods("GET")
 	r.HandleFunc("/api/smart-labels", h.CreateSmartLabel).Methods("POST")
 
+	// Pro waitlist. Public: it exists to measure buying intent from visitors who
+	// have no account yet, so requiring a session would defeat the purpose.
+	r.HandleFunc("/api/waitlist", h.JoinWaitlist).Methods("POST")
+
 	// Boot probe: tells the frontend whether the instance has Gmail credentials.
 	// Public by design (the SPA calls it before any login) and deliberately the
 	// only /api/config/ route: the credentials themselves are set through

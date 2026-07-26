@@ -136,8 +136,30 @@ func TestGmailCredentialsHaveNoHTTPSurface(t *testing.T) {
 	}
 }
 
+// A pre-launch waitlist measures intent from people who have no account yet,
+// so the route must answer logged-out callers. Posting an invalid address
+// proves both at once: a 400 (not a 401) means the request reached the handler
+// and was rejected on its merits, without a session and without touching Mongo.
+func TestWaitlistIsReachableWithoutASession(t *testing.T) {
+	srv := newRoutedTestServer(t)
+
+	res, err := http.Post(srv.URL+"/api/waitlist", "application/json",
+		strings.NewReader(`{"email":"not-an-email","source":"pricing"}`))
+	if err != nil {
+		t.Fatalf("POST /api/waitlist: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusUnauthorized {
+		t.Fatal("POST /api/waitlist = 401: cold traffic can no longer sign up")
+	}
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("POST /api/waitlist with a bad address = %d, want 400", res.StatusCode)
+	}
+}
+
 // The boot probe stays public: the SPA calls it before any login to decide
-// whether to show the setup instructions. It must leak nothing beyond a bool.
+// whether to show the setup instructions and whether Pro can be bought yet. It
+// must expose those two booleans and nothing else, since anyone can read it.
 func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	srv := newRoutedTestServer(t)
 
@@ -154,12 +176,14 @@ func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("decode /api/config/status: %v", err)
 	}
-	if len(body) != 1 {
-		t.Errorf("status payload = %#v, want only isConfigured", body)
+	if len(body) != 2 {
+		t.Errorf("status payload = %#v, want only isConfigured and billingOn", body)
 	}
-	// The test server has no credentials loaded, so it must report false.
-	if configured, ok := body["isConfigured"].(bool); !ok || configured {
-		t.Errorf("isConfigured = %#v, want false on an unconfigured instance", body["isConfigured"])
+	// The test server has neither credentials nor Stripe, so both are false.
+	for _, key := range []string{"isConfigured", "billingOn"} {
+		if v, ok := body[key].(bool); !ok || v {
+			t.Errorf("%s = %#v, want false on a bare instance", key, body[key])
+		}
 	}
 }
 

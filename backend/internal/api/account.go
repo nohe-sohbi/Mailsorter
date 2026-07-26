@@ -73,8 +73,16 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 		"limit":     limit,
 		"period":    currentPeriod(),
 		"plan":      plan,
-		"billingOn": h.billing.Client != nil && h.billing.PriceID != "",
+		"billingOn": h.billingEnabled(),
 	})
+}
+
+// billingEnabled reports whether paid checkout is actually wired up. Both the
+// authenticated usage payload and the public instance status answer from here,
+// so a logged-out visitor and a logged-in user never disagree about whether
+// Pro can be bought yet.
+func (h *Handler) billingEnabled() bool {
+	return h.billing.Client != nil && h.billing.PriceID != ""
 }
 
 // autoApplyRulesEnabled reports whether the user opted into running their
