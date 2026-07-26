@@ -18,8 +18,9 @@ type ctxKey string
 const requestIDKey ctxKey = "requestID"
 
 // publicPrefixes are the routes reachable without a session token: health,
-// the OAuth handshake, the boot-time configuration probe, and the Stripe
-// webhook (which authenticates itself via its HMAC signature).
+// the OAuth handshake, the boot-time configuration probe, the Pro waitlist
+// (whose whole point is to capture cold traffic that has no account yet), and
+// the Stripe webhook (which authenticates itself via its HMAC signature).
 //
 // Only /api/config/status is public, never the whole /api/config/ prefix: the
 // Gmail credentials are a single instance-wide config, so an unauthenticated
@@ -30,6 +31,7 @@ var publicPrefixes = []string{
 	"/metrics",
 	"/api/auth/",
 	"/api/config/status",
+	"/api/waitlist",
 	"/api/billing/webhook",
 }
 
@@ -48,23 +50,35 @@ func isPublicPath(path string) bool {
 // only re-sets it after verifying the bearer token. Downstream handlers keep
 // reading X-User-Email, but its value is now server-vouched rather than blindly
 // trusted from the request — closing the impersonation hole.
+//
+// On public routes it still identifies the caller when it can: a valid token
+// gets X-User-Email set, an absent or bad one is simply not an error. That lets
+// a public handler like the waitlist tell an existing user from an anonymous
+// visitor without ever requiring a session.
 func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Never let a caller smuggle in an identity.
 		r.Header.Del("X-User-Email")
 
-		if isPublicPath(r.URL.Path) {
-			next.ServeHTTP(w, r)
-			return
-		}
+		public := isPublicPath(r.URL.Path)
 
 		token := bearerToken(r)
 		if token == "" {
+			if public {
+				next.ServeHTTP(w, r)
+				return
+			}
 			http.Error(w, "Authentication required", http.StatusUnauthorized)
 			return
 		}
+
 		email, err := h.auth.VerifySession(token)
 		if err != nil {
+			if public {
+				// An expired token must not lock someone out of a public route.
+				next.ServeHTTP(w, r)
+				return
+			}
 			http.Error(w, "Invalid or expired session", http.StatusUnauthorized)
 			return
 		}

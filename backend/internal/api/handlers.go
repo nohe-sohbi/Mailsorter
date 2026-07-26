@@ -524,8 +524,9 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 // document as fallback). The credentials themselves are never readable or
 // writable over HTTP; see cmd/server/main.go for how they are loaded.
 func (h *Handler) GetConfigStatus(w http.ResponseWriter, r *http.Request) {
-	status := models.GmailConfigStatus{
+	status := models.InstanceStatus{
 		IsConfigured: h.gmailService.IsConfigured(),
+		BillingOn:    h.billingEnabled(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

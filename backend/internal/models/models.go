@@ -109,9 +109,15 @@ type GmailConfig struct {
 	UpdatedAt             time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
-// GmailConfigStatus is returned by GET /api/config/status
-type GmailConfigStatus struct {
+// InstanceStatus is returned by GET /api/config/status.
+//
+// It is the only thing a logged-out visitor learns about the deployment: is it
+// wired up to Gmail at all, and is paid checkout open. BillingOn is what lets
+// the pricing page decide between a real "upgrade" button and the waitlist,
+// before the visitor has any account.
+type InstanceStatus struct {
 	IsConfigured bool `json:"isConfigured"`
+	BillingOn    bool `json:"billingOn"`
 }
 
 // ============================================
@@ -412,4 +418,29 @@ type SenderStats struct {
 	SenderName   string            `json:"senderName"`
 	EmailCount   int               `json:"emailCount"`
 	Preference   *SenderPreference `json:"preference,omitempty"`
+}
+
+// ============================================
+// Pro waitlist
+// ============================================
+
+// WaitlistEntry is one person who asked to be told when Pro opens.
+//
+// It is deliberately not scoped by userId: the point of a pre-launch waitlist
+// is to measure intent from cold traffic, so logged-out visitors sign up with
+// just an email. UserID is filled in only when the signup came from an
+// authenticated session, so we can tell a curious visitor from an actual user.
+type WaitlistEntry struct {
+	ID        string    `json:"id" bson:"_id,omitempty"`
+	Email     string    `json:"email" bson:"email"`
+	UserID    string    `json:"userId,omitempty" bson:"userId,omitempty"`
+	Source    string    `json:"source" bson:"source"` // which surface the signup came from
+	Plan      string    `json:"plan" bson:"plan"`     // which plan was being asked for
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+}
+
+// WaitlistInput is the request body for POST /api/waitlist.
+type WaitlistInput struct {
+	Email  string `json:"email"`
+	Source string `json:"source"`
 }

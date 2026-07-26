@@ -143,9 +143,16 @@ export const ruleService = {
 
 // The Gmail credentials are an instance-wide OAuth app set through environment
 // variables, so there is nothing to read or write here: only a boot probe that
-// tells the app whether the deployment is wired up.
+// tells the app whether the deployment is wired up and whether Pro can be
+// bought yet ({ isConfigured, billingOn }).
 export const configService = {
   getStatus: () => apiClient.get('/api/config/status'),
+};
+
+// Pro waitlist. Public on purpose: the people worth measuring are the ones who
+// do not have an account yet.
+export const waitlistService = {
+  join: (email, source = 'pricing') => apiClient.post('/api/waitlist', { email, source }),
 };
 
 export default apiClient;
