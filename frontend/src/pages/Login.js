@@ -8,12 +8,12 @@ const FEATURES = [
   {
     Icon: Sparkles,
     title: 'Tri par IA en un clic',
-    text: "L'IA lit, comprend et classe vos emails comme un assistant humain — newsletters, factures, colis, spam.",
+    text: "L'IA lit, comprend et classe vos emails comme un assistant humain : newsletters, factures, colis, spam.",
   },
   {
     Icon: BellOff,
     title: 'Désabonnement en 1 clic',
-    text: 'Mailsorter traque les newsletters qui vous noient et vous désabonne instantanément — sans formulaire, sans quitter l’app.',
+    text: 'Mailsorter traque les newsletters qui vous noient et vous désabonne instantanément, sans formulaire ni sortie de l’app.',
   },
   {
     Icon: Users,
@@ -115,7 +115,7 @@ function Login() {
               <span className="text-brand-600">triée pendant que vous dormez.</span>
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-600">
-              Mailsorter lit, comprend et range vos emails Gmail à votre place. Stop au scroll infini —
+              Mailsorter lit, comprend et range vos emails Gmail à votre place. Stop au scroll infini :
               atteignez l'Inbox Zero en quelques clics, et gardez-la propre pour toujours.
             </p>
 

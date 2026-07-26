@@ -30,11 +30,11 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/activity/log", h.GetActionLog).Methods("GET")
 	r.HandleFunc("/api/activity/undo", h.UndoAction).Methods("POST")
 
-	// Snooze ("Reporter") — return-to-inbox scheduling
+	// Snooze ("Reporter"): return-to-inbox scheduling
 	r.HandleFunc("/api/snoozes", h.GetSnoozes).Methods("GET")
 	r.HandleFunc("/api/snoozes/{id}/wake", h.WakeSnooze).Methods("POST")
 
-	// Protected senders (VIP) — never auto-archived/trashed/deleted
+	// Protected senders (VIP): never auto-archived/trashed/deleted
 	r.HandleFunc("/api/protected", h.GetProtected).Methods("GET")
 	r.HandleFunc("/api/protected", h.CreateProtected).Methods("POST")
 	r.HandleFunc("/api/protected/{id}", h.DeleteProtected).Methods("DELETE")
@@ -44,7 +44,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/account/profile", h.GetProfile).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.GetSettings).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.UpdateSettings).Methods("PUT")
-	// RGPD — data portability (export) and right to erasure (delete).
+	// RGPD: data portability (export) and right to erasure (delete).
 	r.HandleFunc("/api/account/export", h.ExportAccount).Methods("GET")
 	r.HandleFunc("/api/account", h.DeleteAccount).Methods("DELETE")
 

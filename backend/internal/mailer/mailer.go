@@ -16,7 +16,7 @@ import (
 )
 
 // multipartBoundary is fixed (rather than random) so BuildRaw's output is
-// deterministic — handy for tests and for byte-for-byte reproducibility.
+// deterministic, handy for tests and for byte-for-byte reproducibility.
 const multipartBoundary = "mailsorter-alt-boundary"
 
 // BuildRaw assembles a multipart/alternative email (plain text + HTML) and

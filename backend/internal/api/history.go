@@ -23,8 +23,8 @@ type actionLogView struct {
 }
 
 // GetActionLog returns the caller's most recent ledger entries (newest first),
-// optionally filtered by source. This turns the append-only audit trail — every
-// archive, trash, rule firing, snooze, unsubscribe — into a transparent history
+// optionally filtered by source. This turns the append-only audit trail (every
+// archive, trash, rule firing, snooze, unsubscribe) into a transparent history
 // the user can actually see and act on. Each entry is flagged with whether it is
 // still reversible.
 func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {

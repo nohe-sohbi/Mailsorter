@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildRawStructureAndDecoding(t *testing.T) {
-	raw := BuildRaw("me@example.com", "me@example.com", "Récap quotidien — 3 triés", "Bonjour à vous", "<p>Bonjour à vous</p>")
+	raw := BuildRaw("me@example.com", "me@example.com", "Récap quotidien : 3 triés", "Bonjour à vous", "<p>Bonjour à vous</p>")
 
 	decoded, err := base64.URLEncoding.DecodeString(raw)
 	if err != nil {

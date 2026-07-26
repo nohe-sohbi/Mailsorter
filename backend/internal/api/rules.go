@@ -196,7 +196,7 @@ func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 
 // ApplyRules runs every enabled rule across the current inbox. Each email is
 // matched against the rules in priority order and the first match's action is
-// applied via Gmail. This never calls the AI and never consumes quota — it is
+// applied via Gmail. This never calls the AI and never consumes quota: it is
 // the free, deterministic counterpart to the AI triage.
 func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
@@ -374,7 +374,7 @@ func ruleForSender(userEmail string, req models.CreateSenderRuleRequest) models.
 }
 
 // CreateSenderRule turns a sender into a permanent deterministic rule in one
-// click — the concrete form of "learn once, apply forever". The new rule then
+// click, the concrete form of "learn once, apply forever". The new rule then
 // runs for free on every manual apply and (if enabled) automatically at sync.
 func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")

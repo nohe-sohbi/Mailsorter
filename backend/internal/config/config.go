@@ -76,7 +76,7 @@ func (c *Config) Validate() error {
 		return errors.New("ENCRYPTION_KEY is required")
 	}
 	if insecureEncryptionKeys[key] {
-		return errors.New("ENCRYPTION_KEY is set to a known insecure default — generate a random one (e.g. `openssl rand -base64 32`)")
+		return errors.New("ENCRYPTION_KEY is set to a known insecure default. Generate a random one (e.g. `openssl rand -base64 32`)")
 	}
 	if len(key) < minEncryptionKeyLen {
 		return fmt.Errorf("ENCRYPTION_KEY is too short (%d chars); use at least %d", len(key), minEncryptionKeyLen)

@@ -50,7 +50,7 @@ func Datasets() []Dataset {
 }
 
 // Profile is the redacted view of a user's account record, safe to include in an
-// export. It deliberately omits OAuth tokens and Stripe identifiers — secrets a
+// export. It deliberately omits OAuth tokens and Stripe identifiers: secrets a
 // user's own data export must never leak, even to the user.
 type Profile struct {
 	Email           string    `json:"email"`

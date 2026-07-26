@@ -45,7 +45,7 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 // ExportAccount returns a single JSON document with everything Mailsorter stores
 // about the caller: a redacted account profile plus every user-owned dataset.
 // It is the data-portability half of the RGPD promise ("vos emails ne quittent
-// jamais votre contrôle") — emails themselves live in Gmail, but every artifact
+// jamais votre contrôle"): emails themselves live in Gmail, but every artifact
 // Mailsorter derived is handed back in the open. OAuth tokens and Stripe IDs are
 // stripped via account.RedactUser.
 func (h *Handler) ExportAccount(w http.ResponseWriter, r *http.Request) {
@@ -108,8 +108,8 @@ func (h *Handler) loadUser(ctx context.Context, userEmail string) models.User {
 // DeleteAccount permanently erases everything Mailsorter stores about the caller:
 // every user-owned dataset plus the account record itself. This is the
 // right-to-erasure half of RGPD. It is intentionally irreversible; the frontend
-// gates it behind an explicit typed confirmation. Gmail is never touched — the
-// user's mailbox is theirs — and revoking Mailsorter's access is done by the
+// gates it behind an explicit typed confirmation. Gmail is never touched (the
+// user's mailbox is theirs), and revoking Mailsorter's access is done by the
 // user from their Google account. Returns per-dataset deletion counts so the
 // action is auditable.
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {

@@ -97,7 +97,7 @@ function Pricing() {
       toast.success('Bienvenue dans Pro ! Analyses illimitées débloquées. 🎉');
       accountService.getUsage().then((r) => setUsage(r.data)).catch(() => {});
     } else if (status === 'cancel') {
-      toast.info('Paiement annulé — vous pouvez réessayer quand vous voulez.');
+      toast.info('Paiement annulé. Vous pouvez réessayer quand vous voulez.');
     }
     searchParams.delete('checkout');
     setSearchParams(searchParams, { replace: true });
@@ -194,7 +194,7 @@ function Pricing() {
                 </span>
               </div>
               <div className="mb-2 flex items-baseline gap-1.5">
-                <span className="font-display text-3xl font-extrabold text-ink-900">{usage?.used ?? '—'}</span>
+                <span className="font-display text-3xl font-extrabold text-ink-900">{usage?.used ?? '-'}</span>
                 <span className="text-sm text-ink-500">
                   {isPro ? 'emails analysés · illimité' : `/ ${usage?.limit ?? 200} emails analysés`}
                 </span>

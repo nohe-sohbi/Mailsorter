@@ -4,7 +4,7 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Accent unique — bleu profond "encre". Pas de second accent, pas de dégradé.
+        // Accent unique : bleu profond "encre". Pas de second accent, pas de dégradé.
         brand: {
           50: '#eff6ff',
           100: '#dbeafe',
@@ -18,7 +18,7 @@ module.exports = {
           900: '#1e3a8a',
           950: '#172554',
         },
-        // Neutres froids (slate) — la base "calme clair".
+        // Neutres froids (slate), la base "calme clair".
         ink: {
           50: '#f8fafc',
           100: '#f1f5f9',
@@ -38,7 +38,7 @@ module.exports = {
         display: ['"General Sans"', '"Hanken Grotesk"', 'ui-sans-serif', 'sans-serif'],
       },
       boxShadow: {
-        // Échelle d'ombres sobre et froide — aucune lueur colorée.
+        // Échelle d'ombres sobre et froide, aucune lueur colorée.
         soft: '0 1px 2px 0 rgba(15, 23, 42, 0.04), 0 1px 3px 0 rgba(15, 23, 42, 0.06)',
         card: '0 1px 3px 0 rgba(15, 23, 42, 0.05), 0 10px 28px -14px rgba(15, 23, 42, 0.12)',
         lift: '0 2px 6px -1px rgba(15, 23, 42, 0.08), 0 16px 36px -12px rgba(15, 23, 42, 0.16)',

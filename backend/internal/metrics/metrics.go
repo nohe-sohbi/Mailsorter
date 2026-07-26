@@ -1,8 +1,8 @@
 // Package metrics is a tiny, dependency-free, in-process request meter.
 //
 // It answers the operational questions a single-binary deployment actually has
-// — "is the service taking traffic?", "what share of responses are errors?",
-// "how slow are we?" — without pulling in Prometheus or a metrics backend. The
+// "is the service taking traffic?", "what share of responses are errors?",
+// "how slow are we?", without pulling in Prometheus or a metrics backend. The
 // registry is concurrency-safe and bounded (it never grows with cardinality:
 // requests are bucketed by HTTP method and status class, not by URL), so it is
 // safe to feed from the request hot path. Keeping the aggregation here and pure

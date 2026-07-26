@@ -344,7 +344,7 @@ function Inbox() {
     try {
       await emailService.snooze(email.messageId, preset);
       bumpGamify(1);
-      toast.success('Email reporté — il reviendra au bon moment');
+      toast.success('Email reporté, il reviendra au bon moment');
       fetchData({ forceRefresh: true });
     } catch (err) {
       toast.error('Report impossible. Réessayez.');
@@ -441,7 +441,7 @@ function Inbox() {
   };
 
   // "Learn once, apply forever": create a permanent deterministic rule that
-  // archives every FUTURE email from this sender — for free, no AI, no quota.
+  // archives every FUTURE email from this sender: free, no AI, no quota.
   const handleCreateSenderRule = async (sender) => {
     try {
       await senderService.createRule(sender.senderEmail, 'archive');
@@ -706,7 +706,7 @@ function Inbox() {
                     </div>
                     <div className="truncate text-xs text-ink-400">
                       <span className="text-ink-500">{email?.from?.split('<')[0]?.trim() || 'Expéditeur inconnu'}</span>
-                      {suggestion.reasoning ? ` — ${suggestion.reasoning}` : ''}
+                      {suggestion.reasoning ? ` · ${suggestion.reasoning}` : ''}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -907,7 +907,7 @@ function Inbox() {
                     <span className="font-bold text-ink-900">
                       {subscriptions.filter((s) => !s.unsubscribed).length} newsletter{subscriptions.filter((s) => !s.unsubscribed).length > 1 ? 's' : ''}
                     </span>{' '}
-                    encombrent votre boîte. Coupez le robinet — et archivez le passé d'un seul geste.
+                    encombrent votre boîte. Coupez le robinet, et archivez le passé d'un seul geste.
                   </p>
                 </div>
                 {subscriptions.map((sub) => {

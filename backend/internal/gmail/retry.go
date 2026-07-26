@@ -33,7 +33,7 @@ type retryConfig struct {
 
 // defaultRetryConfig is what NewService installs. Three extra attempts with a
 // 400ms seed and an 8s ceiling keeps a noisy minute of 429s survivable while
-// staying comfortably inside the API handlers' 60–90s context budgets.
+// staying comfortably inside the API handlers' 60-90s context budgets.
 func defaultRetryConfig() retryConfig {
 	return retryConfig{
 		maxRetries: 3,
@@ -46,7 +46,7 @@ func defaultRetryConfig() retryConfig {
 // shouldRetry classifies a Gmail API error: it reports whether the failure is
 // worth retrying and any server-advised Retry-After delay. HTTP 429 and 5xx are
 // transient; other 4xx are permanent (a bad request won't fix itself). Context
-// cancellation/deadline is never retried — the caller's budget is already spent.
+// cancellation/deadline is never retried: the caller's budget is already spent.
 // A non-API (transport) error is treated as transient.
 func shouldRetry(err error) (retryable bool, retryAfter time.Duration) {
 	if err == nil {

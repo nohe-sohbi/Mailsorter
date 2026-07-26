@@ -1,5 +1,5 @@
 // Local gamification engine: tracks how many emails you've triaged today and
-// your day streak. Everything lives in localStorage — no backend required.
+// your day streak. Everything lives in localStorage: no backend required.
 
 const KEY = 'mailsorter_gamify';
 export const DAILY_GOAL = 20;
@@ -27,7 +27,7 @@ function write(state) {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
   } catch {
-    /* storage unavailable — gamification is best-effort */
+    /* storage unavailable: gamification is best-effort */
   }
 }
 

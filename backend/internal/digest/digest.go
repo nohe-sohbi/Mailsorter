@@ -5,7 +5,7 @@
 // GET /api/stats/activity); what was missing to ship "Digest quotidien par
 // email" is the rendering of that data into something a human reads in their
 // inbox. Keeping the rendering pure (no DB, no clock beyond the `now` argument,
-// no network) makes the output deterministic and cheap to test — actual
+// no network) makes the output deterministic and cheap to test. Actual
 // delivery (a gmail.send scope + a scheduler) can sit on top of this without
 // touching the formatting.
 package digest
@@ -76,9 +76,9 @@ func Render(s activity.Summary, now time.Time) Digest {
 	today := todayCount(s)
 	date := now.UTC().Format("02/01/2006")
 
-	subject := fmt.Sprintf("Mailsorter — %d %s triés aujourd'hui", today, pluralize(today))
+	subject := fmt.Sprintf("Mailsorter : %d %s triés aujourd'hui", today, pluralize(today))
 	if today == 0 {
-		subject = "Mailsorter — votre récap de la semaine"
+		subject = "Mailsorter : votre récap de la semaine"
 	}
 
 	return Digest{
@@ -125,7 +125,7 @@ func breakdownBySource(s activity.Summary) []string {
 
 func renderText(s activity.Summary, today int, date string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Votre récap Mailsorter — %s\n\n", date)
+	fmt.Fprintf(&b, "Votre récap Mailsorter du %s\n\n", date)
 	fmt.Fprintf(&b, "Aujourd'hui : %d %s triés.\n", today, pluralize(today))
 	fmt.Fprintf(&b, "Cette semaine : %d %s triés.\n", s.Total, pluralize(s.Total))
 
@@ -136,14 +136,14 @@ func renderText(s activity.Summary, today int, date string) string {
 		fmt.Fprintf(&b, "Sources : %s.\n", strings.Join(sources, ", "))
 	}
 
-	b.WriteString("\nBoîte plus légère, esprit plus clair. — Mailsorter\n")
+	b.WriteString("\nBoîte plus légère, esprit plus clair.\nMailsorter\n")
 	return b.String()
 }
 
 func renderHTML(s activity.Summary, today int, date string) string {
 	var b strings.Builder
 	b.WriteString(`<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1f2937">`)
-	fmt.Fprintf(&b, `<p style="color:#6b7280;font-size:13px;margin:0 0 8px">Votre récap Mailsorter — %s</p>`, html.EscapeString(date))
+	fmt.Fprintf(&b, `<p style="color:#6b7280;font-size:13px;margin:0 0 8px">Votre récap Mailsorter du %s</p>`, html.EscapeString(date))
 	fmt.Fprintf(&b, `<h2 style="margin:0 0 4px;font-size:22px">%d %s triés aujourd'hui</h2>`, today, pluralize(today))
 	fmt.Fprintf(&b, `<p style="margin:0 0 16px;color:#374151">%d %s triés cette semaine.</p>`, s.Total, pluralize(s.Total))
 
@@ -162,6 +162,6 @@ func renderHTML(s activity.Summary, today int, date string) string {
 		b.WriteString(`</ul>`)
 	}
 
-	b.WriteString(`<p style="color:#6b7280;font-size:13px;margin:0">Boîte plus légère, esprit plus clair. — Mailsorter</p></div>`)
+	b.WriteString(`<p style="color:#6b7280;font-size:13px;margin:0">Boîte plus légère, esprit plus clair. Mailsorter</p></div>`)
 	return b.String()
 }

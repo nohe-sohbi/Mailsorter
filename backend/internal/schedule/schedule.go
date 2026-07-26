@@ -2,7 +2,7 @@
 // background work is due. The background loops (snooze sweep, digest, auto-sync)
 // tick on a timer, but *whether* a given user is due for work is a pure function
 // of their last run, the current time and a minimum interval. Pulling that
-// decision out of the loop keeps the cadence deterministic and cheap to test —
+// decision out of the loop keeps the cadence deterministic and cheap to test:
 // no real timers, no I/O.
 package schedule
 

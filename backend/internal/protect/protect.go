@@ -1,6 +1,6 @@
 // Package protect implements Mailsorter's safety net: a per-user list of
 // protected senders (VIP) whose emails must never be archived, trashed or
-// deleted by an automated triage pass — be it the AI, a deterministic rule, the
+// deleted by an automated triage pass, be it the AI, a deterministic rule, the
 // sender auto-pilot, or a bulk action.
 //
 // The whole package is pure (no I/O) so the guard logic can be tested
@@ -11,7 +11,7 @@ package protect
 import "strings"
 
 // Destructive actions remove an email from the user's attention (out of the
-// inbox or into the trash). These are the only actions the protection vetoes —
+// inbox or into the trash). These are the only actions the protection vetoes:
 // labelling, starring or keeping a VIP's mail is always fine.
 const (
 	ActionArchive = "archive"

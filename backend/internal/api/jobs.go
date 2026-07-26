@@ -131,7 +131,7 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 	select {
 	case h.jobQueue <- jobID:
 	default:
-		// Queue saturated — run it on its own goroutine so it still completes.
+		// Queue saturated: run it on its own goroutine so it still completes.
 		go h.processAnalysisJob(jobID)
 	}
 

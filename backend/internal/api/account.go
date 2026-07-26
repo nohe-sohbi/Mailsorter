@@ -155,7 +155,7 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 // UpdateSettings persists the caller's tunable account settings. It merges only
 // the fields the client actually sent (each is a pointer): the Rules screen can
 // toggle autoApplyRules and the digest card can change the digest hour without
-// either silently resetting the other — the bug a full-document overwrite caused.
+// either silently resetting the other, the bug a full-document overwrite caused.
 func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -205,7 +205,7 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 // GetActivity returns triage activity for the last 7 days from the action
 // ledger: a per-day series plus breakdowns by action and by source. Reading the
 // ledger (rather than only applied AI suggestions) means the recap now counts
-// every mutation — direct actions, rules, bulk sweeps, snoozes, unsubscribes —
+// every mutation (direct actions, rules, bulk sweeps, snoozes, unsubscribes)
 // not just the ones the AI suggested.
 func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")

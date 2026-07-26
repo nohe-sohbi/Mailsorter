@@ -19,7 +19,7 @@ import (
 
 // newRoutedTestServer wires the REAL router (full middleware chain + routes)
 // over an httptest server, so these tests exercise routing, auth gating and the
-// observability endpoints end-to-end — not just isolated functions. The Mongo
+// observability endpoints end-to-end, not just isolated functions. The Mongo
 // client points at a dead address on purpose so the /health datastore ping
 // fails fast, letting us assert the degraded (503) path for real.
 func newRoutedTestServer(t *testing.T) *httptest.Server {
@@ -188,7 +188,7 @@ func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 }
 
 // After mixing a 2xx, a 5xx and a 4xx through the chain, the meter must reflect
-// all three status classes — proving the metrics middleware sees final codes.
+// all three status classes, proving the metrics middleware sees final codes.
 func TestMetricsAggregatesStatusClassesLive(t *testing.T) {
 	srv := newRoutedTestServer(t)
 

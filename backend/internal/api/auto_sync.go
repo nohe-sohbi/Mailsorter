@@ -68,7 +68,7 @@ func (h *Handler) runDueAutoSyncs() {
 			continue
 		}
 		if rulesApplied > 0 {
-			log.Printf("autosync: %s — %d email(s) auto-triaged", u.Email, rulesApplied)
+			log.Printf("autosync: %s, %d email(s) auto-triaged", u.Email, rulesApplied)
 		}
 	}
 }
