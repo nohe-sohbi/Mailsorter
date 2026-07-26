@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { authService } from '../services/api';
+import { track } from '../lib/analytics';
 import { Logo, Google, Sparkles, Archive, Tag, Users, Shield, Bolt, Check, BellOff } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 
@@ -62,6 +63,7 @@ function Login() {
       const response = await authService.handleCallback(code, state);
       localStorage.setItem('userEmail', response.data.userEmail);
       localStorage.setItem('accessToken', response.data.accessToken);
+      track('login_done');
       navigate('/inbox');
     } catch (err) {
       setError("Échec de l'authentification. Réessayez.");
@@ -74,6 +76,7 @@ function Login() {
     setError('');
     try {
       const response = await authService.getAuthUrl();
+      track('login_start');
       window.location.href = response.data.authUrl;
     } catch (err) {
       setError('Impossible de démarrer la connexion. Réessayez.');

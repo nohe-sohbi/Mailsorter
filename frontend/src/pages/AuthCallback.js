@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { authService } from '../services/api';
+import { track } from '../lib/analytics';
 import { Logo, Alert } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 
@@ -31,6 +32,7 @@ function AuthCallback() {
       const response = await authService.handleCallback(code, state);
       localStorage.setItem('userEmail', response.data.userEmail);
       localStorage.setItem('accessToken', response.data.accessToken);
+      track('login_done');
       navigate('/inbox');
     } catch (err) {
       const msg = err.response?.data?.error || err.message;

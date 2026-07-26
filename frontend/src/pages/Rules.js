@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ruleService, accountService } from '../services/api';
 import { useToast } from '../ui/Toast';
+import { track } from '../lib/analytics';
 import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
 import { Bolt, Archive, Trash, Tag, Pin, Mail, Check, X, Refresh, Search } from '../ui/icons';
@@ -298,7 +299,10 @@ function Rules() {
     setSaving(true);
     try {
       if (rule.id) await ruleService.updateRule(rule.id, rule);
-      else await ruleService.createRule(rule);
+      else {
+        await ruleService.createRule(rule);
+        track('rule_created', { source: 'editor' });
+      }
       toast.success('Règle enregistrée.');
       setEditing(null);
       load();
@@ -332,6 +336,7 @@ function Rules() {
     setApplying(true);
     try {
       const { data } = await ruleService.apply();
+      track('rules_applied', { applied: data.applied, scanned: data.scanned });
       if (data.applied > 0) toast.success(`${data.applied} email(s) traité(s) par vos règles. 🎯`);
       else toast.info(`Aucun email à traiter (${data.scanned} analysés).`);
       setPreview(null);

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { accountService, billingService, configService, waitlistService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
+import { track } from '../lib/analytics';
 import Spinner from '../ui/Spinner';
 import { Logo, Check, Bolt, Sparkles, Shield, Google } from '../ui/icons';
 
@@ -121,6 +122,7 @@ function Pricing() {
     setUpgrading(true);
     try {
       const { data } = await billingService.checkout();
+      track('upgrade_start');
       window.location.href = data.url;
     } catch (err) {
       const status = err.response?.status;
@@ -155,6 +157,8 @@ function Pricing() {
     setJoining(true);
     try {
       await waitlistService.join(email);
+      // Boolean only: the address itself must never reach the analytics.
+      track('waitlist_join', { loggedIn });
       localStorage.setItem(WAITLIST_KEY, '1');
       setJoined(true);
       setWaitlistEmail('');

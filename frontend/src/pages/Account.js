@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { accountService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
+import { track } from '../lib/analytics';
 import Spinner from '../ui/Spinner';
 import { Shield, Trash, Alert, Bolt, Settings as SettingsIcon, Check } from '../ui/icons';
 
@@ -47,6 +48,7 @@ function PrivacyData() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      track('data_export');
       toast.success('Export téléchargé.');
     } catch (err) {
       toast.error('Export impossible.');
