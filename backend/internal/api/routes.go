@@ -87,10 +87,11 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/smart-labels", h.GetSmartLabels).Methods("GET")
 	r.HandleFunc("/api/smart-labels", h.CreateSmartLabel).Methods("POST")
 
-	// Config routes (no auth required for initial setup)
+	// Boot probe: tells the frontend whether the instance has Gmail credentials.
+	// Public by design (the SPA calls it before any login) and deliberately the
+	// only /api/config/ route: the credentials themselves are set through
+	// environment variables, never over HTTP.
 	r.HandleFunc("/api/config/status", h.GetConfigStatus).Methods("GET")
-	r.HandleFunc("/api/config/gmail", h.GetGmailConfig).Methods("GET")
-	r.HandleFunc("/api/config/gmail", h.SaveGmailConfig).Methods("POST")
 
 	// Middleware chain (applied to every matched route, innermost last):
 	// recover → request-id → metrics → logging → rate-limit → auth → handler.

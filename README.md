@@ -83,9 +83,12 @@ cp .env.example .env
 ENCRYPTION_KEY=une-chaine-aleatoire-de-32-caracteres-minimum
 MISTRAL_API_KEY=votre_cle_mistral
 MISTRAL_MODEL=mistral-large-2411
+GMAIL_CLIENT_ID=votre_client_id.apps.googleusercontent.com
+GMAIL_CLIENT_SECRET=votre_client_secret
+GMAIL_REDIRECT_URL=http://localhost:3000/auth/callback
 ```
 
-> Les identifiants Gmail peuvent être renseignés **dans `.env`** ou directement via la **page Setup** de l'application (chiffrés en base).
+> Les identifiants Gmail sont une **configuration d'instance** : une seule application OAuth sert tous les comptes. Ils se renseignent uniquement dans `.env` (aucune UI, aucune API ne permet de les modifier à chaud) et `GMAIL_REDIRECT_URL` doit correspondre exactement à un URI de redirection autorisé dans le projet Google Cloud.
 
 ### 3. Lancement
 

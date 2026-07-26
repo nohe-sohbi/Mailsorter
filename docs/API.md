@@ -16,8 +16,15 @@ The server derives the user identity from this token; clients must **not** send 
 raw `X-User-Email` header (any client-supplied value is stripped server-side).
 Requests without a valid token receive `401 Unauthorized`.
 
-Public endpoints (no token needed): `/health`, `/api/auth/*`, `/api/config/*`,
-and `/api/billing/webhook` (which authenticates via its Stripe signature).
+Public endpoints (no token needed): `/health`, `/metrics`, `/api/auth/*`,
+`/api/config/status`, and `/api/billing/webhook` (which authenticates via its
+Stripe signature).
+
+Note that only `/api/config/status` is public, never the whole `/api/config/`
+prefix. The Gmail credentials are a single instance-wide OAuth app: they are
+read from the environment at boot (`GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`,
+`GMAIL_REDIRECT_URL`) and have no HTTP surface, so they can be neither read nor
+written over the API.
 
 ## Endpoints
 

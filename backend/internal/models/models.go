@@ -95,7 +95,10 @@ type TokenResponse struct {
 	UserEmail   string `json:"userEmail"`
 }
 
-// GmailConfig stores the Gmail API credentials
+// GmailConfig is the legacy stored form of the Gmail API credentials, kept
+// read-only for instances configured before they moved to environment
+// variables. Nothing writes it anymore and it is never exposed over HTTP; see
+// cmd/server/main.go for the boot-time fallback that still reads it.
 type GmailConfig struct {
 	ID                    string    `json:"id" bson:"_id,omitempty"`
 	ClientID              string    `json:"clientId" bson:"clientId"`
@@ -109,21 +112,6 @@ type GmailConfig struct {
 // GmailConfigStatus is returned by GET /api/config/status
 type GmailConfigStatus struct {
 	IsConfigured bool `json:"isConfigured"`
-}
-
-// GmailConfigMasked is returned by GET /api/config/gmail
-type GmailConfigMasked struct {
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
-	RedirectURL  string `json:"redirectUrl"`
-	IsConfigured bool   `json:"isConfigured"`
-}
-
-// GmailConfigInput is the request body for POST /api/config/gmail
-type GmailConfigInput struct {
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
-	RedirectURL  string `json:"redirectUrl"`
 }
 
 // ============================================

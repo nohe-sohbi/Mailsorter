@@ -11,7 +11,6 @@ func TestIsPublicPath(t *testing.T) {
 		"/api/auth/url",
 		"/api/auth/callback",
 		"/api/config/status",
-		"/api/config/gmail",
 		"/api/billing/webhook",
 	}
 	for _, p := range public {
@@ -26,6 +25,12 @@ func TestIsPublicPath(t *testing.T) {
 		"/api/billing/checkout",
 		"/api/usage",
 		"/api/subscriptions",
+		// The Gmail credentials are instance-wide: an unauthenticated write
+		// there would hijack the OAuth flow for every user. They have no HTTP
+		// surface at all now, and the /api/config/ prefix must never be public
+		// again as a whole.
+		"/api/config/gmail",
+		"/api/config/",
 	}
 	for _, p := range protected {
 		if isPublicPath(p) {
