@@ -261,7 +261,7 @@ Trois axes majeurs, dans la cadence du repo : une feature qui **rend le contrôl
 
 - [ ] `cp .env.example .env` puis renseigner `ENCRYPTION_KEY` (32+ car.) et `MISTRAL_API_KEY`.
 - [ ] OAuth Google : ajouter l'URI de prod aux *Authorized redirect URIs*.
-- [ ] CORS backend : domaine de prod présent dans `ALLOWED_ORIGINS` (variable d'env, séparée par des virgules ; défauts localhost + `mailsorter.sohbi.dev` si vide) — aucun rebuild requis.
+- [ ] CORS backend : domaine de prod présent dans `ALLOWED_ORIGINS` (variable d'env, séparée par des virgules ; défauts localhost + `mailsorter.sohbi.dev` si vide), aucun rebuild requis.
 - [ ] (Optionnel) Stripe : `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID` (Price récurrent), `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` ; webhook → `{backend}/api/billing/webhook` (events `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`).
 - [ ] `docker compose build && docker compose up -d`.
 - [ ] Vérifier `GET /health` → `{"status":"ok"}`.

@@ -181,7 +181,7 @@ Synchronize emails from Gmail to database.
 
 #### POST /api/emails/action
 
-Apply a single, direct action to one message via Gmail — no AI, no rule. Used by
+Apply a single, direct action to one message via Gmail: no AI, no rule. Used by
 the inbox for one-off triage.
 
 **Headers:**
@@ -626,7 +626,7 @@ email. Auto-applied senders are applied inline.
 
 #### POST /api/ai/analyze-async
 
-Enqueue the same analysis as a background job — preferred for large batches. The
+Enqueue the same analysis as a background job, preferred for large batches. The
 email-ID list is capped server-side.
 
 **Request body:** `{ "emailIds": ["18c...", "18d..."] }`
@@ -713,7 +713,7 @@ everything").
 
 List the caller's suggestions, filtered by `status` (default `pending`).
 
-**Response:** `200 OK` — an array of `AISuggestion`.
+**Response:** `200 OK`, an array of `AISuggestion`.
 
 ### Reject a suggestion
 
@@ -735,7 +735,7 @@ Learn-once triage keyed by sender.
 
 Inbox senders aggregated with their email counts and any learned preference.
 
-**Response:** `200 OK` — an array of `SenderStats`:
+**Response:** `200 OK`, an array of `SenderStats`:
 ```json
 [
   {
@@ -761,7 +761,7 @@ Turn a sender into a permanent deterministic rule: every future email whose
 `action` is one of `archive`, `trash`, `label`, `markRead`, `star`; `labelName`
 is required when `action` is `label`.
 
-**Response:** `201 Created` — the created `SortingRule` (see the Sorting Rules
+**Response:** `201 Created`, the created `SortingRule` (see the Sorting Rules
 section for its shape).
 
 ### Update a sender preference
@@ -890,7 +890,7 @@ calls the AI, never consumes quota.
 #### POST /api/rules/preview
 
 Reports what the rules **would** do over the current inbox without touching Gmail
-— the safe way to check a ruleset before applying it.
+This is the safe way to check a ruleset before applying it.
 
 **Response:** `200 OK`
 ```json
@@ -957,44 +957,24 @@ Get all Gmail labels for a user.
 
 ## Config Endpoints
 
-Bootstrap endpoints for first-run Gmail OAuth setup. These are **public** (no
-session token) so the Setup page works before anyone has logged in.
-
-### Configuration status
+### Instance status
 
 #### GET /api/config/status
 
-**Response:** `200 OK` → `{ "isConfigured": true }` — whether Gmail OAuth
-credentials are present (in env or database).
+Public boot probe. The SPA calls it before any login to decide whether to show
+the setup instructions and whether Pro can be bought yet. It is the only public
+route under `/api/config/`, and it returns nothing beyond two booleans.
 
-### Get Gmail config (masked)
-
-#### GET /api/config/gmail
-
-**Response:** `200 OK` — the stored client ID and redirect URL, with the secret
-masked:
+**Response:** `200 OK`
 ```json
-{ "clientId": "123...apps.googleusercontent.com", "clientSecret": "••••••••", "redirectUrl": "http://localhost:3000/auth/callback" }
+{ "isConfigured": true, "billingOn": false }
 ```
 
-### Save Gmail config
-
-#### POST /api/config/gmail
-
-Persist Gmail OAuth credentials (encrypted at rest) and hot-reload the OAuth
-client.
-
-**Request body:**
-```json
-{ "clientId": "123...apps.googleusercontent.com", "clientSecret": "GOCSPX-…", "redirectUrl": "http://localhost:3000/auth/callback" }
-```
-`clientSecret` may be omitted when updating an already-saved config.
-
-**Response:** `200 OK` → `{ "success": true }`
-
-**Error Responses:**
-- `400 Bad Request`: Missing Client ID (or Client Secret on first save)
-- `500 Internal Server Error`: Failed to encrypt or persist credentials
+`isConfigured` reflects the live OAuth client, whichever source its credentials
+came from at boot. The credentials themselves are read from `GMAIL_CLIENT_ID`,
+`GMAIL_CLIENT_SECRET` and `GMAIL_REDIRECT_URL` and have **no HTTP surface**:
+they can be neither read nor written over the API, and both former
+`/api/config/gmail` routes return `404`.
 
 ---
 
