@@ -1,75 +1,72 @@
 <div align="center">
 
-# 📬 Mailsorter
+# Mailsorter
 
-### Inbox Zero, propulsé par l'IA.
+**L'IA lit, comprend et range votre boîte Gmail à votre place.**
 
-**Mailsorter lit, comprend et range vos emails Gmail à votre place.**
-Stop au scroll infini : atteignez l'Inbox Zero en quelques clics, et gardez-la propre pour toujours.
+[Démo en ligne](https://mailsorter.sohbi.dev) · `Go` · `React + Tailwind` · `MongoDB` · `Mistral AI`
 
-`React + Tailwind` · `Go` · `MongoDB` · `Mistral AI`
+<img src="docs/assets/mailsorter.png" alt="Mailsorter : la landing et un aperçu des suggestions de tri" width="820">
 
 </div>
 
 ---
 
-## ⚡ Pourquoi Mailsorter
+Une boîte Gmail qui déborde se vide de deux façons : à la main, pendant des heures, chaque semaine ; ou en déléguant la décision. Mailsorter délègue, mais sans jamais retirer la main à l'utilisateur : chaque action est proposée avec un score de confiance, réversible d'un clic, et journalisée.
 
-Votre boîte mail déborde. Les newsletters s'empilent, les confirmations de colis noient les messages importants, le spam passe entre les mailles. Le tri manuel prend des heures, et recommence chaque semaine.
+L'application est en production sur [mailsorter.sohbi.dev](https://mailsorter.sohbi.dev), auto-hébergée de bout en bout.
 
-Mailsorter automatise tout ça :
+## Ce qu'elle fait
 
-- **🧠 Tri par IA en un clic** : L'IA analyse chaque email (expéditeur, sujet, contenu) et propose une action : *archiver*, *supprimer*, *libellé* ou *garder*, avec un score de confiance.
-- **⚙️ Règles de tri déterministes** : Encodez vos cas évidents une fois (un expéditeur, un sujet récurrent) : les règles s'appliquent **instantanément, gratuitement et sans consommer votre quota IA**. Conditions (contient / **ne contient pas** / égal / **différent** / commence / finit / regex / **plus vieux que** / **plus récent que** *N* jours) → **une ou plusieurs actions enchaînées** (ex. *étiqueter* **puis** *archiver*) : archiver, supprimer, étiqueter, lire, favori. **Autopilote** : appliquez-les automatiquement à chaque synchro, et **prévisualisez** leur effet (dry-run) avant tout changement.
-- **📰 Digest quotidien par email** : Un récap de votre tri des 7 derniers jours, envoyé **chaque jour dans votre boîte** à l'heure (UTC) que vous choisissez. Activez-le en un clic depuis les *Réglages*.
-- **👤 Apprendre une fois, en 1 clic** : Depuis la vue *Expéditeurs*, transformez n'importe quel expéditeur en **règle permanente** : ses futurs emails sont rangés tout seuls, pour toujours.
-- **🔕 Désabonnement en 1 clic** : Mailsorter détecte les newsletters via les en-têtes `List-Unsubscribe` (RFC 8058) et vous désabonne **sans quitter l'app**, puis archive tout le backlog de l'expéditeur d'un geste.
-- **🛡️ Expéditeurs protégés (VIP)** : Marquez une adresse ou un domaine entier comme **protégé** : ses emails ne seront **jamais** archivés ni supprimés automatiquement (ni par l'IA, ni par les règles, ni en masse). Le filet de sécurité de l'Inbox Zero.
-- **⏰ Reporter (snooze)** : Sortez un email de la boîte d'un geste ; il **revient tout seul**, marqué non lu, au moment que vous choisissez (ce soir, demain, ce week-end…).
-- **🕓 Historique & annulation** : Un **journal transparent** de tout ce que Mailsorter a fait à votre place (par source : règle, IA, en masse…), avec un bouton **Annuler** qui rejoue l'inverse Gmail (désarchiver, restaurer, marquer non lu). Le filet de sécurité ultime.
-- **🔄 Synchronisation automatique** : Activez l'auto-sync : Mailsorter **synchronise votre boîte en arrière-plan** et, si l'autopilote des règles est actif, trie vos nouveaux emails **sans aucun clic**. Inbox Zero, en pilote automatique.
-- **⚡ Auto-pilote « Tout appliquer »** : Validez des dizaines de suggestions d'un seul geste, en une requête serveur optimisée.
-- **👥 Règles par expéditeur** : Apprenez une fois, appliquez pour toujours. Archivez ou supprimez en masse tous les emails d'un expéditeur.
-- **🏷️ Libellés intelligents** : Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.
-- **📦 Export & suppression RGPD** : Récupérez **tout ce que Mailsorter stocke** à votre sujet (règles, protections, reports, historique, réglages) en un fichier JSON, ou **effacez définitivement** votre compte et toutes vos données en un geste, sans jamais toucher à votre boîte Gmail.
-- **🔒 Zéro mot de passe stocké** : OAuth Google natif. Le secret API est chiffré au repos. Vos emails ne quittent jamais votre contrôle.
+**Trier.** L'IA analyse expéditeur, sujet et contenu, puis propose une action par email (archiver, supprimer, étiqueter, garder) avec un score de confiance. Vous validez au cas par cas, ou tout d'un geste.
 
----
+**Ne pas passer par l'IA quand c'est inutile.** Un moteur de règles déterministes s'exécute en amont du modèle : conditions sur `from`, `subject`, `snippet`, `to`, `body` (contient, égal, regex, négations, plus vieux/récent que N jours) vers une ou plusieurs actions enchaînées. Gratuit, instantané, hors quota, et prévisualisable en dry-run avant tout changement.
 
-## 🏗️ Architecture
+**Couper le robinet.** Détection des newsletters via les en-têtes `List-Unsubscribe` (RFC 2369) et `List-Unsubscribe-Post` (RFC 8058), désabonnement exécuté côté serveur quand l'expéditeur le supporte, puis archivage du backlog de l'expéditeur dans le même geste.
 
+**Tourner sans vous.** Synchronisation de fond, application automatique des règles à chaque synchro, report d'emails qui reviennent au bon moment, digest quotidien du tri des sept derniers jours envoyé dans votre propre boîte.
+
+**Ne rien casser.** Une liste d'expéditeurs protégés qu'aucune passe automatisée ne peut archiver ni supprimer, un journal de toutes les actions avec un bouton Annuler qui rejoue l'inverse Gmail, et un export ou une suppression RGPD complète en un clic.
+
+## Ce qui est intéressant dedans
+
+Les décisions d'ingénierie qui valent le détour, avec leur point d'entrée dans le code.
+
+| | |
+|---|---|
+| **Le moteur de règles est pur** | `internal/rules` ne fait aucune I/O : il prend des emails et des règles, il rend des décisions. Le dry-run (`rules.Preview`) réutilise exactement le chemin de `ApplyRules`, donc l'aperçu ne peut pas mentir sur ce que fera l'application réelle. |
+| **L'IA coûte cher, on l'évite** | Cache d'analyses indexé sur `sha256(from\|subject)` et **partagé entre tous les utilisateurs** : un email déjà vu par quelqu'un d'autre ne repasse jamais par le modèle. Les appels restants partent par lots de 8, avec repli automatique par email si la réponse ne s'aligne pas. |
+| **Un 429 ne doit pas ruiner un lot** | Le client Mistral réessaie les erreurs transitoires avec backoff exponentiel et jitter, en honorant `Retry-After` et plafonné pour rester dans les timeouts serveur. Les 4xx échouent vite. |
+| **Pas de dépendance d'authentification** | Le token de session est un HMAC-SHA256 maison, expirant, signé avec une clé dérivée du secret maître par un label distinct de celle du `state` OAuth : un token de session ne peut pas être rejoué comme state, ni l'inverse. Le middleware supprime systématiquement l'en-tête `X-User-Email` fourni par le client avant de le reposer lui-même. |
+| **Un seul catalogue de données** | `internal/account` déclare une fois la liste des collections détenues par un utilisateur, et cette liste pilote **à la fois** l'export et la suppression RGPD. Impossible d'exporter une donnée qu'on ne sait pas effacer, ou d'effacer une donnée qu'on n'a jamais divulguée. |
+| **Le digest part de votre compte** | Aucun SMTP, aucun service tiers : le récap quotidien est envoyé via l'API Gmail de l'utilisateur lui-même, avec le scope `gmail.send`. |
+| **Les identifiants OAuth ne sont pas une donnée applicative** | Une seule application OAuth sert toute l'instance, donc elle vit dans l'environnement du déploiement et n'a aucune surface HTTP : ni lecture, ni écriture, ni écran. |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  U([Navigateur]) --> F["Frontend<br/>React + Tailwind<br/>nginx"]
+  F -->|"/api"| B["Backend<br/>Go, REST"]
+  B --> M[("MongoDB")]
+  B --> G([Gmail API])
+  B --> AI([Mistral AI])
+  B -.->|tickers| S["Boucles de fond<br/>sync · snooze · digest"]
+  S --> G
 ```
-┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│   Frontend   │─────▶│   Backend    │─────▶│   MongoDB    │
-│ React+Tailwind│      │   Go API     │      │  Persistence │
-│   (nginx)    │◀─────│  REST + IA   │◀─────│              │
-└──────────────┘      └──────┬───────┘      └──────────────┘
-                             │
-                ┌────────────┴────────────┐
-                ▼                         ▼
-          ┌───────────┐            ┌───────────┐
-          │ Gmail API │            │ Mistral AI│
-          └───────────┘            └───────────┘
-```
 
-| Service  | Stack                          | Rôle                                   |
-| -------- | ------------------------------ | -------------------------------------- |
-| Frontend | React 18, Tailwind CSS, Axios  | Cockpit de tri, design system maison   |
-| Backend  | Go 1.21+, Gorilla Mux, OAuth2  | API REST, orchestration IA, Gmail      |
-| Database | MongoDB 7.0                    | Users, suggestions, préférences        |
-| IA       | Mistral AI                     | Analyse et classification des emails   |
+| Brique | Stack | Rôle |
+| --- | --- | --- |
+| Frontend | React 18, Tailwind, Axios | Cockpit de tri, design system maison, zéro librairie d'icônes |
+| Backend | Go 1.21+, Gorilla Mux, OAuth2 | API REST, orchestration IA, accès Gmail, ordonnanceurs |
+| Base | MongoDB 7 | Comptes, suggestions, règles, journal d'actions |
+| IA | Mistral AI | Classification des emails |
 
----
+Détail : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · API complète : [`docs/API.md`](docs/API.md) · Historique des phases : [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-## 🚀 Démarrage rapide
+## Démarrage
 
-### 1. Prérequis
-
-- Docker & Docker Compose
-- Identifiants **OAuth 2.0** Google (API Gmail activée)
-- Une clé **Mistral AI** ([console.mistral.ai](https://console.mistral.ai/))
-
-### 2. Configuration
+Prérequis : Docker et Docker Compose, un identifiant OAuth 2.0 Google avec l'API Gmail activée, une clé Mistral AI.
 
 ```bash
 git clone https://github.com/nohe-sohbi/Mailsorter.git
@@ -77,107 +74,56 @@ cd Mailsorter
 cp .env.example .env
 ```
 
-Éditez `.env` :
+Renseignez au minimum :
 
 ```env
 ENCRYPTION_KEY=une-chaine-aleatoire-de-32-caracteres-minimum
 MISTRAL_API_KEY=votre_cle_mistral
-MISTRAL_MODEL=mistral-large-2411
 GMAIL_CLIENT_ID=votre_client_id.apps.googleusercontent.com
 GMAIL_CLIENT_SECRET=votre_client_secret
 GMAIL_REDIRECT_URL=http://localhost:3000/auth/callback
 ```
 
-> Les identifiants Gmail sont une **configuration d'instance** : une seule application OAuth sert tous les comptes. Ils se renseignent uniquement dans `.env` (aucune UI, aucune API ne permet de les modifier à chaud) et `GMAIL_REDIRECT_URL` doit correspondre exactement à un URI de redirection autorisé dans le projet Google Cloud.
-
-### 3. Lancement
+Les identifiants Gmail sont une **configuration d'instance** : une seule application OAuth sert tous les comptes, elle se renseigne uniquement ici, et `GMAIL_REDIRECT_URL` doit correspondre exactement à un URI de redirection autorisé dans le projet Google Cloud. Le client OAuth doit être de type **Application Web** ; un client Desktop n'autorise que localhost en redirection.
 
 ```bash
-docker compose up -d        # ou : make up
+docker compose up -d     # ou : make up
 ```
 
-| Surface       | URL                     |
-| ------------- | ----------------------- |
-| App           | http://localhost:3000   |
-| API           | http://localhost:8080   |
-| Health check  | http://localhost:8080/health |
+| Surface | URL |
+| --- | --- |
+| Application | http://localhost:3000 |
+| API | http://localhost:8080 |
+| Santé | http://localhost:8080/health |
 
----
+## Développement
 
-## 🧭 Le flow utilisateur
-
-1. **Connectez Gmail** : un clic, OAuth Google sécurisé.
-2. **Lancez « Trier ma boîte »** : l'IA analyse vos emails et empile ses suggestions.
-3. **Validez** : *Tout appliquer* pour l'auto-pilote, ou tranchez au cas par cas. Filtrez sur *haute confiance* pour aller encore plus vite.
-4. **Industrialisez** : passez en vue *Expéditeurs* pour archiver/supprimer en masse et mémoriser vos préférences.
-
----
-
-## 🔌 API (extrait)
-
-| Méthode | Endpoint                  | Description                                   |
-| ------- | ------------------------- | --------------------------------------------- |
-| `GET`   | `/api/emails`             | Liste paginée de la boîte                     |
-| `POST`  | `/api/emails/action`      | Action directe (archive/trash/read) sur 1 msg |
-| `POST`  | `/api/emails/snooze`      | **Reporter** un email (preset ou date) → revient tout seul |
-| `GET`   | `/api/snoozes`            | Emails reportés (programmés)                   |
-| `POST`  | `/api/snoozes/{id}/wake`  | **Réactiver** un email reporté maintenant      |
-| `GET`   | `/api/protected`          | **Expéditeurs protégés** (VIP)                 |
-| `POST`  | `/api/protected`          | Protège une adresse ou un domaine entier       |
-| `DELETE`| `/api/protected/{id}`     | Retire une protection                          |
-| `POST`  | `/api/ai/analyze`         | Génère des suggestions (synchrone, cache+batch) |
-| `POST`  | `/api/ai/analyze-async`   | **Lance un job d'analyse** (worker, non bloquant) |
-| `GET`   | `/api/ai/jobs/{id}`       | Statut/progression d'un job d'analyse         |
-| `POST`  | `/api/ai/apply`           | Applique une suggestion                       |
-| `POST`  | `/api/ai/apply-batch`     | **Applique N suggestions en une requête**     |
-| `POST`  | `/api/ai/analyze-sender`  | Apprend une préférence par expéditeur         |
-| `GET`   | `/api/subscriptions`      | **Newsletters détectées** (agrégées par expéditeur) |
-| `POST`  | `/api/unsubscribe`        | **Désabonnement 1-clic** (+ archivage optionnel) |
-| `GET`   | `/api/stats`              | Statistiques de la boîte                      |
-| `GET`   | `/api/stats/activity`     | Récap d'activité (7 j, par jour/action/**source**, depuis le journal d'actions) |
-| `GET`   | `/api/activity/log`       | **Historique** des actions (journal, filtrable par source, flag *réversible*) |
-| `POST`  | `/api/activity/undo`      | **Annule** une action automatisée (rejoue l'inverse Gmail)    |
-| `GET`   | `/api/usage`              | Quota mensuel + plan (free/pro)               |
-| `GET`   | `/api/account/settings`   | Réglages du compte (ex. autopilote des règles) |
-| `PUT`   | `/api/account/settings`   | Met à jour les réglages (`autoApplyRules`, `autoSyncEnabled`, digest), **merge partiel** |
-| `GET`   | `/api/account/export`     | **Export RGPD** : toutes vos données Mailsorter en un JSON |
-| `DELETE`| `/api/account`            | **Suppression RGPD** : efface le compte et toutes les données |
-| `GET`   | `/api/rules`              | **Règles de tri** (liste, triées par priorité) |
-| `POST`  | `/api/rules`              | Crée une règle déterministe (validée serveur) |
-| `POST`  | `/api/rules/apply`        | **Applique les règles** sur la boîte (sans IA, sans quota) |
-| `POST`  | `/api/rules/preview`      | **Aperçu (dry-run)** : ce que feraient les règles, sans rien modifier |
-| `PUT`   | `/api/rules/{id}`         | Met à jour une règle                          |
-| `DELETE`| `/api/rules/{id}`         | Supprime une règle                            |
-| `POST`  | `/api/senders/rule`       | **Crée une règle en 1 clic** depuis un expéditeur |
-| `POST`  | `/api/billing/checkout`   | **Stripe Checkout** (passage à Pro = illimité) |
-| `POST`  | `/api/billing/portal`     | **Portail Stripe** (gérer/résilier en self-service) |
-| `POST`  | `/api/billing/webhook`    | Webhook Stripe (signature vérifiée, sync plan) |
-| `GET`   | `/health`                 | Liveness/readiness : **ping MongoDB**, build, uptime (`503` si DB KO) |
-| `GET`   | `/metrics`                | **Métriques d'exploitation** (req. par méthode/classe de statut, latence, uptime) |
-
-Documentation complète : [`docs/API.md`](docs/API.md) · Architecture : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · Roadmap : [`docs/ROADMAP.md`](docs/ROADMAP.md)
-
----
-
-## 🛠️ Développement local
-
-**Backend**
 ```bash
-cd backend && go run cmd/server/main.go
-```
-
-**Frontend**
-```bash
+cd backend  && go run cmd/server/main.go
 cd frontend && npm install && npm start
+cd backend  && go test ./... -race      # la suite complète
 ```
 
-**Build de production (frontend)**
-```bash
-cd frontend && npm run build
-```
+La CI (`.github/workflows/ci.yml`) joue `vet`, `build` et `test -race` sur le backend, et le build du frontend, à chaque push et chaque PR.
 
----
+## API en un coup d'œil
 
-## 📄 Licence
+| Méthode | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/api/emails` | Liste paginée de la boîte |
+| `POST` | `/api/emails/action` | Action directe sur un message |
+| `POST` | `/api/emails/snooze` | Reporte un email, qui revient tout seul |
+| `POST` | `/api/ai/analyze` | Suggestions de tri (cache + batch) |
+| `POST` | `/api/ai/analyze-async` | Job d'analyse non bloquant, avec progression |
+| `POST` | `/api/ai/apply-batch` | Applique N suggestions en une requête |
+| `GET` | `/api/rules` · `POST` `/api/rules/preview` | Règles déterministes et leur dry-run |
+| `GET` | `/api/subscriptions` · `POST` `/api/unsubscribe` | Newsletters détectées, désabonnement |
+| `GET` | `/api/activity/log` · `POST` `/api/activity/undo` | Journal des actions et annulation |
+| `GET` | `/api/account/export` · `DELETE` `/api/account` | Export et suppression RGPD |
+| `GET` | `/health` · `/metrics` | Ping MongoDB, build, uptime, compteurs |
+
+Les 40 routes et leurs charges utiles : [`docs/API.md`](docs/API.md).
+
+## Licence
 
 MIT
