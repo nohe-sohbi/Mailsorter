@@ -1,4 +1,5 @@
-# Mailsorter n'est pas encore lancé publiquement — on ne veut pas être indexé.
-# À assouplir au lancement (autoriser la landing, garder l'app privée).
+# Mailsorter est en ligne : l'indexation est ouverte.
+# Le fichier est conservé plutôt que supprimé, sans quoi la règle SPA
+# (try_files ... /index.html) servirait la page d'accueil en guise de robots.txt.
 User-agent: *
-Disallow: /
+Allow: /
