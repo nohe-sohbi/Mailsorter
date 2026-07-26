@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import Inbox from './pages/Inbox';
 import Setup from './pages/Setup';
 import Settings from './pages/Settings';
+import Account from './pages/Account';
 import Rules from './pages/Rules';
 import Snoozed from './pages/Snoozed';
 import History from './pages/History';
@@ -95,6 +96,7 @@ function App() {
               <Route path="/snoozed" element={isConfigured ? <Snoozed /> : <Navigate to="/setup" replace />} />
               <Route path="/history" element={isConfigured ? <History /> : <Navigate to="/setup" replace />} />
               <Route path="/settings" element={isConfigured ? <Settings /> : <Navigate to="/setup" replace />} />
+              <Route path="/account" element={isConfigured ? <Account /> : <Navigate to="/setup" replace />} />
               <Route path="/pricing" element={<Pricing />} />
               <Route path="/auth/callback" element={<AuthCallback />} />
               {/* Redirects for legacy routes */}
