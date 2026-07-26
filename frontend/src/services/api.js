@@ -102,6 +102,8 @@ export const smartLabelService = {
 };
 
 export const accountService = {
+  // Redacted account record (no OAuth token, no Stripe id) for the profile page.
+  getProfile: () => apiClient.get('/api/account/profile'),
   getUsage: () => apiClient.get('/api/usage'),
   getActivity: () => apiClient.get('/api/stats/activity'),
   getSettings: () => apiClient.get('/api/account/settings'),

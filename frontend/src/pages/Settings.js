@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { protectService, accountService } from '../services/api';
 import { useToast } from '../ui/Toast';
-import { Settings as SettingsIcon, Shield, X, Mail, Trash, Alert, Refresh } from '../ui/icons';
+import { Settings as SettingsIcon, Shield, X, Mail, Refresh } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 
 // Opt in to hands-free background syncing: a scheduler periodically pulls the
@@ -282,105 +282,13 @@ function ProtectedSenders() {
   );
 }
 
-// RGPD controls: export everything Mailsorter stores about you (portability),
-// and permanently erase your account and all derived data (right to erasure).
-// Your Gmail mailbox is never touched — only the artifacts Mailsorter created.
-function PrivacyData() {
-  const toast = useToast();
-  const [exporting, setExporting] = useState(false);
-  const [confirm, setConfirm] = useState('');
-  const [deleting, setDeleting] = useState(false);
-
-  const exportData = async () => {
-    setExporting(true);
-    try {
-      const { data } = await accountService.exportData();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `mailsorter-export-${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast.success('Export téléchargé.');
-    } catch (err) {
-      toast.error('Export impossible.');
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  const deleteAccount = async () => {
-    setDeleting(true);
-    try {
-      await accountService.deleteAccount();
-      toast.success('Compte et données supprimés. À bientôt.');
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('userEmail');
-      setTimeout(() => window.location.assign('/'), 800);
-    } catch (err) {
-      toast.error('Suppression impossible.');
-      setDeleting(false);
-    }
-  };
-
-  return (
-    <div className="card animate-fade-up mt-6 p-7">
-      <div className="mb-1 flex items-center gap-2">
-        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
-          <Shield size={18} />
-        </span>
-        <h2 className="text-lg font-bold text-ink-900">Données &amp; confidentialité</h2>
-      </div>
-      <p className="mb-5 text-sm text-ink-500">
-        Vos emails ne quittent jamais votre contrôle. Récupérez tout ce que Mailsorter stocke à votre sujet,
-        ou effacez définitivement votre compte.
-      </p>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <button onClick={exportData} disabled={exporting} className="btn-secondary">
-          {exporting ? <Spinner size={16} /> : <Shield size={16} />} Exporter mes données
-        </button>
-        <span className="text-xs text-ink-400">Un fichier JSON : règles, expéditeurs protégés, historique, réglages…</span>
-      </div>
-
-      <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50/60 p-5">
-        <div className="mb-1 flex items-center gap-2 text-rose-700">
-          <Alert size={16} />
-          <h3 className="text-sm font-bold">Zone de danger</h3>
-        </div>
-        <p className="mb-4 text-sm text-rose-600/90">
-          La suppression efface définitivement votre compte et toutes vos données Mailsorter (règles, protections,
-          reports, historique). Action <span className="font-semibold">irréversible</span>. Votre boîte Gmail n'est pas affectée.
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
-          <input
-            className="input max-w-[220px] border-rose-200"
-            placeholder="Tapez SUPPRIMER"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            aria-label="Confirmation de suppression"
-          />
-          <button
-            onClick={deleteAccount}
-            disabled={deleting || confirm.trim().toUpperCase() !== 'SUPPRIMER'}
-            className="btn-danger"
-          >
-            {deleting ? <Spinner size={16} /> : <Trash size={16} />} Supprimer mon compte
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Settings holds only per-user preferences. The Gmail API credentials used to
-// live here too, but they are a single instance-wide OAuth app shared by every
-// account: editing them from a user-facing screen let anyone reconfigure the
-// login flow for everyone. They now come from the deployment environment and
-// have no UI at all.
+// Settings holds only per-user preferences.
+//
+// Two things used to live here and no longer do. The Gmail API credentials are
+// a single instance-wide OAuth app shared by every account: editing them from a
+// user-facing screen let anyone reconfigure the login flow for everyone, so
+// they moved to the deployment environment. Data export and account deletion
+// are account-level actions rather than preferences, so they moved to /account.
 function Settings() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
@@ -390,14 +298,13 @@ function Settings() {
         </span>
         <div>
           <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
-          <p className="text-sm text-ink-500">Synchronisation automatique, digest quotidien, expéditeurs protégés et vos données.</p>
+          <p className="text-sm text-ink-500">Synchronisation automatique, digest quotidien et expéditeurs protégés.</p>
         </div>
       </div>
 
       <AutoSyncSettings />
       <DigestSettings />
       <ProtectedSenders />
-      <PrivacyData />
     </div>
   );
 }

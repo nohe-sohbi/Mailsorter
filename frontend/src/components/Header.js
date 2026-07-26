@@ -63,12 +63,24 @@ function Header() {
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="hidden items-center gap-2.5 rounded-full border border-ink-200 bg-white py-1 pl-1 pr-3 shadow-soft sm:flex">
+          {/* Clicking your own address should open your account, which is what
+              everyone tries first. It used to be an inert div. */}
+          <button
+            onClick={() => navigate('/account')}
+            aria-current={location.pathname === '/account' ? 'page' : undefined}
+            title="Mon compte"
+            className={cn(
+              'hidden items-center gap-2.5 rounded-full border bg-white py-1 pl-1 pr-3 shadow-soft transition-colors sm:flex',
+              location.pathname === '/account'
+                ? 'border-brand-300 bg-brand-50'
+                : 'border-ink-200 hover:border-ink-300 hover:bg-ink-50'
+            )}
+          >
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
               {initial}
             </span>
             <span className="max-w-[180px] truncate text-sm font-medium text-ink-600">{userEmail}</span>
-          </div>
+          </button>
           <button
             onClick={handleLogout}
             className="btn-ghost px-2.5"

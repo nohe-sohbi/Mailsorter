@@ -41,6 +41,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 
 	// Account / usage / settings
 	r.HandleFunc("/api/usage", h.GetUsage).Methods("GET")
+	r.HandleFunc("/api/account/profile", h.GetProfile).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.GetSettings).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.UpdateSettings).Methods("PUT")
 	// RGPD — data portability (export) and right to erasure (delete).

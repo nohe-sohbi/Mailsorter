@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/account"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/digest"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -75,6 +76,26 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 		"plan":      plan,
 		"billingOn": h.billingEnabled(),
 	})
+}
+
+// GetProfile returns the caller's account record for the profile screen.
+//
+// It reuses account.RedactUser, the same projection the RGPD export goes
+// through, so the page can never surface an OAuth token or a Stripe identifier
+// by accident: there is one definition of "what is safe to show about an
+// account", and both callers share it.
+func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		http.Error(w, "User email required", http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(account.RedactUser(h.loadUser(ctx, userEmail)))
 }
 
 // billingEnabled reports whether paid checkout is actually wired up. Both the
