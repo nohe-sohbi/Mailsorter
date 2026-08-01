@@ -1,6 +1,5 @@
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 import Modal from './Modal';
-import Spinner from './Spinner';
 import { Alert } from './icons';
 
 const ConfirmContext = createContext(null);
@@ -20,9 +19,11 @@ const ConfirmContext = createContext(null);
 export function ConfirmProvider({ children }) {
   const [state, setState] = useState(null);
   const [typed, setTyped] = useState('');
-  const [busy, setBusy] = useState(false);
   const resolveRef = useRef(null);
   const confirmButtonRef = useRef(null);
+  // settle() closes the dialog in the same batch, so a "busy" state would never
+  // be observable in a render — a ref is what actually blocks a double submit.
+  const submittingRef = useRef(false);
 
   const confirm = useCallback((options = {}) => {
     // A second confirm() while one is still pending would overwrite resolveRef
@@ -34,7 +35,7 @@ export function ConfirmProvider({ children }) {
       resolveRef.current = null;
     }
     setTyped('');
-    setBusy(false);
+    submittingRef.current = false;
     setState({
       title: 'Confirmer',
       message: '',
@@ -54,15 +55,14 @@ export function ConfirmProvider({ children }) {
     resolveRef.current = null;
     setState(null);
     setTyped('');
-    setBusy(false);
+    submittingRef.current = false;
   }, []);
 
   const onConfirm = useCallback(() => {
-    // Guard against a double-submit closing the dialog twice.
-    if (busy) return;
-    setBusy(true);
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     settle(true);
-  }, [busy, settle]);
+  }, [settle]);
 
   const needsTyping = Boolean(state?.typeToConfirm);
   const canConfirm = !needsTyping || typed.trim().toLowerCase() === state.typeToConfirm.toLowerCase();
@@ -87,10 +87,9 @@ export function ConfirmProvider({ children }) {
               <button
                 ref={confirmButtonRef}
                 onClick={onConfirm}
-                disabled={!canConfirm || busy}
+                disabled={!canConfirm}
                 className={(state.danger ? 'btn-danger' : 'btn-primary') + ' w-full sm:w-auto'}
               >
-                {busy && <Spinner size={16} />}
                 {state.confirmLabel}
               </button>
             </>

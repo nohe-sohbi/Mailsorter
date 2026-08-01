@@ -12,7 +12,12 @@ const VARIANTS = {
 
 function ToastItem({ toast, onDismiss }) {
   const { icon: Icon, ring } = VARIANTS[toast.variant] || VARIANTS.info;
-  const [paused, setPaused] = useState(false);
+  // Hover and focus are independent reasons to hold the timer. Collapsing them
+  // into one flag meant moving the mouse away dismissed a toast a keyboard user
+  // had tabbed into — losing the "Annuler" they were reaching for.
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const paused = hovered || focused;
   const remainingRef = useRef(toast.duration);
   const startedRef = useRef(Date.now());
 
@@ -32,10 +37,10 @@ function ToastItem({ toast, onDismiss }) {
   return (
     <div
       className="pointer-events-auto flex w-full max-w-sm animate-slide-in-right items-center gap-3 rounded-2xl border border-hairline bg-surface-raised p-3 pr-4 shadow-card"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-      onFocusCapture={() => setPaused(true)}
-      onBlurCapture={() => setPaused(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocused(true)}
+      onBlurCapture={() => setFocused(false)}
     >
       <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white', ring)}>
         <Icon size={18} />

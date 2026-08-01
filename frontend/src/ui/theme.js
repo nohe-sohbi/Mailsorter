@@ -27,12 +27,17 @@ export const resolveTheme = (theme) => (theme === 'system' ? (prefersDark() ? 'd
 
 // applyTheme is exported so index.js can run it before React mounts, which is
 // what stops a dark-theme user from getting a white flash on every page load.
+// Held across calls so two toggles less than the transition apart do not have
+// the first one's timer strip the class mid-way through the second's animation.
+let transitionTimer = 0;
+
 export function applyTheme(theme, { animate = false } = {}) {
   const root = document.documentElement;
   const resolved = resolveTheme(theme);
   if (animate) {
     root.classList.add('theme-transition');
-    window.setTimeout(() => root.classList.remove('theme-transition'), 220);
+    window.clearTimeout(transitionTimer);
+    transitionTimer = window.setTimeout(() => root.classList.remove('theme-transition'), 220);
   }
   root.classList.toggle('dark', resolved === 'dark');
   return resolved;
@@ -67,15 +72,16 @@ export function ThemeProvider({ children }) {
     setResolved(applyTheme(next, { animate: true }));
   }, []);
 
-  // Cycle in the order a user expects from a single button: what they see now,
-  // then the opposite, then back to following the system.
-  const cycleTheme = useCallback(() => {
-    setTheme(theme === 'system' ? (prefersDark() ? 'light' : 'dark') : theme === 'dark' ? 'light' : 'system');
-  }, [theme, setTheme]);
+  // A fixed, predictable rotation: clair → sombre → système → clair. The button
+  // labels its own destination, so the order has to be stated once and read from
+  // one place — a cycle whose next step depended on the OS preference could not
+  // be announced truthfully.
+  const nextTheme = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
+  const cycleTheme = useCallback(() => setTheme(nextTheme), [nextTheme, setTheme]);
 
   const value = useMemo(
-    () => ({ theme, resolved, setTheme, cycleTheme, isDark: resolved === 'dark' }),
-    [theme, resolved, setTheme, cycleTheme]
+    () => ({ theme, nextTheme, resolved, setTheme, cycleTheme, isDark: resolved === 'dark' }),
+    [theme, nextTheme, resolved, setTheme, cycleTheme]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

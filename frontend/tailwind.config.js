@@ -44,6 +44,7 @@ module.exports = {
           raised: withAlpha('--surface-raised'),
           sunken: withAlpha('--surface-sunken'),
         },
+        overlay: withAlpha('--overlay'),
         muted: withAlpha('--muted'),
         subtle: withAlpha('--subtle'),
         hairline: withAlpha('--hairline'),

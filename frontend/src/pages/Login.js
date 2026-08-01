@@ -237,7 +237,7 @@ function Login() {
           <h2 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">
             Reprenez le contrôle de votre inbox.
           </h2>
-          <p className="mx-auto mt-3 max-w-md text-brand-100">
+          <p className="mx-auto mt-3 max-w-md text-white/85">
             Connectez Gmail et regardez le désordre disparaître. C'est gratuit, et ça prend 30 secondes.
           </p>
           <button

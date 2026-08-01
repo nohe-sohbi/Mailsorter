@@ -34,7 +34,7 @@ export function Toggle({ checked, onChange, label, description, disabled = false
         onClick={() => onChange?.(!checked)}
         className={cn(
           'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-          checked ? 'bg-brand-fill' : 'bg-ink-300'
+          checked ? 'bg-brand-fill' : 'bg-ink-400'
         )}
       >
         <span
@@ -48,9 +48,9 @@ export function Toggle({ checked, onChange, label, description, disabled = false
   );
 }
 
-// Progress carries its value to assistive tech, and the rail meets contrast
-// against the card it sits on (the old `bg-ink-100` rail was 1,23:1, i.e.
-// invisible to anyone who needed it most).
+// Progress carries its value to assistive tech, and the rail is dark enough to
+// be seen against the card it sits on — the old `bg-ink-100` rail came in at
+// 1,23:1, which is to say invisible to the people who needed it most.
 export function Progress({ value = 0, max = 100, label, tone = 'brand', className }) {
   const safeMax = max > 0 ? max : 100;
   const pct = Math.max(0, Math.min(100, Math.round((value / safeMax) * 100)));
@@ -66,7 +66,7 @@ export function Progress({ value = 0, max = 100, label, tone = 'brand', classNam
       aria-valuemin={0}
       aria-valuemax={100}
       aria-label={label}
-      className={cn('h-2.5 w-full overflow-hidden rounded-full bg-ink-200', className)}
+      className={cn('h-2.5 w-full overflow-hidden rounded-full bg-ink-300', className)}
     >
       <div
         className={cn('h-full rounded-full transition-all duration-500', tones[tone] || tones.brand)}

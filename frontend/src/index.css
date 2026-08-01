@@ -50,6 +50,9 @@
     --info-fill: 3 105 161;
     /* Survol/appui des mêmes aplats : eux non plus ne peuvent pas emprunter la
        rampe, qui s'éclaircirait au survol en thème sombre. */
+    /* Voile des surfaces modales. PAS ink-950 : cette rampe s'inverse, donc en
+       thème sombre le voile devenait un flash blanc à 60 % sur tout l'écran. */
+    --overlay: 2 6 23;
     --brand-fill-strong: 29 78 216;
     --brand-fill-deep: 30 64 175;
     --danger-fill-strong: 190 18 60;
@@ -264,7 +267,7 @@
   .input,
   .select {
     @apply h-11 w-full rounded-xl border border-hairline bg-surface px-4 text-sm text-ink-900 shadow-soft
-      transition-colors placeholder:text-subtle focus:border-brand-500 focus:outline-none
+      transition-colors placeholder:text-muted focus:border-brand-500 focus:outline-none
       focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1;
   }
   /* Un <select> natif garde sa flèche : on lui rend juste la place. */
@@ -290,28 +293,46 @@
      sans puces, tableaux collés). Écrit à la main pour ne pas ajouter de
      dépendance, et borné pour qu'un email hostile ne casse pas la mise en page. */
   .email-body {
-    @apply text-sm leading-relaxed text-ink-700;
+    @apply rounded-xl text-sm leading-relaxed;
     overflow-wrap: break-word;
     word-break: break-word;
+    /* An email is a document from someone else, and it sets its own colours
+       assuming a white page. Sanitising keeps those inline styles, so rendering
+       one on the dark surface turns "color: #333 with no background" into black
+       on near-black. The body therefore gets its own light canvas in BOTH
+       themes — which is exactly what every mail client does — rather than a
+       promise that senders will cooperate.
+       `color-scheme: light` also stops the browser from re-theming form
+       controls and default colours inside it. */
+    color-scheme: light;
+    background-color: #ffffff;
+    color: #334155;
+  }
+  .dark .email-body {
+    @apply p-4;
   }
   .email-body > * + * {
     @apply mt-4;
   }
   .email-body h1 {
-    @apply mt-6 text-xl font-bold text-ink-900;
+    @apply mt-6 text-xl font-bold;
+    color: #0f172a;
   }
   .email-body h2 {
-    @apply mt-6 text-lg font-bold text-ink-900;
+    @apply mt-6 text-lg font-bold;
+    color: #0f172a;
   }
   .email-body h3,
   .email-body h4 {
-    @apply mt-5 text-base font-semibold text-ink-900;
+    @apply mt-5 text-base font-semibold;
+    color: #0f172a;
   }
   .email-body p {
     @apply leading-relaxed;
   }
   .email-body a {
-    @apply text-brand-600 underline underline-offset-2 hover:text-brand-700;
+    @apply underline underline-offset-2;
+    color: #1d4ed8;
   }
   .email-body ul {
     @apply list-disc space-y-1 pl-5;
@@ -320,19 +341,23 @@
     @apply list-decimal space-y-1 pl-5;
   }
   .email-body blockquote {
-    @apply border-l-2 border-hairline pl-4 text-muted;
+    @apply border-l-2 pl-4;
+    border-color: #e2e8f0;
+    color: #64748b;
   }
   .email-body hr {
-    @apply border-hairline;
+    border-color: #e2e8f0;
   }
   .email-body img {
     @apply h-auto max-w-full rounded-lg;
   }
   .email-body pre {
-    @apply overflow-x-auto rounded-lg bg-ink-100 p-3 text-xs;
+    @apply overflow-x-auto rounded-lg p-3 text-xs;
+    background-color: #f1f5f9;
   }
   .email-body code {
-    @apply rounded bg-ink-100 px-1 py-0.5 font-mono text-xs;
+    @apply rounded px-1 py-0.5 font-mono text-xs;
+    background-color: #f1f5f9;
   }
   /* Les tableaux de mise en page des newsletters débordent : on les laisse
      défiler dans leur boîte plutôt que d'élargir la page. */
@@ -345,7 +370,8 @@
   }
   /* Un email en texte brut garde ses retours à la ligne. */
   .email-body-plain {
-    @apply whitespace-pre-wrap text-sm leading-relaxed text-ink-700;
+    @apply whitespace-pre-wrap rounded-xl text-sm leading-relaxed;
+    color: #334155;
     overflow-wrap: break-word;
   }
 }

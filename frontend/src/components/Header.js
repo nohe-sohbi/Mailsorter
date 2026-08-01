@@ -13,15 +13,19 @@ const NAV_ITEMS = [
   { to: '/settings', label: 'Réglages', Icon: Settings },
 ];
 
+// Icon and wording per theme. The destination is NOT hard-coded here: it comes
+// from the provider's own rotation, so the button can never promise a theme
+// different from the one the click actually applies.
 const THEME_META = {
-  light: { Icon: Sun, label: 'Thème clair', next: 'sombre' },
-  dark: { Icon: Moon, label: 'Thème sombre', next: 'système' },
-  system: { Icon: Monitor, label: 'Thème système', next: 'clair' },
+  light: { Icon: Sun, label: 'Thème clair', name: 'clair' },
+  dark: { Icon: Moon, label: 'Thème sombre', name: 'sombre' },
+  system: { Icon: Monitor, label: 'Thème système', name: 'système' },
 };
 
 function ThemeButton({ className }) {
-  const { theme, cycleTheme } = useTheme();
-  const { Icon, label, next } = THEME_META[theme] || THEME_META.system;
+  const { theme, nextTheme, cycleTheme } = useTheme();
+  const { Icon, label } = THEME_META[theme] || THEME_META.system;
+  const next = (THEME_META[nextTheme] || THEME_META.system).name;
   return (
     <button
       onClick={cycleTheme}
@@ -44,6 +48,18 @@ function Header() {
   useEffect(() => {
     setMobileOpen(false);
   }, [location.pathname]);
+
+  // The drawer covers the page, so Escape has to dismiss it like any other
+  // overlay — otherwise a keyboard user has to tab all the way through the menu
+  // to reach its close button.
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setMobileOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [mobileOpen]);
 
   const handleLogout = () => {
     localStorage.removeItem('userEmail');
@@ -134,7 +150,7 @@ function Header() {
       {mobileOpen && (
         <div className="lg:hidden">
           <button
-            className="fixed inset-0 top-16 z-30 cursor-default bg-ink-950/30 backdrop-blur-sm"
+            className="fixed inset-0 top-16 z-30 cursor-default bg-overlay/30 backdrop-blur-sm"
             aria-label="Fermer le menu"
             onClick={() => setMobileOpen(false)}
           />

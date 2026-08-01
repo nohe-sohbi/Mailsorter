@@ -917,11 +917,11 @@ function Inbox() {
         </span>
         <div className="flex min-w-[140px] flex-1 items-center gap-2">
           <Progress value={gamify.today} max={gamify.goal} tone={goalHit ? 'positive' : 'brand'} label="Objectif du jour" />
-          <span className={cn('shrink-0 text-xs font-semibold', goalHit ? 'text-positive-600' : 'text-muted')}>
+          <span className={cn('shrink-0 text-xs font-semibold', goalHit ? 'text-positive-700' : 'text-muted')}>
             {gamify.today}/{gamify.goal}
           </span>
         </div>
-        {goalHit && <span className="text-xs font-semibold text-positive-600">Objectif atteint 🎉</span>}
+        {goalHit && <span className="text-xs font-semibold text-positive-700">Objectif atteint 🎉</span>}
       </div>
 
       {/* View toggle + primary action */}

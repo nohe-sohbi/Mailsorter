@@ -30,6 +30,7 @@ function Modal({
   hideClose = false,
 }) {
   const panelRef = useRef(null);
+  const bodyRef = useRef(null);
   const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2)}`);
   const descId = useRef(`modal-desc-${Math.random().toString(36).slice(2)}`);
   const restoreRef = useRef(null);
@@ -45,8 +46,15 @@ function Modal({
     if (!open) return undefined;
     restoreRef.current = document.activeElement;
 
+    // Prefer the first control in the dialog's BODY. Scanning the whole panel in
+    // DOM order lands on the header's "Fermer" button every time, so a dialog
+    // asking the user to type something opened with focus on the dismiss button
+    // instead of the field.
     const target =
-      initialFocusRef?.current || panelRef.current?.querySelector(FOCUSABLE) || panelRef.current;
+      initialFocusRef?.current ||
+      bodyRef.current?.querySelector(FOCUSABLE) ||
+      panelRef.current?.querySelector(FOCUSABLE) ||
+      panelRef.current;
     // Wait a frame so the element exists and the entry animation has started.
     const raf = window.requestAnimationFrame(() => target?.focus?.());
 
@@ -99,7 +107,7 @@ function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-[95] flex items-end justify-center bg-ink-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      className="fixed inset-0 z-[95] flex items-end justify-center bg-overlay/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
       onMouseDown={(e) => {
         // mousedown, not click: a drag that starts inside the panel and ends on
         // the backdrop must not be read as "dismiss".
@@ -138,7 +146,9 @@ function Modal({
             )}
           </div>
         )}
-        <div className="max-h-[70vh] overflow-y-auto px-6 py-5">{children}</div>
+        <div ref={bodyRef} className="max-h-[70vh] overflow-y-auto px-6 py-5">
+          {children}
+        </div>
         {footer && (
           <div className="flex flex-col-reverse gap-2 border-t border-hairline px-6 py-4 sm:flex-row sm:justify-end">
             {footer}

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -115,6 +116,24 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// isInlinePart reports whether a named MIME part is embedded in the message body
+// rather than attached to it.
+func isInlinePart(part *gmailapi.MessagePart) bool {
+	for _, h := range part.Headers {
+		switch strings.ToLower(h.Name) {
+		case "content-id", "x-attachment-id":
+			if strings.TrimSpace(h.Value) != "" {
+				return true
+			}
+		case "content-disposition":
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(h.Value)), "inline") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // withoutLabel returns labels minus one entry, without mutating the input.
 func withoutLabel(labels []string, drop string) []string {
 	out := make([]string, 0, len(labels))
@@ -137,7 +156,12 @@ func listAttachments(msg *gmailapi.Message) []attachmentView {
 		if part == nil || depth > 12 {
 			return
 		}
-		if part.Filename != "" {
+		// A filename alone does not make an attachment: Gmail names the inline
+		// images a newsletter references with cid: too (image001.png, logo.gif),
+		// so listing every named part turned a normal marketing email into a row
+		// of meaningless chips. An inline part announces itself with a
+		// Content-ID, or with Content-Disposition: inline.
+		if part.Filename != "" && !isInlinePart(part) {
 			var size int64
 			if part.Body != nil {
 				size = part.Body.Size

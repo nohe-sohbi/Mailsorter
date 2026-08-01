@@ -8,11 +8,22 @@ import { useEffect } from 'react';
 // toggling means the page only starts scrolling again when the last overlay is
 // gone, whatever order they close in.
 let depth = 0;
-let restoreTo = '';
+let restoreOverflow = '';
+let restorePadding = '';
 
 export function lockScroll() {
   if (depth === 0) {
-    restoreTo = document.body.style.overflow;
+    restoreOverflow = document.body.style.overflow;
+    restorePadding = document.body.style.paddingRight;
+    // Hiding the overflow removes the scrollbar, and on any platform whose
+    // scrollbars take up space (Windows, most Linux, macOS set to always show)
+    // the page then widens by its thickness — everything jumps sideways the
+    // instant a dialog opens. Reserve the width we are about to reclaim.
+    const gap = window.innerWidth - document.documentElement.clientWidth;
+    if (gap > 0) {
+      const current = parseFloat(window.getComputedStyle(document.body).paddingRight) || 0;
+      document.body.style.paddingRight = `${current + gap}px`;
+    }
     document.body.style.overflow = 'hidden';
   }
   depth += 1;
@@ -20,7 +31,10 @@ export function lockScroll() {
 
 export function unlockScroll() {
   depth = Math.max(0, depth - 1);
-  if (depth === 0) document.body.style.overflow = restoreTo;
+  if (depth === 0) {
+    document.body.style.overflow = restoreOverflow;
+    document.body.style.paddingRight = restorePadding;
+  }
 }
 
 export function useScrollLock(active) {

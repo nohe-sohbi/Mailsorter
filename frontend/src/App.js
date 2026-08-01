@@ -69,8 +69,13 @@ function App() {
   }, []);
 
   const checkConfiguration = async () => {
+    // Back to the boot screen while the probe runs. Clearing only `error` left
+    // isConfigured at false, so the very next render fell through to the Router
+    // and every guarded route redirected to /setup — pressing "Réessayer"
+    // ejected the user into the deployment documentation instead of retrying.
+    setIsConfigured(null);
+    setError(null);
     try {
-      setError(null);
       const response = await configService.getStatus();
       setIsConfigured(response.data.isConfigured);
     } catch (err) {
