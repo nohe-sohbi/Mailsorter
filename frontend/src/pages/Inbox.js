@@ -11,7 +11,7 @@ import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
 import { useScrollLock } from '../ui/scrollLock';
-import { actionMeta, BULK_ACTIONS } from '../ui/actions';
+import { actionMeta, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
 import {
   Sparkles, Archive, Trash, Tag, Search, Refresh, Inbox as InboxIcon,
@@ -179,14 +179,18 @@ function Inbox() {
     setFocusedIndex(-1);
   }, [activeQuery, view]);
 
-  // Drop ids that have left the list (triaged elsewhere, filtered out).
+  // Drop ids that have left the list (triaged elsewhere, filtered out), and
+  // close the reader when the email it shows is gone: archiving from the list
+  // used to leave the message open in the panel, still offering Archiver and
+  // Supprimer on something that was no longer there.
   useEffect(() => {
+    const live = new Set(emails.map((e) => e.messageId));
     setSelectedEmails((prev) => {
       if (prev.length === 0) return prev;
-      const live = new Set(emails.map((e) => e.messageId));
       const next = prev.filter((id) => live.has(id));
       return next.length === prev.length ? prev : next;
     });
+    setSelectedEmail((prev) => (prev && !live.has(prev.messageId) ? null : prev));
   }, [emails]);
 
   const dismissWelcome = () => {
@@ -269,7 +273,9 @@ function Inbox() {
     // Stay in the inbox unless the user explicitly says otherwise. Typing
     // "facture" used to search the entire account — archive, spam and trash
     // included — while the header still claimed to show the inbox.
-    const scoped = /\b(in|label|is:sent|is:draft)\s*:/i.test(raw) ? raw : `${DEFAULT_QUERY} ${raw}`;
+    const scoped = /\b(?:in|label)\s*:|\bis\s*:\s*(?:sent|draft|trash|spam)\b/i.test(raw)
+      ? raw
+      : `${DEFAULT_QUERY} ${raw}`;
     runQuery(scoped);
   };
 
@@ -447,7 +453,11 @@ function Inbox() {
     const ids = batch.map((s) => s.id || s._id);
     removeSuggestions(ids);
     ids.forEach((id) => aiService.rejectSuggestion(id).catch(() => {}));
-    toast.action('Suggestions ignorées', 'Rétablir', () => restoreSuggestions(batch));
+    // No "Rétablir" here: rejection is persisted server-side and there is no
+    // un-reject endpoint, so the button would only put rows back on screen that
+    // the next refresh would remove again. Rejecting costs nothing anyway —
+    // nothing was done to the emails themselves.
+    toast.info(`${ids.length} suggestion${plural(ids.length)} ignorée${plural(ids.length)}`);
   };
 
   // --- Bulk actions over the selection --------------------------------------
@@ -484,12 +494,22 @@ function Inbox() {
         let failed = 0;
         let protectedSkipped = 0;
         let reversible = false;
+        let hardError = null;
         for (const chunk of chunks) {
-          const { data } = await emailService.batchAction(chunk, action, labelName);
-          applied.push(...(data.applied || []));
-          failed += data.failed || 0;
-          protectedSkipped += data.protectedSkipped || 0;
-          reversible = reversible || Boolean(data.reversible);
+          // Each chunk is caught on its own. A single try around the loop meant
+          // a second chunk failing threw away everything the first one had
+          // already done in Gmail: those emails stayed on screen, unselected
+          // from nothing, with no way to undo work that had actually happened.
+          try {
+            const { data } = await emailService.batchAction(chunk, action, labelName);
+            applied.push(...(data.applied || []));
+            failed += data.failed || 0;
+            protectedSkipped += data.protectedSkipped || 0;
+            reversible = reversible || Boolean(data.reversible);
+          } catch (err) {
+            failed += chunk.length;
+            hardError = err;
+          }
         }
         const data = { applied, failed, protectedSkipped, reversible };
         track('bulk_selection', { action, applied: applied.length });
@@ -500,14 +520,25 @@ function Inbox() {
         if (action === 'archive' || action === 'delete') removeEmails(applied);
         else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
         else if (action === 'unread') applied.forEach((id) => patchEmail(id, { isRead: false }));
+        else if (action === 'star') applied.forEach((id) => patchEmail(id, { isStarred: true }));
+        else if (action === 'unstar') applied.forEach((id) => patchEmail(id, { isStarred: false }));
 
         setSelectedEmails([]);
 
-        const parts = [`${applied.length} email${applied.length > 1 ? 's' : ''} ${meta.past.toLowerCase()}`];
-        if (data.protectedSkipped) parts.push(`${data.protectedSkipped} protégé${data.protectedSkipped > 1 ? 's' : ''} ignoré${data.protectedSkipped > 1 ? 's' : ''}`);
+        const parts = [`${applied.length} email${plural(applied.length)} ${pastParticiple(action, applied.length)}`];
+        if (data.protectedSkipped)
+          parts.push(`${data.protectedSkipped} protégé${plural(data.protectedSkipped)} ignoré${plural(data.protectedSkipped)}`);
         const message = parts.join(' · ');
 
-        if (data.reversible && applied.length > 0) {
+        if (applied.length === 0) {
+          toast.error(
+            hardError
+              ? hardError.response?.data?.trim?.() || "L'action groupée a échoué."
+              : data.protectedSkipped
+              ? 'Aucun email traité : tous sont protégés.'
+              : "Aucun email n'a pu être traité."
+          );
+        } else if (data.reversible) {
           toast.action(message, 'Annuler', async () => {
             try {
               // Same cap as the forward path: undoing 400 archives is two calls.
@@ -523,7 +554,9 @@ function Inbox() {
         } else {
           toast.success(message);
         }
-        if (data.failed) toast.error(`${data.failed} email(s) n'ont pas pu être traités`);
+        if (data.failed && applied.length > 0) {
+          toast.error(`${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`);
+        }
       } catch (err) {
         toast.error(err.response?.data?.trim?.() || "L'action groupée a échoué.");
       } finally {
@@ -553,13 +586,23 @@ function Inbox() {
   // in the list, so without an explicit acknowledgement the keystroke would look
   // like it did nothing at all.
   const flagAction = async (email, action) => {
-    if (action === 'read') patchEmail(email.messageId, { isRead: true });
+    const optimistic = action === 'read' ? { isRead: true } : action === 'star' ? { isStarred: true } : null;
+    if (optimistic) patchEmail(email.messageId, optimistic);
     try {
-      await emailService.batchAction([email.messageId], action);
+      const { data } = await emailService.batchAction([email.messageId], action);
+      // The endpoint answers 200 while counting per-message failures, so a
+      // rejected promise is not the only failure mode: without this the UI
+      // announced "Lu" for a message Gmail had refused to touch, and the
+      // optimistic patch was never rolled back.
+      if (!(data.applied || []).length) {
+        if (optimistic) patchEmail(email.messageId, action === 'read' ? { isRead: false } : { isStarred: false });
+        toast.error(data.protectedSkipped ? 'Expéditeur protégé : action ignorée.' : "L'action a échoué");
+        return;
+      }
       toast.success(actionMeta(action).past, { duration: 1800 });
     } catch {
+      if (optimistic) patchEmail(email.messageId, action === 'read' ? { isRead: false } : { isStarred: false });
       toast.error("L'action a échoué");
-      fetchData({ forceRefresh: true, sync: false });
     }
   };
 
@@ -695,13 +738,21 @@ function Inbox() {
   // --- Keyboard shortcuts --------------------------------------------------
   useEffect(() => {
     const onKey = (e) => {
+      const el = document.activeElement;
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+
       if (e.key === 'Escape') {
+        // Escape inside a field means "leave this field", not "throw away my
+        // selection": pressing it in the search box used to silently discard
+        // everything the user had ticked.
+        if (typing) {
+          el.blur();
+          return;
+        }
         if (selectedEmail) setSelectedEmail(null);
         else if (selectedEmails.length) setSelectedEmails([]);
         return;
       }
-      const el = document.activeElement;
-      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       // A dialog owns the keyboard while it is open.
       if (document.querySelector('[role="dialog"]')) return;
@@ -1087,6 +1138,23 @@ function Inbox() {
               )}
             </div>
 
+            {/* An error with results still on screen: the list stays (it is
+                still valid, just stale) but the failure has to be visible and
+                retryable rather than silently swallowed. */}
+            {error && emails.length > 0 && (
+              <div
+                role="alert"
+                className="flex flex-wrap items-center gap-3 border-b border-hairline bg-danger-50 px-4 py-2.5"
+              >
+                <span className="flex-1 text-sm text-danger-700">
+                  Actualisation impossible : {error} Les emails affichés datent de la dernière synchronisation réussie.
+                </span>
+                <button onClick={() => fetchData({ forceRefresh: true, sync: true })} className="btn-secondary btn-sm">
+                  Réessayer
+                </button>
+              </div>
+            )}
+
             {loading && emails.length === 0 ? (
               <div className="divide-y divide-[rgb(var(--hairline))]">
                 {Array.from({ length: 8 }).map((_, i) => (
@@ -1179,7 +1247,14 @@ function Inbox() {
                             {name}
                             {!email.isRead && <span className="sr-only"> (non lu)</span>}
                           </span>
-                          <span className="shrink-0 text-xs text-muted">{formatDate(email.receivedDate)}</span>
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            {/* Starring had no visible effect at all: the action
+                                fired, and the row looked exactly the same. */}
+                            {(email.isStarred || (email.labelIds || []).includes('STARRED')) && (
+                              <Star size={13} className="text-caution-600" aria-label="Favori" />
+                            )}
+                            <span className="text-xs text-muted">{formatDate(email.receivedDate)}</span>
+                          </span>
                         </span>
                         <span className={cn('block truncate text-sm', email.isRead ? 'text-ink-600' : 'font-semibold text-ink-800')}>
                           {email.subject || '(Sans sujet)'}
@@ -1406,7 +1481,17 @@ function Inbox() {
             body request and leaving it stuck on the loading skeleton forever. */}
         {selectedEmail &&
           (readerIsOverlay ? (
-            <div className="fixed inset-0 z-[90] bg-surface lg:hidden">{readerPanel}</div>
+            // Full-screen sheet: it covers the page, so it has to declare itself
+            // as a dialog. Otherwise a screen-reader user keeps browsing the
+            // inbox list that is still in the accessibility tree behind it.
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Email : ${selectedEmail.subject || 'sans sujet'}`}
+              className="fixed inset-0 z-[90] bg-surface lg:hidden"
+            >
+              {readerPanel}
+            </div>
           ) : (
             <div className="card sticky top-20 h-[calc(100vh-7rem)] overflow-hidden">{readerPanel}</div>
           ))}

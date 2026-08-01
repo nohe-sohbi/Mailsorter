@@ -5,8 +5,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	gmailapi "google.golang.org/api/gmail/v1"
 )
 
 // maxBatchActionSize bounds one batch so a crafted request can't make the server
@@ -103,8 +107,20 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 
 	// One lookup for the whole batch: the protected check needs each sender, and
 	// the ledger needs the subject/sender to say which email was acted on.
+	//
+	// The local mailbox is only written by syncInbox, while the list the user
+	// selects from is served live from Gmail — so a message can perfectly well
+	// be on screen and absent here. That gap used to silently defeat the
+	// protected-sender shield: an unknown sender reads as "not protected", and a
+	// VIP's mail would be trashed by a bulk action the moment a sync had not run
+	// (or had failed, which the client swallows). Anything still missing is
+	// resolved straight from Gmail below.
 	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
 	protectedList := h.protectedValues(ctx, userEmail)
+	destructive := protect.IsDestructive(req.Action)
+	if len(protectedList) > 0 || len(identities) < len(req.MessageIDs) {
+		h.fillMissingIdentities(ctx, gmailClient, req.MessageIDs, identities)
+	}
 
 	res := batchActionResult{
 		Applied:     make([]string, 0, len(req.MessageIDs)),
@@ -119,10 +135,21 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 			res.Failed++
 			continue
 		}
+		// The deadline is not plumbed into the Gmail client, so the loop has to
+		// check it itself: past it, every ledger write would fail silently and
+		// the batch would keep mutating Gmail off the books.
+		if ctx.Err() != nil {
+			res.Failed++
+			continue
+		}
 		meta := identities[id]
-		// An unknown sender ("" from) is treated as unprotected, matching the
-		// bulk-by-sender path: protection is an explicit allow-list on a known
-		// address, never a default-deny on missing metadata.
+		// Fail safe. A destructive action on a message whose sender could not be
+		// established is refused rather than assumed harmless: the whole point of
+		// the protected list is that it cannot be bypassed by a missing lookup.
+		if destructive && len(protectedList) > 0 && meta.From == "" {
+			res.Protected++
+			continue
+		}
 		if !allows(req.Action, meta.From, protectedList) {
 			res.Protected++
 			continue
@@ -204,20 +231,39 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		restored++
-		// Mark the forward entries undone so the history does not offer a second
-		// "Annuler" on work that has already been reversed.
-		h.db.ActionLog().UpdateMany(ctx,
+
+		// Mark the forward entry undone so the history does not offer a second
+		// "Annuler" on work already reversed. Deliberately the MOST RECENT
+		// matching entry only: an UpdateMany here would stamp every past
+		// archive of the same message as undone, rewriting history the user
+		// never touched.
+		var entry models.ActionLog
+		err := h.db.ActionLog().FindOneAndUpdate(ctx,
 			bson.M{"userId": userEmail, "messageId": id, "action": req.Action, "undone": bson.M{"$ne": true}},
 			bson.M{"$set": bson.M{"undone": true, "undoneAt": time.Now()}},
-		)
+			options.FindOneAndUpdate().SetSort(bson.M{"createdAt": -1}),
+		).Decode(&entry)
+
+		// Record the reversal itself, exactly as the per-entry undo does. Without
+		// it a batch undo left no trace and the ledger stopped being a truthful
+		// account of what Mailsorter did.
+		if err == nil {
+			h.logActionMeta(ctx, userEmail, id, inverse, SourceUndo, entry.Subject, entry.From)
+		} else {
+			h.logAction(ctx, userEmail, id, inverse, SourceUndo)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)})
 }
 
 // emailIdentities resolves the subject/sender of a set of messages in one
-// indexed query. Messages absent from the local cache simply yield a zero value,
-// which every caller treats as "unknown but not protected".
+// indexed query. Messages absent from the local mailbox simply yield a zero
+// value; callers that need certainty must fill the gaps (see
+// fillMissingIdentities).
+//
+// The projection matters: without it this pulls every message body in the batch
+// out of Mongo to read two header fields.
 func (h *Handler) emailIdentities(ctx context.Context, userEmail string, messageIDs []string) map[string]models.Email {
 	out := make(map[string]models.Email, len(messageIDs))
 	if len(messageIDs) == 0 {
@@ -226,7 +272,7 @@ func (h *Handler) emailIdentities(ctx context.Context, userEmail string, message
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId":    userEmail,
 		"messageId": bson.M{"$in": messageIDs},
-	})
+	}, options.Find().SetProjection(bson.M{"messageId": 1, "subject": 1, "from": 1}))
 	if err != nil {
 		return out
 	}
@@ -240,4 +286,31 @@ func (h *Handler) emailIdentities(ctx context.Context, userEmail string, message
 		out[e.MessageID] = e
 	}
 	return out
+}
+
+// fillMissingIdentities asks Gmail for the sender/subject of the messages the
+// local mailbox does not know about, mutating the map in place. Headers only, so
+// the cost is one small call per unknown message and nothing for the rest.
+//
+// A message whose metadata cannot be fetched is left absent on purpose: the
+// caller must be able to tell "sender unknown" from "sender is nobody", because
+// that distinction is what keeps the protected-sender shield honest.
+func (h *Handler) fillMissingIdentities(ctx context.Context, gmailClient *gmailapi.Service, messageIDs []string, into map[string]models.Email) {
+	for _, id := range messageIDs {
+		if id == "" {
+			continue
+		}
+		if e, ok := into[id]; ok && (e.From != "" || e.Subject != "") {
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		msg, err := h.gmailService.GetMessageMetadata(gmailClient, id)
+		if err != nil {
+			continue
+		}
+		from, subject, _, _ := gmail.ParseEmailHeaders(msg)
+		into[id] = models.Email{MessageID: id, From: from, Subject: subject}
+	}
 }

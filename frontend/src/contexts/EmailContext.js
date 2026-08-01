@@ -49,13 +49,16 @@ export function EmailProvider({ children }) {
         sync = forceRefresh,
       } = options;
 
-      const seq = ++requestSeqRef.current;
-      const isStale = () => seq !== requestSeqRef.current;
-
-      // Return cached data if valid, same query, and not forcing refresh
+      // Return cached data if valid, same query, and not forcing refresh.
+      // Checked BEFORE taking a sequence number: a call answered from cache
+      // performs no request, so bumping the counter would mark a slower request
+      // still in flight as stale and leave `loading` stuck at true.
       if (!forceRefresh && isCacheValid() && emails.length > 0 && query === activeQueryRef.current) {
         return { emails, senders, suggestions, stats };
       }
+
+      const seq = ++requestSeqRef.current;
+      const isStale = () => seq !== requestSeqRef.current;
 
       activeQueryRef.current = query;
       setActiveQuery(query);
@@ -145,12 +148,19 @@ export function EmailProvider({ children }) {
   const loadMoreEmails = useCallback(async () => {
     if (!pagination.nextPageToken || loadingMore) return;
 
+    // The page being fetched belongs to the query active when the click
+    // happened. If a filter change lands first, appending this page would splice
+    // results from two different searches into one list.
+    const queryAtCall = activeQueryRef.current;
+    const seqAtCall = requestSeqRef.current;
+
     setLoadingMore(true);
     try {
-      const res = await emailService.getEmails(activeQueryRef.current, {
+      const res = await emailService.getEmails(queryAtCall, {
         maxResults: 100,
         pageToken: pagination.nextPageToken,
       });
+      if (seqAtCall !== requestSeqRef.current || queryAtCall !== activeQueryRef.current) return;
       const data = res.data;
       if (data && data.emails) {
         // De-duplicate: Gmail can repeat a message across page boundaries when

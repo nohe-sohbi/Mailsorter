@@ -15,6 +15,7 @@ export const ACTIONS = {
     key: 'archive',
     label: 'Archiver',
     past: 'Archivé',
+    pastPlural: 'Archivés',
     Icon: Archive,
     chip: 'bg-info-50 text-info-700',
     solid: 'bg-info-fill',
@@ -25,6 +26,7 @@ export const ACTIONS = {
     key: 'delete',
     label: 'Supprimer',
     past: 'Supprimé',
+    pastPlural: 'Supprimés',
     Icon: Trash,
     chip: 'bg-danger-50 text-danger-700',
     solid: 'bg-danger-fill',
@@ -35,6 +37,7 @@ export const ACTIONS = {
     key: 'label',
     label: 'Étiqueter',
     past: 'Étiqueté',
+    pastPlural: 'Étiquetés',
     Icon: Tag,
     chip: 'bg-caution-50 text-caution-700',
     solid: 'bg-caution-fill',
@@ -45,6 +48,7 @@ export const ACTIONS = {
     key: 'keep',
     label: 'Garder',
     past: 'Gardé',
+    pastPlural: 'Gardés',
     Icon: Pin,
     chip: 'bg-positive-50 text-positive-700',
     solid: 'bg-positive-fill',
@@ -55,6 +59,7 @@ export const ACTIONS = {
     key: 'read',
     label: 'Marquer comme lu',
     past: 'Lu',
+    pastPlural: 'Lus',
     Icon: Mail,
     chip: 'bg-ink-100 text-ink-700',
     solid: 'bg-ink-500',
@@ -65,6 +70,7 @@ export const ACTIONS = {
     key: 'unread',
     label: 'Marquer comme non lu',
     past: 'Marqué non lu',
+    pastPlural: 'Marqués non lus',
     Icon: Mail,
     chip: 'bg-ink-100 text-ink-700',
     solid: 'bg-ink-500',
@@ -75,6 +81,7 @@ export const ACTIONS = {
     key: 'star',
     label: 'Mettre en favori',
     past: 'Favori',
+    pastPlural: 'Favoris',
     Icon: Star,
     chip: 'bg-caution-50 text-caution-700',
     solid: 'bg-caution-fill',
@@ -85,6 +92,7 @@ export const ACTIONS = {
     key: 'unstar',
     label: 'Retirer des favoris',
     past: 'Retiré des favoris',
+    pastPlural: 'Retirés des favoris',
     Icon: Star,
     chip: 'bg-ink-100 text-ink-700',
     solid: 'bg-ink-500',
@@ -95,6 +103,7 @@ export const ACTIONS = {
     key: 'snooze',
     label: 'Reporter',
     past: 'Reporté',
+    pastPlural: 'Reportés',
     Icon: Clock,
     chip: 'bg-brand-50 text-brand-700',
     solid: 'bg-brand-fill',
@@ -105,6 +114,7 @@ export const ACTIONS = {
     key: 'unsubscribe',
     label: 'Se désabonner',
     past: 'Désabonné',
+    pastPlural: 'Désabonnés',
     Icon: BellOff,
     chip: 'bg-caution-50 text-caution-700',
     solid: 'bg-caution-fill',
@@ -116,6 +126,7 @@ export const ACTIONS = {
     key: 'unarchive',
     label: 'Désarchiver',
     past: 'Désarchivé',
+    pastPlural: 'Désarchivés',
     Icon: Undo,
     chip: 'bg-positive-50 text-positive-700',
     solid: 'bg-positive-fill',
@@ -126,6 +137,7 @@ export const ACTIONS = {
     key: 'untrash',
     label: 'Restaurer',
     past: 'Restauré',
+    pastPlural: 'Restaurés',
     Icon: Undo,
     chip: 'bg-positive-50 text-positive-700',
     solid: 'bg-positive-fill',
@@ -167,3 +179,13 @@ export function actionMeta(raw) {
 export const BULK_ACTIONS = ['archive', 'read', 'star', 'label', 'delete'];
 
 export const isDestructive = (raw) => actionMeta(raw).destructive === true;
+
+// French agreement, which the toasts were getting wrong: "12 emails archivé".
+// A past participle used as an attribute agrees in number, and 0 and 1 both take
+// the singular.
+export const plural = (n) => (n > 1 ? 's' : '');
+
+export function pastParticiple(raw, count = 1) {
+  const meta = actionMeta(raw);
+  return count > 1 ? meta.pastPlural || meta.past : meta.past;
+}

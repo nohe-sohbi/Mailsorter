@@ -159,6 +159,19 @@ func (s *Service) GetMessage(gmailService *gmail.Service, messageID string) (*gm
 	})
 }
 
+// GetMessageMetadata fetches only the headers needed to identify a message.
+// Format("metadata") skips the body entirely, which matters when the caller is
+// resolving a few hundred senders before a bulk action rather than displaying
+// anything.
+func (s *Service) GetMessageMetadata(gmailService *gmail.Service, messageID string) (*gmail.Message, error) {
+	return withRetry(s.retry, func() (*gmail.Message, error) {
+		return gmailService.Users.Messages.Get("me", messageID).
+			Format("metadata").
+			MetadataHeaders("From", "Subject").
+			Do()
+	})
+}
+
 func (s *Service) ModifyMessage(gmailService *gmail.Service, messageID string, addLabels, removeLabels []string) error {
 	modifyRequest := &gmail.ModifyMessageRequest{
 		AddLabelIds:    addLabels,
