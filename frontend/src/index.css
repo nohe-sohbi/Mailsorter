@@ -36,6 +36,25 @@
     --ink-900: 15 23 42;
     --ink-950: 2 6 23;
 
+    /* Aplats portant du texte blanc.
+       Ils sont DELIBEREMENT identiques dans les deux themes et ne sont pas
+       repris dans la table .dark. Les nuances -500/-600 servent surtout de
+       couleur de TEXTE : en thème sombre elles s'éclaircissent, ce qui est juste
+       pour du texte et catastrophique pour un aplat (blanc sur brand-600 clair
+       tombe à 2,5:1). Ces valeurs-ci tiennent ≥ 4,6:1 avec du blanc ET ≥ 2,8:1
+       contre les deux fonds de page. */
+    --brand-fill: 37 99 235;
+    --positive-fill: 4 120 87;
+    --caution-fill: 180 83 9;
+    --danger-fill: 225 29 72;
+    --info-fill: 3 105 161;
+    /* Survol/appui des mêmes aplats : eux non plus ne peuvent pas emprunter la
+       rampe, qui s'éclaircirait au survol en thème sombre. */
+    --brand-fill-strong: 29 78 216;
+    --brand-fill-deep: 30 64 175;
+    --danger-fill-strong: 190 18 60;
+    --danger-fill-deep: 159 18 57;
+
     --surface: 255 255 255;
     --surface-raised: 255 255 255;
     --surface-sunken: 248 250 252;
@@ -223,7 +242,7 @@
 
   /* One primary action per screen: solid ink-blue, no gradient, no glow. */
   .btn-primary {
-    @apply btn bg-brand-600 text-white shadow-soft hover:bg-brand-700 active:bg-brand-800;
+    @apply btn bg-brand-fill text-white shadow-soft hover:bg-brand-fill-strong active:bg-brand-fill-deep;
   }
   .btn-secondary {
     @apply btn border border-hairline bg-surface text-ink-800 shadow-soft hover:border-ink-300 hover:bg-ink-100 active:bg-ink-200;
@@ -232,7 +251,7 @@
     @apply btn text-ink-600 hover:bg-ink-100 hover:text-ink-900;
   }
   .btn-danger {
-    @apply btn bg-danger-500 text-white shadow-soft hover:bg-danger-600 active:bg-danger-700;
+    @apply btn bg-danger-fill text-white shadow-soft hover:bg-danger-fill-strong active:bg-danger-fill-deep;
   }
   .btn-danger-quiet {
     @apply btn bg-danger-50 text-danger-700 hover:bg-danger-100;

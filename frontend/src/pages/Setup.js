@@ -108,7 +108,7 @@ function Setup({ onComplete }) {
           <ol className="mt-5 space-y-4">
             {GUIDE.map((step, i) => (
               <li key={i} className="flex gap-3">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-fill text-xs font-bold text-white">
                   {i + 1}
                 </span>
                 <p className="pt-0.5 text-sm leading-relaxed text-ink-600">

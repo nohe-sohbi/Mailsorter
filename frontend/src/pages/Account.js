@@ -7,13 +7,7 @@ import { track } from '../lib/analytics';
 import Spinner from '../ui/Spinner';
 import { Shield, Trash, Alert, Bolt, Settings as SettingsIcon, Check } from '../ui/icons';
 
-const ACTION_LABELS = { archive: 'Archivés', delete: 'Supprimés', label: 'Étiquetés', keep: 'Gardés' };
-const ACTION_COLORS = {
-  archive: 'bg-info-500',
-  delete: 'bg-danger-500',
-  label: 'bg-caution-500',
-  keep: 'bg-positive-500',
-};
+import { actionMeta } from '../ui/actions';
 
 // Go zero-value dates come back as year 1, which would render as "1 janvier 1".
 // Treat anything before Mailsorter existed as "unknown" rather than printing it.
@@ -171,7 +165,7 @@ function Account() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
       <div className="mb-8 flex flex-wrap items-center gap-4">
-        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-600 text-xl font-bold text-white">
+        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-fill text-xl font-bold text-white">
           {initial}
         </span>
         <div className="min-w-0">
@@ -185,7 +179,7 @@ function Account() {
       <div className="card animate-fade-up p-7">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-bold text-ink-900">Votre plan</h2>
-          <span className={cn('chip', isPro ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-600')}>
+          <span className={cn('chip', isPro ? 'bg-brand-fill text-white' : 'bg-ink-100 text-ink-600')}>
             {isPro ? (
               <>
                 <Bolt size={13} /> Pro
@@ -206,7 +200,7 @@ function Account() {
           <div
             className={cn(
               'h-full rounded-full transition-all duration-500',
-              isPro ? 'bg-positive-500' : usedPct >= 100 ? 'bg-danger-500' : 'bg-brand-600'
+              isPro ? 'bg-positive-fill' : usedPct >= 100 ? 'bg-danger-fill' : 'bg-brand-fill'
             )}
             style={{ width: isPro ? '100%' : `${usedPct}%` }}
           />
@@ -251,8 +245,8 @@ function Account() {
           <div className="mt-5 flex flex-wrap gap-4">
             {Object.entries(activity.byAction).map(([action, count]) => (
               <span key={action} className="flex items-center gap-2 text-sm text-ink-600">
-                <span className={cn('h-2.5 w-2.5 rounded-full', ACTION_COLORS[action] || 'bg-ink-300')} />
-                {ACTION_LABELS[action] || action}
+                <span className={cn('h-2.5 w-2.5 rounded-full', actionMeta(action).solid)} />
+                {actionMeta(action).past}
                 <span className="font-semibold text-ink-900">{count}</span>
               </span>
             ))}

@@ -233,7 +233,7 @@ function Login() {
         </section>
 
         {/* Final CTA */}
-        <section className="mt-24 overflow-hidden rounded-3xl bg-brand-600 p-10 text-center text-white sm:p-16">
+        <section className="mt-24 overflow-hidden rounded-3xl bg-brand-fill p-10 text-center text-white sm:p-16">
           <h2 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">
             Reprenez le contrôle de votre inbox.
           </h2>

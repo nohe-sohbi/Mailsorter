@@ -6,6 +6,7 @@ import { cn } from '../ui/cn';
 import { track } from '../lib/analytics';
 import Spinner from '../ui/Spinner';
 import { Logo, Check, Bolt, Sparkles, Shield, Google } from '../ui/icons';
+import { actionMeta } from '../ui/actions';
 
 const PLANS = [
   {
@@ -40,22 +41,6 @@ const PLANS = [
   },
 ];
 
-const ACTION_COLORS = {
-  archive: 'bg-info-500',
-  delete: 'bg-danger-500',
-  label: 'bg-caution-500',
-  keep: 'bg-positive-500',
-  read: 'bg-violet-500',
-  star: 'bg-yellow-400',
-};
-const ACTION_LABELS = {
-  archive: 'Archivés',
-  delete: 'Supprimés',
-  label: 'Étiquetés',
-  keep: 'Gardés',
-  read: 'Lus',
-  star: 'Favoris',
-};
 
 // Local hint that this browser already signed up, so we show the confirmed
 // state instead of the form. The server is the real record: signing up again
@@ -202,7 +187,7 @@ function Pricing() {
             <div className="card p-6">
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="font-bold text-ink-900">Usage du mois</h3>
-                <span className={cn('chip', isPro ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-600')}>
+                <span className={cn('chip', isPro ? 'bg-brand-fill text-white' : 'bg-ink-100 text-ink-600')}>
                   {isPro ? <><Bolt size={13} /> Plan Pro</> : 'Plan Free'}
                 </span>
               </div>
@@ -216,7 +201,7 @@ function Pricing() {
                 <div
                   className={cn(
                     'h-full rounded-full transition-all duration-500',
-                    isPro ? 'bg-positive-500' : usedPct >= 100 ? 'bg-danger-500' : 'bg-brand-600'
+                    isPro ? 'bg-positive-fill' : usedPct >= 100 ? 'bg-danger-fill' : 'bg-brand-fill'
                   )}
                   style={{ width: isPro ? '100%' : `${usedPct}%` }}
                 />
@@ -244,7 +229,7 @@ function Pricing() {
                 {(activity?.days || Array.from({ length: 7 })).map((d, i) => (
                   <div key={i} className="flex flex-1 flex-col items-center gap-1">
                     <div
-                      className="w-full rounded-md bg-brand-600 transition-all"
+                      className="w-full rounded-md bg-brand-fill transition-all"
                       style={{ height: `${d ? Math.max(6, (d.count / maxDay) * 100) : 6}%`, opacity: d && d.count ? 1 : 0.25 }}
                       title={d ? `${d.count} le ${d.date}` : ''}
                     />
@@ -257,8 +242,8 @@ function Pricing() {
                     .filter(([, v]) => v > 0)
                     .map(([k, v]) => (
                       <span key={k} className="flex items-center gap-1.5 text-xs text-ink-500">
-                        <span className={cn('h-2.5 w-2.5 rounded-full', ACTION_COLORS[k] || 'bg-ink-300')} />
-                        {ACTION_LABELS[k] || k} · {v}
+                        <span className={cn('h-2.5 w-2.5 rounded-full', actionMeta(k).solid)} />
+                        {actionMeta(k).past} · {v}
                       </span>
                     ))}
                 </div>
@@ -278,7 +263,7 @@ function Pricing() {
               )}
             >
               {plan.highlight && (
-                <span className="absolute -top-3 left-7 chip bg-brand-600 text-white shadow-soft">
+                <span className="absolute -top-3 left-7 chip bg-brand-fill text-white shadow-soft">
                   <Bolt size={13} /> Le plus populaire
                 </span>
               )}

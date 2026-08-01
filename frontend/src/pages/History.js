@@ -235,7 +235,7 @@ function History() {
               // la barre de filtres ne se réaligne pas quand on clique.
               className={cn(
                 'btn-ghost btn-sm',
-                source === f.value && 'bg-brand-600 text-white shadow-soft hover:bg-brand-700 hover:text-white'
+                source === f.value && 'bg-brand-fill text-white shadow-soft hover:bg-brand-fill-strong hover:text-white'
               )}
             >
               {f.label}

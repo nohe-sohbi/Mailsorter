@@ -15,7 +15,7 @@ const SNOOZE_PRESETS = [
   ['nextWeek', 'Semaine prochaine'],
 ];
 
-const AVATAR_TONES = ['bg-brand-500', 'bg-info-500', 'bg-positive-500', 'bg-caution-500', 'bg-danger-500'];
+const AVATAR_TONES = ['bg-brand-fill', 'bg-info-fill', 'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill'];
 
 function toneFor(seed = '') {
   let h = 0;

@@ -19,6 +19,9 @@ import {
 
 const isReversible = (a) => a === 'archive' || a === 'delete';
 
+// Mirrors maxBatchActionSize in backend/internal/api/batch.go.
+const BATCH_LIMIT = 200;
+
 const SHORTCUTS = [
   ['J / K', 'Naviguer entre les emails'],
   ['Entrée', "Ouvrir l'email ciblé"],
@@ -46,7 +49,7 @@ const QUICK_FILTERS = [
   { id: 'big', label: 'Volumineux', query: 'in:inbox larger:5M', Icon: Archive },
 ];
 
-const AVATAR_TONES = ['bg-brand-500', 'bg-info-500', 'bg-positive-500', 'bg-caution-500', 'bg-danger-500'];
+const AVATAR_TONES = ['bg-brand-fill', 'bg-info-fill', 'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill'];
 const toneFor = (seed = '') => {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
@@ -135,6 +138,20 @@ function Inbox() {
   }, [focusedIndex]);
 
   useEffect(() => () => clearTimeout(pollRef.current), []);
+
+  // The mobile reader is a full-screen overlay, so the list behind it must stop
+  // scrolling: otherwise flicking inside the message quietly scrolls the inbox
+  // underneath and closing the reader lands the user somewhere else entirely.
+  useEffect(() => {
+    if (!selectedEmail) return undefined;
+    const mq = window.matchMedia('(max-width: 1023px)');
+    if (!mq.matches) return undefined;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [selectedEmail]);
 
   useEffect(() => {
     if (!localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
@@ -253,13 +270,16 @@ function Inbox() {
     );
 
   const handleSelectAll = () => {
-    setSelectedEmails((prev) => {
-      const next = prev.length === emails.length ? [] : emails.map((e) => e.messageId);
-      setAnnouncement(
-        next.length === 0 ? 'Sélection vidée' : `${next.length} email${next.length > 1 ? 's' : ''} sélectionné${next.length > 1 ? 's' : ''}`
-      );
-      return next;
-    });
+    // Computed outside the updater on purpose: React double-invokes state
+    // updaters in StrictMode, so queueing another setState from inside one fires
+    // it twice and makes the updater impure.
+    const next = selectedEmails.length === emails.length ? [] : emails.map((e) => e.messageId);
+    setSelectedEmails(next);
+    setAnnouncement(
+      next.length === 0
+        ? 'Sélection vidée'
+        : `${next.length} email${next.length > 1 ? 's' : ''} sélectionné${next.length > 1 ? 's' : ''}`
+    );
   };
 
   const handleAnalyze = async () => {
@@ -439,8 +459,25 @@ function Inbox() {
 
       setBulkBusy(true);
       try {
-        const { data } = await emailService.batchAction(ids, action, labelName);
-        const applied = data.applied || [];
+        // The server caps a batch at 200 so one request can't hold a Gmail
+        // connection open indefinitely. "Charger plus" makes selections larger
+        // than that trivially reachable, so chunk here rather than let the user
+        // meet a raw 400.
+        const chunks = [];
+        for (let i = 0; i < ids.length; i += BATCH_LIMIT) chunks.push(ids.slice(i, i + BATCH_LIMIT));
+
+        const applied = [];
+        let failed = 0;
+        let protectedSkipped = 0;
+        let reversible = false;
+        for (const chunk of chunks) {
+          const { data } = await emailService.batchAction(chunk, action, labelName);
+          applied.push(...(data.applied || []));
+          failed += data.failed || 0;
+          protectedSkipped += data.protectedSkipped || 0;
+          reversible = reversible || Boolean(data.reversible);
+        }
+        const data = { applied, failed, protectedSkipped, reversible };
         track('bulk_selection', { action, applied: applied.length });
         bumpGamify(applied.length);
 
@@ -459,7 +496,10 @@ function Inbox() {
         if (data.reversible && applied.length > 0) {
           toast.action(message, 'Annuler', async () => {
             try {
-              await emailService.batchUndo(applied, action);
+              // Same cap as the forward path: undoing 400 archives is two calls.
+              for (let i = 0; i < applied.length; i += BATCH_LIMIT) {
+                await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action);
+              }
               toast.success('Action annulée');
               fetchData({ forceRefresh: true, sync: false });
             } catch {
@@ -495,11 +535,14 @@ function Inbox() {
     }
   };
 
+  // Read/star from the keyboard. Unlike archive/delete these leave the message
+  // in the list, so without an explicit acknowledgement the keystroke would look
+  // like it did nothing at all.
   const flagAction = async (email, action) => {
-    const patch = action === 'read' ? { isRead: true } : {};
-    patchEmail(email.messageId, patch);
+    if (action === 'read') patchEmail(email.messageId, { isRead: true });
     try {
       await emailService.batchAction([email.messageId], action);
+      toast.success(actionMeta(action).past, { duration: 1800 });
     } catch {
       toast.error("L'action a échoué");
       fetchData({ forceRefresh: true, sync: false });
@@ -815,7 +858,7 @@ function Inbox() {
               onClick={() => setView(id)}
               className={cn(
                 'flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors',
-                view === id ? 'bg-brand-600 text-white shadow-soft' : 'text-muted hover:text-ink-900'
+                view === id ? 'bg-brand-fill text-white shadow-soft' : 'text-muted hover:text-ink-900'
               )}
             >
               <Icon size={16} /> {label}
@@ -843,7 +886,7 @@ function Inbox() {
               className={cn(
                 'chip transition-colors',
                 activeQuery === query
-                  ? 'bg-brand-600 text-white'
+                  ? 'bg-brand-fill text-white'
                   : 'bg-ink-100 text-ink-700 hover:bg-ink-200'
               )}
             >
@@ -972,7 +1015,7 @@ function Inbox() {
                 <span
                   className={cn(
                     'flex h-4 w-4 items-center justify-center rounded border',
-                    allSelected || hasSelection ? 'border-brand-600 bg-brand-600 text-white' : 'border-ink-300'
+                    allSelected || hasSelection ? 'border-brand-600 bg-brand-fill text-white' : 'border-ink-300'
                   )}
                   aria-hidden
                 >
@@ -1080,7 +1123,7 @@ function Inbox() {
                         aria-label={`Sélectionner : ${email.subject || 'sans sujet'}, de ${name}`}
                         className={cn(
                           'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all',
-                          isChecked ? 'border-brand-600 bg-brand-600 text-white' : 'border-ink-300 group-hover:border-ink-400'
+                          isChecked ? 'border-brand-600 bg-brand-fill text-white' : 'border-ink-300 group-hover:border-ink-400'
                         )}
                       >
                         {isChecked && <Check size={13} />}

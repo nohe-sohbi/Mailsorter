@@ -9,8 +9,14 @@
 // `bg-ink-950/50` and `ring-brand-500/50` working against variable colours.
 const withAlpha = (name) => `rgb(var(${name}) / <alpha-value>)`;
 
-const scale = (prefix, steps) =>
-  Object.fromEntries(steps.map((s) => [s, withAlpha(`--${prefix}-${s}`)]));
+// `fill` is the solid-background variant: the only shade guaranteed to carry
+// white text at AA in BOTH themes. Use bg-brand-fill, never bg-brand-600, when
+// the background is an opaque block with white text on it.
+const scale = (prefix, steps, extras = []) => ({
+  ...Object.fromEntries(steps.map((s) => [s, withAlpha(`--${prefix}-${s}`)])),
+  fill: withAlpha(`--${prefix}-fill`),
+  ...Object.fromEntries(extras.map((e) => [`fill-${e}`, withAlpha(`--${prefix}-fill-${e}`)])),
+});
 
 const RAMP = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
 
@@ -21,7 +27,7 @@ module.exports = {
     extend: {
       colors: {
         // Accent unique : bleu profond "encre". Pas de second accent, pas de dégradé.
-        brand: scale('brand', RAMP),
+        brand: scale('brand', RAMP, ['strong', 'deep']),
         // Neutres froids, la base calme. En thème sombre, la rampe s'inverse :
         // ink-50 devient le fond de page, ink-900 le texte principal.
         ink: scale('ink', RAMP),
@@ -45,7 +51,7 @@ module.exports = {
         // Teintes de statut, également variables pour tenir en thème sombre.
         positive: scale('positive', [50, 100, 500, 600, 700]),
         caution: scale('caution', [50, 100, 500, 600, 700]),
-        danger: scale('danger', [50, 100, 500, 600, 700]),
+        danger: scale('danger', [50, 100, 500, 600, 700], ['strong', 'deep']),
         info: scale('info', [50, 100, 500, 600, 700]),
       },
       fontFamily: {

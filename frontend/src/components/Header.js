@@ -102,7 +102,7 @@ function Header() {
             }
             title="Mon compte"
           >
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-fill text-xs font-bold text-white">
               {initial}
             </span>
             <span className="max-w-[180px] truncate text-sm font-medium text-ink-700">{userEmail}</span>
@@ -165,7 +165,7 @@ function Header() {
                 className="flex min-w-0 items-center gap-2.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-ink-100"
                 aria-label="Mon compte"
               >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-fill text-xs font-bold text-white">
                   {initial}
                 </span>
                 <span className="truncate text-sm font-medium text-ink-700">{userEmail}</span>

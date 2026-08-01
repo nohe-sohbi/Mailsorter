@@ -5,9 +5,9 @@ import { Check, X, Alert, Sparkles } from './icons';
 const ToastContext = createContext(null);
 
 const VARIANTS = {
-  success: { icon: Check, ring: 'bg-positive-500' },
-  error: { icon: Alert, ring: 'bg-danger-500' },
-  info: { icon: Sparkles, ring: 'bg-brand-500' },
+  success: { icon: Check, ring: 'bg-positive-fill' },
+  error: { icon: Alert, ring: 'bg-danger-fill' },
+  info: { icon: Sparkles, ring: 'bg-brand-fill' },
 };
 
 function ToastItem({ toast, onDismiss }) {

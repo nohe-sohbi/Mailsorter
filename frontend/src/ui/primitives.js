@@ -34,7 +34,7 @@ export function Toggle({ checked, onChange, label, description, disabled = false
         onClick={() => onChange?.(!checked)}
         className={cn(
           'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-          checked ? 'bg-brand-600' : 'bg-ink-300'
+          checked ? 'bg-brand-fill' : 'bg-ink-300'
         )}
       >
         <span
@@ -55,9 +55,9 @@ export function Progress({ value = 0, max = 100, label, tone = 'brand', classNam
   const safeMax = max > 0 ? max : 100;
   const pct = Math.max(0, Math.min(100, Math.round((value / safeMax) * 100)));
   const tones = {
-    brand: 'bg-brand-600',
-    positive: 'bg-positive-500',
-    caution: 'bg-caution-500',
+    brand: 'bg-brand-fill',
+    positive: 'bg-positive-fill',
+    caution: 'bg-caution-fill',
   };
   return (
     <div

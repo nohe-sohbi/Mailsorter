@@ -8,8 +8,8 @@ import Spinner from '../ui/Spinner';
 import { cn } from '../ui/cn';
 
 const AVATAR_GRADIENTS = [
-  'bg-brand-500', 'bg-info-500',
-  'bg-positive-500', 'bg-caution-500', 'bg-danger-500',
+  'bg-brand-fill', 'bg-info-fill',
+  'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill',
 ];
 const gradientFor = (seed = '') => {
   let h = 0;
@@ -305,7 +305,7 @@ function Snoozed() {
               // barre d'onglets ne se réaligne donc pas au clic.
               className={cn(
                 'btn-ghost btn-sm',
-                active && 'bg-brand-600 text-white shadow-soft hover:bg-brand-700 hover:text-white'
+                active && 'bg-brand-fill text-white shadow-soft hover:bg-brand-fill-strong hover:text-white'
               )}
             >
               {t.label}
