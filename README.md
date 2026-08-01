@@ -110,8 +110,10 @@ La CI (`.github/workflows/ci.yml`) joue `vet`, `build` et `test -race` sur le ba
 
 | Méthode | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/api/emails` | Liste paginée de la boîte |
+| `GET` | `/api/emails` | Liste paginée de la boîte (sans les corps) |
+| `GET` | `/api/emails/{id}` | Un message avec son corps décodé et ses pièces jointes |
 | `POST` | `/api/emails/action` | Action directe sur un message |
+| `POST` | `/api/emails/batch-action` · `/batch-undo` | Une action sur toute une sélection, et sa réversion |
 | `POST` | `/api/emails/snooze` | Reporte un email, qui revient tout seul |
 | `POST` | `/api/ai/analyze` | Suggestions de tri (cache + batch) |
 | `POST` | `/api/ai/analyze-async` | Job d'analyse non bloquant, avec progression |
@@ -122,7 +124,7 @@ La CI (`.github/workflows/ci.yml`) joue `vet`, `build` et `test -race` sur le ba
 | `GET` | `/api/account/export` · `DELETE` `/api/account` | Export et suppression RGPD |
 | `GET` | `/health` · `/metrics` | Ping MongoDB, build, uptime, compteurs |
 
-Les 40 routes et leurs charges utiles : [`docs/API.md`](docs/API.md).
+Les 43 routes et leurs charges utiles : [`docs/API.md`](docs/API.md).
 
 ## Licence
 

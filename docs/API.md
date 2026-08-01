@@ -207,6 +207,106 @@ in the action ledger; the inverse actions are not.
 
 ---
 
+### Get one message (with its body)
+
+#### GET /api/emails/{id}
+
+Return a single message, decoded. `GET /api/emails` deliberately omits bodies —
+it ships up to 100 messages per page — so the reader fetches the one it is about
+to display.
+
+**Query parameters:**
+- `markRead` (optional): `1` also removes the `UNREAD` label in Gmail and updates
+  the local cache. Opening an email is user intent rather than automation, so
+  this is **not** written to the action ledger.
+
+**Response:** `200 OK`
+```json
+{
+  "messageId": "18c...",
+  "from": "Acme <news@acme.com>",
+  "subject": "Votre facture",
+  "snippet": "Bonjour…",
+  "body": "version texte",
+  "bodyHtml": "<p>version html</p>",
+  "attachments": [{ "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481 }],
+  "labelIds": ["INBOX"],
+  "isRead": true
+}
+```
+`body` and `bodyHtml` are both returned when the sender provided both: the reader
+renders the HTML, the deterministic rule engine matches on the text. Either may
+be absent.
+
+**Error Responses:**
+- `400 Bad Request`: Missing id
+- `401 Unauthorized`: Missing or expired session
+- `502 Bad Gateway`: Gmail could not return the message
+
+---
+
+### Act on a whole selection
+
+#### POST /api/emails/batch-action
+
+Apply one triage action to a list of messages in a single request. Protected
+senders are shielded from destructive actions exactly as in the rules and
+bulk-by-sender paths; a message that fails is counted rather than aborting the
+batch.
+
+**Request body:**
+```json
+{ "messageIds": ["18c...", "18d..."], "action": "archive", "labelName": "" }
+```
+`action` is one of `archive`, `delete`, `read`, `unread`, `star`, `unstar`,
+`label`. `labelName` is required for `label` and creates the label if it does not
+exist. At most 200 ids per request.
+
+**Response:** `200 OK`
+```json
+{
+  "applied": ["18c..."],
+  "failed": 0,
+  "protectedSkipped": 1,
+  "total": 2,
+  "reversible": true,
+  "inverse": "unarchive"
+}
+```
+`reversible` tells the client whether to offer an "Annuler" affordance;
+`applied` carries the exact ids to hand back to `/batch-undo`.
+
+**Error Responses:**
+- `400 Bad Request`: Empty selection, unsupported action, missing label name, or over 200 ids
+- `401 Unauthorized`: Missing or expired session
+- `502 Bad Gateway`: The label could not be created
+
+---
+
+#### POST /api/emails/batch-undo
+
+Reverse a batch the client just applied. Separate from the per-entry history undo
+because the client already holds the exact ids, which is what makes undoing a
+100-email action one request instead of a hundred.
+
+**Request body:**
+```json
+{ "messageIds": ["18c..."], "action": "archive" }
+```
+Only `archive` and `delete` are reversible. The matching ledger entries are marked
+undone so the history does not offer a second "Annuler" on the same work.
+
+**Response:** `200 OK`
+```json
+{ "restored": 1, "total": 1 }
+```
+
+**Error Responses:**
+- `400 Bad Request`: Non-reversible action, empty list, or over 200 ids
+- `401 Unauthorized`: Missing or expired session
+
+---
+
 ## Snooze Endpoints ("Reporter")
 
 Pull a message out of the inbox until a chosen time, then have it return on its
@@ -405,12 +505,27 @@ source `undo`) both appear.
 
 ### Get action history
 
-#### GET /api/activity/log?source=&limit=
+#### GET /api/activity/log?source=&limit=&before=&q=
 
-Returns the caller's most recent ledger entries, newest first. `source` is an
-optional filter (`direct`, `rule`, `ai`, `ai-auto`, `bulk`, `snooze`,
-`unsubscribe`, `undo`); `limit` defaults to `50` and is capped at `200`. Each
-entry is flagged `undoable` (it has a clean inverse and has not been undone yet).
+Returns the caller's most recent ledger entries, newest first. Each entry is
+flagged `undoable` (it has a clean inverse and has not been undone yet).
+
+**Query parameters:**
+- `source` — optional filter (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
+  `snooze`, `unsubscribe`, `undo`)
+- `limit` — defaults to `50`, capped at `200`
+- `before` — RFC 3339 cursor: return entries strictly older than this. Pass the
+  previous page's `nextBefore`. Cursoring on `createdAt` keeps paging stable
+  while new actions land at the top.
+- `q` — free-text search over the acted-on message's subject and sender
+
+Entries carry `subject`/`from` so the history can say *which* email it is talking
+about. They are captured when the action is logged, and resolved from the stored
+mailbox at read time for entries written before the ledger carried an identity.
+Note that `q` matches only what is **stored on the entry**: those older entries
+still render, but cannot be searched.
+
+`nextBefore` is non-empty when the page was full, i.e. there is probably more.
 
 ```json
 {
@@ -420,11 +535,14 @@ entry is flagged `undoable` (it has a clean inverse and has not been undone yet)
       "messageId": "18f…",
       "action": "archive",
       "source": "rule",
+      "subject": "Votre relevé de compte",
+      "from": "Banque <no-reply@banque.fr>",
       "undone": false,
       "createdAt": "2026-06-22T09:14:00Z",
       "undoable": true
     }
-  ]
+  ],
+  "nextBefore": "2026-06-22T09:14:00Z"
 }
 ```
 
@@ -713,7 +831,12 @@ everything").
 
 List the caller's suggestions, filtered by `status` (default `pending`).
 
-**Response:** `200 OK`, an array of `AISuggestion`.
+**Response:** `200 OK`, an array of `AISuggestion` enriched with the identity of
+the email each one is about — `subject`, `from`, `snippet`, resolved in one
+lookup. Without them the client had to find the message among those currently on
+screen, so any suggestion for an email outside the loaded page asked the user to
+approve an action on "Sans sujet · Expéditeur inconnu". The three fields are
+omitted when the message is no longer in the stored mailbox.
 
 ### Reject a suggestion
 
