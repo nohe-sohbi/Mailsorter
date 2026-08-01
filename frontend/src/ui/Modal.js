@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { cn } from './cn';
 import { X } from './icons';
+import { useScrollLock } from './scrollLock';
 
 // Focusable descendants, in DOM order. Used to trap Tab inside the dialog.
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-let openCount = 0;
 
 // Modal is the one dialog implementation in the app.
 //
@@ -36,6 +36,8 @@ function Modal({
 
   const close = useCallback(() => onClose?.(), [onClose]);
 
+  useScrollLock(open);
+
   // Remember where focus came from, move it into the dialog, and put it back on
   // close: without this, dismissing a dialog drops focus onto <body> and the
   // next Tab restarts from the top of the page.
@@ -48,14 +50,8 @@ function Modal({
     // Wait a frame so the element exists and the entry animation has started.
     const raf = window.requestAnimationFrame(() => target?.focus?.());
 
-    openCount += 1;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
     return () => {
       window.cancelAnimationFrame(raf);
-      openCount = Math.max(0, openCount - 1);
-      if (openCount === 0) document.body.style.overflow = previousOverflow;
       const restore = restoreRef.current;
       if (restore && typeof restore.focus === 'function') restore.focus();
     };

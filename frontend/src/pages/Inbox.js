@@ -10,6 +10,7 @@ import EmailReader from '../components/EmailReader';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
+import { useScrollLock } from '../ui/scrollLock';
 import { actionMeta, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
 import {
@@ -142,16 +143,27 @@ function Inbox() {
   // The mobile reader is a full-screen overlay, so the list behind it must stop
   // scrolling: otherwise flicking inside the message quietly scrolls the inbox
   // underneath and closing the reader lands the user somewhere else entirely.
+  // Below lg only — on a wide screen the reader is a side panel and the list is
+  // meant to keep scrolling next to it.
+  const [readerIsOverlay, setReaderIsOverlay] = useState(false);
   useEffect(() => {
-    if (!selectedEmail) return undefined;
+    if (!selectedEmail) {
+      setReaderIsOverlay(false);
+      return undefined;
+    }
     const mq = window.matchMedia('(max-width: 1023px)');
-    if (!mq.matches) return undefined;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    const sync = () => setReaderIsOverlay(mq.matches);
+    sync();
+    // Rotating a phone, or dragging a desktop window across the breakpoint,
+    // must hand scrolling back rather than leave the page frozen.
+    if (mq.addEventListener) mq.addEventListener('change', sync);
+    else mq.addListener(sync);
     return () => {
-      document.body.style.overflow = previous;
+      if (mq.removeEventListener) mq.removeEventListener('change', sync);
+      else mq.removeListener(sync);
     };
   }, [selectedEmail]);
+  useScrollLock(readerIsOverlay);
 
   useEffect(() => {
     if (!localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
