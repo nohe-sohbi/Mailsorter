@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { snoozeService } from '../services/api';
+import { snoozeService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { EmptyState, ErrorState, LiveAnnouncer } from '../ui/primitives';
@@ -150,26 +150,37 @@ function Snoozed() {
   const [failedCount, setFailedCount] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const tabRefs = useRef({});
+  // Read inside async callbacks to tell whether the tab has moved on since the
+  // request was issued.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
 
   const meta = tabByKey(tab);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    // The tab this request belongs to. Every date, colour and button on screen
+    // is driven by `tab`, so a slow response landing after the user has moved on
+    // would paint one tab's rows under another tab's semantics.
+    const tabAtCall = tab;
+    const stale = () => tabAtCall !== tabRef.current;
     try {
       const { data } = await snoozeService.list(tab);
+      if (stale()) return;
       const rows = data.snoozes || [];
       setSnoozes(rows);
       setNow(Date.now());
       if (tab === 'failed') setFailedCount(rows.length);
     } catch (err) {
+      if (stale()) return;
       // Une panne s'affichait mot pour mot comme un état vide (« Rien en
       // attente ») : l'utilisateur en concluait qu'aucun email n'était reporté
       // alors qu'ils y étaient tous. On garde l'erreur pour un état distinct.
-      setError(err.response?.data?.error || "Les reports n'ont pas pu être chargés.");
+      setError(apiError(err, "Les reports n'ont pas pu être chargés."));
       setSnoozes([]);
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }, [tab]);
 
@@ -237,7 +248,7 @@ function Snoozed() {
       if (tab === 'failed') setFailedCount((c) => Math.max(0, c - 1));
       toast.success('Email réactivé, de retour dans votre boîte');
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Réactivation impossible. Réessayez.');
+      toast.error(apiError(err, 'Réactivation impossible. Réessayez.'));
     } finally {
       setWaking(null);
     }

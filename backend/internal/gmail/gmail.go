@@ -79,6 +79,21 @@ func (s *Service) GetAuthURL(state string) string {
 	return s.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
 }
 
+// GetReconnectURL is the authorization URL for someone who is already connected
+// and is trying to repair a revoked or insufficient grant.
+//
+// It forces the consent screen, because that is the only way Google returns a
+// refresh token again: without it a re-authorization yields an access token
+// alone, so the very flow meant to fix a broken account cannot fix it.
+func (s *Service) GetReconnectURL(state string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.AuthCodeURL(state,
+		oauth2.AccessTypeOffline,
+		oauth2.SetAuthURLParam("prompt", "consent"),
+	)
+}
+
 func (s *Service) ExchangeCode(code string) (*oauth2.Token, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

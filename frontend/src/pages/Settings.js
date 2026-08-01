@@ -248,7 +248,7 @@ function GmailAccount() {
 
     setRedirecting(true);
     try {
-      const response = await authService.getAuthUrl();
+      const response = await authService.getAuthUrl({ reconnect: true });
       const authUrl = response.data?.authUrl;
       // A 200 without a URL would otherwise leave the button spinning forever.
       if (!authUrl) throw new Error('authUrl manquant');

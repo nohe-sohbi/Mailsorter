@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { authService } from '../services/api';
+import { authService, apiError } from '../services/api';
 import { track } from '../lib/analytics';
 import { Logo, Alert } from '../ui/icons';
 import Spinner from '../ui/Spinner';
@@ -35,7 +35,7 @@ function AuthCallback() {
       track('login_done');
       navigate('/inbox');
     } catch (err) {
-      const msg = err.response?.data?.error || err.message;
+      const msg = apiError(err, err.message);
       setError(`Échec de l'authentification : ${msg}`);
     }
   };

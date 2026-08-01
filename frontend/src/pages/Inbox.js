@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useEmails, DEFAULT_QUERY } from '../contexts/EmailContext';
-import { aiService, senderService, emailService, subscriptionService, protectService, labelService } from '../services/api';
+import { aiService, senderService, emailService, subscriptionService, protectService, labelService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
@@ -630,7 +630,7 @@ function Inbox() {
       const { data } = await protectService.add(email.from);
       toast.action(`${data.value} est désormais protégé.`, 'Gérer', () => navigate('/settings'));
     } catch (err) {
-      toast.error(err.response?.data?.trim() || 'Protection impossible.');
+      toast.error(apiError(err, 'Protection impossible.'));
     }
   };
 
@@ -731,7 +731,7 @@ function Inbox() {
         () => navigate('/rules')
       );
     } catch (err) {
-      toast.error(err.response?.data?.trim() || 'Création de la règle impossible');
+      toast.error(apiError(err, 'Création de la règle impossible'));
     }
   };
 

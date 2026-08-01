@@ -21,10 +21,15 @@ apiClient.interceptors.request.use((config) => {
 });
 
 // On 401 the session is missing/expired: clear it and bounce to login.
+//
+// Requests flagged `optional` opt out. The backend answers 401 both for a dead
+// Mailsorter session and for a revoked Gmail grant, so a purely cosmetic call
+// (fetching label names) taking the second kind would log the user out of a page
+// they were merely visiting. The failure is handled locally instead.
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !error.config?.optional) {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('userEmail');
       if (window.location.pathname !== '/') {
@@ -35,8 +40,25 @@ apiClient.interceptors.response.use(
   }
 );
 
+// The API answers errors in two shapes: writeError produces {error, status},
+// while the older handlers use http.Error and produce bare text. Reading only
+// one of them silently discarded the real reason and left the UI showing a
+// generic "Réessayez" — and `data?.trim()` on a JSON object throws outright.
+export function apiError(err, fallback = 'Une erreur est survenue.') {
+  const data = err?.response?.data;
+  if (typeof data === 'string' && data.trim()) return data.trim();
+  if (data && typeof data.error === 'string' && data.error.trim()) return data.error.trim();
+  if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
+  return fallback;
+}
+
 export const authService = {
-  getAuthUrl: () => apiClient.get('/api/auth/url'),
+  // reconnect forces Google's consent screen. Google only hands back a refresh
+  // token on a first authorization or when consent is re-granted, so repairing a
+  // revoked grant without it produces an access token that expires in an hour
+  // and nothing to renew it with.
+  getAuthUrl: ({ reconnect = false } = {}) =>
+    apiClient.get(`/api/auth/url${reconnect ? '?reconnect=1' : ''}`),
   handleCallback: (code, state) => {
     const params = new URLSearchParams({ code });
     if (state) params.set('state', state);
@@ -74,7 +96,10 @@ export const emailService = {
 // label name blind (a typo silently created a second, near-identical label) and
 // the reader rendered raw ids like "Label_1234567".
 export const labelService = {
-  list: () => apiClient.get('/api/labels'),
+  // `optional`: label names are an enhancement everywhere they are used (the
+  // rules picker, the reader's chips). Every caller degrades gracefully, so a
+  // failure here must never cost the user their session.
+  list: () => apiClient.get('/api/labels', { optional: true }),
 };
 
 export const snoozeService = {

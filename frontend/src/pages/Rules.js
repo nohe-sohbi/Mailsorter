@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useState } from 'react';
-import { ruleService, accountService, labelService } from '../services/api';
+import { ruleService, accountService, labelService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
@@ -218,12 +218,12 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
           {rule.conditions.map((c, i) => (
             <div key={i}>
               <div className="flex flex-wrap items-center gap-2">
-                <select className="input w-auto flex-none" value={c.field} onChange={(e) => setCondition(i, { field: e.target.value })}>
+                <select className="select w-auto flex-none" value={c.field} onChange={(e) => setCondition(i, { field: e.target.value })}>
                   {FIELDS.map((f) => (
                     <option key={f.value} value={f.value}>{f.label}</option>
                   ))}
                 </select>
-                <select className="input w-auto flex-none" value={c.operator} onChange={(e) => setCondition(i, { operator: e.target.value })}>
+                <select className="select w-auto flex-none" value={c.operator} onChange={(e) => setCondition(i, { operator: e.target.value })}>
                   {OPERATORS.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
@@ -268,7 +268,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
         <div className="space-y-2">
           {rule.actions.map((a, i) => (
             <div key={i} className="flex flex-wrap items-start gap-2">
-              <select className="input w-auto flex-none" value={a.type} onChange={(e) => setActionType(i, e.target.value)}>
+              <select className="select w-auto flex-none" value={a.type} onChange={(e) => setActionType(i, e.target.value)}>
                 {ACTION_TYPES.map((type) => (
                   <option key={type} value={type} disabled={type !== 'label' && type !== a.type && usedTypes.has(type)}>
                     {actionMeta(type).label}
@@ -431,7 +431,7 @@ function Rules() {
       setEditing(null);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.trim() || 'Échec de l’enregistrement.');
+      toast.error(apiError(err, 'Échec de l’enregistrement.'));
     } finally {
       setSaving(false);
     }
