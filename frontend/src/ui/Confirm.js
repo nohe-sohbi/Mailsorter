@@ -25,6 +25,14 @@ export function ConfirmProvider({ children }) {
   const confirmButtonRef = useRef(null);
 
   const confirm = useCallback((options = {}) => {
+    // A second confirm() while one is still pending would overwrite resolveRef
+    // and leave the first caller awaiting a promise nobody can ever settle —
+    // its `await confirm(...)` would hang, and the action behind it would be
+    // silently dropped. Decline the older one instead.
+    if (resolveRef.current) {
+      resolveRef.current(false);
+      resolveRef.current = null;
+    }
     setTyped('');
     setBusy(false);
     setState({
