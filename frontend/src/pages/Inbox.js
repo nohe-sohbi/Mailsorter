@@ -140,29 +140,31 @@ function Inbox() {
 
   useEffect(() => () => clearTimeout(pollRef.current), []);
 
-  // The mobile reader is a full-screen overlay, so the list behind it must stop
-  // scrolling: otherwise flicking inside the message quietly scrolls the inbox
-  // underneath and closing the reader lands the user somewhere else entirely.
-  // Below lg only — on a wide screen the reader is a side panel and the list is
-  // meant to keep scrolling next to it.
-  const [readerIsOverlay, setReaderIsOverlay] = useState(false);
+  // Below lg the reader is a full-screen sheet; at lg and above it is a side
+  // panel. Read synchronously at first render, not from an effect: initialising
+  // to `false` would mount the desktop panel for one frame on a phone, then swap
+  // containers — remounting the reader and fetching the message twice.
+  const [isNarrow, setIsNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches
+  );
   useEffect(() => {
-    if (!selectedEmail) {
-      setReaderIsOverlay(false);
-      return undefined;
-    }
     const mq = window.matchMedia('(max-width: 1023px)');
-    const sync = () => setReaderIsOverlay(mq.matches);
+    const sync = () => setIsNarrow(mq.matches);
     sync();
-    // Rotating a phone, or dragging a desktop window across the breakpoint,
-    // must hand scrolling back rather than leave the page frozen.
+    // Rotating a phone, or dragging a desktop window across the breakpoint, must
+    // hand scrolling back rather than leave the page frozen.
     if (mq.addEventListener) mq.addEventListener('change', sync);
     else mq.addListener(sync);
     return () => {
       if (mq.removeEventListener) mq.removeEventListener('change', sync);
       else mq.removeListener(sync);
     };
-  }, [selectedEmail]);
+  }, []);
+
+  // The sheet covers the page, so the list behind it must stop scrolling:
+  // otherwise flicking inside the message quietly scrolls the inbox underneath
+  // and closing the reader lands the user somewhere else entirely.
+  const readerIsOverlay = Boolean(selectedEmail) && isNarrow;
   useScrollLock(readerIsOverlay);
 
   useEffect(() => {
@@ -762,6 +764,22 @@ function Inbox() {
   rowRefs.current = [];
 
   const activeFilter = QUICK_FILTERS.find((f) => f.query === activeQuery);
+
+  // One element, rendered into whichever of the two containers the breakpoint
+  // shows. Only one is ever visible, so React mounts a single EmailReader.
+  const readerPanel = selectedEmail ? (
+    <EmailReader
+      email={selectedEmail}
+      onClose={() => setSelectedEmail(null)}
+      onRead={(id) => patchEmail(id, { isRead: true })}
+      onArchive={() => handleReaderAction(selectedEmail, 'archive')}
+      onDelete={() => handleReaderAction(selectedEmail, 'delete')}
+      onSnooze={(preset) => handleSnooze(selectedEmail, preset)}
+      onProtect={() => handleProtect(selectedEmail)}
+      onUnsubscribe={() => handleUnsubscribe({ messageId: selectedEmail.messageId })}
+      unsubscribing={unsubscribing === selectedEmail.messageId}
+    />
+  ) : null;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6">
@@ -1374,16 +1392,24 @@ function Inbox() {
         {/* Reader — a side panel on a wide screen, a full-screen sheet below it.
             It used to be a grid cell that simply did not exist under lg, so
             tapping an email on a phone appeared to do nothing at all. */}
-        {selectedEmail && (
-          <>
-            <div className="card sticky top-20 hidden h-[calc(100vh-7rem)] overflow-hidden lg:block">
-              <ReaderPanel />
-            </div>
-            <div className="fixed inset-0 z-[90] bg-surface lg:hidden">
-              <ReaderPanel />
-            </div>
-          </>
-        )}
+        {/* A side panel on a wide screen, a full-screen sheet below it. The
+            reader used to live in a grid column that simply did not exist under
+            lg, so tapping an email on a phone appeared to do nothing.
+
+            Exactly ONE container is mounted, chosen from the media query rather
+            than by rendering both and hiding one with CSS: two mounted readers
+            would each fetch the message and each mark it read.
+
+            Rendered as an element, never as <ReaderPanel />: a component defined
+            inside this one gets a fresh identity on every render, so React would
+            tear it down and rebuild it each time — cancelling its own in-flight
+            body request and leaving it stuck on the loading skeleton forever. */}
+        {selectedEmail &&
+          (readerIsOverlay ? (
+            <div className="fixed inset-0 z-[90] bg-surface lg:hidden">{readerPanel}</div>
+          ) : (
+            <div className="card sticky top-20 h-[calc(100vh-7rem)] overflow-hidden">{readerPanel}</div>
+          ))}
       </div>
 
       {/* Label picker for the bulk "Étiqueter" action */}
@@ -1452,21 +1478,6 @@ function Inbox() {
     </div>
   );
 
-  function ReaderPanel() {
-    return (
-      <EmailReader
-        email={selectedEmail}
-        onClose={() => setSelectedEmail(null)}
-        onRead={(id) => patchEmail(id, { isRead: true })}
-        onArchive={() => handleReaderAction(selectedEmail, 'archive')}
-        onDelete={() => handleReaderAction(selectedEmail, 'delete')}
-        onSnooze={(preset) => handleSnooze(selectedEmail, preset)}
-        onProtect={() => handleProtect(selectedEmail)}
-        onUnsubscribe={() => handleUnsubscribe({ messageId: selectedEmail.messageId })}
-        unsubscribing={unsubscribing === selectedEmail.messageId}
-      />
-    );
-  }
 }
 
 // LabelPicker offers the user's real Gmail labels while still allowing a new
