@@ -53,11 +53,28 @@ export const emailService = {
     const queryString = params.toString();
     return apiClient.get(`/api/emails${queryString ? `?${queryString}` : ''}`);
   },
+  // One message with its decoded body. The list endpoint omits bodies on
+  // purpose, so this is what makes the reader able to show an email at all.
+  // markRead mirrors what opening an email means everywhere else.
+  getEmail: (messageId, { markRead = false } = {}) =>
+    apiClient.get(`/api/emails/${encodeURIComponent(messageId)}${markRead ? '?markRead=1' : ''}`),
   syncEmails: () => apiClient.post('/api/emails/sync'),
   action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
+  // One action over a whole selection, server-side: N Gmail mutations behind a
+  // single request, with the protected-sender shield applied per message.
+  batchAction: (messageIds, action, labelName = '') =>
+    apiClient.post('/api/emails/batch-action', { messageIds, action, labelName }),
+  batchUndo: (messageIds, action) => apiClient.post('/api/emails/batch-undo', { messageIds, action }),
   getStats: () => apiClient.get('/api/stats'),
   // Snooze: pull a message out of the inbox until a preset (or explicit) time.
   snooze: (messageId, preset) => apiClient.post('/api/emails/snooze', { messageId, preset }),
+};
+
+// The user's real Gmail labels. The rules editor used to ask people to type a
+// label name blind (a typo silently created a second, near-identical label) and
+// the reader rendered raw ids like "Label_1234567".
+export const labelService = {
+  list: () => apiClient.get('/api/labels'),
 };
 
 export const snoozeService = {
@@ -104,6 +121,10 @@ export const accountService = {
     const qs = new URLSearchParams();
     if (params.source) qs.set('source', params.source);
     if (params.limit) qs.set('limit', params.limit);
+    // Cursor from the previous page's `nextBefore`, and free-text search over
+    // the subject/sender of the acted-on message.
+    if (params.before) qs.set('before', params.before);
+    if (params.q) qs.set('q', params.q);
     const s = qs.toString();
     return apiClient.get(`/api/activity/log${s ? `?${s}` : ''}`);
   },

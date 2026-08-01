@@ -1,9 +1,10 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
+import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { emailService, aiService, senderService, subscriptionService } from '../services/api';
 
 const EmailContext = createContext(null);
 
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+export const DEFAULT_QUERY = 'in:inbox';
 
 export function EmailProvider({ children }) {
   const [emails, setEmails] = useState([]);
@@ -15,65 +16,97 @@ export function EmailProvider({ children }) {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  // The query the emails on screen actually came from. "Charger plus" and any
+  // refresh must reuse THIS, not whatever is currently typed in the search box:
+  // paging with a half-typed query silently mixed two different result sets.
+  const [activeQuery, setActiveQuery] = useState(DEFAULT_QUERY);
 
   // Use refs for timestamps to avoid re-renders
   const lastFetchRef = useRef(null);
   const lastSyncRef = useRef(null);
   const lastStatsRef = useRef(null);
+  const activeQueryRef = useRef(DEFAULT_QUERY);
+  // Guards against an older in-flight fetch overwriting a newer one (type fast,
+  // hit enter twice, and the slower response used to win).
+  const requestSeqRef = useRef(0);
 
   const isCacheValid = useCallback(() => {
     if (!lastFetchRef.current) return false;
-    return (Date.now() - lastFetchRef.current) < CACHE_DURATION;
+    return Date.now() - lastFetchRef.current < CACHE_DURATION;
   }, []);
 
-  const fetchData = useCallback(async (options = {}) => {
-    const { forceRefresh = false, query = 'in:inbox', maxResults = 100 } = options;
+  const fetchData = useCallback(
+    async (options = {}) => {
+      const {
+        forceRefresh = false,
+        query = activeQueryRef.current || DEFAULT_QUERY,
+        maxResults = 100,
+        // A real sync hits Gmail. It is throttled on its own timer so that
+        // background refreshes stay cheap, but an explicit user action must
+        // never be silently swallowed: pressing "Synchroniser" and being told
+        // "Boîte synchronisée" when nothing was fetched is a lie the UI told
+        // every time the button was used twice within five minutes.
+        sync = forceRefresh,
+      } = options;
 
-    // Return cached data if valid and not forcing refresh
-    if (!forceRefresh && isCacheValid() && emails.length > 0) {
-      return { emails, senders, suggestions, stats };
-    }
+      const seq = ++requestSeqRef.current;
+      const isStale = () => seq !== requestSeqRef.current;
 
-    setLoading(true);
-    setError('');
-
-    try {
-      // Sync with Gmail if needed (only every 5 min)
-      const now = Date.now();
-      if (!lastSyncRef.current || (now - lastSyncRef.current) > CACHE_DURATION) {
-        try {
-          await emailService.syncEmails();
-          lastSyncRef.current = now;
-        } catch (syncErr) {
-          console.warn('Sync failed:', syncErr);
-        }
+      // Return cached data if valid, same query, and not forcing refresh
+      if (!forceRefresh && isCacheValid() && emails.length > 0 && query === activeQueryRef.current) {
+        return { emails, senders, suggestions, stats };
       }
 
-      // Fetch stats if needed (cache for 5 min)
-      let newStats = stats;
-      if (!lastStatsRef.current || (now - lastStatsRef.current) > CACHE_DURATION || forceRefresh) {
-        try {
-          const statsRes = await emailService.getStats();
-          newStats = statsRes.data;
-          setStats(newStats);
-          lastStatsRef.current = now;
-        } catch (statsErr) {
-          console.warn('Stats fetch failed:', statsErr);
+      activeQueryRef.current = query;
+      setActiveQuery(query);
+      setLoading(true);
+      setError('');
+
+      try {
+        const now = Date.now();
+        if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
+          try {
+            await emailService.syncEmails();
+            lastSyncRef.current = now;
+          } catch (syncErr) {
+            // A failed sync is not fatal: the stored mailbox is still worth
+            // showing. It becomes visible only if the listing below also fails.
+            console.warn('Sync failed:', syncErr);
+          }
         }
-      }
 
-      // Fetch all data
-      const [emailsRes, sendersRes, suggestionsRes, subscriptionsRes] = await Promise.allSettled([
-        emailService.getEmails(query, { maxResults }),
-        senderService.getSenders(),
-        aiService.getSuggestions('pending'),
-        subscriptionService.getSubscriptions(),
-      ]);
+        let newStats = stats;
+        if (!lastStatsRef.current || now - lastStatsRef.current > CACHE_DURATION || forceRefresh) {
+          try {
+            const statsRes = await emailService.getStats();
+            newStats = statsRes.data;
+            if (!isStale()) setStats(newStats);
+            lastStatsRef.current = now;
+          } catch (statsErr) {
+            console.warn('Stats fetch failed:', statsErr);
+          }
+        }
 
-      // Handle new response format with pagination
-      let newEmails = emails;
-      let newPagination = { nextPageToken: null, resultSizeEstimate: 0 };
-      if (emailsRes.status === 'fulfilled') {
+        const [emailsRes, sendersRes, suggestionsRes, subscriptionsRes] = await Promise.allSettled([
+          emailService.getEmails(query, { maxResults }),
+          senderService.getSenders(),
+          aiService.getSuggestions('pending'),
+          subscriptionService.getSubscriptions(),
+        ]);
+
+        if (isStale()) return { emails, senders, suggestions, stats: newStats };
+
+        // The listing is the one call whose failure the user must see: without
+        // it the screen falls back to an empty list, which the inbox used to
+        // celebrate as "Inbox Zero atteint 🎉" — the exact opposite of the truth.
+        if (emailsRes.status === 'rejected') {
+          setError(errorMessage(emailsRes.reason));
+          setLoading(false);
+          return { emails, senders, suggestions, stats: newStats };
+        }
+
+        let newEmails = [];
+        let newPagination = { nextPageToken: null, resultSizeEstimate: 0 };
         const data = emailsRes.value.data;
         // Handle both old format (array) and new format (object with emails array)
         if (Array.isArray(data)) {
@@ -85,63 +118,90 @@ export function EmailProvider({ children }) {
             resultSizeEstimate: data.resultSizeEstimate || 0,
           };
         }
+
+        const newSenders = sendersRes.status === 'fulfilled' ? sendersRes.value.data || [] : [];
+        const newSuggestions = suggestionsRes.status === 'fulfilled' ? suggestionsRes.value.data || [] : [];
+        const newSubscriptions =
+          subscriptionsRes.status === 'fulfilled' ? subscriptionsRes.value.data || [] : [];
+
+        setEmails(newEmails);
+        setPagination(newPagination);
+        setSenders(newSenders);
+        setSuggestions(newSuggestions);
+        setSubscriptions(newSubscriptions);
+        lastFetchRef.current = Date.now();
+
+        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats };
+      } catch (err) {
+        if (!isStale()) setError(errorMessage(err));
+        return { emails, senders, suggestions, stats };
+      } finally {
+        if (!isStale()) setLoading(false);
       }
+    },
+    [emails, senders, suggestions, stats, isCacheValid]
+  );
 
-      const newSenders = sendersRes.status === 'fulfilled' ? (sendersRes.value.data || []) : [];
-      const newSuggestions = suggestionsRes.status === 'fulfilled' ? (suggestionsRes.value.data || []) : [];
-      const newSubscriptions = subscriptionsRes.status === 'fulfilled' ? (subscriptionsRes.value.data || []) : [];
-
-      setEmails(newEmails);
-      setPagination(newPagination);
-      setSenders(newSenders);
-      setSuggestions(newSuggestions);
-      setSubscriptions(newSubscriptions);
-      lastFetchRef.current = Date.now();
-
-      if (emailsRes.status === 'rejected') {
-        setError('Erreur: ' + (emailsRes.reason?.response?.data || emailsRes.reason?.message));
-      }
-
-      return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats };
-    } catch (err) {
-      setError('Erreur: ' + (err.response?.data || err.message));
-      return { emails, senders, suggestions, stats };
-    } finally {
-      setLoading(false);
-    }
-  }, [emails, senders, suggestions, stats, isCacheValid]);
-
-  const loadMoreEmails = useCallback(async (query = 'in:inbox') => {
+  const loadMoreEmails = useCallback(async () => {
     if (!pagination.nextPageToken || loadingMore) return;
 
     setLoadingMore(true);
     try {
-      const res = await emailService.getEmails(query, {
+      const res = await emailService.getEmails(activeQueryRef.current, {
         maxResults: 100,
-        pageToken: pagination.nextPageToken
+        pageToken: pagination.nextPageToken,
       });
       const data = res.data;
       if (data && data.emails) {
-        setEmails(prev => [...prev, ...data.emails]);
+        // De-duplicate: Gmail can repeat a message across page boundaries when
+        // the mailbox changes mid-pagination, and a duplicate key breaks React's
+        // list reconciliation.
+        setEmails((prev) => {
+          const seen = new Set(prev.map((e) => e.messageId));
+          return [...prev, ...data.emails.filter((e) => !seen.has(e.messageId))];
+        });
         setPagination({
           nextPageToken: data.nextPageToken || null,
           resultSizeEstimate: data.resultSizeEstimate || 0,
         });
       }
     } catch (err) {
-      console.error('Failed to load more emails:', err);
+      setError(errorMessage(err));
     } finally {
       setLoadingMore(false);
     }
   }, [pagination.nextPageToken, loadingMore]);
 
+  // Optimistic removal: a triaged email must leave the list immediately, or
+  // burst keyboard triage (j, e, j, e…) works against a list that never moves.
+  const removeEmails = useCallback((ids) => {
+    const set = new Set(Array.isArray(ids) ? ids : [ids]);
+    setEmails((prev) => prev.filter((e) => !set.has(e.messageId)));
+  }, []);
+
+  const patchEmail = useCallback((messageId, patch) => {
+    setEmails((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, ...patch } : e)));
+  }, []);
+
   const removeSuggestion = useCallback((suggestionId) => {
-    setSuggestions(prev => prev.filter(s => (s.id || s._id) !== suggestionId));
+    setSuggestions((prev) => prev.filter((s) => (s.id || s._id) !== suggestionId));
   }, []);
 
   const removeSuggestions = useCallback((ids) => {
     const set = new Set(ids);
-    setSuggestions(prev => prev.filter(s => !set.has(s.id || s._id)));
+    setSuggestions((prev) => prev.filter((s) => !set.has(s.id || s._id)));
+  }, []);
+
+  // Put a suggestion back where it was. Applying one is optimistic, so a failure
+  // has to be able to undo the optimism: otherwise a suggestion whose Gmail call
+  // failed vanished from the screen for good while the email stayed put.
+  const restoreSuggestions = useCallback((items) => {
+    setSuggestions((prev) => {
+      const known = new Set(prev.map((s) => s.id || s._id));
+      const missing = items.filter((s) => !known.has(s.id || s._id));
+      if (missing.length === 0) return prev;
+      return [...missing, ...prev];
+    });
   }, []);
 
   const markUnsubscribed = useCallback((senderEmail) => {
@@ -161,19 +221,33 @@ export function EmailProvider({ children }) {
     loadingMore,
     error,
     setError,
+    activeQuery,
     fetchData,
     loadMoreEmails,
+    removeEmails,
+    patchEmail,
     removeSuggestion,
     removeSuggestions,
+    restoreSuggestions,
     markUnsubscribed,
     isCacheValid,
   };
 
-  return (
-    <EmailContext.Provider value={value}>
-      {children}
-    </EmailContext.Provider>
-  );
+  return <EmailContext.Provider value={value}>{children}</EmailContext.Provider>;
+}
+
+// The API returns plain-text errors for most failures; surface something a
+// French-speaking user can act on rather than a raw googleapi string.
+function errorMessage(err) {
+  const status = err?.response?.status;
+  if (status === 429) return 'Trop de requêtes vers Gmail. Patientez quelques instants.';
+  if (status === 402) return 'Quota mensuel atteint.';
+  if (status === 401) return 'Session expirée. Reconnectez-vous.';
+  if (status >= 500 || status === 502) return 'Gmail est momentanément injoignable. Réessayez.';
+  if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
+  const raw = err?.response?.data;
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  return err?.message || 'Une erreur inattendue est survenue.';
 }
 
 export function useEmails() {

@@ -410,7 +410,7 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 					rulesApplied++
 					byRule[match.Name]++
 					for _, act := range appliedActs {
-						h.logAction(ctx, userEmail, msg.Id, act, SourceRule)
+						h.logActionMeta(ctx, userEmail, msg.Id, act, SourceRule, email.Subject, email.From)
 					}
 				}
 			}

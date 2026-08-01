@@ -257,6 +257,12 @@ type ActionLog struct {
 	MessageID string `json:"messageId" bson:"messageId"`
 	Action    string `json:"action" bson:"action"`
 	Source    string `json:"source" bson:"source"` // direct, rule, ai, ai-auto, bulk, snooze, unsubscribe, undo
+	// Subject and From identify the message the action was performed on. A ledger
+	// that only says "archived at 14:32" tells the user nothing, so the human
+	// identity of the email is captured at write time when the caller already
+	// holds it, and resolved from the emails collection at read time otherwise.
+	Subject string `json:"subject,omitempty" bson:"subject,omitempty"`
+	From    string `json:"from,omitempty" bson:"from,omitempty"`
 	// Undone is set when the user reverses this entry from the action history
 	// (e.g. un-archiving a mail a rule archived). UndoneAt stamps when.
 	Undone    bool      `json:"undone,omitempty" bson:"undone,omitempty"`

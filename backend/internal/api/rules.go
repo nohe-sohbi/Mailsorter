@@ -261,7 +261,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		applied++
 		byRule[match.Name]++
 		for _, act := range appliedActs {
-			h.logAction(ctx, userEmail, msg.Id, act, SourceRule)
+			h.logActionMeta(ctx, userEmail, msg.Id, act, SourceRule, email.Subject, email.From)
 		}
 	}
 

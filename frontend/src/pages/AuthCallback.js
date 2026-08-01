@@ -44,7 +44,7 @@ function AuthCallback() {
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-ink-50 px-6 text-center">
       {error ? (
         <div className="card w-full max-w-md animate-scale-in p-8">
-          <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-50 text-rose-500">
+          <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-danger-50 text-danger-500">
             <Alert size={28} />
           </span>
           <h1 className="text-xl font-bold text-ink-900">Connexion interrompue</h1>

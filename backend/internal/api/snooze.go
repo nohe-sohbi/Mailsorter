@@ -111,7 +111,7 @@ func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logAction(ctx, userEmail, req.MessageID, "archive", SourceSnooze)
+	h.logActionMeta(ctx, userEmail, req.MessageID, "archive", SourceSnooze, subject, from)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -192,7 +192,7 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 
 	h.db.Snoozes().UpdateOne(ctx, bson.M{"_id": oid},
 		bson.M{"$set": bson.M{"status": "done", "updatedAt": time.Now()}})
-	h.logAction(ctx, userEmail, s.MessageID, "unarchive", SourceSnooze)
+	h.logActionMeta(ctx, userEmail, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "woken"})
@@ -277,6 +277,6 @@ func (h *Handler) wakeDueSnoozes() {
 		oid, _ := primitive.ObjectIDFromHex(s.ID)
 		h.db.Snoozes().UpdateOne(ctx, bson.M{"_id": oid},
 			bson.M{"$set": bson.M{"status": "done", "updatedAt": time.Now()}})
-		h.logAction(ctx, s.UserID, s.MessageID, "unarchive", SourceSnooze)
+		h.logActionMeta(ctx, s.UserID, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
 	}
 }

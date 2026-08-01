@@ -9,10 +9,10 @@ import { Shield, Trash, Alert, Bolt, Settings as SettingsIcon, Check } from '../
 
 const ACTION_LABELS = { archive: 'Archivés', delete: 'Supprimés', label: 'Étiquetés', keep: 'Gardés' };
 const ACTION_COLORS = {
-  archive: 'bg-sky-500',
-  delete: 'bg-rose-500',
-  label: 'bg-amber-500',
-  keep: 'bg-emerald-500',
+  archive: 'bg-info-500',
+  delete: 'bg-danger-500',
+  label: 'bg-caution-500',
+  keep: 'bg-positive-500',
 };
 
 // Go zero-value dates come back as year 1, which would render as "1 janvier 1".
@@ -88,21 +88,21 @@ function PrivacyData() {
         <button onClick={exportData} disabled={exporting} className="btn-secondary">
           {exporting ? <Spinner size={16} /> : <Shield size={16} />} Exporter mes données
         </button>
-        <span className="text-xs text-ink-400">Un fichier JSON : règles, expéditeurs protégés, historique, réglages…</span>
+        <span className="text-xs text-muted">Un fichier JSON : règles, expéditeurs protégés, historique, réglages…</span>
       </div>
 
-      <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50/60 p-5">
-        <div className="mb-1 flex items-center gap-2 text-rose-700">
+      <div className="mt-6 rounded-xl border border-danger-100 bg-danger-50/60 p-5">
+        <div className="mb-1 flex items-center gap-2 text-danger-700">
           <Alert size={16} />
           <h3 className="text-sm font-bold">Zone de danger</h3>
         </div>
-        <p className="mb-4 text-sm text-rose-600/90">
+        <p className="mb-4 text-sm text-danger-600/90">
           La suppression efface définitivement votre compte et toutes vos données Mailsorter (règles, protections,
           reports, historique). Action <span className="font-semibold">irréversible</span>. Votre boîte Gmail n'est pas affectée.
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <input
-            className="input max-w-[220px] border-rose-200"
+            className="input max-w-[220px] border-danger-100"
             placeholder="Tapez SUPPRIMER"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
@@ -206,12 +206,12 @@ function Account() {
           <div
             className={cn(
               'h-full rounded-full transition-all duration-500',
-              isPro ? 'bg-emerald-500' : usedPct >= 100 ? 'bg-rose-500' : 'bg-brand-600'
+              isPro ? 'bg-positive-500' : usedPct >= 100 ? 'bg-danger-500' : 'bg-brand-600'
             )}
             style={{ width: isPro ? '100%' : `${usedPct}%` }}
           />
         </div>
-        <p className="mt-3 text-xs text-ink-400">
+        <p className="mt-3 text-xs text-muted">
           {usage?.period ? `Période ${usage.period}. ` : ''}
           Le cache et l'auto-pilote ne consomment pas votre quota.
         </p>
@@ -242,7 +242,7 @@ function Account() {
                 style={{ height: `${Math.max(4, (d.count / maxDay) * 72)}px` }}
                 title={`${d.count} le ${d.date}`}
               />
-              <span className="text-[10px] text-ink-400">{d.date.slice(8)}</span>
+              <span className="text-[10px] text-muted">{d.date.slice(8)}</span>
             </div>
           ))}
         </div>

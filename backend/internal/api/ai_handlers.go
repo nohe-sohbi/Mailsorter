@@ -101,7 +101,7 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 	}
 
 	h.db.AISuggestions().InsertOne(ctx, suggestion)
-	h.logAction(ctx, userEmail, email.MessageID, pref.DefaultAction, SourceAIAuto)
+	h.logActionMeta(ctx, userEmail, email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From)
 	return true
 }
 
@@ -452,7 +452,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		if applyErr == nil {
 			appliedCount++
-			h.logAction(ctx, userEmail, email.MessageID, req.Action, SourceBulk)
+			h.logActionMeta(ctx, userEmail, email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
 		}
 	}
 
@@ -496,8 +496,36 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Attach the subject/sender of each suggested email in one indexed lookup.
+	// The client used to find it by scanning the emails currently on screen,
+	// which meant any suggestion for a message outside the loaded page rendered
+	// as "Sans sujet · Expéditeur inconnu" — asking the user to approve an
+	// action on an email they cannot see.
+	ids := make([]string, 0, len(suggestions))
+	for _, s := range suggestions {
+		if s.EmailID != "" {
+			ids = append(ids, s.EmailID)
+		}
+	}
+	identities := h.emailIdentities(ctx, userEmail, ids)
+
+	type suggestionView struct {
+		models.AISuggestion
+		Subject string `json:"subject,omitempty"`
+		From    string `json:"from,omitempty"`
+		Snippet string `json:"snippet,omitempty"`
+	}
+	views := make([]suggestionView, 0, len(suggestions))
+	for _, s := range suggestions {
+		v := suggestionView{AISuggestion: s}
+		if e, ok := identities[s.EmailID]; ok {
+			v.Subject, v.From, v.Snippet = e.Subject, e.From, e.Snippet
+		}
+		views = append(views, v)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(suggestions)
+	json.NewEncoder(w).Encode(views)
 }
 
 // RejectSuggestion rejects an AI suggestion

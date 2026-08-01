@@ -41,10 +41,10 @@ const PLANS = [
 ];
 
 const ACTION_COLORS = {
-  archive: 'bg-sky-500',
-  delete: 'bg-rose-500',
-  label: 'bg-amber-500',
-  keep: 'bg-emerald-500',
+  archive: 'bg-info-500',
+  delete: 'bg-danger-500',
+  label: 'bg-caution-500',
+  keep: 'bg-positive-500',
   read: 'bg-violet-500',
   star: 'bg-yellow-400',
 };
@@ -216,12 +216,12 @@ function Pricing() {
                 <div
                   className={cn(
                     'h-full rounded-full transition-all duration-500',
-                    isPro ? 'bg-emerald-500' : usedPct >= 100 ? 'bg-rose-500' : 'bg-brand-600'
+                    isPro ? 'bg-positive-500' : usedPct >= 100 ? 'bg-danger-500' : 'bg-brand-600'
                   )}
                   style={{ width: isPro ? '100%' : `${usedPct}%` }}
                 />
               </div>
-              <p className="mt-3 text-xs text-ink-400">
+              <p className="mt-3 text-xs text-muted">
                 {isPro
                   ? 'Analyses illimitées. Gérez votre abonnement à tout moment.'
                   : "Le cache et l'auto-pilote ne consomment pas votre quota."}
@@ -286,12 +286,12 @@ function Pricing() {
               <p className="text-sm text-ink-500">{plan.tagline}</p>
               <div className="mt-4 flex items-baseline gap-1">
                 <span className="font-display text-4xl font-extrabold text-ink-900">{plan.price}</span>
-                <span className="text-sm text-ink-400">{plan.cadence}</span>
+                <span className="text-sm text-muted">{plan.cadence}</span>
               </div>
               <ul className="mt-6 space-y-3">
                 {plan.features.map((f) => (
                   <li key={f} className="flex items-start gap-2.5 text-sm text-ink-700">
-                    <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                    <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-positive-100 text-positive-600">
                       <Check size={12} />
                     </span>
                     {f}
@@ -369,7 +369,7 @@ function Pricing() {
           ))}
         </div>
 
-        <p className="mt-10 flex items-center justify-center gap-2 text-center text-xs text-ink-400">
+        <p className="mt-10 flex items-center justify-center gap-2 text-center text-xs text-muted">
           <Shield size={14} /> Paiements sécurisés · Données chiffrées · Résiliation en un clic
         </p>
       </div>
