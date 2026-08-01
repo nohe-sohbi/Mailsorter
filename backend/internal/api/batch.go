@@ -9,6 +9,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
@@ -286,6 +287,54 @@ func (h *Handler) emailIdentities(ctx context.Context, userEmail string, message
 		out[e.MessageID] = e
 	}
 	return out
+}
+
+// suggestionEmailIDs maps a set of suggestion ids to the message ids they act
+// on, in one query, so a batch can pre-resolve identities without a per-item
+// round trip. Unparseable or foreign ids are skipped; the caller's loop reports
+// them as failures on its own.
+func (h *Handler) suggestionEmailIDs(ctx context.Context, userEmail string, suggestionIDs []string) []string {
+	oids := make([]primitive.ObjectID, 0, len(suggestionIDs))
+	for _, id := range suggestionIDs {
+		if oid, err := primitive.ObjectIDFromHex(id); err == nil {
+			oids = append(oids, oid)
+		}
+	}
+	if len(oids) == 0 {
+		return nil
+	}
+	cursor, err := h.db.AISuggestions().Find(ctx,
+		bson.M{"_id": bson.M{"$in": oids}, "userId": userEmail},
+		options.Find().SetProjection(bson.M{"emailId": 1}))
+	if err != nil {
+		return nil
+	}
+	defer cursor.Close(ctx)
+
+	var rows []models.AISuggestion
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, s := range rows {
+		if s.EmailID != "" {
+			out = append(out, s.EmailID)
+		}
+	}
+	return out
+}
+
+// emailIdentity resolves one message's sender and subject: local mailbox first,
+// Gmail headers as a fallback. Used by the single-message triage paths so their
+// ledger entries carry an identity at WRITE time — which is what makes them
+// searchable, since the read-time resolution happens after the query has run.
+func (h *Handler) emailIdentity(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID string) models.Email {
+	found := h.emailIdentities(ctx, userEmail, []string{messageID})
+	if e, ok := found[messageID]; ok && (e.From != "" || e.Subject != "") {
+		return e
+	}
+	h.fillMissingIdentities(ctx, gmailClient, []string{messageID}, found)
+	return found[messageID]
 }
 
 // fillMissingIdentities asks Gmail for the sender/subject of the messages the

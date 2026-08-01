@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { emailService, labelService } from '../services/api';
+import { emailService, labelService, apiError } from '../services/api';
 import { X, Archive, Trash, Mail, BellOff, Clock, Shield, Paperclip, Star } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 import { ErrorState } from '../ui/primitives';
@@ -95,41 +95,58 @@ function EmailReader({
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [labelsById, setLabelsById] = useState(null);
   const snoozeRef = useRef(null);
+  const loadSeqRef = useRef(0);
+  // Held in a ref so loadMessage can stay a stable callback.
+  const onReadRef = useRef(onRead);
+  onReadRef.current = onRead;
   const closeRef = useRef(null);
   const messageId = email?.messageId;
 
   // The list endpoint deliberately ships no bodies, so the reader fetches the
   // message it is about to show. Before this existed the panel had nothing to
   // render and every email read "Contenu complet indisponible".
+  //
+  // One implementation, shared by the initial load and the retry button. The
+  // retry used to be a second, inline copy with no cancellation guard, so a
+  // slow response could paint the body of a message the panel had already
+  // moved off — and it never told the list the mail had been read.
+  const loadMessage = useCallback(
+    (id) => {
+      if (!id) return;
+      const run = ++loadSeqRef.current;
+      const stale = () => run !== loadSeqRef.current;
+      setFull(null);
+      setLoadError('');
+      setLoading(true);
+      emailService
+        .getEmail(id, { markRead: true })
+        .then(({ data }) => {
+          if (stale()) return;
+          setFull(data);
+          // Opening an email is what marks it read; tell the list so the unread
+          // dot disappears without a full refetch.
+          if (data?.isRead) onReadRef.current?.(id);
+        })
+        .catch((err) => {
+          if (stale()) return;
+          setLoadError(apiError(err, "Impossible de charger cet email."));
+        })
+        .finally(() => {
+          if (!stale()) setLoading(false);
+        });
+    },
+    // onRead is read through a ref: depending on it would rebuild this callback
+    // on every parent render, refetching the message and re-marking it read.
+    []
+  );
+
   useEffect(() => {
-    if (!messageId) return undefined;
-    let cancelled = false;
-    setFull(null);
-    setLoadError('');
-    setLoading(true);
-    emailService
-      .getEmail(messageId, { markRead: true })
-      .then(({ data }) => {
-        if (cancelled) return;
-        setFull(data);
-        // Opening an email is what marks it read; tell the list so the unread
-        // dot disappears without a full refetch.
-        if (data?.isRead) onRead?.(messageId);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setLoadError(err?.response?.data?.trim?.() || "Impossible de charger cet email.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    loadMessage(messageId);
+    // Any response still in flight belongs to a message we are leaving.
     return () => {
-      cancelled = true;
+      loadSeqRef.current += 1;
     };
-    // onRead is stable enough in practice; re-running on it would refetch the
-    // message (and re-mark it read) on every parent render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messageId]);
+  }, [messageId, loadMessage]);
 
   // Label names are per-account and rarely change; fetch once for the session.
   useEffect(() => {
@@ -347,17 +364,7 @@ function EmailReader({
               compact
               title="Message illisible"
               message={loadError}
-              onRetry={() => {
-                setLoadError('');
-                setLoading(true);
-                emailService
-                  .getEmail(messageId, { markRead: true })
-                  .then(({ data }) => setFull(data))
-                  .catch((err) =>
-                    setLoadError(err?.response?.data?.trim?.() || "Impossible de charger cet email.")
-                  )
-                  .finally(() => setLoading(false));
-              }}
+              onRetry={() => loadMessage(messageId)}
             />
           ) : html ? (
             <div className="email-body" dangerouslySetInnerHTML={{ __html: html }} />

@@ -269,7 +269,8 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 			"labelId":   suggestion.LabelID,
 		}},
 	)
-	h.logAction(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI)
+	meta := h.emailIdentity(ctx, gmailClient, userEmail, suggestion.EmailID)
+	h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "applied"})
@@ -309,6 +310,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
 	failed := 0
 	protectedSkipped := 0
+
+	// Resolve every suggested email's identity once, up front, so each ledger
+	// entry can name the message it acted on without a lookup inside the loop.
+	emailIDs := h.suggestionEmailIDs(ctx, userEmail, req.SuggestionIDs)
+	identities := h.emailIdentities(ctx, userEmail, emailIDs)
 
 	for _, id := range req.SuggestionIDs {
 		objectID, err := primitive.ObjectIDFromHex(id)
@@ -364,7 +370,8 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 				"labelId":   suggestion.LabelID,
 			}},
 		)
-		h.logAction(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI)
+		meta := identities[suggestion.EmailID]
+		h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
 		applied++
 		appliedIDs = append(appliedIDs, id)
 	}

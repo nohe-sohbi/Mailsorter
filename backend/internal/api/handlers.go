@@ -496,13 +496,17 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record forward triage actions in the ledger (undo actions are not counted).
+	// One lookup, only on the branches that actually log: the history is useless
+	// without the subject, and resolving it here rather than at read time is what
+	// lets the entry be found by search later.
 	switch req.Action {
-	case "archive":
-		h.logAction(ctx, userEmail, req.MessageID, "archive", SourceDirect)
-	case "delete", "trash":
-		h.logAction(ctx, userEmail, req.MessageID, "delete", SourceDirect)
-	case "read":
-		h.logAction(ctx, userEmail, req.MessageID, "read", SourceDirect)
+	case "archive", "delete", "trash", "read":
+		action := req.Action
+		if action == "trash" {
+			action = "delete"
+		}
+		meta := h.emailIdentity(ctx, gmailClient, userEmail, req.MessageID)
+		h.logActionMeta(ctx, userEmail, req.MessageID, action, SourceDirect, meta.Subject, meta.From)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

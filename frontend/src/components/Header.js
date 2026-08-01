@@ -1,8 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate, useLocation, Link } from 'react-router-dom';
 import { cn } from '../ui/cn';
 import { useTheme } from '../ui/theme';
 import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock, History, Menu, X, Sun, Moon, Monitor } from '../ui/icons';
+
+// Same set Modal uses to confine Tab.
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 const NAV_ITEMS = [
   { to: '/inbox', label: 'Boîte', Icon: Inbox },
@@ -43,22 +47,57 @@ function Header() {
   const location = useLocation();
   const userEmail = localStorage.getItem('userEmail');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const drawerRef = useRef(null);
+  const toggleRef = useRef(null);
 
   // Close the mobile menu whenever the route changes.
   useEffect(() => {
     setMobileOpen(false);
   }, [location.pathname]);
 
-  // The drawer covers the page, so Escape has to dismiss it like any other
-  // overlay — otherwise a keyboard user has to tab all the way through the menu
-  // to reach its close button.
+  // The drawer is a modal surface: a full-screen backdrop over a page the user
+  // is not meant to reach. So it gets what every other overlay in the app got —
+  // Escape to dismiss, Tab confined to its own contents, and focus handed back
+  // to the toggle on close. Without the trap, tabbing past the last menu item
+  // walked into the inbox behind the backdrop with no way to tell.
   useEffect(() => {
     if (!mobileOpen) return undefined;
+    const opener = toggleRef.current;
+
     const onKey = (e) => {
-      if (e.key === 'Escape') setMobileOpen(false);
+      if (e.key === 'Escape') {
+        setMobileOpen(false);
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const nodes = Array.from(drawerRef.current?.querySelectorAll(FOCUSABLE) || []).filter(
+        (el) => el.offsetParent !== null
+      );
+      if (nodes.length === 0) return;
+      // The toggle stays reachable: it is the drawer's own close button.
+      const chain = [opener, ...nodes].filter(Boolean);
+      const first = chain[0];
+      const last = chain[chain.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+
+    // Captured now: by cleanup time React may already have unmounted the drawer
+    // and cleared the ref.
+    const drawer = drawerRef.current;
+
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      // Only reclaim focus if it is still inside the drawer; navigating away
+      // must not yank it back to the header.
+      if (drawer?.contains(document.activeElement)) opener?.focus();
+    };
   }, [mobileOpen]);
 
   const handleLogout = () => {
@@ -135,6 +174,7 @@ function Header() {
           {/* Mobile menu toggle. The breakpoint is lg, not sm: six tabs plus the
               identity chip do not fit on a tablet either. */}
           <button
+            ref={toggleRef}
             onClick={() => setMobileOpen((o) => !o)}
             className="btn-ghost btn-sm btn-icon lg:hidden"
             aria-label={mobileOpen ? 'Fermer le menu' : 'Ouvrir le menu'}
@@ -155,6 +195,7 @@ function Header() {
             onClick={() => setMobileOpen(false)}
           />
           <nav
+            ref={drawerRef}
             id="mobile-nav"
             aria-label="Navigation principale"
             className="relative z-40 space-y-1 border-t border-hairline bg-surface px-4 pb-4 pt-3 shadow-card"

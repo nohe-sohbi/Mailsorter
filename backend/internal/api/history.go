@@ -52,23 +52,34 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	if source := r.URL.Query().Get("source"); source != "" {
 		filter["source"] = source
 	}
-	// Cursor pagination on createdAt: the ledger is already sorted newest-first,
-	// so "everything older than the last row I have" is a stable next page even
-	// while new actions land at the top. Without it the history stopped dead at
-	// the most recent 100 entries.
+	// Cursor pagination: "everything older than the last row I have" is a stable
+	// next page even while new actions land at the top. Without it the history
+	// stopped dead at the most recent 100 entries.
+	//
+	// The cursor is (createdAt, _id), not createdAt alone. BSON stores dates to
+	// the millisecond and a bulk action writes its entries back to back with no
+	// I/O between them, so a page boundary landing inside such a burst would drop
+	// every sibling sharing that timestamp — silently, which is the worst way to
+	// lose an audit trail. The _id tiebreaker also makes the sort total, so two
+	// requests cannot order equal timestamps differently.
 	if before := r.URL.Query().Get("before"); before != "" {
-		if ts, err := time.Parse(time.RFC3339Nano, before); err == nil {
-			filter["createdAt"] = bson.M{"$lt": ts}
+		if ts, oid, ok := parseLogCursor(before); ok {
+			filter["$and"] = []bson.M{{
+				"$or": []bson.M{
+					{"createdAt": bson.M{"$lt": ts}},
+					{"createdAt": ts, "_id": bson.M{"$lt": oid}},
+				},
+			}}
 		}
 	}
 	// Free-text search over the message identity. Anchored to the caller's own
 	// entries by the userId filter above, and the needle is quoted so a stray
 	// regex metacharacter can't turn into a scan the user did not ask for.
 	//
-	// Caveat worth knowing: this matches the identity *stored on the entry*.
-	// Entries written before the ledger carried one are still rendered (see
-	// resolveLogIdentities below) but cannot be searched, because their subject
-	// only exists after the query has run.
+	// This matches the identity stored ON the entry. Every writer now records it,
+	// so anything logged from here on is searchable; entries predating that still
+	// render (resolveLogIdentities fills them in below) but cannot be matched,
+	// because their subject only exists after the query has run.
 	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
 		needle := bson.M{"$regex": regexp.QuoteMeta(q), "$options": "i"}
 		filter["$or"] = []bson.M{{"subject": needle}, {"from": needle}}
@@ -77,8 +88,10 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// bson.D, not bson.M: a compound sort needs a defined key order, and a map
+	// has none.
 	cursor, err := h.db.ActionLog().Find(ctx, filter,
-		options.Find().SetSort(bson.M{"createdAt": -1}).SetLimit(limit))
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).SetLimit(limit))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to load history")
 		return
@@ -103,10 +116,34 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	// it rather than making the client guess.
 	var nextBefore string
 	if int64(len(logs)) == limit && len(logs) > 0 {
-		nextBefore = logs[len(logs)-1].CreatedAt.Format(time.RFC3339Nano)
+		nextBefore = formatLogCursor(logs[len(logs)-1])
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": views, "nextBefore": nextBefore})
+}
+
+// formatLogCursor encodes the (createdAt, _id) pair the next page starts after.
+// Opaque to the client, which only ever echoes it back.
+func formatLogCursor(entry models.ActionLog) string {
+	return entry.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + entry.ID
+}
+
+// parseLogCursor decodes what formatLogCursor produced. A cursor missing its id
+// half is still accepted so links minted by the previous, timestamp-only scheme
+// keep working; it simply falls back to the far end of that millisecond.
+func parseLogCursor(raw string) (time.Time, primitive.ObjectID, bool) {
+	stamp, id, _ := strings.Cut(raw, "|")
+	ts, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return time.Time{}, primitive.NilObjectID, false
+	}
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		// No usable id: treat every entry in that millisecond as already seen,
+		// which is exactly what the old cursor did.
+		return ts, primitive.NilObjectID, true
+	}
+	return ts, oid, true
 }
 
 // resolveLogIdentities fills in the subject/sender of ledger entries that were
