@@ -146,7 +146,15 @@ func (h *Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 	// Signed, expiring state to prevent CSRF on the OAuth callback. It is
 	// stateless: the callback verifies the signature, no server storage needed.
 	state := h.auth.IssueState()
+
+	// ?reconnect=1 is the "Reconnecter Gmail" path in the settings: the caller
+	// already has an account and is repairing a grant, which needs the consent
+	// screen to get a refresh token back. A first login does not force consent,
+	// so nothing changes for new users.
 	authURL := h.gmailService.GetAuthURL(state)
+	if r.URL.Query().Get("reconnect") == "1" {
+		authURL = h.gmailService.GetReconnectURL(state)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models.AuthResponse{AuthURL: authURL})
@@ -185,13 +193,22 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	filter := bson.M{"email": userEmail}
+	set := bson.M{
+		"accessToken": token.AccessToken,
+		"tokenExpiry": token.Expiry,
+		"updatedAt":   time.Now(),
+	}
+	// Google issues a refresh token only on the FIRST authorization for a given
+	// client and user, unless consent is forced. Every later authorization comes
+	// back with an empty one — and writing that over the stored token destroyed
+	// the account: the access token kept working for about an hour, then nothing
+	// could be refreshed and there was no way back from inside the app. Keep
+	// what we have unless Google actually hands us a new one.
+	if token.RefreshToken != "" {
+		set["refreshToken"] = token.RefreshToken
+	}
 	update := bson.M{
-		"$set": bson.M{
-			"accessToken":  token.AccessToken,
-			"refreshToken": token.RefreshToken,
-			"tokenExpiry":  token.Expiry,
-			"updatedAt":    time.Now(),
-		},
+		"$set": set,
 		"$setOnInsert": bson.M{
 			"email":     userEmail,
 			"createdAt": time.Now(),
@@ -410,7 +427,7 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 					rulesApplied++
 					byRule[match.Name]++
 					for _, act := range appliedActs {
-						h.logAction(ctx, userEmail, msg.Id, act, SourceRule)
+						h.logActionMeta(ctx, userEmail, msg.Id, act, SourceRule, email.Subject, email.From)
 					}
 				}
 			}
@@ -479,13 +496,17 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Record forward triage actions in the ledger (undo actions are not counted).
+	// One lookup, only on the branches that actually log: the history is useless
+	// without the subject, and resolving it here rather than at read time is what
+	// lets the entry be found by search later.
 	switch req.Action {
-	case "archive":
-		h.logAction(ctx, userEmail, req.MessageID, "archive", SourceDirect)
-	case "delete", "trash":
-		h.logAction(ctx, userEmail, req.MessageID, "delete", SourceDirect)
-	case "read":
-		h.logAction(ctx, userEmail, req.MessageID, "read", SourceDirect)
+	case "archive", "delete", "trash", "read":
+		action := req.Action
+		if action == "trash" {
+			action = "delete"
+		}
+		meta := h.emailIdentity(ctx, gmailClient, userEmail, req.MessageID)
+		h.logActionMeta(ctx, userEmail, req.MessageID, action, SourceDirect, meta.Subject, meta.From)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
@@ -50,12 +52,46 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	if source := r.URL.Query().Get("source"); source != "" {
 		filter["source"] = source
 	}
+	// Cursor pagination: "everything older than the last row I have" is a stable
+	// next page even while new actions land at the top. Without it the history
+	// stopped dead at the most recent 100 entries.
+	//
+	// The cursor is (createdAt, _id), not createdAt alone. BSON stores dates to
+	// the millisecond and a bulk action writes its entries back to back with no
+	// I/O between them, so a page boundary landing inside such a burst would drop
+	// every sibling sharing that timestamp — silently, which is the worst way to
+	// lose an audit trail. The _id tiebreaker also makes the sort total, so two
+	// requests cannot order equal timestamps differently.
+	if before := r.URL.Query().Get("before"); before != "" {
+		if ts, oid, ok := parseLogCursor(before); ok {
+			filter["$and"] = []bson.M{{
+				"$or": []bson.M{
+					{"createdAt": bson.M{"$lt": ts}},
+					{"createdAt": ts, "_id": bson.M{"$lt": oid}},
+				},
+			}}
+		}
+	}
+	// Free-text search over the message identity. Anchored to the caller's own
+	// entries by the userId filter above, and the needle is quoted so a stray
+	// regex metacharacter can't turn into a scan the user did not ask for.
+	//
+	// This matches the identity stored ON the entry. Every writer now records it,
+	// so anything logged from here on is searchable; entries predating that still
+	// render (resolveLogIdentities fills them in below) but cannot be matched,
+	// because their subject only exists after the query has run.
+	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+		needle := bson.M{"$regex": regexp.QuoteMeta(q), "$options": "i"}
+		filter["$or"] = []bson.M{{"subject": needle}, {"from": needle}}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// bson.D, not bson.M: a compound sort needs a defined key order, and a map
+	// has none.
 	cursor, err := h.db.ActionLog().Find(ctx, filter,
-		options.Find().SetSort(bson.M{"createdAt": -1}).SetLimit(limit))
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).SetLimit(limit))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to load history")
 		return
@@ -68,13 +104,93 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.resolveLogIdentities(ctx, userEmail, logs)
+
 	views := make([]actionLogView, 0, len(logs))
 	for _, l := range logs {
 		_, reversible := activity.Inverse(l.Action)
 		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": views})
+	// A full page means there is probably more; hand back the cursor to ask for
+	// it rather than making the client guess.
+	var nextBefore string
+	if int64(len(logs)) == limit && len(logs) > 0 {
+		nextBefore = formatLogCursor(logs[len(logs)-1])
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": views, "nextBefore": nextBefore})
+}
+
+// formatLogCursor encodes the (createdAt, _id) pair the next page starts after.
+// Opaque to the client, which only ever echoes it back.
+func formatLogCursor(entry models.ActionLog) string {
+	return entry.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + entry.ID
+}
+
+// parseLogCursor decodes what formatLogCursor produced. A cursor missing its id
+// half is still accepted so links minted by the previous, timestamp-only scheme
+// keep working; it simply falls back to the far end of that millisecond.
+func parseLogCursor(raw string) (time.Time, primitive.ObjectID, bool) {
+	stamp, id, _ := strings.Cut(raw, "|")
+	ts, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return time.Time{}, primitive.NilObjectID, false
+	}
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		// No usable id: treat every entry in that millisecond as already seen,
+		// which is exactly what the old cursor did.
+		return ts, primitive.NilObjectID, true
+	}
+	return ts, oid, true
+}
+
+// resolveLogIdentities fills in the subject/sender of ledger entries that were
+// written without them (either by a caller that did not hold the message, or
+// before the ledger carried an identity at all). It costs a single indexed
+// lookup for the whole page, and leaves entries whose email is no longer cached
+// untouched so the UI can fall back to a neutral label.
+func (h *Handler) resolveLogIdentities(ctx context.Context, userEmail string, logs []models.ActionLog) {
+	missing := make([]string, 0, len(logs))
+	seen := make(map[string]bool, len(logs))
+	for _, l := range logs {
+		if l.Subject != "" || l.From != "" || l.MessageID == "" || seen[l.MessageID] {
+			continue
+		}
+		seen[l.MessageID] = true
+		missing = append(missing, l.MessageID)
+	}
+	if len(missing) == 0 {
+		return
+	}
+
+	cursor, err := h.db.Emails().Find(ctx, bson.M{
+		"userId":    userEmail,
+		"messageId": bson.M{"$in": missing},
+	}, options.Find().SetProjection(bson.M{"messageId": 1, "subject": 1, "from": 1}))
+	if err != nil {
+		return // best-effort: the history still renders without identities
+	}
+	defer cursor.Close(ctx)
+
+	var found []models.Email
+	if err := cursor.All(ctx, &found); err != nil {
+		return
+	}
+	byID := make(map[string]models.Email, len(found))
+	for _, e := range found {
+		byID[e.MessageID] = e
+	}
+	for i := range logs {
+		if logs[i].Subject != "" || logs[i].From != "" {
+			continue
+		}
+		if e, ok := byID[logs[i].MessageID]; ok {
+			logs[i].Subject = e.Subject
+			logs[i].From = e.From
+		}
+	}
 }
 
 // UndoActionRequest is the request body for POST /api/activity/undo.
@@ -139,7 +255,7 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		bson.M{"$set": bson.M{"undone": true, "undoneAt": time.Now()}},
 	)
 	// Record the reversal itself so the audit trail stays truthful.
-	h.logAction(ctx, userEmail, entry.MessageID, inverse, SourceUndo)
+	h.logActionMeta(ctx, userEmail, entry.MessageID, inverse, SourceUndo, entry.Subject, entry.From)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
 }

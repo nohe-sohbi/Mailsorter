@@ -21,10 +21,15 @@ apiClient.interceptors.request.use((config) => {
 });
 
 // On 401 the session is missing/expired: clear it and bounce to login.
+//
+// Requests flagged `optional` opt out. The backend answers 401 both for a dead
+// Mailsorter session and for a revoked Gmail grant, so a purely cosmetic call
+// (fetching label names) taking the second kind would log the user out of a page
+// they were merely visiting. The failure is handled locally instead.
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !error.config?.optional) {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('userEmail');
       if (window.location.pathname !== '/') {
@@ -35,8 +40,25 @@ apiClient.interceptors.response.use(
   }
 );
 
+// The API answers errors in two shapes: writeError produces {error, status},
+// while the older handlers use http.Error and produce bare text. Reading only
+// one of them silently discarded the real reason and left the UI showing a
+// generic "Réessayez" — and `data?.trim()` on a JSON object throws outright.
+export function apiError(err, fallback = 'Une erreur est survenue.') {
+  const data = err?.response?.data;
+  if (typeof data === 'string' && data.trim()) return data.trim();
+  if (data && typeof data.error === 'string' && data.error.trim()) return data.error.trim();
+  if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
+  return fallback;
+}
+
 export const authService = {
-  getAuthUrl: () => apiClient.get('/api/auth/url'),
+  // reconnect forces Google's consent screen. Google only hands back a refresh
+  // token on a first authorization or when consent is re-granted, so repairing a
+  // revoked grant without it produces an access token that expires in an hour
+  // and nothing to renew it with.
+  getAuthUrl: ({ reconnect = false } = {}) =>
+    apiClient.get(`/api/auth/url${reconnect ? '?reconnect=1' : ''}`),
   handleCallback: (code, state) => {
     const params = new URLSearchParams({ code });
     if (state) params.set('state', state);
@@ -53,11 +75,31 @@ export const emailService = {
     const queryString = params.toString();
     return apiClient.get(`/api/emails${queryString ? `?${queryString}` : ''}`);
   },
+  // One message with its decoded body. The list endpoint omits bodies on
+  // purpose, so this is what makes the reader able to show an email at all.
+  // markRead mirrors what opening an email means everywhere else.
+  getEmail: (messageId, { markRead = false } = {}) =>
+    apiClient.get(`/api/emails/${encodeURIComponent(messageId)}${markRead ? '?markRead=1' : ''}`),
   syncEmails: () => apiClient.post('/api/emails/sync'),
   action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
+  // One action over a whole selection, server-side: N Gmail mutations behind a
+  // single request, with the protected-sender shield applied per message.
+  batchAction: (messageIds, action, labelName = '') =>
+    apiClient.post('/api/emails/batch-action', { messageIds, action, labelName }),
+  batchUndo: (messageIds, action) => apiClient.post('/api/emails/batch-undo', { messageIds, action }),
   getStats: () => apiClient.get('/api/stats'),
   // Snooze: pull a message out of the inbox until a preset (or explicit) time.
   snooze: (messageId, preset) => apiClient.post('/api/emails/snooze', { messageId, preset }),
+};
+
+// The user's real Gmail labels. The rules editor used to ask people to type a
+// label name blind (a typo silently created a second, near-identical label) and
+// the reader rendered raw ids like "Label_1234567".
+export const labelService = {
+  // `optional`: label names are an enhancement everywhere they are used (the
+  // rules picker, the reader's chips). Every caller degrades gracefully, so a
+  // failure here must never cost the user their session.
+  list: () => apiClient.get('/api/labels', { optional: true }),
 };
 
 export const snoozeService = {
@@ -104,6 +146,10 @@ export const accountService = {
     const qs = new URLSearchParams();
     if (params.source) qs.set('source', params.source);
     if (params.limit) qs.set('limit', params.limit);
+    // Cursor from the previous page's `nextBefore`, and free-text search over
+    // the subject/sender of the acted-on message.
+    if (params.before) qs.set('before', params.before);
+    if (params.q) qs.set('q', params.q);
     const s = qs.toString();
     return apiClient.get(`/api/activity/log${s ? `?${s}` : ''}`);
   },

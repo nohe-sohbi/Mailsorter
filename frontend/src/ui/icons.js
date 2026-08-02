@@ -167,6 +167,49 @@ export const BellOff = make(
   </>
 );
 
+export const Star = make(
+  <path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8L3.5 9.7l5.9-.9L12 3.5z" />
+);
+
+export const Sun = make(
+  <>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+  </>
+);
+
+export const Moon = make(<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" />);
+
+export const Monitor = make(
+  <>
+    <rect x="2" y="4" width="20" height="13" rx="2" />
+    <path d="M8 21h8M12 17v4" />
+  </>
+);
+
+export const ChevronDown = make(<path d="m6 9 6 6 6-6" />);
+
+export const Filter = make(<path d="M3 5h18l-7 8v6l-4 2v-8L3 5z" />);
+
+export const Paperclip = make(
+  <path d="M21 12.5 12.5 21a5 5 0 0 1-7-7l8.5-8.5a3.5 3.5 0 0 1 5 5L10.4 19.1a2 2 0 0 1-2.8-2.8l8-8" />
+);
+
+export const Reply = make(
+  <>
+    <path d="M9 17 4 12l5-5" />
+    <path d="M4 12h11a5 5 0 0 1 5 5v2" />
+  </>
+);
+
+export const Download = make(
+  <>
+    <path d="M12 3v12" />
+    <path d="m7 12 5 5 5-5" />
+    <path d="M4 20h16" />
+  </>
+);
+
 export const Google = ({ size = 18, className = '' }) => (
   <svg width={size} height={size} viewBox="0 0 48 48" className={className} aria-hidden>
     <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8a12 12 0 1 1 7.9-21l5.7-5.7A20 20 0 1 0 44 24c0-1.2-.1-2.4-.4-3.5z" />

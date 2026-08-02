@@ -72,7 +72,7 @@ function Setup({ onComplete }) {
 
           <dl className="mt-6 space-y-3">
             {envVars.map(({ name, value }) => (
-              <div key={name} className="rounded-xl border border-ink-200/70 bg-ink-50/60 px-4 py-3">
+              <div key={name} className="rounded-xl border border-hairline/70 bg-ink-50/60 px-4 py-3">
                 <dt className="font-mono text-xs font-bold text-ink-800">{name}</dt>
                 <dd className="mt-1 break-all font-mono text-xs text-ink-500">{value}</dd>
               </div>
@@ -96,19 +96,19 @@ function Setup({ onComplete }) {
             )}
           </button>
 
-          <p className="mt-4 flex items-center justify-center gap-2 text-xs text-ink-400">
+          <p className="mt-4 flex items-center justify-center gap-2 text-xs text-muted">
             <Shield size={14} /> Le secret ne transite jamais par le navigateur.
           </p>
         </div>
 
         {/* Guide */}
-        <div className="animate-fade-up rounded-2xl border border-ink-200/70 bg-white/60 p-8 [animation-delay:100ms]">
+        <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-8 [animation-delay:100ms]">
           <span className="chip bg-brand-50 text-brand-700">Guide express · 2 min</span>
           <h2 className="mt-4 text-lg font-bold text-ink-900">Obtenir vos identifiants Google</h2>
           <ol className="mt-5 space-y-4">
             {GUIDE.map((step, i) => (
               <li key={i} className="flex gap-3">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-fill text-xs font-bold text-white">
                   {i + 1}
                 </span>
                 <p className="pt-0.5 text-sm leading-relaxed text-ink-600">
@@ -130,9 +130,9 @@ function Setup({ onComplete }) {
             ))}
           </ol>
 
-          <div className="mt-6 rounded-xl border border-ink-200/70 bg-white px-4 py-3">
+          <div className="mt-6 rounded-xl border border-hairline/70 bg-surface px-4 py-3">
             <p className="flex items-center gap-2 text-xs font-semibold text-ink-700">
-              <Check size={14} className="text-emerald-600" /> URI de redirection à déclarer
+              <Check size={14} className="text-positive-600" /> URI de redirection à déclarer
             </p>
             <p className="mt-1.5 break-all font-mono text-xs text-ink-500">{redirectUri}</p>
           </div>

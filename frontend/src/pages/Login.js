@@ -100,7 +100,7 @@ function Login() {
             >
               Tarifs
             </button>
-            <span className="hidden chip border border-ink-200 bg-white text-ink-600 sm:inline-flex">
+            <span className="hidden chip border border-hairline bg-surface text-ink-600 sm:inline-flex">
               <Shield size={14} className="text-brand-600" /> OAuth Google sécurisé
             </span>
           </div>
@@ -135,12 +135,12 @@ function Login() {
                 )}
               </button>
               <div className="flex items-center gap-2 text-sm text-ink-500">
-                <Check size={16} className="text-emerald-600" /> Gratuit · Sans carte bancaire
+                <Check size={16} className="text-positive-600" /> Gratuit · Sans carte bancaire
               </div>
             </div>
 
             {error && (
-              <div className="mt-5 inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
+              <div className="mt-5 inline-flex items-center gap-2 rounded-xl border border-danger-100 bg-danger-50 px-4 py-2.5 text-sm text-danger-700">
                 {error}
               </div>
             )}
@@ -160,7 +160,7 @@ function Login() {
                     { Icon: Tag, from: 'Amazon', act: 'Libellé · Achats', conf: 92 },
                     { Icon: Sparkles, from: 'Promo Casino', act: 'Supprimer', conf: 88 },
                   ].map((r, i) => (
-                    <div key={i} className="flex items-center gap-3 rounded-xl border border-ink-200 bg-white p-3">
+                    <div key={i} className="flex items-center gap-3 rounded-xl border border-hairline bg-surface p-3">
                       <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
                         <r.Icon size={18} />
                       </span>
@@ -168,7 +168,7 @@ function Login() {
                         <div className="truncate text-sm font-semibold text-ink-900">{r.from}</div>
                         <div className="text-xs text-ink-500">{r.act}</div>
                       </div>
-                      <span className="chip bg-emerald-50 text-emerald-700">{r.conf}%</span>
+                      <span className="chip bg-positive-50 text-positive-700">{r.conf}%</span>
                     </div>
                   ))}
                 </div>
@@ -233,27 +233,27 @@ function Login() {
         </section>
 
         {/* Final CTA */}
-        <section className="mt-24 overflow-hidden rounded-3xl bg-brand-600 p-10 text-center text-white sm:p-16">
+        <section className="mt-24 overflow-hidden rounded-3xl bg-brand-fill p-10 text-center text-white sm:p-16">
           <h2 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">
             Reprenez le contrôle de votre inbox.
           </h2>
-          <p className="mx-auto mt-3 max-w-md text-brand-100">
+          <p className="mx-auto mt-3 max-w-md text-white/85">
             Connectez Gmail et regardez le désordre disparaître. C'est gratuit, et ça prend 30 secondes.
           </p>
           <button
             onClick={handleLogin}
             disabled={loading}
-            className="mt-8 inline-flex items-center justify-center gap-3 rounded-xl bg-white px-7 py-3.5 text-base font-bold text-brand-700 shadow-soft transition-colors hover:bg-brand-50 disabled:opacity-60"
+            className="mt-8 inline-flex items-center justify-center gap-3 rounded-xl bg-surface px-7 py-3.5 text-base font-bold text-brand-700 shadow-soft transition-colors hover:bg-brand-50 disabled:opacity-60"
           >
             {loading ? <Spinner size={20} className="text-brand-600" /> : <Google size={20} />}
             Commencer maintenant
           </button>
         </section>
 
-        <footer className="mt-16 flex flex-col items-center justify-between gap-4 border-t border-ink-200 pt-8 text-sm text-ink-400 sm:flex-row">
+        <footer className="mt-16 flex flex-col items-center justify-between gap-4 border-t border-hairline pt-8 text-sm text-muted sm:flex-row">
           <span>© {new Date().getFullYear()} Mailsorter</span>
           <span className="flex items-center gap-2">
-            <Shield size={14} className="text-ink-400" /> Vos emails ne quittent jamais votre contrôle.
+            <Shield size={14} className="text-muted" /> Vos emails ne quittent jamais votre contrôle.
           </span>
         </footer>
       </div>

@@ -22,7 +22,18 @@ const (
 
 // logAction appends one entry to the action ledger. Best-effort: a ledger
 // failure must never break the underlying action, so the error is ignored.
+//
+// Use logActionMeta instead whenever the caller already holds the message: the
+// history is only useful if it says which email was acted on, and capturing the
+// subject/sender at write time survives the email later leaving the local cache.
 func (h *Handler) logAction(ctx context.Context, userEmail, messageID, action, source string) {
+	h.logActionMeta(ctx, userEmail, messageID, action, source, "", "")
+}
+
+// logActionMeta is logAction with the email's human identity attached. Empty
+// subject/from are stored as absent (omitempty) and resolved at read time by
+// GetActionLog, so entries written before this existed still render.
+func (h *Handler) logActionMeta(ctx context.Context, userEmail, messageID, action, source, subject, from string) {
 	if action == "" || action == "keep" {
 		return // nothing was mutated in Gmail
 	}
@@ -31,6 +42,8 @@ func (h *Handler) logAction(ctx context.Context, userEmail, messageID, action, s
 		MessageID: messageID,
 		Action:    action,
 		Source:    source,
+		Subject:   subject,
+		From:      from,
 		CreatedAt: time.Now(),
 	})
 }

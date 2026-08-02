@@ -79,6 +79,21 @@ func (s *Service) GetAuthURL(state string) string {
 	return s.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
 }
 
+// GetReconnectURL is the authorization URL for someone who is already connected
+// and is trying to repair a revoked or insufficient grant.
+//
+// It forces the consent screen, because that is the only way Google returns a
+// refresh token again: without it a re-authorization yields an access token
+// alone, so the very flow meant to fix a broken account cannot fix it.
+func (s *Service) GetReconnectURL(state string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.AuthCodeURL(state,
+		oauth2.AccessTypeOffline,
+		oauth2.SetAuthURLParam("prompt", "consent"),
+	)
+}
+
 func (s *Service) ExchangeCode(code string) (*oauth2.Token, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -156,6 +171,19 @@ func (s *Service) ListMessagesWithPagination(gmailService *gmail.Service, query 
 func (s *Service) GetMessage(gmailService *gmail.Service, messageID string) (*gmail.Message, error) {
 	return withRetry(s.retry, func() (*gmail.Message, error) {
 		return gmailService.Users.Messages.Get("me", messageID).Format("full").Do()
+	})
+}
+
+// GetMessageMetadata fetches only the headers needed to identify a message.
+// Format("metadata") skips the body entirely, which matters when the caller is
+// resolving a few hundred senders before a bulk action rather than displaying
+// anything.
+func (s *Service) GetMessageMetadata(gmailService *gmail.Service, messageID string) (*gmail.Message, error) {
+	return withRetry(s.retry, func() (*gmail.Message, error) {
+		return gmailService.Users.Messages.Get("me", messageID).
+			Format("metadata").
+			MetadataHeaders("From", "Subject").
+			Do()
 	})
 }
 
@@ -256,6 +284,11 @@ type LabelStat struct {
 }
 
 // GetMailboxStats retrieves comprehensive mailbox statistics
+// countedLabels are the only labels GetMailboxStats needs counts for.
+var countedLabels = map[string]bool{
+	"INBOX": true, "SENT": true, "DRAFT": true, "SPAM": true, "TRASH": true,
+}
+
 func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, error) {
 	user := "me"
 
@@ -281,8 +314,14 @@ func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, e
 		return nil, fmt.Errorf("failed to list labels: %w", err)
 	}
 
+	// Labels.List does not carry message counts, so each counter needs its own
+	// Labels.Get. Fetching every label meant 30-50 sequential round-trips on a
+	// typical account to fill six numbers — on the endpoint the inbox calls on
+	// every load. Only the system labels the stats actually report are fetched.
 	for _, label := range labels.Labels {
-		// Get detailed label info including message counts
+		if !countedLabels[label.Id] {
+			continue
+		}
 		labelDetail, err := withRetry(s.retry, func() (*gmail.Label, error) {
 			return gmailService.Users.Labels.Get(user, label.Id).Do()
 		})
@@ -290,22 +329,23 @@ func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, e
 			continue
 		}
 
-		labelStat := LabelStat{
+		stats.LabelStats = append(stats.LabelStats, LabelStat{
 			LabelID:        labelDetail.Id,
 			LabelName:      labelDetail.Name,
 			MessagesTotal:  labelDetail.MessagesTotal,
 			MessagesUnread: labelDetail.MessagesUnread,
 			ThreadsTotal:   labelDetail.ThreadsTotal,
 			Type:           labelDetail.Type,
-		}
-		stats.LabelStats = append(stats.LabelStats, labelStat)
+		})
 
-		// Extract key counts
 		switch labelDetail.Id {
 		case "INBOX":
 			stats.InboxCount = uint64(labelDetail.MessagesTotal)
-		case "UNREAD":
-			stats.UnreadCount = uint64(labelDetail.MessagesTotal)
+			// Unread is read from INBOX, not from the UNREAD label: the latter
+			// counts unread messages across the WHOLE account — archive, spam and
+			// trash included — so the figure shown next to "Boîte de réception"
+			// could exceed the inbox total and never matched what Gmail displays.
+			stats.UnreadCount = uint64(labelDetail.MessagesUnread)
 		case "SENT":
 			stats.SentCount = uint64(labelDetail.MessagesTotal)
 		case "DRAFT":
@@ -367,19 +407,56 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 }
 
 func GetEmailBody(message *gmail.Message) string {
-	if message.Payload.Body.Data != "" {
-		return decodeBodyData(message.Payload.Body.Data)
+	plain, html := GetEmailBodies(message)
+	if plain != "" {
+		return plain
 	}
+	return html
+}
 
-	for _, part := range message.Payload.Parts {
-		if part.MimeType == "text/plain" || part.MimeType == "text/html" {
-			if part.Body.Data != "" {
-				return decodeBodyData(part.Body.Data)
-			}
+// GetEmailBodies walks the whole MIME tree and returns the first text/plain and
+// text/html representations it finds, decoded.
+//
+// Walking recursively matters: a typical newsletter is multipart/mixed wrapping
+// a multipart/alternative wrapping the actual text parts, so a single-level scan
+// sees only container parts whose MIME type matches neither and reports an empty
+// body. Attachment parts (those carrying a filename) are skipped so a .txt
+// attachment never masquerades as the message.
+//
+// Both representations are returned because the two consumers want different
+// things: the reader renders the HTML, while the deterministic rule engine
+// matches on the plain text, where markup would produce false positives.
+func GetEmailBodies(message *gmail.Message) (plain, html string) {
+	if message == nil || message.Payload == nil {
+		return "", ""
+	}
+	collectBodies(message.Payload, &plain, &html, 0)
+	return plain, html
+}
+
+// maxMIMEDepth bounds the recursion: a malformed or hostile message must not be
+// able to drive an unbounded walk.
+const maxMIMEDepth = 12
+
+func collectBodies(part *gmail.MessagePart, plain, html *string, depth int) {
+	if part == nil || depth > maxMIMEDepth || (*plain != "" && *html != "") {
+		return
+	}
+	// A part with a filename is an attachment, not the message body.
+	if part.Filename == "" && part.Body != nil && part.Body.Data != "" {
+		switch {
+		case strings.HasPrefix(part.MimeType, "text/plain") && *plain == "":
+			*plain = decodeBodyData(part.Body.Data)
+		case strings.HasPrefix(part.MimeType, "text/html") && *html == "":
+			*html = decodeBodyData(part.Body.Data)
+		case part.MimeType == "" && *plain == "" && len(part.Parts) == 0:
+			// Single-part messages sometimes arrive without a declared type.
+			*plain = decodeBodyData(part.Body.Data)
 		}
 	}
-
-	return ""
+	for _, child := range part.Parts {
+		collectBodies(child, plain, html, depth+1)
+	}
 }
 
 // decodeBodyData decodes the base64url payload the Gmail API returns for message

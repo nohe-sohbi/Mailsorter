@@ -21,6 +21,12 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/emails", h.GetEmails).Methods("GET")
 	r.HandleFunc("/api/emails/sync", h.SyncEmails).Methods("POST")
 	r.HandleFunc("/api/emails/action", h.EmailAction).Methods("POST")
+	// Selection-scoped triage: one action over N messages, and its reversal.
+	r.HandleFunc("/api/emails/batch-action", h.BatchAction).Methods("POST")
+	r.HandleFunc("/api/emails/batch-undo", h.BatchUndo).Methods("POST")
+	// Single message with its decoded body: the list omits bodies on purpose.
+	// Registered last so the fixed /api/emails/* paths above always win.
+	r.HandleFunc("/api/emails/{id}", h.GetEmail).Methods("GET")
 	r.HandleFunc("/api/emails/snooze", h.Snooze).Methods("POST")
 	r.HandleFunc("/api/stats", h.GetMailboxStats).Methods("GET")
 	r.HandleFunc("/api/stats/activity", h.GetActivity).Methods("GET")
