@@ -16,7 +16,6 @@ dist/
 # IDE
 .vscode/
 .idea/
-CLAUDE.md
 *.swp
 *.swo
 *~
