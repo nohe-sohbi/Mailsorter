@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -53,28 +52,27 @@ func (h *Handler) enabledRules(ctx context.Context, userEmail string) []models.S
 func (h *Handler) GetRules(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	ruleset, err := h.loadRules(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to load rules", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to load rules")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"rules": ruleset})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": ruleset})
 }
 
 // CreateRule validates and persists a new rule.
 func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -85,40 +83,38 @@ func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 
 	rule := ruleFromInput(userEmail, in)
 	if err := rules.Validate(rule); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	rule.CreatedAt = time.Now()
 	rule.UpdatedAt = rule.CreatedAt
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	res, err := h.db.SortingRules().InsertOne(ctx, rule)
 	if err != nil {
-		http.Error(w, "Failed to save rule", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to save rule")
 		return
 	}
 	if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
 		rule.ID = oid.Hex()
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(rule)
+	writeJSON(w, http.StatusCreated, rule)
 }
 
 // UpdateRule replaces an existing rule's editable fields after validation.
 func (h *Handler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
 	oid, err := primitive.ObjectIDFromHex(mux.Vars(r)["id"])
 	if err != nil {
-		http.Error(w, "Invalid rule ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid rule ID")
 		return
 	}
 
@@ -129,11 +125,11 @@ func (h *Handler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 
 	rule := ruleFromInput(userEmail, in)
 	if err := rules.Validate(rule); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	res, err := h.db.SortingRules().UpdateOne(ctx,
@@ -151,47 +147,45 @@ func (h *Handler) UpdateRule(w http.ResponseWriter, r *http.Request) {
 		}},
 	)
 	if err != nil {
-		http.Error(w, "Failed to update rule", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to update rule")
 		return
 	}
 	if res.MatchedCount == 0 {
-		http.Error(w, "Rule not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Rule not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 // DeleteRule removes a rule the caller owns.
 func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
 	oid, err := primitive.ObjectIDFromHex(mux.Vars(r)["id"])
 	if err != nil {
-		http.Error(w, "Invalid rule ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid rule ID")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	res, err := h.db.SortingRules().DeleteOne(ctx, bson.M{"_id": oid, "userId": userEmail})
 	if err != nil {
-		http.Error(w, "Failed to delete rule", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to delete rule")
 		return
 	}
 	if res.DeletedCount == 0 {
-		http.Error(w, "Rule not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Rule not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ApplyRules runs every enabled rule across the current inbox. Each email is
@@ -201,17 +195,16 @@ func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
 	enabled := h.enabledRules(ctx, userEmail)
 	if len(enabled) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"applied": 0, "scanned": 0, "byRule": map[string]int{}})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"applied": 0, "scanned": 0, "byRule": map[string]int{}})
 		return
 	}
 
@@ -223,7 +216,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 
 	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 200)
 	if err != nil {
-		http.Error(w, "Failed to read inbox: "+err.Error(), http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "Failed to read inbox: "+err.Error())
 		return
 	}
 
@@ -273,8 +266,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"applied":          applied,
 		"scanned":          len(messages),
 		"byRule":           byRule,
@@ -292,17 +284,16 @@ const previewSampleCap = 12
 func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	enabled := h.enabledRules(ctx, userEmail)
 	if len(enabled) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"scanned": 0, "willApply": 0, "byRule": []rules.RuleHits{}, "samples": []rules.PreviewItem{},
 		})
 		return
@@ -316,7 +307,7 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 
 	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 200)
 	if err != nil {
-		http.Error(w, "Failed to read inbox: "+err.Error(), http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "Failed to read inbox: "+err.Error())
 		return
 	}
 
@@ -341,8 +332,7 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 		samples = samples[:previewSampleCap]
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"scanned":   len(messages),
 		"willApply": len(items),
 		"byRule":    hits,
@@ -379,7 +369,7 @@ func ruleForSender(userEmail string, req models.CreateSenderRuleRequest) models.
 func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -388,31 +378,29 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if extractSenderAddress(req.SenderEmail) == "" {
-		http.Error(w, "Adresse d'expéditeur requise", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Adresse d'expéditeur requise")
 		return
 	}
 
 	rule := ruleForSender(userEmail, req)
 	if err := rules.Validate(rule); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	res, err := h.db.SortingRules().InsertOne(ctx, rule)
 	if err != nil {
-		http.Error(w, "Failed to save rule", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to save rule")
 		return
 	}
 	if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
 		rule.ID = oid.Hex()
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(rule)
+	writeJSON(w, http.StatusCreated, rule)
 }
 
 // applyRuleToMessage runs every action of a matched rule on one message, in

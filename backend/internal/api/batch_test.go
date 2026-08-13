@@ -95,9 +95,9 @@ func TestBatchUndoOnlyAcceptsReversibleActions(t *testing.T) {
 	srv := newRoutedTestServer(t)
 	token := newTestAuth(t).IssueSession("nohe@example.com")
 
-	// Labelling and read-marking have no clean inverse the client can replay, so
+	// Read-marking and starring have no inverse the client can replay, so
 	// offering to undo them would be a lie.
-	for _, action := range []string{"label", "read", "unread", "star", "unstar", ""} {
+	for _, action := range []string{"read", "unread", "star", "unstar", ""} {
 		res := postBatch(t, srv.URL, "/api/emails/batch-undo", token, BatchActionRequest{
 			MessageIDs: []string{"a"},
 			Action:     action,
@@ -109,36 +109,79 @@ func TestBatchUndoOnlyAcceptsReversibleActions(t *testing.T) {
 	}
 }
 
+// Undoing a labelling is the one reversal that takes an argument. Without the
+// label name the server has nothing to remove, and must say so rather than
+// reporting a reversal that removed nothing.
+func TestBatchUndoOfALabelNeedsTheLabelName(t *testing.T) {
+	srv := newRoutedTestServer(t)
+	token := newTestAuth(t).IssueSession("nohe@example.com")
+
+	res := postBatch(t, srv.URL, "/api/emails/batch-undo", token, BatchActionRequest{
+		MessageIDs: []string{"a"},
+		Action:     "label",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("batch-undo of a label with no name = %d, want 400", res.StatusCode)
+	}
+
+	// That it is accepted WITH a name is asserted without a round trip: reaching
+	// the acceptance path means waiting out the deliberately dead datastore, and
+	// the contract that matters is the mapping itself.
+	if batchInverse["label"] != "unlabel" {
+		t.Errorf("batchInverse[label] = %q, want unlabel: labelling is meant to be reversible", batchInverse["label"])
+	}
+}
+
 // batchInverse is what the client uses to decide whether to offer "Annuler" on a
 // batch, so every inverse it claims must be one the undo path can actually
-// replay through applyInverseAction, and must agree with the per-entry history
-// undo. A mismatch would surface as an undo button that silently does nothing.
-func TestBatchInverseMatchesLedgerInverse(t *testing.T) {
+// replay through applyInverseActionWithLabel. A mismatch would surface as an
+// undo button that silently does nothing.
+func TestBatchInverseIsReplayable(t *testing.T) {
 	if len(batchInverse) == 0 {
 		t.Fatal("batchInverse must not be empty")
 	}
 	for action, inverse := range batchInverse {
-		ledgerInverse, ok := activity.Inverse(action)
-		if !ok {
-			t.Errorf("batch offers to undo %q but the ledger has no inverse for it", action)
-			continue
-		}
-		if ledgerInverse != inverse {
-			t.Errorf("inverse of %q: batch says %q, ledger says %q", action, inverse, ledgerInverse)
-		}
-		// applyInverseAction is the single place a reversal is turned into a Gmail
-		// mutation; an inverse it does not know is a silent no-op.
 		if !isHandledInverse(inverse) {
-			t.Errorf("applyInverseAction does not handle inverse %q", inverse)
+			t.Errorf("applyInverseActionWithLabel does not handle inverse %q (for %q)", inverse, action)
 		}
 	}
 }
 
-// isHandledInverse mirrors the switch in applyInverseAction. Kept next to the
-// test that depends on it so adding a case there without adding it here is loud.
+// Where the two undo paths overlap they must say the same thing: the per-entry
+// history undo and the batch undo reverse the same ledger entries.
+//
+// They do NOT overlap everywhere, and that is deliberate. The batch can reverse
+// a labelling because the client still holds the label name it just applied; the
+// ledger stores no label name, so the history genuinely cannot, and claiming
+// otherwise would put a dead "Annuler" on every label row.
+func TestBatchInverseAgreesWithLedgerWhereBothKnowTheAction(t *testing.T) {
+	ledgerCannotReverse := map[string]string{
+		"label": "the action log stores no label name, so a per-entry undo has nothing to remove",
+	}
+
+	for action, inverse := range batchInverse {
+		ledgerInverse, ok := activity.Inverse(action)
+		if !ok {
+			if _, expected := ledgerCannotReverse[action]; !expected {
+				t.Errorf("batch offers to undo %q but the ledger has no inverse for it, and the divergence is undocumented", action)
+			}
+			continue
+		}
+		if _, expected := ledgerCannotReverse[action]; expected {
+			t.Errorf("%q is documented as ledger-irreversible but activity.Inverse now handles it: drop it from the exception list", action)
+		}
+		if ledgerInverse != inverse {
+			t.Errorf("inverse of %q: batch says %q, ledger says %q", action, inverse, ledgerInverse)
+		}
+	}
+}
+
+// isHandledInverse mirrors the switch in applyInverseActionWithLabel. Kept next
+// to the test that depends on it so adding a case there without adding it here
+// is loud.
 func isHandledInverse(inverse string) bool {
 	switch inverse {
-	case "unarchive", "untrash", "unread":
+	case "unarchive", "untrash", "unread", "unlabel":
 		return true
 	}
 	return false

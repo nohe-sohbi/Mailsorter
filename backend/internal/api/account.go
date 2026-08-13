@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -54,11 +53,11 @@ func (h *Handler) quotaExceeded(ctx context.Context, userEmail string) bool {
 func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	used := h.getUsage(ctx, userEmail)
@@ -68,8 +67,7 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 		limit = -1 // unlimited
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"used":      used,
 		"limit":     limit,
 		"period":    currentPeriod(),
@@ -87,15 +85,14 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(account.RedactUser(h.loadUser(ctx, userEmail)))
+	writeJSON(w, http.StatusOK, account.RedactUser(h.loadUser(ctx, userEmail)))
 }
 
 // billingEnabled reports whether paid checkout is actually wired up. Both the
@@ -144,15 +141,14 @@ func (h *Handler) userSettings(ctx context.Context, userEmail string) models.Use
 func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.userSettings(ctx, userEmail))
+	writeJSON(w, http.StatusOK, h.userSettings(ctx, userEmail))
 }
 
 // UpdateSettings persists the caller's tunable account settings. It merges only
@@ -190,7 +186,7 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		set["digestHourUTC"] = hour
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	if _, err := h.db.Users().UpdateOne(ctx,
@@ -213,21 +209,20 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetActivity(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	summary, err := h.activitySummary(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to load activity", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to load activity")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(summary)
+	writeJSON(w, http.StatusOK, summary)
 }
 
 // activitySummary loads the trailing-7-day action ledger for a user and folds
@@ -265,19 +260,18 @@ func (h *Handler) activitySummary(ctx context.Context, userEmail string) (activi
 func (h *Handler) GetDigest(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	summary, err := h.activitySummary(ctx, userEmail)
 	if err != nil {
-		http.Error(w, "Failed to load activity", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to load activity")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(digest.Render(summary, time.Now()))
+	writeJSON(w, http.StatusOK, digest.Render(summary, time.Now()))
 }

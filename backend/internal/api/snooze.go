@@ -2,7 +2,8 @@ package api
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/snooze"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -37,7 +39,7 @@ const maxSnoozeWakeAttempts = 5
 func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -46,27 +48,18 @@ func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.MessageID == "" {
-		http.Error(w, "Message ID required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Message ID required")
 		return
 	}
 
-	// Resolve the wake time: an explicit future timestamp wins, otherwise a preset.
-	wakeAt := req.WakeAt
 	now := time.Now()
-	if wakeAt.IsZero() {
-		resolved, err := snooze.Resolve(req.Preset, now)
-		if err != nil {
-			http.Error(w, "Choisissez une échéance valide", http.StatusBadRequest)
-			return
-		}
-		wakeAt = resolved
-	}
-	if !wakeAt.After(now) {
-		http.Error(w, "L'échéance doit être dans le futur", http.StatusBadRequest)
+	wakeAt, wErr := resolveWakeAt(req.Preset, req.WakeAt, now)
+	if wErr != nil {
+		writeError(w, http.StatusBadRequest, wErr.Error())
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -76,55 +69,187 @@ func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enrich the record with sender/subject for the snoozed list (best-effort).
-	from, subject, threadID := "", "", ""
+	var identity models.Email
 	if msg, mErr := h.gmailService.GetMessage(gmailClient, req.MessageID); mErr == nil {
-		from, subject, _, _ = gmail.ParseEmailHeaders(msg)
-		threadID = msg.ThreadId
+		from, subject, _, _ := gmail.ParseEmailHeaders(msg)
+		identity = models.Email{MessageID: req.MessageID, From: from, Subject: subject, ThreadID: msg.ThreadId}
 	}
 
 	labelID, err := h.ensureLabel(ctx, gmailClient, userEmail, snoozeLabelName)
 	if err != nil {
-		http.Error(w, "Impossible de préparer le report", http.StatusBadGateway)
-		return
-	}
-	// Out of the inbox, tagged as snoozed.
-	if err := h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{labelID}, []string{"INBOX"}); err != nil {
-		http.Error(w, "Report impossible : "+err.Error(), http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "Impossible de préparer le report")
 		return
 	}
 
-	_, err = h.db.Snoozes().UpdateOne(ctx,
-		bson.M{"userId": userEmail, "messageId": req.MessageID, "status": "scheduled"},
-		bson.M{
-			"$set": bson.M{
-				"from": from, "subject": subject, "threadId": threadID,
-				"wakeAt": wakeAt, "status": "scheduled", "updatedAt": now,
-			},
-			"$setOnInsert": bson.M{
-				"userId": userEmail, "messageId": req.MessageID, "createdAt": now,
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
-	if err != nil {
-		http.Error(w, "Failed to save snooze", http.StatusInternalServerError)
+	if err := h.snoozeMessage(ctx, gmailClient, userEmail, labelID, identity, wakeAt, now); err != nil {
+		writeError(w, http.StatusBadGateway, "Report impossible : "+err.Error())
 		return
 	}
 
-	h.logActionMeta(ctx, userEmail, req.MessageID, "archive", SourceSnooze, subject, from)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "snoozed",
 		"wakeAt": wakeAt,
 	})
+}
+
+// resolveWakeAt turns a request's preset-or-timestamp pair into one concrete
+// wake time. An explicit timestamp wins and is validated on its own terms (in
+// the future, inside the supported horizon) rather than merely being "not in the
+// past": presets cannot produce a bad time, a date picker can. Shared by the
+// single and batch snooze routes so both accept exactly the same input.
+func resolveWakeAt(preset string, explicit, now time.Time) (time.Time, error) {
+	if explicit.IsZero() {
+		resolved, err := snooze.Resolve(preset, now)
+		if err != nil {
+			return time.Time{}, errInvalidSnoozeDeadline
+		}
+		return resolved, nil
+	}
+	// Surfaced verbatim, like rules.Validate: the pure package owns the wording
+	// so the same sentence reaches the user from every caller.
+	if err := snooze.ValidateWake(explicit, now); err != nil {
+		return time.Time{}, err
+	}
+	return explicit, nil
+}
+
+// errInvalidSnoozeDeadline is what an unknown preset reports. The preset names
+// are ours, not the user's, so the message names the fix rather than the value.
+var errInvalidSnoozeDeadline = errors.New("choisissez une échéance valide")
+
+// snoozeMessage performs one snooze: out of the inbox, tagged with the snooze
+// label, recorded as scheduled and journaled. The caller resolves the wake time
+// and the label id once (they are identical across a batch) and passes whatever
+// identity it already holds, so the batch route costs one label lookup rather
+// than one per message.
+func (h *Handler) snoozeMessage(ctx context.Context, gmailClient *gmailapi.Service, userEmail, labelID string, identity models.Email, wakeAt, now time.Time) error {
+	messageID := identity.MessageID
+	if err := h.gmailService.ModifyMessage(gmailClient, messageID, []string{labelID}, []string{"INBOX"}); err != nil {
+		return err
+	}
+
+	if _, err := h.db.Snoozes().UpdateOne(ctx,
+		bson.M{"userId": userEmail, "messageId": messageID, "status": "scheduled"},
+		bson.M{
+			"$set": bson.M{
+				"from": identity.From, "subject": identity.Subject, "threadId": identity.ThreadID,
+				"wakeAt": wakeAt, "status": "scheduled", "updatedAt": now,
+			},
+			"$setOnInsert": bson.M{
+				"userId": userEmail, "messageId": messageID, "createdAt": now,
+			},
+		},
+		options.Update().SetUpsert(true),
+	); err != nil {
+		// The message is already out of the inbox at this point. Without a
+		// scheduled row nothing would ever bring it back, so this is a real
+		// failure and not something to swallow.
+		return fmt.Errorf("le report n'a pas pu être enregistré: %w", err)
+	}
+
+	h.logActionMeta(ctx, userEmail, messageID, "archive", SourceSnooze, identity.Subject, identity.From)
+	return nil
+}
+
+// BatchSnooze reports a whole selection to the same wake time in one request.
+//
+// Snoozing was a one-message-at-a-time affordance reachable only from the
+// reader, which made it useless against the case it is best at: the twenty
+// newsletters you want out of the way until Saturday. Everything else about it
+// is unchanged, protected senders included: a bulk snooze takes mail out of the
+// inbox, which is exactly what the VIP list is there to veto.
+func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		writeError(w, http.StatusUnauthorized, "User email required")
+		return
+	}
+
+	var req models.BatchSnoozeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.MessageIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "Aucun email sélectionné")
+		return
+	}
+	if len(req.MessageIDs) > maxBatchActionSize {
+		writeError(w, http.StatusBadRequest, "Trop d'emails sélectionnés en une fois")
+		return
+	}
+
+	now := time.Now()
+	wakeAt, wErr := resolveWakeAt(req.Preset, req.WakeAt, now)
+	if wErr != nil {
+		writeError(w, http.StatusBadRequest, wErr.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+
+	labelID, err := h.ensureLabel(ctx, gmailClient, userEmail, snoozeLabelName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Impossible de préparer le report")
+		return
+	}
+
+	// One lookup for the whole batch, exactly as BatchAction does: the shield
+	// needs each sender, and the snoozed list needs the subject to be readable.
+	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
+	protectedList := h.protectedValues(ctx, userEmail)
+	if len(protectedList) > 0 || len(identities) < len(req.MessageIDs) {
+		h.fillMissingIdentities(ctx, gmailClient, req.MessageIDs, identities)
+	}
+
+	res := batchSnoozeResult{Total: len(req.MessageIDs), WakeAt: wakeAt}
+	res.Snoozed = make([]string, 0, len(req.MessageIDs))
+
+	for _, id := range req.MessageIDs {
+		if id == "" || ctx.Err() != nil {
+			res.Failed++
+			continue
+		}
+		meta := identities[id]
+		meta.MessageID = id
+		// Fail safe, like the batch actions: a sender we could not establish is
+		// treated as possibly protected rather than assumed harmless.
+		if len(protectedList) > 0 && (meta.From == "" || !allows(protect.ActionArchive, meta.From, protectedList)) {
+			res.Protected++
+			continue
+		}
+		if err := h.snoozeMessage(ctx, gmailClient, userEmail, labelID, meta, wakeAt, now); err != nil {
+			log.Printf("snooze: batch failed for %s: %v", id, err)
+			res.Failed++
+			continue
+		}
+		res.Snoozed = append(res.Snoozed, id)
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+// batchSnoozeResult mirrors batchActionResult: the client has to be able to tell
+// "done" from "shielded by your VIP list" from "failed".
+type batchSnoozeResult struct {
+	Snoozed   []string  `json:"snoozed"`
+	Failed    int       `json:"failed"`
+	Protected int       `json:"protectedSkipped"`
+	Total     int       `json:"total"`
+	WakeAt    time.Time `json:"wakeAt"`
 }
 
 // GetSnoozes lists the caller's snoozes (scheduled by default), soonest first.
 func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -133,26 +258,25 @@ func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 		status = "scheduled"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	cursor, err := h.db.Snoozes().Find(ctx,
 		bson.M{"userId": userEmail, "status": status},
 		options.Find().SetSort(bson.M{"wakeAt": 1}).SetLimit(200))
 	if err != nil {
-		http.Error(w, "Failed to load snoozes", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to load snoozes")
 		return
 	}
 	defer cursor.Close(ctx)
 
 	rows := make([]models.Snooze, 0)
 	if err := cursor.All(ctx, &rows); err != nil {
-		http.Error(w, "Failed to decode snoozes", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode snoozes")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"snoozes": rows})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"snoozes": rows})
 }
 
 // WakeSnooze brings a snoozed email back to the inbox immediately (the user
@@ -160,22 +284,22 @@ func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
 	oid, err := primitive.ObjectIDFromHex(mux.Vars(r)["id"])
 	if err != nil {
-		http.Error(w, "Invalid id", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	var s models.Snooze
 	if err := h.db.Snoozes().FindOne(ctx, bson.M{"_id": oid, "userId": userEmail}).Decode(&s); err != nil {
-		http.Error(w, "Snooze introuvable", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Snooze introuvable")
 		return
 	}
 
@@ -186,7 +310,7 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.restoreSnoozed(ctx, gmailClient, userEmail, s.MessageID); err != nil {
-		http.Error(w, "Réactivation impossible : "+err.Error(), http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "Réactivation impossible : "+err.Error())
 		return
 	}
 
@@ -194,8 +318,7 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 		bson.M{"$set": bson.M{"status": "done", "updatedAt": time.Now()}})
 	h.logActionMeta(ctx, userEmail, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "woken"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "woken"})
 }
 
 // restoreSnoozed returns a message to the inbox, marks it unread and strips the

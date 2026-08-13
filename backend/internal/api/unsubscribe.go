@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"time"
@@ -22,7 +21,7 @@ import (
 func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -31,11 +30,11 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.MessageID == "" {
-		http.Error(w, "Message ID required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Message ID required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	token, err := h.getUserToken(ctx, userEmail)
@@ -47,7 +46,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 
 	msg, err := h.gmailService.GetMessage(gmailClient, req.MessageID)
 	if err != nil {
-		http.Error(w, "Email introuvable", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Email introuvable")
 		return
 	}
 
@@ -57,7 +56,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	senderName := extractSenderName(from)
 
 	if httpURL == "" && mailto == "" {
-		http.Error(w, "Cet expéditeur ne propose pas de lien de désabonnement.", http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, "Cet expéditeur ne propose pas de lien de désabonnement.")
 		return
 	}
 
@@ -98,8 +97,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		archived = h.archiveBySender(ctx, gmailClient, userEmail, senderAddr)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"done":     done,
 		"method":   method,
 		"url":      httpURL,
@@ -142,11 +140,11 @@ func (h *Handler) archiveBySender(ctx context.Context, gmailClient *gmailapi.Ser
 func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	pipeline := []bson.M{
@@ -171,7 +169,7 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 
 	cursor, err := h.db.Emails().Aggregate(ctx, pipeline)
 	if err != nil {
-		http.Error(w, "Failed to aggregate subscriptions", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to aggregate subscriptions")
 		return
 	}
 	defer cursor.Close(ctx)
@@ -184,7 +182,7 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 		OneClick     bool      `bson:"oneClick"`
 	}
 	if err := cursor.All(ctx, &results); err != nil {
-		http.Error(w, "Failed to decode subscriptions", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode subscriptions")
 		return
 	}
 
@@ -213,6 +211,5 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(subscriptions)
+	writeJSON(w, http.StatusOK, subscriptions)
 }

@@ -1,19 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { emailService, labelService, apiError } from '../services/api';
-import { X, Archive, Trash, Mail, BellOff, Clock, Shield, Paperclip, Star } from '../ui/icons';
+import { X, Archive, Trash, Mail, BellOff, Shield, Paperclip, Star, Download } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 import { ErrorState } from '../ui/primitives';
+import { useToast } from '../ui/Toast';
+import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
-
-// Friendly snooze presets, resolved to concrete wake times server-side.
-const SNOOZE_PRESETS = [
-  ['laterToday', 'Plus tard'],
-  ['thisEvening', 'Ce soir'],
-  ['tomorrow', 'Demain matin'],
-  ['weekend', 'Ce week-end'],
-  ['nextWeek', 'Semaine prochaine'],
-];
 
 const AVATAR_TONES = ['bg-brand-fill', 'bg-info-fill', 'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill'];
 
@@ -86,15 +79,16 @@ function EmailReader({
   onUnsubscribe,
   onSnooze,
   onProtect,
+  onFlag,
   unsubscribing,
   onRead,
 }) {
+  const toast = useToast();
   const [full, setFull] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [downloading, setDownloading] = useState(null);
   const [labelsById, setLabelsById] = useState(null);
-  const snoozeRef = useRef(null);
   const loadSeqRef = useRef(0);
   // Held in a ref so loadMessage can stay a stable callback.
   const onReadRef = useRef(onRead);
@@ -167,30 +161,43 @@ function EmailReader({
     };
   }, []);
 
-  // The snooze menu is a popover: Escape and outside clicks must close it, and
-  // focus has to come back to the button that opened it.
-  useEffect(() => {
-    if (!snoozeOpen) return undefined;
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        setSnoozeOpen(false);
-        snoozeRef.current?.focus();
-      }
-    };
-    document.addEventListener('keydown', onKey, true);
-    return () => document.removeEventListener('keydown', onKey, true);
-  }, [snoozeOpen]);
-
   if (!email) return null;
 
   const merged = { ...email, ...(full || {}) };
   const canUnsubscribe = Boolean(merged.unsubUrl || merged.unsubMailto);
   const attachments = full?.attachments || [];
+  // The list keeps a local isStarred flag (patched optimistically), while the
+  // freshly loaded message only carries Gmail's labels. Read both so the toggle
+  // reflects whichever one is newer.
+  const starred = merged.isStarred ?? (merged.labelIds || []).includes('STARRED');
 
-  const handleSnooze = (preset) => {
-    setSnoozeOpen(false);
-    onSnooze?.(preset);
+  // The download goes through axios because the route is session-authenticated:
+  // a plain <a href> would send no Authorization header and get a 401. So the
+  // bytes arrive as a Blob and we hand the browser an object URL, revoked right
+  // after the click so the blob does not stay pinned in memory for the session.
+  const handleDownload = async (attachment) => {
+    if (!attachment?.attachmentId || !messageId) return;
+    setDownloading(attachment.attachmentId);
+    try {
+      const { data } = await emailService.downloadAttachment(messageId, attachment.attachmentId);
+      const objectUrl = URL.createObjectURL(data);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = attachment.filename || 'piece-jointe';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoking in the same tick cancels the download on some browsers, which
+      // read the blob after the click returns. A delay keeps it alive long
+      // enough without leaking the buffer for the rest of the session.
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (err) {
+      // The error body is a Blob here (responseType), so the shared reader would
+      // find no message: say plainly that the download failed instead.
+      toast.error(apiError(err, 'Téléchargement impossible.'));
+    } finally {
+      setDownloading(null);
+    }
   };
 
   const formatDate = (dateStr) => {
@@ -222,41 +229,34 @@ function EmailReader({
           <X size={18} />
         </button>
         <div className="flex items-center gap-0.5">
-          {onSnooze && (
-            <div className="relative">
+          {onSnooze && <SnoozeButton onSnooze={onSnooze} ariaLabel="Reporter cet email" />}
+          {onFlag && (
+            <>
+              {/* Favori and "unread again" are the two things a reader is for
+                  besides getting rid of mail: flagging what matters and putting
+                  back what you opened by mistake. Both were reachable only from
+                  the list's keyboard shortcuts, i.e. not while reading. */}
               <button
-                ref={snoozeRef}
-                onClick={() => setSnoozeOpen((v) => !v)}
-                className="btn-ghost btn-sm btn-icon"
-                aria-haspopup="menu"
-                aria-expanded={snoozeOpen}
-                aria-label="Reporter cet email"
-                title="Reporter (sortir de la boîte et revenir plus tard)"
+                onClick={() => onFlag(starred ? 'unstar' : 'star')}
+                className={cn(
+                  'btn-ghost btn-sm btn-icon',
+                  starred ? 'text-caution-600 hover:bg-caution-50' : 'hover:bg-ink-100'
+                )}
+                aria-pressed={starred}
+                aria-label={starred ? 'Retirer des favoris' : 'Mettre en favori'}
+                title={starred ? 'Retirer des favoris' : 'Mettre en favori'}
               >
-                <Clock size={18} />
+                <Star size={18} className={starred ? 'fill-current' : undefined} />
               </button>
-              {snoozeOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setSnoozeOpen(false)} />
-                  <div
-                    role="menu"
-                    className="absolute right-0 z-20 mt-1 w-48 animate-fade-up overflow-hidden rounded-xl border border-hairline bg-surface-raised py-1 shadow-card"
-                  >
-                    <div className="px-3 py-1.5 text-xs font-semibold text-muted">Reporter jusqu'à…</div>
-                    {SNOOZE_PRESETS.map(([value, label]) => (
-                      <button
-                        key={value}
-                        role="menuitem"
-                        onClick={() => handleSnooze(value)}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-700 hover:bg-ink-100"
-                      >
-                        <Clock size={15} className="text-subtle" /> {label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
+              <button
+                onClick={() => onFlag('unread')}
+                className="btn-ghost btn-sm btn-icon"
+                aria-label="Marquer comme non lu"
+                title="Marquer comme non lu (le remettre dans la pile)"
+              >
+                <Mail size={18} />
+              </button>
+            </>
           )}
           {onProtect && (
             <button
@@ -336,17 +336,37 @@ function EmailReader({
 
         {attachments.length > 0 && (
           <div className="mt-4 flex flex-wrap gap-2">
-            {attachments.map((a, i) => (
-              <span
-                key={`${a.filename}-${i}`}
-                className="chip bg-ink-100 text-ink-700"
-                title={`${a.filename} · ${a.mimeType || 'fichier'}`}
-              >
-                <Paperclip size={13} />
-                <span className="max-w-[180px] truncate">{a.filename}</span>
-                <span className="text-muted">{formatBytes(a.size)}</span>
-              </span>
-            ))}
+            {attachments.map((a, i) => {
+              // A part with no attachment id carries its bytes inline in the
+              // payload; there is nothing to fetch, so it stays a plain chip
+              // rather than a button that could only fail.
+              const downloadable = Boolean(a.attachmentId);
+              const label = `${a.filename} · ${a.mimeType || 'fichier'}`;
+              if (!downloadable) {
+                return (
+                  <span key={`${a.filename}-${i}`} className="chip bg-ink-100 text-ink-700" title={label}>
+                    <Paperclip size={13} />
+                    <span className="max-w-[180px] truncate">{a.filename}</span>
+                    <span className="text-muted">{formatBytes(a.size)}</span>
+                  </span>
+                );
+              }
+              const busy = downloading === a.attachmentId;
+              return (
+                <button
+                  key={`${a.filename}-${i}`}
+                  type="button"
+                  onClick={() => handleDownload(a)}
+                  disabled={busy}
+                  className="chip bg-ink-100 text-ink-700 transition-colors hover:bg-brand-50 hover:text-brand-700 disabled:opacity-60"
+                  title={`Télécharger ${label}`}
+                >
+                  {busy ? <Spinner size={13} /> : <Download size={13} />}
+                  <span className="max-w-[180px] truncate">{a.filename}</span>
+                  <span className="text-muted">{formatBytes(a.size)}</span>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -381,9 +401,14 @@ function EmailReader({
           )}
         </div>
 
-        {visibleLabels.length > 0 && (
+        {/* STARRED est une étiquette système, donc filtrée de visibleLabels :
+            gardée sur la seule longueur de cette liste, la puce « Favori » ne
+            s'affichait que sur un email portant par ailleurs une étiquette
+            utilisateur. Mettre en favori depuis le lecteur ne montrait alors
+            rien du tout. */}
+        {(starred || visibleLabels.length > 0) && (
           <div className="mt-6 flex flex-wrap gap-2 border-t border-hairline pt-5">
-            {(merged.labelIds || []).includes('STARRED') && (
+            {starred && (
               <span className="chip bg-caution-50 text-caution-700">
                 <Star size={13} /> Favori
               </span>

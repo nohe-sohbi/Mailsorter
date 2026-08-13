@@ -68,7 +68,7 @@ func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			http.Error(w, "Authentication required", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "Authentication required")
 			return
 		}
 
@@ -79,7 +79,7 @@ func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			http.Error(w, "Invalid or expired session", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "Invalid or expired session")
 			return
 		}
 
@@ -108,7 +108,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("[panic] %s %s: %v", r.Method, r.URL.Path, rec)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, "Internal server error")
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -239,7 +239,7 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		key := clientKey(r)
 		if !rl.allow(key) {
 			w.Header().Set("Retry-After", "1")
-			http.Error(w, "Too many requests", http.StatusTooManyRequests)
+			writeError(w, http.StatusTooManyRequests, "Too many requests")
 			return
 		}
 		next.ServeHTTP(w, r)

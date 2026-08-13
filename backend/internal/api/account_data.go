@@ -38,6 +38,8 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 		return h.db.ActionLog()
 	case account.DatasetJobs:
 		return h.db.AnalysisJobs()
+	case account.DatasetSavedSearches:
+		return h.db.SavedSearches()
 	}
 	return nil
 }
@@ -51,11 +53,11 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 func (h *Handler) ExportAccount(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	export := map[string]interface{}{
@@ -115,11 +117,11 @@ func (h *Handler) loadUser(ctx context.Context, userEmail string) models.User {
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	deleted := map[string]int64{}
@@ -139,8 +141,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		deleted["account"] = res.DeletedCount
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "deleted",
 		"deleted": deleted,
 	})

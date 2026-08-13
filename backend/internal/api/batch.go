@@ -38,12 +38,20 @@ type batchActionResult struct {
 	InverseName string   `json:"inverse,omitempty"`
 }
 
-// batchInverse maps a batch action to the action that undoes it. Labelling and
-// marking-as-read are not offered as reversible here: un-labelling needs the
-// label id the caller no longer has, and "unread" is rarely what the user means.
+// batchInverse maps a batch action to the action that undoes it.
+//
+// Un-labelling needs a Gmail label id, which the client does not have. It has
+// the label NAME though (it is what it sent to apply it), and the server can
+// resolve one to the other, so labelling is reversible after all: this is the
+// bulk action a user is most likely to regret, since it is the only one that
+// leaves no visible trace in the inbox to undo by hand.
+//
+// Marking as read stays one-way on purpose: "unread" is rarely what the user
+// means by undoing a triage pass.
 var batchInverse = map[string]string{
 	"archive": "unarchive",
 	"delete":  "untrash",
+	"label":   "unlabel",
 }
 
 // BatchAction applies one triage action to a list of messages in a single
@@ -88,7 +96,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 
 	// Gmail mutations are sequential and network-bound; budget generously but
 	// stay under any sane proxy timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -138,7 +146,9 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 		}
 		// The deadline is not plumbed into the Gmail client, so the loop has to
 		// check it itself: past it, every ledger write would fail silently and
-		// the batch would keep mutating Gmail off the books.
+		// the batch would keep mutating Gmail off the books. Since the context
+		// descends from the request, this also stops the batch when the caller
+		// hangs up, rather than mutating an inbox nobody is waiting on.
 		if ctx.Err() != nil {
 			res.Failed++
 			continue
@@ -213,8 +223,15 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Trop d'emails à restaurer en une fois")
 		return
 	}
+	// Un-labelling is the one reversal that takes an argument: which label to
+	// take off. Checked here with the rest of the payload, before any Gmail or
+	// Mongo call, so a malformed request costs nothing.
+	if inverse == "unlabel" && req.LabelName == "" {
+		writeError(w, http.StatusBadRequest, "Nom du libellé requis")
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -223,12 +240,26 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The label id is resolved once for the whole batch, from the name the
+	// caller applied.
+	var labelID string
+	if inverse == "unlabel" {
+		labelID, err = h.ensureLabel(ctx, gmailClient, userEmail, req.LabelName)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "Libellé introuvable : "+err.Error())
+			return
+		}
+	}
+
 	restored := 0
 	for _, id := range req.MessageIDs {
 		if id == "" {
 			continue
 		}
-		if err := h.applyInverseAction(gmailClient, id, inverse); err != nil {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := h.applyInverseActionWithLabel(gmailClient, id, inverse, labelID); err != nil {
 			continue
 		}
 		restored++
@@ -273,7 +304,7 @@ func (h *Handler) emailIdentities(ctx context.Context, userEmail string, message
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId":    userEmail,
 		"messageId": bson.M{"$in": messageIDs},
-	}, options.Find().SetProjection(bson.M{"messageId": 1, "subject": 1, "from": 1}))
+	}, options.Find().SetProjection(bson.M{"messageId": 1, "subject": 1, "from": 1, "threadId": 1}))
 	if err != nil {
 		return out
 	}
@@ -360,6 +391,6 @@ func (h *Handler) fillMissingIdentities(ctx context.Context, gmailClient *gmaila
 			continue
 		}
 		from, subject, _, _ := gmail.ParseEmailHeaders(msg)
-		into[id] = models.Email{MessageID: id, From: from, Subject: subject}
+		into[id] = models.Email{MessageID: id, From: from, Subject: subject, ThreadID: msg.ThreadId}
 	}
 }

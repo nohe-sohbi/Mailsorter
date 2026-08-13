@@ -24,10 +24,14 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// Selection-scoped triage: one action over N messages, and its reversal.
 	r.HandleFunc("/api/emails/batch-action", h.BatchAction).Methods("POST")
 	r.HandleFunc("/api/emails/batch-undo", h.BatchUndo).Methods("POST")
-	// Single message with its decoded body: the list omits bodies on purpose.
-	// Registered last so the fixed /api/emails/* paths above always win.
-	r.HandleFunc("/api/emails/{id}", h.GetEmail).Methods("GET")
+	// Snooze: one message, or a whole selection to the same wake time.
 	r.HandleFunc("/api/emails/snooze", h.Snooze).Methods("POST")
+	r.HandleFunc("/api/emails/batch-snooze", h.BatchSnooze).Methods("POST")
+	// Single message with its decoded body (the list omits bodies on purpose)
+	// and its attachments. Registered last so every fixed /api/emails/* path
+	// above always wins over the {id} pattern.
+	r.HandleFunc("/api/emails/{id}/attachments/{attachmentId}", h.DownloadAttachment).Methods("GET")
+	r.HandleFunc("/api/emails/{id}", h.GetEmail).Methods("GET")
 	r.HandleFunc("/api/stats", h.GetMailboxStats).Methods("GET")
 	r.HandleFunc("/api/stats/activity", h.GetActivity).Methods("GET")
 	r.HandleFunc("/api/stats/digest", h.GetDigest).Methods("GET")
@@ -50,6 +54,9 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/account/profile", h.GetProfile).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.GetSettings).Methods("GET")
 	r.HandleFunc("/api/account/settings", h.UpdateSettings).Methods("PUT")
+	// Send the daily recap right now, so the digest can be verified without
+	// waiting a day to find out the Gmail grant lost its send scope.
+	r.HandleFunc("/api/account/digest/test", h.SendTestDigest).Methods("POST")
 	// RGPD: data portability (export) and right to erasure (delete).
 	r.HandleFunc("/api/account/export", h.ExportAccount).Methods("GET")
 	r.HandleFunc("/api/account", h.DeleteAccount).Methods("DELETE")
@@ -64,12 +71,25 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/rules", h.CreateRule).Methods("POST")
 	r.HandleFunc("/api/rules/apply", h.ApplyRules).Methods("POST")
 	r.HandleFunc("/api/rules/preview", h.PreviewRules).Methods("POST")
+	// Order IS the engine's semantics (first match wins), and a ruleset is worth
+	// backing up: both are edited as a whole, hence their own routes. Registered
+	// before /api/rules/{id} so the fixed paths win.
+	r.HandleFunc("/api/rules/reorder", h.ReorderRules).Methods("PUT")
+	r.HandleFunc("/api/rules/export", h.ExportRules).Methods("GET")
+	r.HandleFunc("/api/rules/import", h.ImportRules).Methods("POST")
+	r.HandleFunc("/api/rules/{id}/duplicate", h.DuplicateRule).Methods("POST")
 	r.HandleFunc("/api/rules/{id}", h.UpdateRule).Methods("PUT")
 	r.HandleFunc("/api/rules/{id}", h.DeleteRule).Methods("DELETE")
 
 	// Unsubscribe / subscriptions cleanup
 	r.HandleFunc("/api/subscriptions", h.GetSubscriptions).Methods("GET")
 	r.HandleFunc("/api/unsubscribe", h.Unsubscribe).Methods("POST")
+
+	// Saved searches: the user's own Gmail queries, kept as one-click filters.
+	r.HandleFunc("/api/searches", h.GetSavedSearches).Methods("GET")
+	r.HandleFunc("/api/searches", h.CreateSavedSearch).Methods("POST")
+	r.HandleFunc("/api/searches/{id}/use", h.UseSavedSearch).Methods("POST")
+	r.HandleFunc("/api/searches/{id}", h.DeleteSavedSearch).Methods("DELETE")
 
 	// Labels routes
 	r.HandleFunc("/api/labels", h.GetLabels).Methods("GET")

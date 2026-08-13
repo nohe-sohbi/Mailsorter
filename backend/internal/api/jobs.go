@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -83,13 +82,13 @@ func (h *Handler) updateJob(ctx context.Context, id primitive.ObjectID, set bson
 // so the UI never blocks while hundreds of emails are processed.
 func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 	if h.aiClient == nil {
-		http.Error(w, "AI service not configured", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
 		return
 	}
 
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -98,18 +97,18 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.EmailIDs) == 0 {
-		http.Error(w, "No email IDs provided", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "No email IDs provided")
 		return
 	}
 	if len(req.EmailIDs) > analysisJobCap {
 		req.EmailIDs = req.EmailIDs[:analysisJobCap]
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	if h.quotaExceeded(ctx, userEmail) {
-		http.Error(w, "Quota mensuel atteint. Passez à Pro pour continuer.", http.StatusPaymentRequired)
+		writeError(w, http.StatusPaymentRequired, "Quota mensuel atteint. Passez à Pro pour continuer.")
 		return
 	}
 
@@ -123,7 +122,7 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.db.AnalysisJobs().InsertOne(ctx, job)
 	if err != nil {
-		http.Error(w, "Failed to create job", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to create job")
 		return
 	}
 	jobID := res.InsertedID.(primitive.ObjectID).Hex()
@@ -135,34 +134,31 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 		go h.processAnalysisJob(jobID)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"jobId": jobID, "status": "queued"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"jobId": jobID, "status": "queued"})
 }
 
 // GetJob returns the live status of an analysis job (polled by the client).
 func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
 	objectID, err := primitive.ObjectIDFromHex(mux.Vars(r)["id"])
 	if err != nil {
-		http.Error(w, "Invalid job ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid job ID")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	var job models.AnalysisJob
 	if err := h.db.AnalysisJobs().FindOne(ctx, bson.M{"_id": objectID, "userId": userEmail}).Decode(&job); err != nil {
-		http.Error(w, "Job not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Job not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(job)
+	writeJSON(w, http.StatusOK, job)
 }

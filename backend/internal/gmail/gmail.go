@@ -207,6 +207,38 @@ func (s *Service) SendMessage(gmailService *gmail.Service, raw string) error {
 	})
 }
 
+// GetAttachment downloads one attachment's bytes.
+//
+// Gmail never ships attachment data with the message: Payload only carries the
+// part's metadata plus an attachmentId, and the bytes live behind a second call
+// that returns them base64url-encoded. Decoding here means every caller gets the
+// raw file, which is what the download route streams back.
+func (s *Service) GetAttachment(gmailService *gmail.Service, messageID, attachmentID string) ([]byte, error) {
+	body, err := withRetry(s.retry, func() (*gmail.MessagePartBody, error) {
+		return gmailService.Users.Messages.Attachments.Get("me", messageID, attachmentID).Do()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return decodeAttachmentData(body.Data)
+}
+
+// decodeAttachmentData decodes an attachment payload from the base64url alphabet
+// (padded or not). Unlike decodeBodyData it refuses to fall back to the raw
+// string: a body that failed to decode is still readable text, whereas handing
+// back the base64 of a PDF would produce a file that opens as garbage. A caller
+// gets an error and can say so instead.
+func decodeAttachmentData(data string) ([]byte, error) {
+	if decoded, err := base64.URLEncoding.DecodeString(data); err == nil {
+		return decoded, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(data)
+	if err != nil {
+		return nil, fmt.Errorf("attachment payload is not valid base64url: %w", err)
+	}
+	return decoded, nil
+}
+
 func (s *Service) ListLabels(gmailService *gmail.Service) ([]*gmail.Label, error) {
 	response, err := withRetry(s.retry, func() (*gmail.ListLabelsResponse, error) {
 		return gmailService.Users.Labels.List("me").Do()

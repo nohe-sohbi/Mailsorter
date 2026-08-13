@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -50,7 +49,7 @@ func (h *Handler) JoinWaitlist(w http.ResponseWriter, r *http.Request) {
 
 	email := normalizeWaitlistEmail(in.Email)
 	if email == "" {
-		http.Error(w, "Adresse email invalide", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Adresse email invalide")
 		return
 	}
 
@@ -59,7 +58,7 @@ func (h *Handler) JoinWaitlist(w http.ResponseWriter, r *http.Request) {
 		source = "pricing"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	set := bson.M{"source": source, "plan": waitlistPlan}
@@ -78,10 +77,9 @@ func (h *Handler) JoinWaitlist(w http.ResponseWriter, r *http.Request) {
 		options.Update().SetUpsert(true),
 	)
 	if err != nil {
-		http.Error(w, "Failed to join waitlist", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to join waitlist")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"joined": true, "email": email})
+	writeJSON(w, http.StatusOK, map[string]any{"joined": true, "email": email})
 }

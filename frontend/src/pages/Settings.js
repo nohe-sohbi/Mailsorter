@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { protectService, accountService, authService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { track } from '../lib/analytics';
-import { Settings as SettingsIcon, Shield, X, Mail, Refresh, Google } from '../ui/icons';
+import { Settings as SettingsIcon, Shield, X, Mail, Refresh, Google, Search } from '../ui/icons';
+import Modal from '../ui/Modal';
 import Spinner from '../ui/Spinner';
 
 // The API answers with a JSON object on some routes and a bare string on others
@@ -127,8 +129,39 @@ function AutoSyncSettings({ settings, onSaved }) {
 function DigestSettings({ settings, onSaved }) {
   const toast = useToast();
   const [saving, setSaving] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [sendingTest, setSendingTest] = useState(false);
   const enabled = !!settings.digestEnabled;
   const hour = normalizeHour(settings.digestHourUTC);
+
+  const openPreview = async () => {
+    setLoadingPreview(true);
+    try {
+      const { data } = await accountService.getDigestPreview();
+      setPreview(data);
+    } catch (err) {
+      toast.error(errText(err, "L'aperçu n'a pas pu être chargé."));
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const sendTest = async () => {
+    setSendingTest(true);
+    try {
+      const { data } = await accountService.sendTestDigest();
+      toast.success(
+        data.total > 0
+          ? 'Digest envoyé : regardez votre boîte.'
+          : 'Digest envoyé. Votre semaine est vide, le récap le dit tel quel.'
+      );
+    } catch (err) {
+      toast.error(errText(err, "L'envoi de test a échoué."));
+    } finally {
+      setSendingTest(false);
+    }
+  };
 
   // The offset cannot change while the page is open, so the 24 labels are built
   // once instead of on every keystroke elsewhere in the tree.
@@ -211,7 +244,44 @@ function DigestSettings({ settings, onSaved }) {
             <Spinner size={14} className="text-brand-500" /> Enregistrement…
           </p>
         )}
+
+        {/* Deux questions que le réglage seul ne répondait pas : à quoi
+            ressemble ce mail, et l'envoi fonctionne-t-il vraiment ? La seconde
+            demandait d'attendre un jour pour découvrir que l'autorisation Gmail
+            n'avait plus le scope d'envoi. */}
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-hairline pt-4">
+          <button onClick={openPreview} disabled={loadingPreview} className="btn-secondary btn-sm">
+            {loadingPreview ? <Spinner size={15} /> : <Search size={15} />} Voir un aperçu
+          </button>
+          <button onClick={sendTest} disabled={sendingTest} className="btn-ghost btn-sm">
+            {sendingTest ? <Spinner size={15} /> : <Mail size={15} />} M'envoyer un test
+          </button>
+          <span className="text-xs text-muted">Un test n'utilise pas le digest du jour.</span>
+        </div>
       </div>
+
+      {preview && (
+        <Modal
+          open
+          onClose={() => setPreview(null)}
+          title="Aperçu du digest"
+          description="Exactement ce que vous recevrez, rendu depuis vos 7 derniers jours."
+          size="lg"
+        >
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Objet</p>
+            <p className="mb-4 font-bold text-ink-900">{preview.subject}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Contenu</p>
+            {/* Le HTML vient de notre propre moteur de rendu (internal/digest),
+                mais il transporte des données de l'utilisateur : il passe donc
+                par dompurify comme tout HTML affiché dans l'app. */}
+            <div
+              className="email-body mt-1 rounded-xl border border-hairline p-4"
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(preview.html || '') }}
+            />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

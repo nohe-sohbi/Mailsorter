@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useEmails, DEFAULT_QUERY } from '../contexts/EmailContext';
-import { aiService, senderService, emailService, subscriptionService, protectService, labelService, apiError } from '../services/api';
+import { aiService, senderService, emailService, subscriptionService, protectService, labelService, searchService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
 import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
+import SnoozeButton from '../ui/SnoozeMenu';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
@@ -19,6 +20,16 @@ import {
 } from '../ui/icons';
 
 const isReversible = (a) => a === 'archive' || a === 'delete';
+
+// The four non-removing actions and how each one shows in the list before the
+// server has answered. Their inverses double as the rollback when it refuses.
+const FLAG_PATCH = {
+  read: { isRead: true },
+  unread: { isRead: false },
+  star: { isStarred: true },
+  unstar: { isStarred: false },
+};
+const FLAG_INVERSE = { read: 'unread', unread: 'read', star: 'unstar', unstar: 'star' };
 
 // Mirrors maxBatchActionSize in backend/internal/api/batch.go.
 const BATCH_LIMIT = 200;
@@ -56,6 +67,76 @@ const toneFor = (seed = '') => {
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
   return AVATAR_TONES[h % AVATAR_TONES.length];
 };
+
+// Mirrors internal/search.SuggestName: the save dialog opens on the query's
+// most specific term rather than an empty field, because naming a filter is the
+// step people abandon.
+function suggestSearchName(query = '') {
+  const tokens = query.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+  let fallback = '';
+  for (const token of tokens) {
+    const colon = token.indexOf(':');
+    const value = colon > 0 && colon < token.length - 1 ? token.slice(colon + 1).replace(/^["']|["']$/g, '') : token;
+    if (token.toLowerCase().startsWith('in:')) {
+      if (!fallback) fallback = value;
+      continue;
+    }
+    return value;
+  }
+  return fallback || query.trim();
+}
+
+function SaveSearchDialog({ query, onCancel, onSave }) {
+  const [name, setName] = useState(() => suggestSearchName(query));
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef(null);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    const ok = await onSave(name.trim(), query);
+    // Keep the dialog open on failure: the message says what to fix, and the
+    // user should not have to retype the name to try again.
+    if (!ok) setSaving(false);
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onCancel}
+      title="Enregistrer cette recherche"
+      description="Elle rejoindra vos filtres, à un clic."
+      initialFocusRef={inputRef}
+    >
+      <form onSubmit={submit}>
+        <label htmlFor="saved-search-name" className="block text-sm font-bold text-ink-900">
+          Nom
+        </label>
+        <input
+          ref={inputRef}
+          id="saved-search-name"
+          className="input mt-1.5"
+          value={name}
+          maxLength={60}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Ex. Recrutement"
+        />
+        <p className="mt-2 text-xs text-muted">
+          Requête : <span className="font-mono text-ink-700">{query}</span>
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="btn-secondary">
+            Annuler
+          </button>
+          <button type="submit" disabled={saving || !name.trim()} className="btn-primary">
+            {saving ? <Spinner size={16} /> : <Star size={16} />} Enregistrer
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 
 function ConfidenceRing({ value = 0, color = 'rgb(var(--brand-600))' }) {
   const pct = Math.round((value || 0) * 100);
@@ -113,6 +194,8 @@ function Inbox() {
   const [showWelcome, setShowWelcome] = useState(false);
   const [labelPickerOpen, setLabelPickerOpen] = useState(false);
   const [gamify, setGamify] = useState(getStreakState);
+  const [savedSearches, setSavedSearches] = useState([]);
+  const [savingSearch, setSavingSearch] = useState(null);
   const [job, setJob] = useState(null);
   const [announcement, setAnnouncement] = useState('');
 
@@ -253,6 +336,57 @@ function Inbox() {
     setSelectedEmails([]);
     setSelectedEmail(null);
     fetchData({ forceRefresh: true, sync: false, query });
+  };
+
+  // --- Saved searches -------------------------------------------------------
+  // A query worked out once ("in:inbox from:linkedin.com older_than:7d") was
+  // usable exactly once: the box kept the language, not the result.
+  const loadSavedSearches = useCallback(() => {
+    searchService
+      .list()
+      .then(({ data }) => setSavedSearches(data.searches || []))
+      // Silencieux : les filtres intégrés restent là, la page fonctionne sans.
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadSavedSearches();
+  }, [loadSavedSearches]);
+
+  const isSaved = (query) => savedSearches.some((s) => s.query === query);
+
+  const runSavedSearch = (saved) => {
+    setSearchQuery('');
+    runQuery(saved.query);
+    track('saved_search_used');
+    // Fire-and-forget: the counter only orders the bar, and a failed increment
+    // must never cost the user their search.
+    searchService.markUsed(saved.id).catch(() => {});
+  };
+
+  const saveSearch = async (name, query) => {
+    try {
+      const { data } = await searchService.save(name, query);
+      setSavedSearches((prev) => [data, ...prev.filter((s) => s.id !== data.id)]);
+      setSavingSearch(null);
+      track('saved_search_created');
+      toast.success(`« ${data.name} » ajoutée à vos filtres.`);
+      return true;
+    } catch (err) {
+      toast.error(apiError(err, "La recherche n'a pas pu être enregistrée."));
+      return false;
+    }
+  };
+
+  const removeSavedSearch = async (saved) => {
+    // Optimiste : c'est un raccourci, pas une donnée. Le rétablir coûte un clic.
+    setSavedSearches((prev) => prev.filter((s) => s.id !== saved.id));
+    try {
+      await searchService.remove(saved.id);
+    } catch (err) {
+      toast.error(apiError(err, 'Suppression impossible.'));
+      loadSavedSearches();
+    }
   };
 
   const handleSync = async () => {
@@ -542,8 +676,10 @@ function Inbox() {
           toast.action(message, 'Annuler', async () => {
             try {
               // Same cap as the forward path: undoing 400 archives is two calls.
+              // The label name travels back too: taking a label off needs to
+              // know which one, and only this closure still remembers.
               for (let i = 0; i < applied.length; i += BATCH_LIMIT) {
-                await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action);
+                await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
               }
               toast.success('Action annulée');
               fetchData({ forceRefresh: true, sync: false });
@@ -567,6 +703,58 @@ function Inbox() {
     [selectedEmails, confirm]
   );
 
+  // Snooze the whole selection to one wake time. Same chunking as runBulk (the
+  // server caps a batch at 200) and the same per-chunk isolation, so a second
+  // chunk failing never discards what the first one already did in Gmail.
+  const runBulkSnooze = useCallback(
+    async (choice) => {
+      const ids = selectedEmails;
+      if (ids.length === 0) return;
+
+      setBulkBusy(true);
+      try {
+        const snoozed = [];
+        let failed = 0;
+        let protectedSkipped = 0;
+        for (let i = 0; i < ids.length; i += BATCH_LIMIT) {
+          const chunk = ids.slice(i, i + BATCH_LIMIT);
+          try {
+            const { data } = await emailService.batchSnooze(chunk, choice);
+            snoozed.push(...(data.snoozed || []));
+            failed += data.failed || 0;
+            protectedSkipped += data.protectedSkipped || 0;
+          } catch (err) {
+            failed += chunk.length;
+          }
+        }
+
+        track('bulk_snooze', { preset: choice.preset || 'custom', snoozed: snoozed.length });
+        bumpGamify(snoozed.length);
+        removeEmails(snoozed);
+        setSelectedEmails([]);
+
+        if (snoozed.length === 0) {
+          toast.error(
+            protectedSkipped
+              ? 'Aucun email reporté : tous sont protégés.'
+              : "Aucun email n'a pu être reporté."
+          );
+          return;
+        }
+        const parts = [`${snoozed.length} email${plural(snoozed.length)} reporté${plural(snoozed.length)}`];
+        if (protectedSkipped) parts.push(`${protectedSkipped} protégé${plural(protectedSkipped)} ignoré${plural(protectedSkipped)}`);
+        toast.success(parts.join(' · '));
+        if (failed) {
+          toast.error(`${failed} email${plural(failed)} n'${failed > 1 ? 'ont' : 'a'} pas pu être reporté${plural(failed)}`);
+        }
+      } finally {
+        setBulkBusy(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedEmails]
+  );
+
   // Direct action on a single email (used by reader buttons + keyboard).
   const directAction = async (email, action) => {
     // Optimistic: the row leaves immediately so a burst of j/e/j/e actually
@@ -582,11 +770,12 @@ function Inbox() {
     }
   };
 
-  // Read/star from the keyboard. Unlike archive/delete these leave the message
-  // in the list, so without an explicit acknowledgement the keystroke would look
-  // like it did nothing at all.
+  // Read/star from the keyboard and from the reader. Unlike archive/delete these
+  // leave the message in the list, so without an explicit acknowledgement the
+  // keystroke would look like it did nothing at all.
   const flagAction = async (email, action) => {
-    const optimistic = action === 'read' ? { isRead: true } : action === 'star' ? { isStarred: true } : null;
+    const optimistic = FLAG_PATCH[action];
+    const rollback = FLAG_PATCH[FLAG_INVERSE[action]];
     if (optimistic) patchEmail(email.messageId, optimistic);
     try {
       const { data } = await emailService.batchAction([email.messageId], action);
@@ -595,13 +784,13 @@ function Inbox() {
       // announced "Lu" for a message Gmail had refused to touch, and the
       // optimistic patch was never rolled back.
       if (!(data.applied || []).length) {
-        if (optimistic) patchEmail(email.messageId, action === 'read' ? { isRead: false } : { isStarred: false });
+        if (rollback) patchEmail(email.messageId, rollback);
         toast.error(data.protectedSkipped ? 'Expéditeur protégé : action ignorée.' : "L'action a échoué");
         return;
       }
       toast.success(actionMeta(action).past, { duration: 1800 });
     } catch {
-      if (optimistic) patchEmail(email.messageId, action === 'read' ? { isRead: false } : { isStarred: false });
+      if (rollback) patchEmail(email.messageId, rollback);
       toast.error("L'action a échoué");
     }
   };
@@ -611,16 +800,18 @@ function Inbox() {
     directAction(email, action);
   };
 
-  const handleSnooze = async (email, preset) => {
+  const handleSnooze = async (email, choice) => {
     setSelectedEmail(null);
     removeEmails(email.messageId);
     try {
-      await emailService.snooze(email.messageId, preset);
-      track('snooze', { preset });
+      await emailService.snooze(email.messageId, choice);
+      // `custom` rather than the instant itself: an exact wake time is personal
+      // data and product analytics only needs to know the affordance was used.
+      track('snooze', { preset: choice.preset || 'custom' });
       bumpGamify(1);
       toast.success('Email reporté, il reviendra au bon moment');
     } catch (err) {
-      toast.error('Report impossible. Réessayez.');
+      toast.error(apiError(err, 'Report impossible. Réessayez.'));
       fetchData({ forceRefresh: true, sync: false });
     }
   };
@@ -816,19 +1007,28 @@ function Inbox() {
 
   const activeFilter = QUICK_FILTERS.find((f) => f.query === activeQuery);
 
+  // The open message, as the LIST currently knows it rather than as it was when
+  // the row was clicked. selectedEmail is a snapshot: without this, every
+  // optimistic patch (read, starred) landed in the list and left the reader
+  // showing the old state, so its own favourite toggle never flipped.
+  const openEmail = selectedEmail
+    ? emails.find((e) => e.messageId === selectedEmail.messageId) || selectedEmail
+    : null;
+
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
-  const readerPanel = selectedEmail ? (
+  const readerPanel = openEmail ? (
     <EmailReader
-      email={selectedEmail}
+      email={openEmail}
       onClose={() => setSelectedEmail(null)}
       onRead={(id) => patchEmail(id, { isRead: true })}
-      onArchive={() => handleReaderAction(selectedEmail, 'archive')}
-      onDelete={() => handleReaderAction(selectedEmail, 'delete')}
-      onSnooze={(preset) => handleSnooze(selectedEmail, preset)}
-      onProtect={() => handleProtect(selectedEmail)}
-      onUnsubscribe={() => handleUnsubscribe({ messageId: selectedEmail.messageId })}
-      unsubscribing={unsubscribing === selectedEmail.messageId}
+      onArchive={() => handleReaderAction(openEmail, 'archive')}
+      onDelete={() => handleReaderAction(openEmail, 'delete')}
+      onSnooze={(choice) => handleSnooze(openEmail, choice)}
+      onFlag={(action) => flagAction(openEmail, action)}
+      onProtect={() => handleProtect(openEmail)}
+      onUnsubscribe={() => handleUnsubscribe({ messageId: openEmail.messageId })}
+      unsubscribing={unsubscribing === openEmail.messageId}
     />
   ) : null;
 
@@ -974,15 +1174,65 @@ function Inbox() {
               {label}
             </button>
           ))}
+          {/* Les recherches de l'utilisateur, à la suite des filtres intégrés :
+              ce sont les mêmes objets pour qui les utilise, une requête à un
+              clic. Seul le nom vient de lui. */}
+          {savedSearches.map((s) => (
+            <span
+              key={s.id}
+              className={cn(
+                'chip group transition-colors',
+                activeQuery === s.query ? 'bg-brand-fill text-white' : 'bg-brand-50 text-brand-700 hover:bg-brand-100'
+              )}
+            >
+              <button
+                onClick={() => runSavedSearch(s)}
+                aria-pressed={activeQuery === s.query}
+                title={s.query}
+                className="flex items-center gap-1.5"
+              >
+                <Search size={12} /> {s.name}
+              </button>
+              <button
+                onClick={() => removeSavedSearch(s)}
+                aria-label={`Supprimer la recherche « ${s.name} »`}
+                className="ml-0.5 rounded-full p-0.5 opacity-0 transition-opacity hover:bg-brand-200 focus:opacity-100 group-hover:opacity-100"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+
           {!activeFilter && activeQuery !== DEFAULT_QUERY && (
             <span className="chip bg-brand-50 text-brand-700">
               <Search size={12} /> {activeQuery.replace(`${DEFAULT_QUERY} `, '')}
+              {/* Une recherche qu'on vient d'écrire ne vaut souvent d'être
+                  gardée qu'une fois qu'elle a donné le bon résultat : le bouton
+                  est donc ici, sur le filtre actif, et pas dans le champ. */}
+              {!isSaved(activeQuery) && (
+                <button
+                  onClick={() => setSavingSearch(activeQuery)}
+                  aria-label="Enregistrer cette recherche"
+                  title="Enregistrer cette recherche"
+                  className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100"
+                >
+                  <Star size={12} />
+                </button>
+              )}
               <button onClick={clearSearch} aria-label="Effacer le filtre" className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100">
                 <X size={12} />
               </button>
             </span>
           )}
         </div>
+      )}
+
+      {savingSearch && (
+        <SaveSearchDialog
+          query={savingSearch}
+          onCancel={() => setSavingSearch(null)}
+          onSave={saveSearch}
+        />
       )}
 
       {/* Async analysis progress */}
@@ -1126,6 +1376,17 @@ function Inbox() {
                       </button>
                     );
                   })}
+                  {/* Snooze is the one bulk action that needs a "until when",
+                      so it carries its own menu instead of a flat button. */}
+                  <SnoozeButton
+                    onSnooze={runBulkSnooze}
+                    disabled={bulkBusy}
+                    label={<span className="hidden sm:inline">Reporter</span>}
+                    ariaLabel="Reporter la sélection"
+                    title="Reporter la sélection (sortir de la boîte, revenir plus tard)"
+                    className="btn-ghost btn-sm"
+                    iconSize={15}
+                  />
                   <button onClick={() => setSelectedEmails([])} className="btn-ghost btn-sm btn-icon" aria-label="Vider la sélection">
                     <X size={15} />
                   </button>

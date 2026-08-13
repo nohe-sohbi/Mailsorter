@@ -229,20 +229,6 @@
       transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500
       focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 select-none;
   }
-  .btn-sm {
-    @apply h-8 gap-1.5 rounded-lg px-2.5 text-xs;
-  }
-  .btn-lg {
-    @apply h-12 gap-2.5 px-5 text-base;
-  }
-  /* Bouton purement iconique : carré, pour ne pas dépendre d'un px- ad hoc. */
-  .btn-icon {
-    @apply w-11 px-0;
-  }
-  .btn-sm.btn-icon {
-    @apply w-8;
-  }
-
   /* One primary action per screen: solid ink-blue, no gradient, no glow. */
   .btn-primary {
     @apply btn bg-brand-fill text-white shadow-soft hover:bg-brand-fill-strong active:bg-brand-fill-deep;
@@ -258,6 +244,27 @@
   }
   .btn-danger-quiet {
     @apply btn bg-danger-50 text-danger-700 hover:bg-danger-100;
+  }
+
+  /* Les modificateurs de TAILLE viennent après les variantes de couleur, et pas
+     avant : chaque variante fait `@apply btn`, ce qui recopie chez elle la
+     hauteur et le padding de .btn. À égalité de spécificité c'est la dernière
+     règle du fichier qui gagne, donc placés plus haut ils étaient tous écrasés.
+     Concrètement, `.btn-icon` perdait son px-0 : un bouton de 32 px gardait
+     32 px de padding, son icône était comprimée à zéro et la barre d'outils du
+     lecteur d'email s'affichait entièrement vide. */
+  .btn-sm {
+    @apply h-8 gap-1.5 rounded-lg px-2.5 text-xs;
+  }
+  .btn-lg {
+    @apply h-12 gap-2.5 px-5 text-base;
+  }
+  /* Bouton purement iconique : carré, pour ne pas dépendre d'un px- ad hoc. */
+  .btn-icon {
+    @apply w-11 px-0;
+  }
+  .btn-sm.btn-icon {
+    @apply w-8;
   }
 
   .card {

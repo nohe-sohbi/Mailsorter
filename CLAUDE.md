@@ -69,7 +69,7 @@ frontend/
   src/components/        shared non-route components (Header, EmailReader)
   src/contexts/          EmailContext: the shared inbox cache
   src/services/api.js    every HTTP call in the app, grouped by service object
-  src/ui/                design-system primitives (icons, Toast, Spinner, cn, streak)
+  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
   src/lib/analytics.js   Umami tracker injection + track()
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
 docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, assets/
@@ -85,7 +85,7 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080 |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 108 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 161 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
@@ -121,9 +121,10 @@ Everything below is pure by construction, and each one says so in its package do
 
 | Package | Owns | Key entry points |
 |---|---|---|
-| `rules` | Deterministic AI-free triage engine | `Matches`, `Validate`, `Preview`, field/operator/action constants |
+| `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset | `Matches`, `Validate`, `Preview`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
 | `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted | `Allowed`, `ActionArchive/Trash/Delete` |
-| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time | `Resolve`, `Preset*` constants |
+| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
+| `search` | What makes a saved search valid, its identity, and its default name | `Normalize`, `Key`, `SuggestName`, `MaxPerUser` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML | `Digest` |
@@ -148,7 +149,7 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (52 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (66 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `publicPrefixes` |
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
@@ -156,7 +157,10 @@ The outbound clients and primitives:
 | `ai_handlers.go` | The nine `/api/ai/*` endpoints, plus `/api/senders/*` and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
-| `snooze.go` | Snooze CRUD plus the 1 min wake sweeper |
+| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
+| `attachment.go` | Attachment download: the one route that streams bytes rather than JSON |
+| `searches.go` | Saved searches CRUD and their use counter |
+| `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
 | `protected.go` | VIP list CRUD and `protectedValues` lookup |
 | `unsubscribe.go` | `List-Unsubscribe` (RFC 2369) and one-click POST (RFC 8058) |
 | `history.go` | Action log view and undo |
@@ -202,7 +206,7 @@ original collections on a fresh volume, so `EnsureIndexes` is the real source of
 `users`, `emails`, `labels`, `gmail_config` (legacy, read-only fallback),
 `ai_suggestions`, `sender_preferences`, `smart_labels`, `analysis_jobs`,
 `analysis_cache`, `usage`, `unsubscribes`, `sorting_rules`, `protected_senders`,
-`snoozes`, `action_log`, `waitlist`.
+`snoozes`, `action_log`, `saved_searches`, `waitlist`.
 
 Everything is scoped by `userId` (which is the user's email address) except
 `analysis_cache`, keyed by `sha256(lower(from) + "|" + lower(subject))` and shared
@@ -245,9 +249,10 @@ instance has no Gmail credentials every guarded route redirects to `/setup`.
 ### Data access and state
 
 - **Every HTTP call lives in `src/services/api.js`**, grouped into `authService`,
-  `emailService`, `snoozeService`, `protectService`, `aiService`, `senderService`,
-  `accountService`, `subscriptionService`, `billingService`, `ruleService`,
-  `configService`, `waitlistService`. A component never imports axios.
+  `emailService`, `labelService`, `searchService`, `snoozeService`, `protectService`,
+  `aiService`, `senderService`, `accountService`, `subscriptionService`,
+  `billingService`, `ruleService`, `configService`, `waitlistService`. A component
+  never imports axios.
 - The axios instance attaches `Authorization: Bearer <localStorage.accessToken>` on
   request, and on any 401 clears `accessToken` + `userEmail` and bounces to `/`.
 - `contexts/EmailContext.js` is the only shared store: emails, senders, subscriptions,
@@ -268,6 +273,10 @@ instance has no Gmail credentials every guarded route redirects to `/setup`.
 - **Icons are hand-written SVG in `src/ui/icons.js`.** No icon package. Add a new icon there.
 - `ui/Toast.js` provides `useToast()` with `.success` / `.error` / `.info` / `.action`
   (the action variant is how undo is offered). `ui/Spinner.js` and `ui/cn.js` round it out.
+- `ui/SnoozeMenu.js` owns the whole "reporter" affordance (trigger, preset menu, custom
+  date picker) because the reader and the inbox bulk bar both need it and the popover
+  has real behaviour to get right. It calls back with `{ preset }` or `{ wakeAt }`,
+  mirroring the API contract.
 - **Tailwind class names must be statically present in the source.** Never build a class
   by string concatenation; the Inbox action tokens are spelled out as full literal classes
   for exactly this reason.
@@ -421,9 +430,17 @@ Do not duplicate these into this file. Point at them.
   never cache anything user-specific through it.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
-- **`GET /api/stats/digest`, `GET /api/labels`, `GET`/`POST /api/smart-labels` have no UI.**
-  They work and are tested; they are deliberately unwired. Do not delete them, do not
-  assume they are reachable from the app either.
+- **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are
+  deliberately unwired. Do not delete them, do not assume they are reachable from the
+  app either. (`GET /api/stats/digest` and `GET /api/labels` used to be in this list;
+  both are now wired, to the digest preview in Réglages and to the rules/reader label
+  pickers.)
+- **Size and color modifiers in `index.css` must come AFTER the color variants.**
+  Every `.btn-*` variant does `@apply btn`, which copies `.btn`'s height and padding
+  into itself. At equal specificity the last rule wins, so `.btn-sm` / `.btn-icon`
+  placed above the variants were silently overridden: an icon-only button kept 16px
+  of padding inside a 32px box and its icon was squeezed to zero width, which is how
+  the email reader's entire toolbar rendered blank.
 
 ## Post-Change Checklist
 

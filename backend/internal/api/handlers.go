@@ -123,8 +123,7 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 // so it can be scraped without authentication, the way an ops endpoint expects.
 func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 	snap := h.metrics.Snapshot()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"version": Version,
 		"metrics": snap,
 	})
@@ -156,14 +155,13 @@ func (h *Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 		authURL = h.gmailService.GetReconnectURL(state)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.AuthResponse{AuthURL: authURL})
+	writeJSON(w, http.StatusOK, models.AuthResponse{AuthURL: authURL})
 }
 
 func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		http.Error(w, "No code provided", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "No code provided")
 		return
 	}
 
@@ -171,25 +169,25 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// what stops a forged redirect (CSRF) from completing a login.
 	state := r.URL.Query().Get("state")
 	if err := h.auth.VerifyState(state); err != nil {
-		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid OAuth state")
 		return
 	}
 
 	token, err := h.gmailService.ExchangeCode(code)
 	if err != nil {
-		http.Error(w, "Failed to exchange code: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to exchange code: "+err.Error())
 		return
 	}
 
 	gmailClient := h.gmailService.GetClient(token)
 	userEmail, err := h.gmailService.GetUserProfile(gmailClient)
 	if err != nil {
-		http.Error(w, "Failed to get user profile: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get user profile: "+err.Error())
 		return
 	}
 
 	// Store user in database
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	filter := bson.M{"email": userEmail}
@@ -218,7 +216,7 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	opts := options.Update().SetUpsert(true)
 	_, err = h.db.Users().UpdateOne(ctx, filter, update, opts)
 	if err != nil {
-		http.Error(w, "Failed to save user: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to save user: "+err.Error())
 		return
 	}
 
@@ -226,8 +224,7 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// access token, which must stay server-side.
 	sessionToken := h.auth.IssueSession(userEmail)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models.TokenResponse{
+	writeJSON(w, http.StatusOK, models.TokenResponse{
 		AccessToken: sessionToken,
 		UserEmail:   userEmail,
 	})
@@ -237,11 +234,11 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -271,7 +268,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.gmailService.ListMessagesWithPagination(gmailClient, query, maxResults, pageToken)
 	if err != nil {
-		http.Error(w, "Failed to fetch emails: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch emails: "+err.Error())
 		return
 	}
 
@@ -299,8 +296,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 		emails = append(emails, email)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"emails":             emails,
 		"nextPageToken":      resp.NextPageToken,
 		"resultSizeEstimate": resp.ResultSizeEstimate,
@@ -311,11 +307,11 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -326,22 +322,21 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.gmailService.GetMailboxStats(gmailClient)
 	if err != nil {
-		http.Error(w, "Failed to get mailbox stats: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to get mailbox stats: "+err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
@@ -350,12 +345,11 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 			writeAuthError(w, err)
 			return
 		}
-		http.Error(w, "Failed to sync emails: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to sync emails: "+err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"synced":       synced,
 		"total":        total,
 		"rulesApplied": rulesApplied,
@@ -450,7 +444,7 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -459,11 +453,11 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.MessageID == "" {
-		http.Error(w, "Message ID required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Message ID required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -485,13 +479,20 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"UNREAD"})
 	case "unread":
 		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"UNREAD"}, nil)
+	// Starring was reachable over the batch route but not here, so the single
+	// message path (what the reader and the shortcuts use) could not express
+	// "flag this one". The two vocabularies now match.
+	case "star":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"STARRED"}, nil)
+	case "unstar":
+		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"STARRED"})
 	default:
-		http.Error(w, "Unsupported action", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return
 	}
 
 	if err != nil {
-		http.Error(w, "Failed to apply action: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
 		return
 	}
 
@@ -500,7 +501,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	// without the subject, and resolving it here rather than at read time is what
 	// lets the entry be found by search later.
 	switch req.Action {
-	case "archive", "delete", "trash", "read":
+	case "archive", "delete", "trash", "read", "star":
 		action := req.Action
 		if action == "trash" {
 			action = "delete"
@@ -509,19 +510,18 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		h.logActionMeta(ctx, userEmail, req.MessageID, action, SourceDirect, meta.Subject, meta.From)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": req.Action})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})
 }
 
 // Labels endpoints
 func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -532,12 +532,11 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 
 	labels, err := h.gmailService.ListLabels(gmailClient)
 	if err != nil {
-		http.Error(w, "Failed to fetch labels: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch labels: "+err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(labels)
+	writeJSON(w, http.StatusOK, labels)
 }
 
 // Config endpoints
@@ -555,8 +554,7 @@ func (h *Handler) GetConfigStatus(w http.ResponseWriter, r *http.Request) {
 		BillingOn:    h.billingEnabled(),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
+	writeJSON(w, http.StatusOK, status)
 }
 
 // Helper functions
