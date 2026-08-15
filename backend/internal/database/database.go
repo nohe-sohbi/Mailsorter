@@ -105,6 +105,11 @@ func (d *Database) ActionLog() *mongo.Collection {
 	return d.DB.Collection("action_log")
 }
 
+// SavedSearches holds the Gmail queries a user kept as one-click filters.
+func (d *Database) SavedSearches() *mongo.Collection {
+	return d.DB.Collection("saved_searches")
+}
+
 // Waitlist holds the people who asked to be told when Pro opens. It is the only
 // collection not scoped by userId: signups come from logged-out visitors too,
 // and the email address is the identity.
@@ -133,6 +138,9 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.Snoozes(), mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "wakeAt", Value: 1}}}},
 		{d.Snoozes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "status", Value: 1}}}},
 		{d.ActionLog(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "createdAt", Value: -1}}}},
+		// Unique on the normalized query: re-saving a query the user already
+		// kept renames that chip instead of creating a second identical one.
+		{d.SavedSearches(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "key", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		// Unique on email so a visitor clicking twice (or across devices) is one
 		// signup, not two: the count has to mean something.
 		{d.Waitlist(), mongo.IndexModel{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)}},

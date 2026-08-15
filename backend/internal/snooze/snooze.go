@@ -28,6 +28,28 @@ const (
 	eveningHour = 18
 )
 
+// MaxHorizon caps how far ahead an explicit wake time may be set. A preset can
+// only ever land a few days out, but a hand-picked date is free-form: without a
+// ceiling a mistyped year ("2035" for "2026") silently removes an email from the
+// inbox for a decade, and nothing in the app would ever surface it again.
+const MaxHorizon = 365 * 24 * time.Hour
+
+// ValidateWake checks an explicitly chosen wake time against now. It is the
+// counterpart of Resolve for the "date personnalisée" path: the presets cannot
+// produce a bad time, a date picker can. Errors are user-facing (French).
+func ValidateWake(wakeAt, now time.Time) error {
+	if wakeAt.IsZero() {
+		return fmt.Errorf("choisissez une date et une heure de retour")
+	}
+	if !wakeAt.After(now) {
+		return fmt.Errorf("l'échéance doit être dans le futur")
+	}
+	if wakeAt.Sub(now) > MaxHorizon {
+		return fmt.Errorf("un report ne peut pas dépasser un an")
+	}
+	return nil
+}
+
 // Resolve turns a preset into an absolute wake time, computed in now's location
 // so it lines up with the user's wall clock. It always returns a time strictly
 // in the future relative to now. Unknown presets yield an error so callers can

@@ -29,6 +29,7 @@ const (
 	DatasetUsage            Dataset = "usage"
 	DatasetActionLog        Dataset = "actionLog"
 	DatasetJobs             Dataset = "analysisJobs"
+	DatasetSavedSearches    Dataset = "savedSearches"
 )
 
 // Datasets returns the canonical, stable list of user-owned data categories. The
@@ -46,6 +47,7 @@ func Datasets() []Dataset {
 		DatasetUsage,
 		DatasetActionLog,
 		DatasetJobs,
+		DatasetSavedSearches,
 	}
 }
 

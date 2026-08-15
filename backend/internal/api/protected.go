@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -47,29 +46,28 @@ func allows(action, from string, protectedList []string) bool {
 func (h *Handler) GetProtected(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	cursor, err := h.db.ProtectedSenders().Find(ctx, bson.M{"userId": userEmail},
 		options.Find().SetSort(bson.M{"createdAt": -1}))
 	if err != nil {
-		http.Error(w, "Failed to load protected senders", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to load protected senders")
 		return
 	}
 	defer cursor.Close(ctx)
 
 	rows := make([]models.ProtectedSender, 0)
 	if err := cursor.All(ctx, &rows); err != nil {
-		http.Error(w, "Failed to decode protected senders", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode protected senders")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"protected": rows})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"protected": rows})
 }
 
 // CreateProtected adds a sender (full address or whole domain) to the protected
@@ -78,7 +76,7 @@ func (h *Handler) GetProtected(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -89,11 +87,11 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 
 	value, kind := protect.NormalizeEntry(in.Value)
 	if value == "" {
-		http.Error(w, "Adresse ou domaine invalide", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Adresse ou domaine invalide")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	now := time.Now()
@@ -106,7 +104,7 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 		options.Update().SetUpsert(true),
 	)
 	if err != nil {
-		http.Error(w, "Failed to save protected sender", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to save protected sender")
 		return
 	}
 
@@ -115,38 +113,35 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 		entry.ID = oid.Hex()
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(entry)
+	writeJSON(w, http.StatusCreated, entry)
 }
 
 // DeleteProtected removes a protected sender the caller owns.
 func (h *Handler) DeleteProtected(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
 	oid, err := primitive.ObjectIDFromHex(mux.Vars(r)["id"])
 	if err != nil {
-		http.Error(w, "Invalid id", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	res, err := h.db.ProtectedSenders().DeleteOne(ctx, bson.M{"_id": oid, "userId": userEmail})
 	if err != nil {
-		http.Error(w, "Failed to delete", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to delete")
 		return
 	}
 	if res.DeletedCount == 0 {
-		http.Error(w, "Not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

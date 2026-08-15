@@ -35,20 +35,20 @@ func (h *Handler) getPlan(ctx context.Context, userEmail string) string {
 func (h *Handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 	if h.billing.Client == nil || h.billing.PriceID == "" {
-		http.Error(w, "Billing not configured", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "Billing not configured")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
 	// Already Pro, nothing to buy.
 	if h.getPlan(ctx, userEmail) == PlanPro {
-		http.Error(w, "Vous êtes déjà abonné à Pro.", http.StatusConflict)
+		writeError(w, http.StatusConflict, "Vous êtes déjà abonné à Pro.")
 		return
 	}
 
@@ -61,12 +61,11 @@ func (h *Handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("stripe checkout error: %v", err)
-		http.Error(w, "Impossible de démarrer le paiement.", http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "Impossible de démarrer le paiement.")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": url})
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
 // CreatePortal starts a Stripe Billing Portal session so a subscribed user can
@@ -75,34 +74,33 @@ func (h *Handler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreatePortal(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 	if h.billing.Client == nil {
-		http.Error(w, "Billing not configured", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "Billing not configured")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
 	var u struct {
 		StripeCustomerID string `bson:"stripeCustomerId"`
 	}
 	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&u); err != nil || u.StripeCustomerID == "" {
-		http.Error(w, "Aucun abonnement à gérer.", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Aucun abonnement à gérer.")
 		return
 	}
 
 	url, err := h.billing.Client.CreatePortalSession(u.StripeCustomerID, h.billing.AppBaseURL+"/pricing")
 	if err != nil {
 		log.Printf("stripe portal error: %v", err)
-		http.Error(w, "Impossible d'ouvrir le portail de facturation.", http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "Impossible d'ouvrir le portail de facturation.")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": url})
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 }
 
 // StripeWebhook receives Stripe events, verifies their signature, and keeps the
@@ -110,24 +108,24 @@ func (h *Handler) CreatePortal(w http.ResponseWriter, r *http.Request) {
 // body before any parsing so the HMAC check is performed on the exact payload.
 func (h *Handler) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 	if h.billing.WebhookSecret == "" {
-		http.Error(w, "Billing not configured", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "Billing not configured")
 		return
 	}
 
 	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MiB cap
 	if err != nil {
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Failed to read body")
 		return
 	}
 
 	event, err := billing.ConstructEvent(payload, r.Header.Get("Stripe-Signature"), h.billing.WebhookSecret)
 	if err != nil {
 		log.Printf("stripe webhook rejected: %v", err)
-		http.Error(w, "Invalid signature", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid signature")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	switch event.Type {

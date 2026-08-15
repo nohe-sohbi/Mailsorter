@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -85,7 +86,7 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 		filter["$or"] = []bson.M{{"subject": needle}, {"from": needle}}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	// bson.D, not bson.M: a compound sort needs a defined key order, and a map
@@ -221,7 +222,7 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	var entry models.ActionLog
@@ -264,6 +265,14 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 // label mutation. It mirrors the undo branches of EmailAction so a reversal from
 // the history behaves exactly like a manual one.
 func (h *Handler) applyInverseAction(gmailClient *gmailapi.Service, messageID, inverse string) error {
+	return h.applyInverseActionWithLabel(gmailClient, messageID, inverse, "")
+}
+
+// applyInverseActionWithLabel is applyInverseAction for the one reversal that
+// takes an argument: removing a label needs its Gmail id, which the caller
+// resolves once per batch rather than per message. An "unlabel" with no id is a
+// no-op rather than a silent full-label wipe.
+func (h *Handler) applyInverseActionWithLabel(gmailClient *gmailapi.Service, messageID, inverse, labelID string) error {
 	switch inverse {
 	case "unarchive":
 		return h.gmailService.ModifyMessage(gmailClient, messageID, []string{"INBOX"}, nil)
@@ -271,6 +280,11 @@ func (h *Handler) applyInverseAction(gmailClient *gmailapi.Service, messageID, i
 		return h.gmailService.ModifyMessage(gmailClient, messageID, []string{"INBOX"}, []string{"TRASH"})
 	case "unread":
 		return h.gmailService.ModifyMessage(gmailClient, messageID, []string{"UNREAD"}, nil)
+	case "unlabel":
+		if labelID == "" {
+			return fmt.Errorf("aucun libellé à retirer")
+		}
+		return h.gmailService.ModifyMessage(gmailClient, messageID, nil, []string{labelID})
 	}
 	return nil
 }

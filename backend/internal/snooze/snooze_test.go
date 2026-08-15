@@ -82,3 +82,51 @@ func TestResolveUnknownPreset(t *testing.T) {
 		t.Error("expected error for unknown preset")
 	}
 }
+
+func TestValidateWake(t *testing.T) {
+	now := ref()
+	cases := []struct {
+		name    string
+		wakeAt  time.Time
+		wantErr bool
+	}{
+		{"an hour out", now.Add(time.Hour), false},
+		{"a month out", now.AddDate(0, 1, 0), false},
+		{"the last supported day", now.Add(MaxHorizon - time.Minute), false},
+		{"unset", time.Time{}, true},
+		{"in the past", now.Add(-time.Minute), true},
+		{"right now", now, true},
+		// A mistyped year is the realistic failure: it removes the email from
+		// the inbox for a decade and nothing would ever surface it again.
+		{"a decade out", now.AddDate(10, 0, 0), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateWake(tc.wakeAt, now)
+			if tc.wantErr && err == nil {
+				t.Errorf("ValidateWake(%v, %v) = nil, want an error", tc.wakeAt, now)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("ValidateWake(%v, %v) = %v, want nil", tc.wakeAt, now, err)
+			}
+		})
+	}
+}
+
+// Every preset must satisfy the explicit-time validator: the two paths land in
+// the same stored field, so a preset the guard would reject means the guard is
+// wrong about what a legitimate wake time looks like.
+func TestPresetsPassValidateWake(t *testing.T) {
+	now := ref()
+	for _, preset := range []string{
+		PresetLaterToday, PresetThisEvening, PresetTomorrow, PresetThisWeekend, PresetNextWeek,
+	} {
+		wakeAt, err := Resolve(preset, now)
+		if err != nil {
+			t.Fatalf("Resolve(%q): %v", preset, err)
+		}
+		if err := ValidateWake(wakeAt, now); err != nil {
+			t.Errorf("preset %q resolves to %v, which ValidateWake rejects: %v", preset, wakeAt, err)
+		}
+	}
+}

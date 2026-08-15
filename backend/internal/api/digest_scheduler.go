@@ -2,9 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"net/http"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/digest"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailer"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -88,21 +92,78 @@ func (h *Handler) sendOneDigest(ctx context.Context, userEmail string) {
 		return
 	}
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
-	if err != nil {
-		log.Printf("digest: no Gmail client for %s: %v", userEmail, err)
-		return
-	}
-
-	d := digest.Render(summary, time.Now())
-	raw := mailer.BuildRaw(userEmail, userEmail, d.Subject, d.Text, d.HTML)
-	if err := h.gmailService.SendMessage(gmailClient, raw); err != nil {
+	if _, err := h.deliverDigest(ctx, userEmail, summary); err != nil {
 		// A missing gmail.send scope (user connected before the digest feature)
 		// surfaces here; they simply need to reconnect Gmail to grant it.
 		log.Printf("digest: send failed for %s: %v", userEmail, err)
 		return
 	}
 	log.Printf("digest: sent to %s", userEmail)
+}
+
+// deliverDigest renders a summary and sends it to the user through their own
+// Gmail. Shared by the scheduler and the "envoyer un test" button so a test
+// exercises the real delivery path, headers included, rather than a lookalike.
+func (h *Handler) deliverDigest(ctx context.Context, userEmail string, summary activity.Summary) (digest.Digest, error) {
+	d := digest.Render(summary, time.Now())
+
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	if err != nil {
+		return d, err
+	}
+
+	raw := mailer.BuildRaw(userEmail, userEmail, d.Subject, d.Text, d.HTML)
+	if err := h.gmailService.SendMessage(gmailClient, raw); err != nil {
+		return d, fmt.Errorf("envoi du digest impossible: %w", err)
+	}
+	return d, nil
+}
+
+// SendTestDigest emails the caller their recap right now.
+//
+// The digest was the one feature nobody could verify: you turned it on, and
+// then waited a day to learn whether your Gmail grant still carried the send
+// scope. This closes that loop. It deliberately does NOT stamp
+// digestLastSentAt: a test must not consume the day's real digest.
+//
+// An empty week is sent rather than skipped here (unlike the scheduler, which
+// has no reason to mail "0 emails triés" unprompted): the point of a test send
+// is to prove delivery works, and a user who asked for it is owed the answer.
+func (h *Handler) SendTestDigest(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		writeError(w, http.StatusUnauthorized, "User email required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	summary, err := h.activitySummary(ctx, userEmail)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to load activity")
+		return
+	}
+
+	d, err := h.deliverDigest(ctx, userEmail, summary)
+	if err != nil {
+		// A dead Google grant is the single most likely cause, and it has its
+		// own remedy in the UI ("Reconnecter Gmail"), so it must not be flattened
+		// into a generic 500.
+		if errors.Is(err, errReauthRequired) {
+			writeAuthError(w, err)
+			return
+		}
+		writeError(w, http.StatusBadGateway,
+			"Envoi impossible. Reconnectez Gmail depuis la carte « Compte Gmail » pour réautoriser l'envoi.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "sent",
+		"subject": d.Subject,
+		"total":   summary.Total,
+	})
 }
 
 // stampDigestSent records that we attempted a digest for the user today so the

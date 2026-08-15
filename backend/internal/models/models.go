@@ -244,6 +244,40 @@ type SnoozeRequest struct {
 	WakeAt    time.Time `json:"wakeAt"`
 }
 
+// BatchSnoozeRequest is the request body for POST /api/emails/batch-snooze: the
+// same preset-or-timestamp choice as SnoozeRequest, applied to a whole
+// selection so one wake time covers every message in it.
+type BatchSnoozeRequest struct {
+	MessageIDs []string  `json:"messageIds"`
+	Preset     string    `json:"preset"`
+	WakeAt     time.Time `json:"wakeAt"`
+}
+
+// ============================================
+// Saved searches
+// ============================================
+
+// SavedSearch is a Gmail query the user kept, so a filter they worked out once
+// becomes a chip they click. Key is the normalized query (see internal/search):
+// it is the identity of the shortcut, so re-saving the same query renames the
+// existing chip instead of growing a second, identical one.
+type SavedSearch struct {
+	ID        string    `json:"id" bson:"_id,omitempty"`
+	UserID    string    `json:"userId" bson:"userId"`
+	Name      string    `json:"name" bson:"name"`
+	Query     string    `json:"query" bson:"query"`
+	Key       string    `json:"-" bson:"key"`
+	UsedCount int       `json:"usedCount" bson:"usedCount,omitempty"`
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+}
+
+// SavedSearchInput is the request body for POST /api/searches.
+type SavedSearchInput struct {
+	Name  string `json:"name"`
+	Query string `json:"query"`
+}
+
 // ============================================
 // Action ledger (audit / activity)
 // ============================================

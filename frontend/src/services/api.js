@@ -80,16 +80,33 @@ export const emailService = {
   // markRead mirrors what opening an email means everywhere else.
   getEmail: (messageId, { markRead = false } = {}) =>
     apiClient.get(`/api/emails/${encodeURIComponent(messageId)}${markRead ? '?markRead=1' : ''}`),
+  // The attachment bytes, as a Blob. Gmail keeps them behind a second call, and
+  // the route needs the session header, so a plain <a href> cannot fetch them:
+  // the reader downloads through axios and hands the browser an object URL.
+  downloadAttachment: (messageId, attachmentId) =>
+    apiClient.get(
+      `/api/emails/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { responseType: 'blob' }
+    ),
   syncEmails: () => apiClient.post('/api/emails/sync'),
   action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
   // One action over a whole selection, server-side: N Gmail mutations behind a
   // single request, with the protected-sender shield applied per message.
   batchAction: (messageIds, action, labelName = '') =>
     apiClient.post('/api/emails/batch-action', { messageIds, action, labelName }),
-  batchUndo: (messageIds, action) => apiClient.post('/api/emails/batch-undo', { messageIds, action }),
+  // Undoing a labelling needs the label back: the server holds the id, but only
+  // the caller knows which name it just applied.
+  batchUndo: (messageIds, action, labelName = '') =>
+    apiClient.post('/api/emails/batch-undo', { messageIds, action, labelName }),
   getStats: () => apiClient.get('/api/stats'),
-  // Snooze: pull a message out of the inbox until a preset (or explicit) time.
-  snooze: (messageId, preset) => apiClient.post('/api/emails/snooze', { messageId, preset }),
+  // Snooze: pull a message out of the inbox until a preset OR an explicit
+  // instant. The two are exclusive server-side (a wakeAt short-circuits the
+  // preset), so only the one the user actually chose is sent.
+  snooze: (messageId, { preset = '', wakeAt = '' } = {}) =>
+    apiClient.post('/api/emails/snooze', wakeAt ? { messageId, wakeAt } : { messageId, preset }),
+  // The same, over a whole selection: one request, N messages, one wake time.
+  batchSnooze: (messageIds, { preset = '', wakeAt = '' } = {}) =>
+    apiClient.post('/api/emails/batch-snooze', wakeAt ? { messageIds, wakeAt } : { messageIds, preset }),
 };
 
 // The user's real Gmail labels. The rules editor used to ask people to type a
@@ -100,6 +117,18 @@ export const labelService = {
   // rules picker, the reader's chips). Every caller degrades gracefully, so a
   // failure here must never cost the user their session.
   list: () => apiClient.get('/api/labels', { optional: true }),
+};
+
+// The user's own Gmail queries, kept as one-click filters. The six built-in
+// quick filters cover the generic cases; these are the ones only this person
+// needs, and retyping them was the reason the search box was used once.
+export const searchService = {
+  list: () => apiClient.get('/api/searches'),
+  save: (name, query) => apiClient.post('/api/searches', { name, query }),
+  remove: (id) => apiClient.delete(`/api/searches/${id}`),
+  // Records a click so the bar orders itself by what actually gets used. Never
+  // blocks the search it is counting.
+  markUsed: (id) => apiClient.post(`/api/searches/${id}/use`),
 };
 
 export const snoozeService = {
@@ -141,6 +170,11 @@ export const accountService = {
   getActivity: () => apiClient.get('/api/stats/activity'),
   getSettings: () => apiClient.get('/api/account/settings'),
   updateSettings: (settings) => apiClient.put('/api/account/settings', settings),
+  // The exact recap the daily digest would carry (subject + text + HTML), and
+  // an immediate send of it. Together they answer "what will I receive, and
+  // does delivery actually work", which used to take a day to find out.
+  getDigestPreview: () => apiClient.get('/api/stats/digest'),
+  sendTestDigest: () => apiClient.post('/api/account/digest/test'),
   // Action history (audit trail) + one-click undo of an automated action.
   getActionLog: (params = {}) => {
     const qs = new URLSearchParams();
@@ -178,6 +212,14 @@ export const ruleService = {
   apply: () => apiClient.post('/api/rules/apply'),
   // Dry run: report what the rules WOULD do, without touching Gmail.
   preview: () => apiClient.post('/api/rules/preview'),
+  // Order is the engine's semantics (first match wins), so it is edited as a
+  // whole list rather than one number at a time.
+  reorder: (ids) => apiClient.put('/api/rules/reorder', { ids }),
+  duplicate: (id) => apiClient.post(`/api/rules/${id}/duplicate`),
+  // Backup / move a ruleset. The export carries intent only (no ids, no owner,
+  // no counters), which is what makes importing it elsewhere safe.
+  exportRules: () => apiClient.get('/api/rules/export'),
+  importRules: (doc) => apiClient.post('/api/rules/import', doc),
 };
 
 // The Gmail credentials are an instance-wide OAuth app set through environment

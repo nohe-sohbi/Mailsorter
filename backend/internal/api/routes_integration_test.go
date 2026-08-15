@@ -24,20 +24,38 @@ import (
 // fails fast, letting us assert the degraded (503) path for real.
 func newRoutedTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	srv := httptest.NewServer(newTestHandler(t).SetupRoutes())
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// cancelledContext is an already-cancelled request context. Handlers derive
+// their own context from r.Context(), so a test that only cares about what
+// happens BEFORE the datastore can attach this and have the Mongo call fail
+// instantly instead of waiting out the handler's whole timeout budget.
+func cancelledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// newTestHandler builds the same Handler newRoutedTestServer mounts, for tests
+// that call a handler directly instead of going over HTTP. Mongo points at a
+// dead address on purpose (see newRoutedTestServer). It deliberately does NOT
+// go through NewHandler, which would start the four background loops.
+func newTestHandler(t *testing.T) *Handler {
+	t.Helper()
 	cli, err := mongo.Connect(context.Background(), options.Client().ApplyURI("mongodb://127.0.0.1:1"))
 	if err != nil {
 		t.Fatalf("connect (no dial yet): %v", err)
 	}
-	h := &Handler{
-		db:           &database.Database{Client: cli},
+	return &Handler{
+		db:           &database.Database{Client: cli, DB: cli.Database("mailsorter")},
 		gmailService: gmail.NewService("", "", ""),
 		auth:         auth.NewManager("integration-test-secret-key-1234567890"),
 		metrics:      metrics.New(),
 		startedAt:    time.Now(),
 	}
-	srv := httptest.NewServer(h.SetupRoutes())
-	t.Cleanup(srv.Close)
-	return srv
 }
 
 func TestMetricsEndpointLive(t *testing.T) {

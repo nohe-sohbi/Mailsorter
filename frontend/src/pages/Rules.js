@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { ruleService, accountService, labelService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
@@ -7,7 +7,7 @@ import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
 import { actionMeta } from '../ui/actions';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
-import { Bolt, Trash, Tag, Check, X, Refresh, Search } from '../ui/icons';
+import { Bolt, Trash, Tag, Check, X, Refresh, Search, ChevronDown, Copy, Download, Upload } from '../ui/icons';
 
 const FIELDS = [
   { value: 'from', label: 'Expéditeur' },
@@ -316,13 +316,24 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
   );
 }
 
-function RuleCard({ rule, onToggle, onEdit, onDelete }) {
+function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplicate, onMove, reordering }) {
   const actions = effectiveActions(rule);
   const meta = actionMeta(actions[0].type);
   return (
     <div className="card flex items-start justify-between gap-4 p-5">
       <div className="min-w-0">
         <div className="flex items-center gap-2.5">
+          {/* Le rang, pas la priorité brute : « 1re » dit ce qui compte
+              (elle passe avant les autres), le nombre stocké ne le dit pas. */}
+          {total > 1 && (
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-ink-100 text-xs font-bold text-ink-600"
+              title={`${position + 1}e règle évaluée`}
+              aria-hidden
+            >
+              {position + 1}
+            </span>
+          )}
           <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', meta.chip)}>
             <meta.Icon size={16} />
           </span>
@@ -350,6 +361,30 @@ function RuleCard({ rule, onToggle, onEdit, onDelete }) {
         )}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
+        {total > 1 && (
+          // Monter/descendre plutôt qu'un champ « priorité » : l'ordre décide
+          // quelle règle gagne, et personne ne veut le calculer à la main.
+          <div className="flex flex-col">
+            <button
+              onClick={() => onMove(-1)}
+              disabled={position === 0 || reordering}
+              className="btn-ghost btn-icon h-6 w-6 rounded-md text-muted disabled:opacity-30"
+              aria-label={`Faire passer « ${rule.name} » avant`}
+              title="Évaluer cette règle plus tôt"
+            >
+              <ChevronDown size={14} className="rotate-180" />
+            </button>
+            <button
+              onClick={() => onMove(1)}
+              disabled={position === total - 1 || reordering}
+              className="btn-ghost btn-icon h-6 w-6 rounded-md text-muted disabled:opacity-30"
+              aria-label={`Faire passer « ${rule.name} » après`}
+              title="Évaluer cette règle plus tard"
+            >
+              <ChevronDown size={14} />
+            </button>
+          </div>
+        )}
         <Toggle
           id={`rule-${rule.id}-enabled`}
           checked={!!rule.enabled}
@@ -359,6 +394,14 @@ function RuleCard({ rule, onToggle, onEdit, onDelete }) {
           label={<span className="sr-only">{`Activer la règle « ${rule.name} »`}</span>}
         />
         <button onClick={onEdit} className="btn-ghost btn-sm">Modifier</button>
+        <button
+          onClick={onDuplicate}
+          className="btn-ghost btn-sm btn-icon text-muted hover:text-brand-600"
+          aria-label={`Dupliquer la règle « ${rule.name} »`}
+          title="Dupliquer (la copie arrive en pause)"
+        >
+          <Copy size={16} />
+        </button>
         <button onClick={onDelete} className="btn-ghost btn-sm btn-icon text-muted hover:text-danger-600" aria-label="Supprimer la règle">
           <Trash size={16} />
         </button>
@@ -378,6 +421,9 @@ function Rules() {
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState(null); // { scanned, willApply, byRule, samples }
   const [autoApply, setAutoApply] = useState(false);
+  const [reordering, setReordering] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef(null);
   const [labels, setLabels] = useState([]);
   // Distinct from `labels.length`: tant que l'appel n'a pas abouti, on ne peut
   // pas affirmer qu'un libellé saisi n'existe pas.
@@ -462,6 +508,88 @@ function Rules() {
       load();
     } catch {
       toast.error('Échec de la suppression.');
+    }
+  };
+
+  // Reordering is optimistic: the list is what the user just dragged into
+  // place, and a failure puts the server's order back rather than leaving the
+  // screen disagreeing with the engine.
+  const move = async (index, delta) => {
+    const target = index + delta;
+    if (!rules || target < 0 || target >= rules.length) return;
+    const next = [...rules];
+    [next[index], next[target]] = [next[target], next[index]];
+    const previous = rules;
+    setRules(next);
+    setReordering(true);
+    try {
+      await ruleService.reorder(next.map((r) => r.id));
+      track('rules_reordered', { count: next.length });
+    } catch (err) {
+      setRules(previous);
+      toast.error(apiError(err, "L'ordre n'a pas pu être enregistré."));
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const duplicate = async (rule) => {
+    try {
+      const { data } = await ruleService.duplicate(rule.id);
+      track('rule_duplicated');
+      toast.success(`« ${data.name} » créée, en pause.`);
+      load();
+    } catch (err) {
+      toast.error(apiError(err, 'Duplication impossible.'));
+    }
+  };
+
+  // Export and import both go through the browser rather than a link: the
+  // routes are session-authenticated, so an <a href> would get a 401.
+  const exportRules = async () => {
+    try {
+      const { data } = await ruleService.exportRules();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `mailsorter-regles-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      track('rules_exported', { count: (data.rules || []).length });
+      toast.success(`${(data.rules || []).length} règle(s) exportée(s).`);
+    } catch (err) {
+      toast.error(apiError(err, 'Export impossible.'));
+    }
+  };
+
+  const importRules = async (event) => {
+    const file = event.target.files?.[0];
+    // Reset immediately: without it, re-picking the same file fires no change
+    // event and the import silently does nothing the second time.
+    event.target.value = '';
+    if (!file) return;
+
+    setImporting(true);
+    try {
+      const text = await file.text();
+      let doc;
+      try {
+        doc = JSON.parse(text);
+      } catch {
+        toast.error("Ce fichier n'est pas un JSON valide.");
+        return;
+      }
+      const { data } = await ruleService.importRules(doc);
+      track('rules_imported', { count: data.imported });
+      toast.success(`${data.imported} règle(s) importée(s), à la suite des vôtres.`);
+      load();
+    } catch (err) {
+      toast.error(apiError(err, 'Import impossible.'));
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -639,9 +767,14 @@ function Rules() {
               <RuleCard
                 key={rule.id}
                 rule={rule}
+                position={rules.indexOf(rule)}
+                total={rules.length}
+                reordering={reordering}
                 onToggle={() => toggle(rule)}
                 onEdit={() => setEditing(rule)}
                 onDelete={() => remove(rule)}
+                onDuplicate={() => duplicate(rule)}
+                onMove={(delta) => move(rules.indexOf(rule), delta)}
               />
             )
           )}
@@ -650,6 +783,43 @@ function Rules() {
 
       {hasRules && editing !== 'new' && (
         <button onClick={() => setEditing('new')} className="btn-secondary mt-4 w-full">+ Nouvelle règle</button>
+      )}
+
+      {/* Sauvegarder / transporter un ruleset. Volontairement en bas de page :
+          c'est une opération d'entretien, pas le geste quotidien. */}
+      {!error && rules !== null && (
+        <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-hairline pt-5">
+          <span className="text-xs text-muted">
+            Vos règles vous appartiennent : emportez-les, sauvegardez-les, rejouez-les ailleurs.
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={exportRules}
+              disabled={rules.length === 0}
+              className="btn-ghost btn-sm"
+              title="Télécharger vos règles au format JSON"
+            >
+              <Download size={15} /> Exporter
+            </button>
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={importing}
+              className="btn-ghost btn-sm"
+              title="Ajouter les règles d'un fichier exporté"
+            >
+              {importing ? <Spinner size={15} /> : <Upload size={15} />} Importer
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={importRules}
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

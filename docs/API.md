@@ -17,8 +17,20 @@ raw `X-User-Email` header (any client-supplied value is stripped server-side).
 Requests without a valid token receive `401 Unauthorized`.
 
 Public endpoints (no token needed): `/health`, `/metrics`, `/api/auth/*`,
-`/api/config/status`, and `/api/billing/webhook` (which authenticates via its
-Stripe signature).
+`/api/config/status`, `/api/waitlist`, and `/api/billing/webhook` (which
+authenticates via its Stripe signature).
+
+## Errors
+
+Every failure, from any layer (middleware, routing, handler), is a JSON envelope:
+
+```json
+{ "error": "Choisissez une échéance valide", "status": 400 }
+```
+
+`Content-Type` is always `application/json`, including on `401`, `429` and `500`.
+Clients can therefore read one shape everywhere; the SPA does exactly that, in
+`apiError` (`frontend/src/services/api.js`).
 
 Note that only `/api/config/status` is public, never the whole `/api/config/`
 prefix. The Gmail credentials are a single instance-wide OAuth app: they are
@@ -192,8 +204,10 @@ the inbox for one-off triage.
 { "messageId": "18c...", "action": "archive" }
 ```
 `action` is one of `archive`, `delete` (alias `trash`), `unarchive`, `untrash`,
-`read`, `unread`. Forward triage actions (`archive`/`delete`/`read`) are recorded
-in the action ledger; the inverse actions are not.
+`read`, `unread`, `star`, `unstar`. Forward triage actions
+(`archive`/`delete`/`read`/`star`) are recorded in the action ledger; the inverse
+actions are not. The vocabulary matches `/api/emails/batch-action`, so the reader
+and the shortcuts can express the same things one message at a time.
 
 **Response:** `200 OK`
 ```json
@@ -229,7 +243,9 @@ to display.
   "snippet": "Bonjour…",
   "body": "version texte",
   "bodyHtml": "<p>version html</p>",
-  "attachments": [{ "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481 }],
+  "attachments": [
+    { "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481, "attachmentId": "ANGjdJ..." }
+  ],
   "labelIds": ["INBOX"],
   "isRead": true
 }
@@ -238,10 +254,46 @@ to display.
 renders the HTML, the deterministic rule engine matches on the text. Either may
 be absent.
 
+`attachmentId` is the handle the bytes live behind (see the download route
+below). A part without one carries its data inline in the message payload and is
+not downloadable; inline images a newsletter references are filtered out
+entirely.
+
 **Error Responses:**
 - `400 Bad Request`: Missing id
 - `401 Unauthorized`: Missing or expired session
 - `502 Bad Gateway`: Gmail could not return the message
+
+---
+
+### Download an attachment
+
+#### GET /api/emails/{id}/attachments/{attachmentId}
+
+Stream one attachment of one message. Gmail never ships attachment data with the
+message, so this resolves the message first (to learn the part's real filename
+and MIME type, and to prove the message actually carries that id) and then
+fetches the bytes.
+
+Only a part of the named message may be served: an attachment id the message
+does not carry is a 404, never a passthrough to Gmail.
+
+**Response:** `200 OK`, the raw file, with:
+- `Content-Type`: the part's MIME type when it parses, `application/octet-stream` otherwise
+- `Content-Disposition`: `attachment`, with the filename sanitized (no directory
+  components, no control characters) and published in both the quoted and the
+  RFC 5987 `filename*` form so accents survive
+- `X-Content-Type-Options: nosniff`
+
+The route is session-authenticated, so a plain `<a href>` cannot fetch it: the
+SPA downloads through the API client and hands the browser an object URL.
+
+**Error Responses:**
+- `400 Bad Request`: Missing message or attachment id
+- `401 Unauthorized`: Missing or expired session
+- `404 Not Found`: This message carries no such attachment
+- `413 Payload Too Large`: Over 30 MiB
+- `502 Bad Gateway`: Gmail could not return the message or the bytes
 
 ---
 
@@ -291,10 +343,17 @@ because the client already holds the exact ids, which is what makes undoing a
 
 **Request body:**
 ```json
-{ "messageIds": ["18c..."], "action": "archive" }
+{ "messageIds": ["18c..."], "action": "label", "labelName": "Factures" }
 ```
-Only `archive` and `delete` are reversible. The matching ledger entries are marked
-undone so the history does not offer a second "Annuler" on the same work.
+`archive`, `delete` and `label` are reversible. `labelName` is required when
+undoing a `label` and is the name the client just applied: the server resolves it
+to a Gmail label id, which the client does not have. Marking as read stays
+one-way on purpose.
+
+The matching ledger entries are marked undone so the history does not offer a
+second "Annuler" on the same work. Note that the per-entry history undo
+(`POST /api/activity/undo`) still cannot reverse a labelling: the action log
+stores no label name, so it would have nothing to remove.
 
 **Response:** `200 OK`
 ```json
@@ -302,7 +361,7 @@ undone so the history does not offer a second "Annuler" on the same work.
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Non-reversible action, empty list, or over 200 ids
+- `400 Bad Request`: Non-reversible action, empty list, missing label name, or over 200 ids
 - `401 Unauthorized`: Missing or expired session
 
 ---
@@ -321,12 +380,52 @@ own (marked unread). Wake time is resolved from a friendly preset server-side.
 { "messageId": "msg-id", "preset": "tomorrow" }
 ```
 `preset` is one of `laterToday`, `thisEvening`, `tomorrow`, `weekend`,
-`nextWeek`. Alternatively pass an explicit `wakeAt` (RFC 3339, must be future).
+`nextWeek`. Alternatively pass an explicit `wakeAt` (RFC 3339): it wins over the
+preset and is validated on its own terms, since a preset cannot produce a bad
+time but a date picker can. It must be in the future and within one year
+(`snooze.MaxHorizon`), so a mistyped year cannot hide an email for a decade.
 
 **Response:**
 ```json
 { "status": "snoozed", "wakeAt": "2026-06-22T08:00:00Z" }
 ```
+
+**Error Responses:**
+- `400 Bad Request`: Unknown preset, or a wake time in the past or beyond one year
+- `401 Unauthorized`: Missing or expired session
+- `502 Bad Gateway`: Gmail refused the label or the move
+
+### Snooze a whole selection
+
+#### POST /api/emails/batch-snooze
+
+The same choice of preset or explicit `wakeAt`, applied to a selection so one
+wake time covers every message in it.
+
+**Body:**
+```json
+{ "messageIds": ["18c...", "18d..."], "preset": "weekend" }
+```
+At most 200 ids per request. Protected senders are shielded exactly as in
+`/batch-action`: a bulk snooze takes mail out of the inbox, which is what the VIP
+list exists to veto, and a sender that could not be established is treated as
+possibly protected rather than assumed harmless.
+
+**Response:** `200 OK`
+```json
+{
+  "snoozed": ["18c..."],
+  "failed": 0,
+  "protectedSkipped": 1,
+  "total": 2,
+  "wakeAt": "2026-06-22T08:00:00Z"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Empty selection, over 200 ids, or an invalid deadline
+- `401 Unauthorized`: Missing or expired session
+- `502 Bad Gateway`: The snooze label could not be prepared
 
 ### List snoozes
 
@@ -605,7 +704,7 @@ Returns a single JSON document with everything Mailsorter stores about the
 caller: a **redacted** account profile (never the OAuth tokens or Stripe IDs)
 plus every user-owned dataset (rules, protected senders, snoozes, suggestions,
 sender preferences, smart labels, unsubscribes, usage, action log, analysis
-jobs). Served as a downloadable attachment. The user's Gmail mailbox is not
+jobs, saved searches). Served as a downloadable attachment. The user's Gmail mailbox is not
 included: those emails live in Gmail and never leave the user's control.
 
 ```json
@@ -630,6 +729,33 @@ typed confirmation. Gmail is never touched. Returns per-dataset deletion counts.
 ```json
 { "status": "deleted", "deleted": { "rules": 4, "protectedSenders": 2, "actionLog": 137, "account": 1 } }
 ```
+
+### Send today's digest now
+
+#### POST /api/account/digest/test
+
+Email the caller their 7-day recap immediately, through their own Gmail, using
+the same rendering and the same delivery path as the scheduler.
+
+The digest was the one feature nobody could verify: you turned it on and waited a
+day to learn whether your Gmail grant still carried the send scope. This closes
+that loop. It deliberately does **not** stamp `digestLastSentAt`, so a test never
+consumes the day's real digest, and it sends even when the week is empty (unlike
+the scheduler, which has no reason to mail "0 emails triés" unprompted).
+
+**Response:** `200 OK`
+```json
+{ "status": "sent", "subject": "Mailsorter : 34 emails triés cette semaine", "total": 34 }
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Missing session, or a dead Google grant (the SPA offers
+  "Reconnecter Gmail")
+- `502 Bad Gateway`: Gmail refused the send, typically a missing `gmail.send`
+  scope on an older authorization
+
+The matching preview, without sending anything, is `GET /api/stats/digest`.
+
 
 ---
 
@@ -1034,6 +1160,150 @@ This is the safe way to check a ruleset before applying it.
 `samples` is capped server-side. When the user has no rules, `willApply` is `0`
 and the arrays are empty.
 
+### Reorder the ruleset
+
+#### PUT /api/rules/reorder
+
+Set the running order of the whole ruleset in one request. Order is the engine's
+semantics rather than a display preference: `FirstMatch` stops at the first rule
+that matches, so which rule wins IS its priority.
+
+**Request body:**
+```json
+{ "ids": ["665...a1", "665...a2", "665...a3"] }
+```
+The list is the desired order, first evaluated first. Ids the account does not
+own are ignored, and rules the client did not mention keep their relative order
+behind the ones it did, so a stale list can never drop a rule out of the ruleset
+or collapse two rules onto the same priority.
+
+**Response:** `200 OK`
+```json
+{ "status": "reordered", "reordered": 3 }
+```
+
+**Error Responses:**
+- `400 Bad Request`: Empty list, or no id matching a rule the caller owns
+- `401 Unauthorized`: Missing or expired session
+
+### Duplicate a rule
+
+#### POST /api/rules/{id}/duplicate
+
+Copy a rule the caller owns. The copy is built from the rule's intent through the
+portable form, so it carries no id, no applied counter and no shared history. It
+is named `<name> (copie)` (then `(copie 2)`, since the per-rule apply counter is
+keyed by name) and arrives **disabled**: until it is edited it would be a second
+rule acting on the same mail as the one it was cloned from.
+
+**Response:** `201 Created`, the new rule.
+
+**Error Responses:**
+- `400 Bad Request`: Invalid rule id
+- `404 Not Found`: Rule not found
+
+### Export the ruleset
+
+#### GET /api/rules/export
+
+Hand back every rule as a portable document. It carries intent only, never
+account state: no ids, no owner, no applied counters. That is what makes
+importing it into another account a supported operation.
+
+**Response:** `200 OK` with a `Content-Disposition: attachment` header.
+```json
+{
+  "version": 1,
+  "exportedAt": "2026-08-13T09:00:00Z",
+  "rules": [
+    {
+      "name": "Newsletters",
+      "enabled": true,
+      "matchAll": true,
+      "conditions": [{ "field": "from", "operator": "contains", "value": "news@" }],
+      "actions": [{ "type": "label", "labelName": "Veille" }, { "type": "archive" }],
+      "priority": 0
+    }
+  ]
+}
+```
+
+### Import a ruleset
+
+#### POST /api/rules/import
+
+Create rules from a previously exported document. The body is the export itself.
+
+It **appends** rather than replaces: an import that silently wiped the existing
+ruleset would be an irreversible action behind a file picker. Imported rules land
+after the ones already in place, so an import never quietly outranks rules the
+user built by hand.
+
+Validation is all-or-nothing and happens before anything is written: a file with
+one bad rule creates none of them, because a half-applied import leaves a ruleset
+that is neither the old one nor the file's. Errors name the offending entry.
+
+**Response:** `201 Created`
+```json
+{ "status": "imported", "imported": 4 }
+```
+
+**Error Responses:**
+- `400 Bad Request`: Not an export, a newer format version, an empty file, an
+  invalid rule (named in the message), or a ruleset that would exceed 200 rules
+- `401 Unauthorized`: Missing or expired session
+
+---
+
+## Saved Searches Endpoints
+
+The inbox speaks Gmail's query language, which is what makes it powerful and what
+made it single-use: nobody retypes `in:inbox from:linkedin.com older_than:7d`
+every morning. A saved search turns a query worked out once into a chip.
+
+### List saved searches
+
+#### GET /api/searches
+
+Returns `{ "searches": [ ... ] }`, most used first then most recent, so the bar
+orders itself by what has earned its place. At most 24 per account.
+
+### Save a search
+
+#### POST /api/searches
+
+**Request body:**
+```json
+{ "name": "Recrutement", "query": "in:inbox from:linkedin.com" }
+```
+The name is trimmed and collapsed (60 characters max); the query is trimmed
+(512 characters max) and must be a single line.
+
+Identity is the normalized query, not the name: saving a query the account
+already keeps **renames that chip** rather than growing a second, identical one.
+
+**Response:** `201 Created`, the stored search.
+
+**Error Responses:**
+- `400 Bad Request`: Missing name or query, over the length limits, a multiline
+  query, or the account is already at 24 searches
+- `401 Unauthorized`: Missing or expired session
+
+### Record a use
+
+#### POST /api/searches/{id}/use
+
+Increments the use counter that orders the bar. Fire-and-forget from the client's
+point of view: a failed increment must never cost the user their search.
+
+**Response:** `{ "status": "ok" }`. `404` when the search does not exist.
+
+### Delete a saved search
+
+#### DELETE /api/searches/{id}
+
+**Response:** `{ "status": "deleted" }`. `404` when the search does not exist.
+
 ---
 
 ## Labels Endpoints
@@ -1103,35 +1373,24 @@ they can be neither read nor written over the API, and both former
 
 ## Error Responses
 
-All endpoints may return the following errors:
+Every endpoint answers failures with the same JSON envelope (see **Errors**
+above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`.
 
-### 400 Bad Request
-```json
-{
-  "error": "Invalid request body"
-}
-```
+| Status | Means | Typical body |
+|---|---|---|
+| `400` | The request is malformed or rejected on its merits | `{ "error": "Invalid request body", "status": 400 }` |
+| `401` | No session, an expired one, or a dead Google grant | `{ "error": "Authentication required", "status": 401 }` |
+| `402` | Free monthly AI quota exhausted | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
+| `404` | No such resource for this caller | `{ "error": "Rule not found", "status": 404 }` |
+| `409` | Already done (an action undone twice) | `{ "error": "Action déjà annulée", "status": 409 }` |
+| `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Request body too large", "status": 413 }` |
+| `429` | Rate limited (20 req/s sustained, burst 40, per client) | `{ "error": "Too many requests", "status": 429 }` |
+| `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
+| `502` | Gmail, Mistral or Stripe failed | `{ "error": "Report impossible : ...", "status": 502 }` |
+| `503` | A dependency is not configured (AI, billing) | `{ "error": "AI service not configured", "status": 503 }` |
 
-### 401 Unauthorized
-```json
-{
-  "error": "User email required"
-}
-```
-
-### 404 Not Found
-```json
-{
-  "error": "Resource not found"
-}
-```
-
-### 500 Internal Server Error
-```json
-{
-  "error": "Internal server error: details..."
-}
-```
+A `401` on a route the SPA considers non-optional clears the session and returns
+the user to the login screen.
 
 ## CORS
 

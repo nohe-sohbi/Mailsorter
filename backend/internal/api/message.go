@@ -25,13 +25,15 @@ type messageView struct {
 	Attachments []attachmentView `json:"attachments,omitempty"`
 }
 
-// attachmentView describes a file carried by the message. Downloading is not
-// offered yet; naming what is attached is already the difference between "this
-// email looks empty" and "this email is a 2 MB invoice".
+// attachmentView describes a file carried by the message. AttachmentID is the
+// handle Gmail hands out for the bytes themselves (they never travel with the
+// message payload), so it is what the download route needs; a part with no id
+// carries its data inline and is not downloadable through that route.
 type attachmentView struct {
-	Filename string `json:"filename"`
-	MimeType string `json:"mimeType"`
-	Size     int64  `json:"size"`
+	Filename     string `json:"filename"`
+	MimeType     string `json:"mimeType"`
+	Size         int64  `json:"size"`
+	AttachmentID string `json:"attachmentId,omitempty"`
 }
 
 // GetEmail returns a single message with its decoded body.
@@ -59,7 +61,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
@@ -163,10 +165,17 @@ func listAttachments(msg *gmailapi.Message) []attachmentView {
 		// Content-ID, or with Content-Disposition: inline.
 		if part.Filename != "" && !isInlinePart(part) {
 			var size int64
+			var attachmentID string
 			if part.Body != nil {
 				size = part.Body.Size
+				attachmentID = part.Body.AttachmentId
 			}
-			out = append(out, attachmentView{Filename: part.Filename, MimeType: part.MimeType, Size: size})
+			out = append(out, attachmentView{
+				Filename:     part.Filename,
+				MimeType:     part.MimeType,
+				Size:         size,
+				AttachmentID: attachmentID,
+			})
 		}
 		for _, child := range part.Parts {
 			walk(child, depth+1)

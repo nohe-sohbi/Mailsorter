@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"strings"
@@ -20,13 +19,13 @@ import (
 // AnalyzeEmails synchronously analyzes selected emails and creates AI suggestions.
 func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	if h.aiClient == nil {
-		http.Error(w, "AI service not configured", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
 		return
 	}
 
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -35,26 +34,25 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.EmailIDs) == 0 {
-		http.Error(w, "No email IDs provided", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "No email IDs provided")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
 	if h.quotaExceeded(ctx, userEmail) {
-		http.Error(w, "Quota mensuel atteint. Passez à Pro pour continuer.", http.StatusPaymentRequired)
+		writeError(w, http.StatusPaymentRequired, "Quota mensuel atteint. Passez à Pro pour continuer.")
 		return
 	}
 
 	progress, suggestions, err := h.runAnalysis(ctx, userEmail, req.EmailIDs, nil)
 	if err != nil {
-		http.Error(w, "Analysis failed: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Analysis failed: "+err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"suggestions": suggestions,
 		"autoApplied": progress.AutoApplied,
 		"cachedHits":  progress.CachedHits,
@@ -108,13 +106,13 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 // AnalyzeSender analyzes all emails from a specific sender
 func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	if h.aiClient == nil {
-		http.Error(w, "AI service not configured", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
 		return
 	}
 
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -123,7 +121,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	// Fetch emails from this sender
@@ -132,19 +130,19 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 		"from":   bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
 	}, options.Find().SetLimit(20))
 	if err != nil {
-		http.Error(w, "Failed to fetch emails", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
 		return
 	}
 	defer cursor.Close(ctx)
 
 	var emails []models.Email
 	if err := cursor.All(ctx, &emails); err != nil {
-		http.Error(w, "Failed to decode emails", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode emails")
 		return
 	}
 
 	if len(emails) == 0 {
-		http.Error(w, "No emails found from this sender", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "No emails found from this sender")
 		return
 	}
 
@@ -154,7 +152,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	// Analyze sender
 	analysis, err := h.aiClient.AnalyzeSender(req.SenderEmail, emails, existingLabels)
 	if err != nil {
-		http.Error(w, "Failed to analyze sender: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to analyze sender: "+err.Error())
 		return
 	}
 
@@ -184,8 +182,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	opts := options.Update().SetUpsert(true)
 	h.db.SenderPreferences().UpdateOne(ctx, filter, update, opts)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"analysis":   analysis,
 		"emailCount": len(emails),
 		"preference": senderPref,
@@ -196,7 +193,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -205,13 +202,13 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	// Get suggestion
 	objectID, err := primitive.ObjectIDFromHex(req.SuggestionID)
 	if err != nil {
-		http.Error(w, "Invalid suggestion ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid suggestion ID")
 		return
 	}
 
@@ -221,7 +218,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		"userId": userEmail,
 	}).Decode(&suggestion)
 	if err != nil {
-		http.Error(w, "Suggestion not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Suggestion not found")
 		return
 	}
 
@@ -246,7 +243,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		// the switch) instead of a variable shadowed by `:=`.
 		labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, suggestion.LabelName)
 		if lerr != nil {
-			http.Error(w, "Failed to create label: "+lerr.Error(), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "Failed to create label: "+lerr.Error())
 			return
 		}
 		err = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{labelID}, nil)
@@ -256,7 +253,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		http.Error(w, "Failed to apply action: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
 		return
 	}
 
@@ -272,8 +269,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	meta := h.emailIdentity(ctx, gmailClient, userEmail, suggestion.EmailID)
 	h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "applied"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 
 // ApplyBatch applies a list of AI suggestions in a single request.
@@ -282,7 +278,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -291,11 +287,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.SuggestionIDs) == 0 {
-		http.Error(w, "No suggestion IDs provided", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "No suggestion IDs provided")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	token, err := h.getUserToken(ctx, userEmail)
@@ -376,8 +372,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		appliedIDs = append(appliedIDs, id)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"applied":          applied,
 		"failed":           failed,
 		"total":            len(req.SuggestionIDs),
@@ -390,7 +385,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -399,7 +394,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	// Get user token
@@ -417,14 +412,14 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		"from":   bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
 	})
 	if err != nil {
-		http.Error(w, "Failed to fetch emails", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
 		return
 	}
 	defer cursor.Close(ctx)
 
 	var emails []models.Email
 	if err := cursor.All(ctx, &emails); err != nil {
-		http.Error(w, "Failed to decode emails", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode emails")
 		return
 	}
 
@@ -433,7 +428,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	if req.Action == "label" && req.LabelName != "" {
 		labelID, err = h.ensureLabel(ctx, gmailClient, userEmail, req.LabelName)
 		if err != nil {
-			http.Error(w, "Failed to create label: "+err.Error(), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "Failed to create label: "+err.Error())
 			return
 		}
 	}
@@ -463,8 +458,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"applied":          appliedCount,
 		"total":            len(emails),
 		"protectedSkipped": protectedSkipped,
@@ -475,11 +469,11 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	status := r.URL.Query().Get("status")
@@ -492,14 +486,14 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		"status": status,
 	}, options.Find().SetSort(bson.M{"createdAt": -1}).SetLimit(100))
 	if err != nil {
-		http.Error(w, "Failed to fetch suggestions", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch suggestions")
 		return
 	}
 	defer cursor.Close(ctx)
 
 	var suggestions []models.AISuggestion
 	if err := cursor.All(ctx, &suggestions); err != nil {
-		http.Error(w, "Failed to decode suggestions", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode suggestions")
 		return
 	}
 
@@ -531,15 +525,14 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		views = append(views, v)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(views)
+	writeJSON(w, http.StatusOK, views)
 }
 
 // RejectSuggestion rejects an AI suggestion
 func (h *Handler) RejectSuggestion(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -548,11 +541,11 @@ func (h *Handler) RejectSuggestion(w http.ResponseWriter, r *http.Request) {
 
 	objectID, err := primitive.ObjectIDFromHex(suggestionID)
 	if err != nil {
-		http.Error(w, "Invalid suggestion ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid suggestion ID")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	result, err := h.db.AISuggestions().UpdateOne(ctx,
@@ -560,12 +553,12 @@ func (h *Handler) RejectSuggestion(w http.ResponseWriter, r *http.Request) {
 		bson.M{"$set": bson.M{"status": "rejected"}},
 	)
 	if err != nil {
-		http.Error(w, "Failed to reject suggestion", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to reject suggestion")
 		return
 	}
 
 	if result.MatchedCount == 0 {
-		http.Error(w, "Suggestion not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Suggestion not found")
 		return
 	}
 
@@ -576,11 +569,11 @@ func (h *Handler) RejectSuggestion(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	// Aggregate emails by sender
@@ -597,7 +590,7 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 
 	cursor, err := h.db.Emails().Aggregate(ctx, pipeline)
 	if err != nil {
-		http.Error(w, "Failed to aggregate senders", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to aggregate senders")
 		return
 	}
 	defer cursor.Close(ctx)
@@ -608,7 +601,7 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 		LastEmail  time.Time `bson:"lastEmail"`
 	}
 	if err := cursor.All(ctx, &results); err != nil {
-		http.Error(w, "Failed to decode results", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode results")
 		return
 	}
 
@@ -635,15 +628,14 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 		senders = append(senders, sender)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(senders)
+	writeJSON(w, http.StatusOK, senders)
 }
 
 // UpdateSenderPreference updates auto-apply settings for a sender
 func (h *Handler) UpdateSenderPreference(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -652,7 +644,7 @@ func (h *Handler) UpdateSenderPreference(w http.ResponseWriter, r *http.Request)
 
 	objectID, err := primitive.ObjectIDFromHex(prefID)
 	if err != nil {
-		http.Error(w, "Invalid preference ID", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid preference ID")
 		return
 	}
 
@@ -661,7 +653,7 @@ func (h *Handler) UpdateSenderPreference(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	result, err := h.db.SenderPreferences().UpdateOne(ctx,
@@ -674,52 +666,50 @@ func (h *Handler) UpdateSenderPreference(w http.ResponseWriter, r *http.Request)
 		}},
 	)
 	if err != nil {
-		http.Error(w, "Failed to update preference", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to update preference")
 		return
 	}
 
 	if result.MatchedCount == 0 {
-		http.Error(w, "Preference not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "Preference not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 // GetSmartLabels returns the user's smart labels
 func (h *Handler) GetSmartLabels(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	cursor, err := h.db.SmartLabels().Find(ctx, bson.M{"userId": userEmail})
 	if err != nil {
-		http.Error(w, "Failed to fetch labels", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch labels")
 		return
 	}
 	defer cursor.Close(ctx)
 
 	var labels []models.SmartLabel
 	if err := cursor.All(ctx, &labels); err != nil {
-		http.Error(w, "Failed to decode labels", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to decode labels")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(labels)
+	writeJSON(w, http.StatusOK, labels)
 }
 
 // CreateSmartLabel creates a new smart label manually
 func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		http.Error(w, "User email required", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
@@ -729,11 +719,11 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if label.Name == "" {
-		http.Error(w, "Label name required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Label name required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	// Get user token to create Gmail label
@@ -748,7 +738,7 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 	// Create Gmail label
 	gmailLabelID, err := h.gmailService.CreateLabel(gmailClient, label.Name)
 	if err != nil {
-		http.Error(w, "Failed to create Gmail label: "+err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to create Gmail label: "+err.Error())
 		return
 	}
 
@@ -759,15 +749,13 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.db.SmartLabels().InsertOne(ctx, label)
 	if err != nil {
-		http.Error(w, "Failed to save label", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "Failed to save label")
 		return
 	}
 
 	label.ID = result.InsertedID.(primitive.ObjectID).Hex()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(label)
+	writeJSON(w, http.StatusCreated, label)
 }
 
 // Helper functions

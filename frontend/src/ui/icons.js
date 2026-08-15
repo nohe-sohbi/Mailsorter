@@ -210,6 +210,21 @@ export const Download = make(
   </>
 );
 
+export const Upload = make(
+  <>
+    <path d="M12 21V9" />
+    <path d="m7 12 5-5 5 5" />
+    <path d="M4 4h16" />
+  </>
+);
+
+export const Copy = make(
+  <>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+  </>
+);
+
 export const Google = ({ size = 18, className = '' }) => (
   <svg width={size} height={size} viewBox="0 0 48 48" className={className} aria-hidden>
     <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8a12 12 0 1 1 7.9-21l5.7-5.7A20 20 0 1 0 44 24c0-1.2-.1-2.4-.4-3.5z" />
