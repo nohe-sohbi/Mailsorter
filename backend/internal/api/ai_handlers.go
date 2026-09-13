@@ -12,7 +12,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"golang.org/x/oauth2"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
 
@@ -500,7 +499,7 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 	// Attach the subject/sender of each suggested email in one indexed lookup.
 	// The client used to find it by scanning the emails currently on screen,
 	// which meant any suggestion for a message outside the loaded page rendered
-	// as "Sans sujet · Expéditeur inconnu" — asking the user to approve an
+	// as "Sans sujet · Expéditeur inconnu", asking the user to approve an
 	// action on an email they cannot see.
 	ids := make([]string, 0, len(suggestions))
 	for _, s := range suggestions {
@@ -788,44 +787,6 @@ func (h *Handler) senderOf(ctx context.Context, userEmail, messageID string) str
 		return e.From
 	}
 	return ""
-}
-
-func (h *Handler) getUserToken(ctx context.Context, userEmail string) (*oauth2.Token, error) {
-	var user models.User
-	err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
-	if err != nil {
-		return nil, err
-	}
-
-	token := &oauth2.Token{
-		AccessToken:  user.AccessToken,
-		RefreshToken: user.RefreshToken,
-		Expiry:       user.TokenExpiry,
-	}
-
-	// Refresh if expired. If we can't mint a fresh token (no refresh token, or the
-	// refresh was rejected), surface errReauthRequired so callers answer 401 and
-	// the SPA restarts OAuth. Returning the dead token here would instead yield a
-	// stream of opaque 500s the user can never escape.
-	if token.Expiry.Before(time.Now()) {
-		if user.RefreshToken == "" {
-			return nil, errReauthRequired
-		}
-		newToken, rerr := h.gmailService.RefreshToken(user.RefreshToken)
-		if rerr != nil {
-			return nil, errReauthRequired
-		}
-		token = newToken
-		h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail}, bson.M{
-			"$set": bson.M{
-				"accessToken": newToken.AccessToken,
-				"tokenExpiry": newToken.Expiry,
-				"updatedAt":   time.Now(),
-			},
-		})
-	}
-
-	return token, nil
 }
 
 func (h *Handler) ensureLabel(ctx context.Context, gmailClient interface{}, userEmail, labelName string) (string, error) {

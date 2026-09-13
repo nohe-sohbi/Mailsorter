@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
@@ -52,11 +53,18 @@ func newTestHandler(t *testing.T) *Handler {
 	return &Handler{
 		db:           &database.Database{Client: cli, DB: cli.Database("mailsorter")},
 		gmailService: gmail.NewService("", "", ""),
-		auth:         auth.NewManager("integration-test-secret-key-1234567890"),
+		encryptor:    crypto.NewEncryptor(testSecret),
+		auth:         auth.NewManager(testSecret),
 		metrics:      metrics.New(),
 		startedAt:    time.Now(),
 	}
 }
+
+// testSecret stands in for ENCRYPTION_KEY. Both the session signer and the
+// at-rest encryptor derive from it in production, so the harness wires it into
+// both: a Handler missing its encryptor would panic on the first token write
+// rather than fail a test honestly.
+const testSecret = "integration-test-secret-key-1234567890"
 
 func TestMetricsEndpointLive(t *testing.T) {
 	srv := newRoutedTestServer(t)

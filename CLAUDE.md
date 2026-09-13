@@ -140,7 +140,7 @@ The outbound clients and primitives:
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
-| `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY` |
+| `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (per-user Gmail tokens) and the legacy `gmail_config` read at boot |
 | `config` | Env loading + `Validate()` fail-fast |
 | `database` | Mongo client, one accessor per collection, `EnsureIndexes` |
 | `models` | Every BSON/JSON struct. One file, `models.go` |
@@ -154,7 +154,8 @@ The outbound clients and primitives:
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
-| `ai_handlers.go` | The nine `/api/ai/*` endpoints, plus `/api/senders/*` and `getUserToken` |
+| `ai_handlers.go` | The nine `/api/ai/*` endpoints, plus `/api/senders/*` |
+| `tokens.go` | The user's Google credentials: `sealToken` / `openToken` (AES-256-GCM at rest), the legacy-plaintext migration, and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
 | `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
@@ -425,7 +426,20 @@ Do not duplicate these into this file. Point at them.
 
 - **`REACT_APP_*` is frozen at image build time.** A runtime env var change does nothing to
   the SPA. This already caused one production incident (PR #15).
-- **`ENCRYPTION_KEY` is not rotatable in place.** Changing it orphans every AES-GCM value at rest.
+- **`ENCRYPTION_KEY` is not rotatable in place.** Changing it orphans every AES-GCM value at
+  rest, which now includes every user's Gmail token: each one has to reconnect their account.
+  It also invalidates every session token in the wild.
+- **Never write a Gmail token to Mongo directly.** `api/tokens.go` owns both directions:
+  `sealToken` on the way in, `openToken` on the way out. A value without the `enc:v1:`
+  prefix is a legacy plaintext token, re-sealed in place the first time it is read, so the
+  migration needs no backfill. A prefixed value that fails to decrypt is NOT treated as
+  plaintext: it becomes `errReauthRequired` (401) so the user reconnects.
+- **A message listing picks its own payload size.** `gmail.FieldsFull` downloads every MIME
+  part and is only for callers that read `Email.Body` (the sync, the rule engine).
+  `gmail.FieldsMetadata` is for anything that only renders sender, subject and snippet, and
+  its headers must be listed in `metadataHeaders` or Gmail returns none at all. Fetches run
+  8 at a time and the result keeps the listing order; that order is the mailbox order and
+  the page token only makes sense against it.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account

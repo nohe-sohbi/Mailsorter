@@ -30,6 +30,18 @@ const (
 	DatasetActionLog        Dataset = "actionLog"
 	DatasetJobs             Dataset = "analysisJobs"
 	DatasetSavedSearches    Dataset = "savedSearches"
+	// DatasetEmails is the local mirror of the synced mailbox, and it holds the
+	// DECODED body of every message, which makes it the most sensitive thing
+	// Mailsorter stores. It was missing from this catalog, so deleting an account
+	// wiped the profile and settings while leaving the full text of the user's
+	// mail in the database indefinitely, under a screen promising erasure.
+	DatasetEmails Dataset = "emails"
+	// DatasetLabels is the per-user label cache. Nothing writes it today, so it
+	// exports as an empty list, but the collection and its unique index exist in
+	// every deployment: listing it here means the day something does start
+	// writing it, export and erasure already cover it instead of silently
+	// drifting apart.
+	DatasetLabels Dataset = "labels"
 )
 
 // Datasets returns the canonical, stable list of user-owned data categories. The
@@ -48,6 +60,10 @@ func Datasets() []Dataset {
 		DatasetActionLog,
 		DatasetJobs,
 		DatasetSavedSearches,
+		// Last, because they are the bulkiest: the settings a user recognizes
+		// should come first in an export they open themselves.
+		DatasetLabels,
+		DatasetEmails,
 	}
 }
 

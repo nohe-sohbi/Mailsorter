@@ -22,7 +22,7 @@ files:
   - frontend/src/pages/AuthCallback.js
 priority: high
 related: [gmail-sync, data-model, frontend-inbox]
-last-verified: 2026-08-09
+last-verified: 2026-09-13
 ---
 # Auth, Session and Secrets
 
@@ -30,7 +30,7 @@ Mailsorter has no session store, no account entity and no JWT library. Identity 
 single HMAC-SHA256 string the server signs and re-verifies on every request, the OAuth
 handshake is protected by a second HMAC string with a different derived key, and both
 keys plus the AES key come from one env var: `ENCRYPTION_KEY`. The user's Gmail OAuth
-token never leaves the server.
+token never leaves the server, and no longer sits in the clear once it gets there.
 
 ## Overview
 
@@ -197,15 +197,18 @@ back off and rejects anything shorter with `ciphertext too short`.
 |---|---|---|---|
 | Legacy Gmail client secret | `gmail_config.clientSecretEncrypted` | Yes, AES-256-GCM | `models.go:105`, decrypted at `cmd/server/main.go:79` |
 | Live Gmail client secret | `GMAIL_CLIENT_SECRET` env var | No, it is an env var | `config.go:55`, `main.go:62-67` |
-| Per-user Gmail access token | `users.accessToken` | **No, plaintext** | `handlers.go:191` writes `token.AccessToken` raw |
-| Per-user Gmail refresh token | `users.refreshToken` | **No, plaintext** | `handlers.go:192` writes `token.RefreshToken` raw |
+| Per-user Gmail access token | `users.accessToken` | Yes, AES-256-GCM | sealed by `sealToken` (`api/tokens.go`), written at `handlers.go` |
+| Per-user Gmail refresh token | `users.refreshToken` | Yes, AES-256-GCM | same path; opened only by `openToken` |
 | Session token | not stored server-side at all | n/a, stateless | `auth.go` has no store |
 
-`Encryptor.Encrypt` has **zero production callers**. A grep for `.Encrypt(` across the Go
-tree returns only its own definition and `crypto_test.go`. The only production call into
-the package is `Decrypt`, twice, both on the legacy document
-(`cmd/server/main.go:79`, `cmd/test_decrypt/main.go:39`). The encryption path is therefore
-read-only legacy support, not an active protection for user tokens.
+`backend/internal/api/tokens.go` is the only place that seals or opens a Google token,
+and every read goes through `userTokens` -> `openToken`. A stored value carries the
+`enc:v1:` prefix; one without it is a legacy plaintext token from before this change,
+still accepted and **re-sealed in place on first read**, so the migration completes
+account by account with no backfill job. A value that carries the prefix but fails to
+decrypt (sealed under a different `ENCRYPTION_KEY`) is never passed off as plaintext:
+`getUserToken` turns it into `errReauthRequired`, so the user is asked to reconnect
+instead of receiving a 500 they cannot escape.
 
 Both `models.User.AccessToken` and `.RefreshToken` carry `json:"-"`, so they are excluded
 from any JSON response even if a handler marshals a whole `User`.
@@ -272,8 +275,9 @@ Break one of these and the whole model is gone.
 - **`ENCRYPTION_KEY` is three secrets in one, and rotating it logs everyone out.** It is
   the AES key, the session key and the state key. Changing it invalidates every session
   token in the wild (users get a 401 and land on `/`), breaks any OAuth handshake in
-  flight, and makes the legacy `clientSecretEncrypted` permanently unreadable. There is
-  no rotation path in the code.
+  flight, makes the legacy `clientSecretEncrypted` permanently unreadable, and now also
+  orphans every sealed Gmail token, which forces each user through the OAuth consent
+  screen again. There is no rotation path in the code.
 - **The OAuth `state` is not single-use, despite the doc comment saying so.**
   `VerifyState` (`auth.go:108-125`) checks the signature and the expiry, nothing else.
   No nonce is stored, so the same state replays successfully for its full 10 minutes.

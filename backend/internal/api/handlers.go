@@ -190,20 +190,33 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// Both tokens are encrypted before they touch the database: see tokens.go for
+	// why they are the one thing here that must never sit at rest in the clear.
+	sealedAccess, err := h.sealToken(token.AccessToken)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to secure credentials")
+		return
+	}
+	sealedRefresh, err := h.sealToken(token.RefreshToken)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to secure credentials")
+		return
+	}
+
 	filter := bson.M{"email": userEmail}
 	set := bson.M{
-		"accessToken": token.AccessToken,
+		"accessToken": sealedAccess,
 		"tokenExpiry": token.Expiry,
 		"updatedAt":   time.Now(),
 	}
 	// Google issues a refresh token only on the FIRST authorization for a given
 	// client and user, unless consent is forced. Every later authorization comes
-	// back with an empty one — and writing that over the stored token destroyed
+	// back with an empty one, and writing that over the stored token destroyed
 	// the account: the access token kept working for about an hour, then nothing
 	// could be refreshed and there was no way back from inside the app. Keep
 	// what we have unless Google actually hands us a new one.
-	if token.RefreshToken != "" {
-		set["refreshToken"] = token.RefreshToken
+	if sealedRefresh != "" {
+		set["refreshToken"] = sealedRefresh
 	}
 	update := bson.M{
 		"$set": set,
@@ -266,7 +279,11 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	// Get page token for pagination
 	pageToken := r.URL.Query().Get("pageToken")
 
-	resp, err := h.gmailService.ListMessagesWithPagination(gmailClient, query, maxResults, pageToken)
+	// Metadata only: this listing renders the sender, the subject and the snippet,
+	// and never touches Email.Body. Asking for full payloads here downloaded every
+	// MIME part of every message on screen, which is both the wait the user felt
+	// and the bulk of the account's Gmail quota.
+	resp, err := h.gmailService.ListMessagesWithPagination(gmailClient, query, maxResults, pageToken, gmail.FieldsMetadata)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails: "+err.Error())
 		return

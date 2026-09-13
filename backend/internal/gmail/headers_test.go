@@ -52,3 +52,30 @@ func TestParseEmailHeadersUsesInternalDate(t *testing.T) {
 		t.Fatalf("date = %v, want %v", date, internal)
 	}
 }
+
+// A metadata listing returns only the headers it asked for, and Gmail omits the
+// payload object entirely when it has none to give. This used to be a nil
+// dereference, recovered as a 500 on the endpoint the inbox calls on every load.
+func TestParseEmailHeadersSurvivesAMissingPayload(t *testing.T) {
+	// InternalDate is the one field that still says something without a payload:
+	// 2026-09-13T08:30:00Z in Gmail's epoch milliseconds.
+	const internal = int64(1789288200000)
+
+	from, subject, to, date := ParseEmailHeaders(&gmailapi.Message{Id: "m0", InternalDate: internal})
+
+	if from != "" || subject != "" || to != nil {
+		t.Errorf("headers from a payload-less message = (%q, %q, %v), want all empty", from, subject, to)
+	}
+	if date.IsZero() {
+		t.Error("date = zero, want the InternalDate fallback: a zero date makes the message escape every olderThan/newerThan rule")
+	}
+	if got := date.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-09-13T08:30:00Z" {
+		t.Errorf("date = %s, want 2026-09-13T08:30:00Z", got)
+	}
+
+	// A nil message must not panic either: fetchMessages skips those, but the
+	// parser is exported and called from several places.
+	if _, _, _, d := ParseEmailHeaders(nil); !d.IsZero() {
+		t.Errorf("ParseEmailHeaders(nil) date = %v, want the zero time", d)
+	}
+}

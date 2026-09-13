@@ -11,7 +11,7 @@ files:
   - docker-compose.yml
 priority: high
 related: [gmail-sync, ai-triage, rules-engine, billing-quota]
-last-verified: 2026-08-09
+last-verified: 2026-09-13
 ---
 # Data Model: MongoDB Collections
 
@@ -24,7 +24,7 @@ out of the source, not inferred.
 `docs/ARCHITECTURE.md` is stale for this topic. Its "Composants" section lists
 only 4 collections (`emails`, `sorting_rules`, `labels`, `users`), which was true
 before most of the app existed. This file supersedes it for anything about the
-persistence layer. `CLAUDE.md` names the 16 collections but stops at the names;
+persistence layer. `CLAUDE.md` names the 17 collections but stops at the names;
 this file is the terrain under that map.
 
 ## Overview
@@ -475,6 +475,9 @@ either one silently escapes both.
 | DatasetUsage | `usage` | `usage` |
 | DatasetActionLog | `actionLog` | `action_log` |
 | DatasetJobs | `analysisJobs` | `analysis_jobs` |
+| DatasetSavedSearches | `savedSearches` | `saved_searches` |
+| DatasetLabels | `labels` | `labels` |
+| DatasetEmails | `emails` | `emails` |
 
 Both operations filter on `bson.M{"userId": userEmail}`. `users` is handled
 separately: exported through `account.RedactUser` (which strips the OAuth tokens
@@ -569,12 +572,15 @@ user. Anything user-specific written through it leaks across accounts.
 non-unique; uniqueness comes from the upsert filter
 `{userId, messageId, status: "scheduled"}`. A direct insert bypasses it.
 
-**Account deletion does not touch `emails`.** `account.Datasets()` covers ten
-collections; `emails` is not one of them, and neither are `labels`, `waitlist`,
-`analysis_cache` or `gmail_config`. `DeleteAccount` therefore leaves the user's
-synced subjects and bodies in `emails`. `waitlist` and `analysis_cache` are
-excluded by design (not user-scoped); `emails` reads as an omission. Verified by
-reading `account.go` and `account_data.go`, not by running the endpoint.
+**Account deletion now covers `emails` and `labels`.** It did not until
+2026-09-13: `account.Datasets()` listed eleven collections and the mailbox mirror
+was not one of them, so `DeleteAccount` wiped the profile and the settings while
+leaving the user's synced subjects and decoded bodies in `emails` indefinitely,
+under a screen promising permanent erasure. Both are in the catalog now, which
+puts them in the export too. Still deliberately outside it: `waitlist` and
+`analysis_cache` (not user-scoped) and `gmail_config` (instance config, legacy).
+`analysis_cache` is the one that keeps a model-written justification derived from
+a user's mail after that user is gone; it has no expiry.
 
 **`usage` has no Go struct.** Anything you write about its shape must come from
 `account.go`. Do not add a `models.Usage` from memory.
