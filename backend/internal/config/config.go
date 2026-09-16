@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
 // defaultAllowedOrigins is the CORS allow-list used when ALLOWED_ORIGINS is not
@@ -45,6 +47,11 @@ type Config struct {
 	BuildVersion        string
 	DigestHourUTC       int
 	AllowedOrigins      []string
+	// Edition decides which providers this instance may offer. It is not a
+	// packaging label: the self-hosted edition can reach the Gmail API through
+	// the operator's own Cloud project and Proton through a local Bridge, and
+	// the hosted one can do neither. See internal/provider.
+	Edition provider.Edition
 }
 
 func Load() *Config {
@@ -65,6 +72,12 @@ func Load() *Config {
 		BuildVersion:        getEnv("BUILD_VERSION", "dev"),
 		DigestHourUTC:       getEnvInt("DIGEST_HOUR_UTC", 7),
 		AllowedOrigins:      getEnvList("ALLOWED_ORIGINS", defaultAllowedOrigins),
+		// Self-hosted is the default because it is the safe one to get wrong:
+		// an instance that wrongly believes it is self-hosted offers routes its
+		// operator can simply not configure, while one that wrongly believes it
+		// is hosted would hide them.
+		Edition: provider.Edition(strings.ToLower(strings.TrimSpace(
+			getEnv("EDITION", string(provider.EditionSelfHosted))))),
 	}
 }
 
@@ -80,6 +93,15 @@ func (c *Config) Validate() error {
 	}
 	if len(key) < minEncryptionKeyLen {
 		return fmt.Errorf("ENCRYPTION_KEY is too short (%d chars); use at least %d", len(key), minEncryptionKeyLen)
+	}
+	// An unrecognised edition must not fall back to a default: it decides which
+	// mailbox routes exist, so booting on a typo would silently offer the wrong
+	// set of providers and only show up as a connection that cannot be made.
+	switch c.Edition {
+	case provider.EditionSelfHosted, provider.EditionHosted:
+	default:
+		return fmt.Errorf("EDITION is %q; use %q or %q",
+			c.Edition, provider.EditionSelfHosted, provider.EditionHosted)
 	}
 	return nil
 }

@@ -131,6 +131,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure | `Dataset*`, redaction helpers |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
+| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 
 The outbound clients and primitives:
 
@@ -374,6 +375,7 @@ as a side effect of another change.
 | `MONGODB_URI` / `MONGO_ROOT_USERNAME` / `MONGO_ROOT_PASSWORD` / `PORT` / `BACKEND_PORT` | see `.env.example` | direct `go run` reads `MONGODB_URI` and `PORT` |
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` | optional | empty key keeps the waitlist CTA instead of checkout |
 | `ALLOWED_ORIGINS` | optional | comma separated. Empty falls back to localhost:3000, localhost, mailsorter.sohbi.dev. No rebuild needed |
+| `EDITION` | yes (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers: the Gmail API and Proton exist only in `self-hosted` |
 | `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest default 07:00 UTC |
 | `REACT_APP_API_URL`, `REACT_APP_UMAMI_WEBSITE_ID` | build args | **inlined into the static bundle at image build time.** Leave `REACT_APP_API_URL` unset so it defaults to `/` and the SPA calls the API same-origin through the nginx proxy |
 
@@ -442,6 +444,11 @@ Do not duplicate these into this file. Point at them.
   the page token only makes sense against it.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it.
+- **The edition is not packaging, it is a capability gate.** `EDITION=hosted` can never
+  reach the Gmail API: a shared OAuth client is capped by Google at 100 authorizations for
+  the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an
+  app password instead. `internal/provider` holds that rule as data and a test enforces it,
+  so do not special-case a provider in a handler: add or fix its route in the catalog.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are
