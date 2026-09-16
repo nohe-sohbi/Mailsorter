@@ -16,6 +16,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -47,6 +48,11 @@ type BillingConfig struct {
 // from configuration (BUILD_VERSION) at startup so /health and /metrics can
 // report exactly which build is live.
 var Version = "dev"
+
+// Edition is which distribution is running, set from configuration at startup.
+// It gates which mailbox providers this instance can offer: see
+// internal/provider, and the catalog served by GET /api/providers.
+var Edition = provider.EditionSelfHosted
 
 // AllowedOrigins is the CORS allow-list applied by SetupRoutes. It defaults to
 // the local-dev + public origins and is overridden from configuration
@@ -569,6 +575,7 @@ func (h *Handler) GetConfigStatus(w http.ResponseWriter, r *http.Request) {
 	status := models.InstanceStatus{
 		IsConfigured: h.gmailService.IsConfigured(),
 		BillingOn:    h.billingEnabled(),
+		Edition:      string(Edition),
 	}
 
 	writeJSON(w, http.StatusOK, status)

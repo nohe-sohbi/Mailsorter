@@ -118,6 +118,11 @@ type GmailConfig struct {
 type InstanceStatus struct {
 	IsConfigured bool `json:"isConfigured"`
 	BillingOn    bool `json:"billingOn"`
+	// Edition is "self-hosted" or "hosted". The SPA needs it at boot, before
+	// any login, because it decides which mailbox providers exist and whether
+	// there is anything to bill at all. It is the one place the frontend learns
+	// the edition: nothing in React hardcodes it.
+	Edition string `json:"edition"`
 }
 
 // ============================================

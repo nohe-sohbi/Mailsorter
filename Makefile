@@ -12,23 +12,28 @@ help:
 	@echo "  make backend   - Build and run backend locally"
 	@echo "  make frontend  - Build and run frontend locally"
 
+# Local runs go through compose.local.yml, which publishes the host ports that
+# docker-compose.yml deliberately omits for the Dokploy deployment. Without it
+# the stack starts and binds nothing, and the URLs printed below are a lie.
+COMPOSE = docker compose -f docker-compose.yml -f compose.local.yml
+
 build:
-	docker compose build
+	$(COMPOSE) build
 
 up:
-	docker compose up -d
+	$(COMPOSE) up -d
 	@echo "Services are starting..."
-	@echo "Frontend: http://localhost:3000"
-	@echo "Backend: http://localhost:8080"
+	@echo "Frontend: http://localhost:$${FRONTEND_PORT:-3000}"
+	@echo "Backend:  http://localhost:$${BACKEND_PORT:-8080}/health"
 
 down:
-	docker compose down
+	$(COMPOSE) down
 
 logs:
-	docker compose logs -f
+	$(COMPOSE) logs -f
 
 clean:
-	docker compose down -v
+	$(COMPOSE) down -v
 	rm -rf frontend/node_modules
 	rm -rf frontend/build
 	rm -f backend/server

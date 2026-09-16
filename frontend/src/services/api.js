@@ -228,6 +228,10 @@ export const ruleService = {
 // bought yet ({ isConfigured, billingOn }).
 export const configService = {
   getStatus: () => apiClient.get('/api/config/status'),
+  // The mailbox catalog for the running edition. The connect screen renders
+  // whatever this returns: no provider, hostname or help text is hardcoded in
+  // the SPA, so it can never offer a provider the backend cannot reach.
+  getProviders: () => apiClient.get('/api/providers'),
 };
 
 // Pro waitlist. Public on purpose: the people worth measuring are the ones who

@@ -184,8 +184,11 @@ func TestWaitlistIsReachableWithoutASession(t *testing.T) {
 }
 
 // The boot probe stays public: the SPA calls it before any login to decide
-// whether to show the setup instructions and whether Pro can be bought yet. It
-// must expose those two booleans and nothing else, since anyone can read it.
+// whether to show the setup instructions, whether Pro can be bought yet, and
+// which edition is running (which decides the providers on offer and whether
+// there is anything to bill at all). Those three fields and nothing else: the
+// payload is readable by anyone, so it stays a deliberate list rather than a
+// place things accumulate.
 func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	srv := newRoutedTestServer(t)
 
@@ -202,14 +205,19 @@ func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("decode /api/config/status: %v", err)
 	}
-	if len(body) != 2 {
-		t.Errorf("status payload = %#v, want only isConfigured and billingOn", body)
+	if len(body) != 3 {
+		t.Errorf("status payload = %#v, want only isConfigured, billingOn and edition", body)
 	}
 	// The test server has neither credentials nor Stripe, so both are false.
 	for _, key := range []string{"isConfigured", "billingOn"} {
 		if v, ok := body[key].(bool); !ok || v {
 			t.Errorf("%s = %#v, want false on a bare instance", key, body[key])
 		}
+	}
+	// The edition is never empty: the SPA branches on it at boot, and an empty
+	// string would silently read as neither edition.
+	if edition, ok := body["edition"].(string); !ok || edition == "" {
+		t.Errorf("edition = %#v, want a non-empty edition string", body["edition"])
 	}
 }
 

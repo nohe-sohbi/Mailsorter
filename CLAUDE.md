@@ -82,7 +82,7 @@ All commands verified against this working copy.
 
 | Goal | Command | Notes |
 |---|---|---|
-| Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080 |
+| Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
 | Backend tests | `make test` (= `cd backend && go test ./...`) | 161 test functions, all green |
@@ -171,6 +171,7 @@ The outbound clients and primitives:
 | `account_data.go` | `datasetCollection`: the one bridge from `account.Dataset` to a Mongo collection. Export and delete both walk it |
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
+| `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
 | `auto_sync.go` | 30 min per-user background inbox sync |
 
@@ -185,7 +186,7 @@ CORS -> recover -> request-id -> metrics -> logging -> rate-limit (20 r/s, burst
 `authMiddleware` deletes any inbound `X-User-Email`, verifies the `Authorization: Bearer`
 session token, then sets `X-User-Email` itself. Handlers read that header and can trust it.
 Public routes (`publicPrefixes` in `middleware.go`): `/health`, `/metrics`, `/api/auth/`,
-`/api/config/status`, `/api/waitlist`, `/api/billing/webhook`. On a public route a valid
+`/api/config/status`, `/api/providers`, `/api/waitlist`, `/api/billing/webhook`. On a public route a valid
 token still identifies the caller; a bad one is not an error.
 
 ### Adding an endpoint
@@ -444,6 +445,10 @@ Do not duplicate these into this file. Point at them.
   the page token only makes sense against it.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it.
+- **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so
+  the deployment file binds nothing to the host. Local runs need `compose.local.yml` on
+  top, which is what `make up` does. It is deliberately NOT named
+  `docker-compose.override.yml`, since Compose would merge that into the deployment too.
 - **The edition is not packaging, it is a capability gate.** `EDITION=hosted` can never
   reach the Gmail API: a shared OAuth client is capped by Google at 100 authorizations for
   the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an

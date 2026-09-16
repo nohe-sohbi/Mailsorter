@@ -124,6 +124,11 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// environment variables, never over HTTP.
 	r.HandleFunc("/api/config/status", h.GetConfigStatus).Methods("GET")
 
+	// The mailbox catalog for the running edition. Public because the connect
+	// screen is shown before any login, and it carries no secret: provider
+	// names, hosts, ports and help text.
+	r.HandleFunc("/api/providers", h.GetProviders).Methods("GET")
+
 	// Middleware chain (applied to every matched route, innermost last):
 	// recover → request-id → metrics → logging → rate-limit → auth → handler.
 	rl := newRateLimiter(20, 40) // ~20 req/s sustained, burst 40, per client

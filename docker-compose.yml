@@ -35,6 +35,9 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # Decides which mailbox providers this instance offers. Without this line
+      # the container always fell back to the default, whatever the .env said.
+      EDITION: ${EDITION:-self-hosted}
       BUILD_VERSION: ${BUILD_VERSION:-dev}
       DIGEST_HOUR_UTC: ${DIGEST_HOUR_UTC:-7}
       MISTRAL_MAX_RETRIES: ${MISTRAL_MAX_RETRIES:-2}
