@@ -14,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -310,7 +311,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 			Snippet:       msg.Snippet,
 			LabelIDs:      msg.LabelIds,
 			ReceivedDate:  date,
-			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			IsRead:        mailbox.GmailIsRead(msg.LabelIds),
 			UnsubURL:      unsubURL,
 			UnsubMailto:   unsubMailto,
 			UnsubOneClick: oneClick,
@@ -423,7 +424,7 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 			Snippet:       msg.Snippet,
 			LabelIDs:      msg.LabelIds,
 			ReceivedDate:  date,
-			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			IsRead:        mailbox.GmailIsRead(msg.LabelIds),
 			UnsubURL:      unsubURL,
 			UnsubMailto:   unsubMailto,
 			UnsubOneClick: oneClick,
@@ -489,27 +490,13 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch req.Action {
-	case "archive":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"INBOX"})
-	case "delete", "trash":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"TRASH"}, nil)
-	case "unarchive":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, nil)
-	case "untrash":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, []string{"TRASH"})
-	case "read":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"UNREAD"})
-	case "unread":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"UNREAD"}, nil)
-	// Starring was reachable over the batch route but not here, so the single
-	// message path (what the reader and the shortcuts use) could not express
-	// "flag this one". The two vocabularies now match.
-	case "star":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"STARRED"}, nil)
-	case "unstar":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"STARRED"})
-	default:
+	// The verb vocabulary and its translation to Gmail labels live in
+	// internal/mailbox. Starring was reachable over the batch route but not
+	// here, so the single message path (what the reader and the shortcuts use)
+	// could not express "flag this one"; one vocabulary for both is what fixed
+	// that, and what stops the two from drifting again.
+	err = h.applyVerb(ctx, gmailClient, req.MessageID, req.Action, "")
+	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return
 	}

@@ -166,23 +166,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var applyErr error
-		switch req.Action {
-		case "archive":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, id, nil, []string{"INBOX"})
-		case "delete":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, id, []string{"TRASH"}, nil)
-		case "read":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, id, nil, []string{"UNREAD"})
-		case "unread":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, id, []string{"UNREAD"}, nil)
-		case "star":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, id, []string{"STARRED"}, nil)
-		case "unstar":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, id, nil, []string{"STARRED"})
-		case "label":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, id, []string{labelID}, nil)
-		}
+		applyErr := h.applyVerb(ctx, gmailClient, id, req.Action, labelID)
 		if applyErr != nil {
 			res.Failed++
 			continue

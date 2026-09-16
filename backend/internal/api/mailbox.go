@@ -1,0 +1,75 @@
+package api
+
+import (
+	"context"
+
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
+	gmailapi "google.golang.org/api/gmail/v1"
+)
+
+// gmailMailbox is the Gmail implementation of mailbox.Mailbox. It lives here
+// rather than in internal/mailbox because it holds a live API client: the
+// vocabulary and its translation are pure, performing the call is not.
+//
+// It is deliberately thin. Everything that decides what a verb means was moved
+// into mailbox.GmailLabels, so the next adapter (IMAP, then Graph) is the same
+// four lines against a different translation function rather than a second copy
+// of the switch that used to live in forty places.
+type gmailMailbox struct {
+	svc    gmailService
+	client *gmailapi.Service
+}
+
+// gmailService is the subset of internal/gmail this adapter needs. Naming it
+// keeps the adapter honest about its dependency, and lets a test substitute a
+// recorder without a live client.
+type gmailService interface {
+	ModifyMessage(gmailService *gmailapi.Service, messageID string, addLabels, removeLabels []string) error
+}
+
+func (m gmailMailbox) Apply(ctx context.Context, messageID string, mut mailbox.Mutation) error {
+	return m.ApplyAll(ctx, messageID, mut)
+}
+
+// ApplyAll performs several mutations in ONE modify call. A compound act (snooze
+// parks a message by labelling AND archiving it) must not be split into separate
+// requests: it would multiply the traffic on the sweeper that runs every minute,
+// and a failure between the two would leave the message visibly half-moved.
+func (m gmailMailbox) ApplyAll(ctx context.Context, messageID string, muts ...mailbox.Mutation) error {
+	add, remove, err := mailbox.GmailLabelsFor(muts)
+	if err != nil {
+		return err
+	}
+	// The Gmail client does not take a context: its calls are wrapped by the
+	// retry policy in internal/gmail and bounded by the server's write timeout.
+	// The parameter stays on the interface because the next transport (IMAP,
+	// which holds a connection) genuinely needs one, and adding it later would
+	// mean touching every call site a second time.
+	_ = ctx
+	return m.svc.ModifyMessage(m.client, messageID, add, remove)
+}
+
+// mailboxOf wraps an authenticated Gmail client as a Mailbox. Call sites hold a
+// client already (they need it for reads and label creation too), so this is a
+// wrap rather than a lookup.
+func (h *Handler) mailboxOf(client *gmailapi.Service) mailbox.Mailbox {
+	return gmailMailbox{svc: h.gmailService, client: client}
+}
+
+// applyVerb is the one bridge from a wire verb to a mutation, used by every
+// handler that acts on a message. Resolving the verb here means an unsupported
+// action is refused once, in a typed way, instead of falling through a switch
+// default in each of the places that used to have one.
+func (h *Handler) applyVerb(ctx context.Context, client *gmailapi.Service, messageID, verb, labelID string) error {
+	action, err := mailbox.Parse(verb)
+	if err != nil {
+		return err
+	}
+	return h.mailboxOf(client).Apply(ctx, messageID, mailbox.Mutation{Action: action, LabelID: labelID})
+}
+
+// applyMutations performs a compound act in one call. Used where the intent is
+// several verbs at once rather than a verb the API accepted.
+func (h *Handler) applyMutations(ctx context.Context, client *gmailapi.Service, messageID string, muts ...mailbox.Mutation) error {
+	return gmailMailbox{svc: h.gmailService, client: client}.ApplyAll(ctx, messageID, muts...)
+}

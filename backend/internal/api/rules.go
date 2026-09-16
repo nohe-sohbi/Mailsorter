@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
@@ -424,29 +426,30 @@ func (h *Handler) applyRuleToMessage(ctx context.Context, gmailClient *gmailapi.
 
 // applyOneAction performs a single rule action on one message.
 func (h *Handler) applyOneAction(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID string, a models.RuleAction, labelCache map[string]string) error {
-	svc := h.gmailService
-	switch a.Type {
-	case rules.ActionArchive:
-		return svc.ModifyMessage(gmailClient, messageID, nil, []string{"INBOX"})
-	case rules.ActionTrash:
-		return svc.ModifyMessage(gmailClient, messageID, []string{"TRASH"}, nil)
-	case rules.ActionMarkRead:
-		return svc.ModifyMessage(gmailClient, messageID, nil, []string{"UNREAD"})
-	case rules.ActionStar:
-		return svc.ModifyMessage(gmailClient, messageID, []string{"STARRED"}, nil)
-	case rules.ActionLabel:
-		labelID, ok := labelCache[a.LabelName]
+	// Only the label action needs anything resolved before it can run: the
+	// label has to exist in the mailbox before a message can carry it, and the
+	// cache keeps one rule application from creating it once per message.
+	var labelID string
+	if a.Type == rules.ActionLabel {
+		id, ok := labelCache[a.LabelName]
 		if !ok {
-			id, err := h.ensureLabel(ctx, gmailClient, userEmail, a.LabelName)
+			created, err := h.ensureLabel(ctx, gmailClient, userEmail, a.LabelName)
 			if err != nil {
 				return err
 			}
-			labelID = id
-			labelCache[a.LabelName] = id
+			id = created
+			labelCache[a.LabelName] = created
 		}
-		return svc.ModifyMessage(gmailClient, messageID, []string{labelID}, nil)
+		labelID = id
 	}
-	return nil
+
+	// An action the rules engine validated but this transport does not know is
+	// skipped rather than failed: it must not abort the rest of the ruleset.
+	err := h.applyVerb(ctx, gmailClient, messageID, a.Type, labelID)
+	if errors.Is(err, mailbox.ErrUnknownAction) {
+		return nil
+	}
+	return err
 }
 
 // ruleFromInput maps an input payload onto a SortingRule owned by the caller. It

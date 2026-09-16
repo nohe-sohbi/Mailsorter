@@ -46,6 +46,9 @@ being asked.
 4. **Every Gmail mutation is journaled and reversible.** Call `h.logAction(...)` with a
    `Source*` constant after any mutating action, and check `protect.Allowed` before any
    destructive one. A feature that mutates the inbox without a ledger entry is incomplete.
+   Perform the mutation through `h.applyVerb` (one verb) or `h.applyMutations` (several in
+   one call). Never call `gmailService.ModifyMessage` from a handler and never write a
+   Gmail label id there: that knowledge lives in `internal/mailbox` and nowhere else.
 5. **Cheap paths before expensive ones.** Deterministic rules run before the model; the
    shared analysis cache runs before an API call; cache hits and auto-pilot do not burn
    quota. New AI work must justify why it cannot be a rule or a cache hit.
@@ -85,7 +88,7 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 161 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 205 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
@@ -132,6 +135,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `account` | The single catalog of user-owned data driving BOTH export and erasure | `Dataset*`, redaction helpers |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
+| `mailbox` | The provider-neutral verb vocabulary and its translation per transport. The ONLY place that knows Gmail's system label ids | `Action*`, `Parse`, `Destructive`, `Mutation`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter` |
 
 The outbound clients and primitives:
 
@@ -172,6 +176,7 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
+| `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
 | `auto_sync.go` | 30 min per-user background inbox sync |
 
@@ -449,6 +454,15 @@ Do not duplicate these into this file. Point at them.
   the deployment file binds nothing to the host. Local runs need `compose.local.yml` on
   top, which is what `make up` does. It is deliberately NOT named
   `docker-compose.override.yml`, since Compose would merge that into the deployment too.
+- **No handler knows Gmail's label vocabulary.** `"INBOX"`, `"TRASH"`, `"UNREAD"` and
+  `"STARRED"` appear in exactly two files: `internal/mailbox/mailbox.go` (the translation)
+  and `internal/gmail/gmail.go` (the client). They used to appear 51 times across the tree.
+  Two traps the table encodes: untrashing must BOTH restore `INBOX` and drop `TRASH`, and
+  read state is the ABSENCE of `UNREAD`, so marking read removes rather than adds.
+- **`mailbox.Parse` accepts every spelling already in circulation.** `delete` and `trash`
+  are one act, `read` and `markRead` another, and both spellings sit in `action_log` rows
+  written over the life of the app. Dropping an alias would silently stop the undo history
+  resolving for every entry written the other way.
 - **The edition is not packaging, it is a capability gate.** `EDITION=hosted` can never
   reach the Gmail API: a shared OAuth client is capped by Google at 100 authorizations for
   the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an
