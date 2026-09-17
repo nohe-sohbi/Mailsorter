@@ -3,6 +3,7 @@ module github.com/nohe-sohbi/mailsorter/backend
 go 1.21
 
 require (
+	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/gorilla/mux v1.8.1
 	github.com/rs/cors v1.10.1
 	go.mongodb.org/mongo-driver v1.13.1
@@ -13,6 +14,8 @@ require (
 require (
 	cloud.google.com/go/compute v1.23.3 // indirect
 	cloud.google.com/go/compute/metadata v0.2.3 // indirect
+	github.com/emersion/go-message v0.18.2 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.3.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

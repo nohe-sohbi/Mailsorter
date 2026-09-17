@@ -16,6 +16,7 @@ Solo-developer project. Production is live. The 12 roadmap phases are delivered
 | HTTP deps | `gorilla/mux` 1.8.1, `rs/cors` 1.10.1 | `backend/go.mod` |
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
 | Google | `golang.org/x/oauth2` 0.15.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
+| IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned | `backend/go.mod` |
 | AI | Mistral chat completions, hand-rolled HTTP client | `backend/internal/ai/mistral.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
 | Frontend | React 18.2, react-router-dom 6.21, axios 1.6, dompurify 3.0 | `frontend/package.json` |
@@ -28,6 +29,16 @@ There is no Stripe SDK, no icon library, no test framework beyond the standard
 library, and no metrics backend. Each of those is a deliberate, hand-rolled,
 dependency-free replacement. Do not add a library to replace one of them without
 being asked.
+
+`go-imap` is the one exception, and it is not a contradiction of that rule: it
+replaces nothing hand-rolled, and IMAP is not in the same class as those four. It
+is a stateful protocol with literals, continuation requests and nested response
+grammars, where a parsing bug means the wrong message is archived rather than a
+failed request. It is pinned to an exact version. It is a BETA on purpose: the
+v1.2.1 tag looks stabler but has not been published since May 2022, and four
+years without a fix on code that handles credentials and TLS is the larger risk.
+It also ships `imapserver/imapmemserver`, which is what lets `internal/imap` be
+tested against a real server rather than a mock.
 
 ## Code Quality Standards
 
@@ -66,7 +77,7 @@ backend/
   internal/{account,activity,digest,egress,mailbox,mailer,metrics,protect,
             provider,rules,schedule,snooze}/
                          pure logic, no I/O, heavily unit-tested
-  internal/{ai,billing,gmail}/   outbound clients (Mistral, Stripe, Gmail)
+  internal/{ai,billing,gmail,imap}/  outbound clients (Mistral, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
 frontend/
   src/pages/             one file per route (10 routes)
@@ -137,7 +148,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `account` | The single catalog of user-owned data driving BOTH export and erasure | `Dataset*`, redaction helpers |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
-| `mailbox` | The provider-neutral verb vocabulary and its translation per transport. The ONLY place that knows Gmail's system label ids | `Action*`, `Parse`, `Destructive`, `Mutation`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter` |
+| `mailbox` | The provider-neutral verb vocabulary and its translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 
 The outbound clients and primitives:
@@ -146,6 +157,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | Mistral client. Batching of 8, exponential backoff with jitter honoring `Retry-After`, fast-fail on 4xx |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
+| `imap` | The IMAP transport, for every route the hosted edition uses. Connect (TLS or STARTTLS, never cleartext), resolve the server's special folders, apply a mutation |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
 | `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (per-user Gmail tokens) and the legacy `gmail_config` read at boot |
@@ -492,6 +504,16 @@ Do not duplicate these into this file. Point at them.
   run from the dialer's `Control` hook (not before the lookup, or DNS rebinding
   walks past it), and every redirect hop must be re-judged. Mistral and Stripe are
   safe for one reason only: their base URL is a constant.
+- **An IMAP UID is NOT a message id.** Over the Gmail API a message id names a
+  message on the account and never changes. Over IMAP a UID names a message
+  inside one folder, so a move ends its validity and the same mail has a
+  different UID in its new folder. That is why `imap.Client.Apply` takes the
+  folder explicitly and why it refuses anything that is not entirely digits: a
+  Gmail id like `18c8c1f2a3b4d5e6` starts with digits, and a parser that stopped
+  at the first letter would act on UID 18, archiving a different message and
+  journaling it as a success. This is also the piece still missing before IMAP
+  reaches the handlers: `mailbox.Mailbox` names a message with one string, and
+  IMAP needs two.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are
