@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate, useLocation, Link } from 'react-router-dom';
+import { useInstance } from '../contexts/InstanceContext';
 import { cn } from '../ui/cn';
 import { useTheme } from '../ui/theme';
 import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock, History, Menu, X, Sun, Moon, Monitor } from '../ui/icons';
@@ -8,12 +9,14 @@ import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock, History, Menu, X, Sun,
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Tarifs is billing-only: a self-hosted instance has no plan and no account
+// with anyone, so the entry is absent rather than leading to an empty page.
 const NAV_ITEMS = [
   { to: '/inbox', label: 'Boîte', Icon: Inbox },
   { to: '/rules', label: 'Règles', Icon: Tag },
   { to: '/snoozed', label: 'Reporté', Icon: Clock },
   { to: '/history', label: 'Historique', Icon: History },
-  { to: '/pricing', label: 'Tarifs', Icon: Bolt },
+  { to: '/pricing', label: 'Tarifs', Icon: Bolt, billingOnly: true },
   { to: '/settings', label: 'Réglages', Icon: Settings },
 ];
 
@@ -43,6 +46,7 @@ function ThemeButton({ className }) {
 }
 
 function Header() {
+  const { selfHosted } = useInstance();
   const navigate = useNavigate();
   const location = useLocation();
   const userEmail = localStorage.getItem('userEmail');
@@ -125,6 +129,10 @@ function Header() {
       isActive ? 'bg-brand-50 text-brand-700' : 'text-muted hover:bg-ink-100 hover:text-ink-900'
     );
 
+  // The nav is derived, not fixed: a self-hosted instance bills nobody, so the
+  // pricing entry is dropped rather than leading somewhere that redirects.
+  const navItems = NAV_ITEMS.filter((item) => !item.billingOnly || !selfHosted);
+
   return (
     <header className="sticky top-0 z-40 border-b border-hairline bg-surface/85 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
@@ -134,7 +142,7 @@ function Header() {
             <span className="font-display text-lg font-extrabold tracking-tight text-ink-900">Mailsorter</span>
           </Link>
           <nav className="hidden items-center gap-1 lg:flex" aria-label="Navigation principale">
-            {NAV_ITEMS.map(({ to, label, Icon }) => (
+            {navItems.map(({ to, label, Icon }) => (
               <NavLink key={to} to={to} className={navClass}>
                 <Icon size={17} />
                 {label}
@@ -200,7 +208,7 @@ function Header() {
             aria-label="Navigation principale"
             className="relative z-40 space-y-1 border-t border-hairline bg-surface px-4 pb-4 pt-3 shadow-card"
           >
-            {NAV_ITEMS.map(({ to, label, Icon }) => (
+            {navItems.map(({ to, label, Icon }) => (
               <NavLink
                 key={to}
                 to={to}
