@@ -6,9 +6,9 @@ func TestNormalizeAddress(t *testing.T) {
 	cases := map[string]string{
 		"Acme <hi@acme.com>":            "hi@acme.com",
 		`"Jane Doe" <Jane@Example.COM>`: "jane@example.com",
-		"  bob@host.org  ":             "bob@host.org",
+		"  bob@host.org  ":              "bob@host.org",
 		"No Address Here":               "no address here",
-		"Broken <unterminated":         "unterminated",
+		"Broken <unterminated":          "unterminated",
 		"":                              "",
 	}
 	for in, want := range cases {
@@ -48,14 +48,14 @@ func TestMatch(t *testing.T) {
 		from string
 		want bool
 	}{
-		{"The Boss <boss@corp.com>", true},     // exact address
-		{"boss@corp.com", true},                // bare address
-		{"Boss <BOSS@CORP.COM>", true},         // case-insensitive
-		{"colleague@corp.com", false},          // same domain, not listed as domain
-		{"Promo <deals@acme.com>", true},       // domain entry
-		{"News <news@mail.acme.com>", true},    // subdomain of domain entry
-		{"news@notacme.com", false},            // suffix but not a subdomain
-		{"someone@evilacme.com", false},        // must not match acme.com as substring
+		{"The Boss <boss@corp.com>", true},  // exact address
+		{"boss@corp.com", true},             // bare address
+		{"Boss <BOSS@CORP.COM>", true},      // case-insensitive
+		{"colleague@corp.com", false},       // same domain, not listed as domain
+		{"Promo <deals@acme.com>", true},    // domain entry
+		{"News <news@mail.acme.com>", true}, // subdomain of domain entry
+		{"news@notacme.com", false},         // suffix but not a subdomain
+		{"someone@evilacme.com", false},     // must not match acme.com as substring
 		{"", false},
 	}
 	for _, tc := range cases {
