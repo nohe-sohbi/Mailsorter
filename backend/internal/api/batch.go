@@ -118,7 +118,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	// the ledger needs the subject/sender to say which email was acted on.
 	//
 	// The local mailbox is only written by syncInbox, while the list the user
-	// selects from is served live from Gmail — so a message can perfectly well
+	// selects from is served live from Gmail, so a message can perfectly well
 	// be on screen and absent here. That gap used to silently defeat the
 	// protected-sender shield: an unknown sender reads as "not protected", and a
 	// VIP's mail would be trashed by a bulk action the moment a sync had not run
@@ -341,7 +341,7 @@ func (h *Handler) suggestionEmailIDs(ctx context.Context, userEmail string, sugg
 
 // emailIdentity resolves one message's sender and subject: local mailbox first,
 // Gmail headers as a fallback. Used by the single-message triage paths so their
-// ledger entries carry an identity at WRITE time — which is what makes them
+// ledger entries carry an identity at WRITE time, which is what makes them
 // searchable, since the read-time resolution happens after the query has run.
 func (h *Handler) emailIdentity(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID string) models.Email {
 	found := h.emailIdentities(ctx, userEmail, []string{messageID})

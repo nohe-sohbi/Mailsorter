@@ -89,7 +89,7 @@ const normalizeForEdit = (rule) => ({ ...rule, actions: effectiveActions(rule) }
 
 // LabelField: the user picks from their real Gmail labels, but stays free to
 // name a new one. Typing blind was how a single typo ended up creating a second,
-// near-identical label — so an unknown name is now announced *before* saving,
+// near-identical label, so an unknown name is now announced *before* saving,
 // instead of being discovered later in Gmail.
 function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
   const typed = (value || '').trim();

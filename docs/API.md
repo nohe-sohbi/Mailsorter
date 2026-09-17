@@ -225,9 +225,9 @@ and the shortcuts can express the same things one message at a time.
 
 #### GET /api/emails/{id}
 
-Return a single message, decoded. `GET /api/emails` deliberately omits bodies —
-it ships up to 100 messages per page — so the reader fetches the one it is about
-to display.
+Return a single message, decoded. `GET /api/emails` deliberately omits bodies
+(it ships up to 100 messages per page), so the reader fetches the one it is
+about to display.
 
 **Query parameters:**
 - `markRead` (optional): `1` also removes the `UNREAD` label in Gmail and updates
@@ -610,13 +610,13 @@ Returns the caller's most recent ledger entries, newest first. Each entry is
 flagged `undoable` (it has a clean inverse and has not been undone yet).
 
 **Query parameters:**
-- `source` — optional filter (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
+- `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
   `snooze`, `unsubscribe`, `undo`)
-- `limit` — defaults to `50`, capped at `200`
-- `before` — RFC 3339 cursor: return entries strictly older than this. Pass the
+- `limit`: defaults to `50`, capped at `200`
+- `before`: RFC 3339 cursor, return entries strictly older than this. Pass the
   previous page's `nextBefore`. Cursoring on `createdAt` keeps paging stable
   while new actions land at the top.
-- `q` — free-text search over the acted-on message's subject and sender
+- `q`: free-text search over the acted-on message's subject and sender
 
 Entries carry `subject`/`from` so the history can say *which* email it is talking
 about. They are captured when the action is logged, and resolved from the stored
@@ -958,7 +958,7 @@ everything").
 List the caller's suggestions, filtered by `status` (default `pending`).
 
 **Response:** `200 OK`, an array of `AISuggestion` enriched with the identity of
-the email each one is about — `subject`, `from`, `snippet`, resolved in one
+the email each one is about: `subject`, `from`, `snippet`, resolved in one
 lookup. Without them the client had to find the message among those currently on
 screen, so any suggestion for an email outside the loaded page asked the user to
 approve an action on "Sans sujet · Expéditeur inconnu". The three fields are

@@ -166,7 +166,7 @@ function DigestSettings({ settings, onSaved }) {
   // The offset cannot change while the page is open, so the 24 labels are built
   // once instead of on every keystroke elsewhere in the tree.
   const options = useMemo(
-    () => HOURS.map((h) => ({ h, label: `${pad2(h)}:00 UTC — ${localTimeLabel(h)} chez vous` })),
+    () => HOURS.map((h) => ({ h, label: `${pad2(h)}:00 UTC (${localTimeLabel(h)} chez vous)` })),
     []
   );
   const zone = useMemo(localZoneName, []);
@@ -503,7 +503,7 @@ function Settings() {
 
   // One GET for the whole screen. Each preference card used to call
   // getSettings() on mount, so opening this page fired the same request three
-  // times — and each card failed (or not) on its own, showing defaults as if
+  // times, and each card failed (or not) on its own, showing defaults as if
   // they were the saved values.
   const load = useCallback(async () => {
     setLoading(true);

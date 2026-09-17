@@ -9,7 +9,7 @@ import (
 )
 
 // The history cursor is (createdAt, _id). A timestamp alone loses every entry
-// sharing the millisecond at a page boundary — and a bulk action writes its
+// sharing the millisecond at a page boundary, and a bulk action writes its
 // entries back to back with no I/O between them, so those collisions are the
 // normal case, not an exotic one. Losing audit-trail rows silently is the worst
 // failure mode this endpoint has, hence the round-trip test.

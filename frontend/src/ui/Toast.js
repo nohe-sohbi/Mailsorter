@@ -14,7 +14,7 @@ function ToastItem({ toast, onDismiss }) {
   const { icon: Icon, ring } = VARIANTS[toast.variant] || VARIANTS.info;
   // Hover and focus are independent reasons to hold the timer. Collapsing them
   // into one flag meant moving the mouse away dismissed a toast a keyboard user
-  // had tabbed into — losing the "Annuler" they were reaching for.
+  // had tabbed into, losing the "Annuler" they were reaching for.
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const paused = hovered || focused;
@@ -23,7 +23,7 @@ function ToastItem({ toast, onDismiss }) {
 
   // The timer pauses on hover and on focus. A toast carrying the only "Annuler"
   // for an action the user just regretted must not expire while they are
-  // reaching for it — and a keyboard user needs it to survive being tabbed to.
+  // reaching for it, and a keyboard user needs it to survive being tabbed to.
   useEffect(() => {
     if (toast.duration <= 0 || paused) return undefined;
     startedRef.current = Date.now();
@@ -96,7 +96,7 @@ export function ToastProvider({ children }) {
   // Two regions, declared up front and never remounted, so a screen reader picks
   // them up: errors interrupt (assertive), everything else waits its turn.
   // The old markup put role="status" on each toast as it appeared, which is
-  // unreliable — a live region has to exist before the content lands in it.
+  // unreliable: a live region has to exist before the content lands in it.
   const errors = toasts.filter((t) => t.variant === 'error');
   const others = toasts.filter((t) => t.variant !== 'error');
 

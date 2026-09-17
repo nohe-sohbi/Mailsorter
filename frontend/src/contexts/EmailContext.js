@@ -101,7 +101,7 @@ export function EmailProvider({ children }) {
 
         // The listing is the one call whose failure the user must see: without
         // it the screen falls back to an empty list, which the inbox used to
-        // celebrate as "Inbox Zero atteint 🎉" — the exact opposite of the truth.
+        // celebrate as "Inbox Zero atteint 🎉", the exact opposite of the truth.
         if (emailsRes.status === 'rejected') {
           setError(errorMessage(emailsRes.reason));
           setLoading(false);

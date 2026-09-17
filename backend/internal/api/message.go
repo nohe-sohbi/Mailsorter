@@ -41,7 +41,7 @@ type attachmentView struct {
 //
 // The list endpoint deliberately omits bodies: it already fetches 100 messages
 // per page, and shipping 100 HTML payloads to render one would be wasteful. So
-// the body is fetched on demand, when the reader actually opens a message —
+// the body is fetched on demand, when the reader actually opens a message,
 // which, before this route existed, it never could, leaving the reader stuck on
 // "Contenu complet indisponible" for every email.
 //

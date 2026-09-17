@@ -123,8 +123,8 @@ func (h *Handler) userSettings(ctx context.Context, userEmail string) models.Use
 		return models.UserSettings{DigestHourUTC: defaultDigestHour()}
 	}
 	hour := doc.DigestHourUTC
-	// 0 is midnight, a perfectly good hour. Treating it as "unset" here — while
-	// the write path accepted and stored it — meant picking 00:00 silently
+	// 0 is midnight, a perfectly good hour. Treating it as "unset" here (while
+	// the write path accepted and stored it) meant picking 00:00 silently
 	// reverted to the default on the next read, with no way to ever save it.
 	if hour < 0 || hour > 23 {
 		hour = defaultDigestHour()

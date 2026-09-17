@@ -62,7 +62,7 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	// The cursor is (createdAt, _id), not createdAt alone. BSON stores dates to
 	// the millisecond and a bulk action writes its entries back to back with no
 	// I/O between them, so a page boundary landing inside such a burst would drop
-	// every sibling sharing that timestamp — silently, which is the worst way to
+	// every sibling sharing that timestamp: silently, which is the worst way to
 	// lose an audit trail. The _id tiebreaker also makes the sort total, so two
 	// requests cannot order equal timestamps differently.
 	if before := r.URL.Query().Get("before"); before != "" {

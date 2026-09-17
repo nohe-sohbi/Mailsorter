@@ -19,8 +19,8 @@ const gradientFor = (seed = '') => {
 const senderName = (from = '') => from.split('<')[0].replace(/"/g, '').trim() || from;
 
 // Le backend connaît trois états (`scheduled`, `done`, `failed`) et la page n'en
-// montrait qu'un. Un report en échec — message introuvable côté Gmail, cinq
-// tentatives épuisées — quittait donc la liste sans un mot : l'email restait
+// montrait qu'un. Un report en échec (message introuvable côté Gmail, cinq
+// tentatives épuisées) quittait donc la liste sans un mot : l'email restait
 // hors de la boîte, définitivement, sans que personne ne l'apprenne.
 const TABS = [
   {
@@ -218,7 +218,7 @@ function Snoozed() {
     // Le serveur trie déjà par `wakeAt` croissant : pour les reports à venir
     // c'est exactement « le réveil le plus proche d'abord », rien à inverser.
     // Les onglets d'historique lisent au contraire du plus récent au plus
-    // ancien, et sur leur propre date d'événement — d'où un tri explicite.
+    // ancien, et sur leur propre date d'événement : d'où un tri explicite.
     const dir = tab === 'scheduled' ? 1 : -1;
     return [...snoozes].sort(
       (a, b) => dir * (timeOf(eventDate(a, tab)) - timeOf(eventDate(b, tab)))
@@ -228,7 +228,7 @@ function Snoozed() {
   const handleWake = async (snooze) => {
     // Réactiver un report prévu annule l'échéance que l'utilisateur avait posée :
     // on le lui dit avant. Depuis l'onglet des échecs c'est au contraire une
-    // réparation — il n'y a rien à perdre, donc rien à confirmer.
+    // réparation : il n'y a rien à perdre, donc rien à confirmer.
     if (tab === 'scheduled') {
       const confirmed = await confirm({
         title: 'Ramener cet email maintenant ?',

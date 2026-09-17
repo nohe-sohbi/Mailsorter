@@ -30,7 +30,7 @@ function BootScreen({ children }) {
 // RequireAuth is the single place the session is checked. It used to be a
 // per-page copy-paste that four of the six screens simply skipped: they fired
 // their API calls, took a 401, and the axios interceptor recovered with a full
-// browser reload — losing all state and flashing the login page.
+// browser reload, losing all state and flashing the login page.
 function RequireAuth({ children }) {
   const navigate = useNavigate();
   const authed = Boolean(localStorage.getItem('userEmail') && localStorage.getItem('accessToken'));

@@ -37,7 +37,7 @@ function ThemeButton({ className }) {
     <button
       onClick={cycleTheme}
       className={cn('btn-ghost btn-sm btn-icon', className)}
-      title={`${label} — basculer en ${next}`}
+      title={`${label} : basculer en ${next}`}
       aria-label={`${label}. Basculer en thème ${next}.`}
     >
       <Icon size={18} />
@@ -60,7 +60,7 @@ function Header() {
   }, [location.pathname]);
 
   // The drawer is a modal surface: a full-screen backdrop over a page the user
-  // is not meant to reach. So it gets what every other overlay in the app got —
+  // is not meant to reach. So it gets what every other overlay in the app got:
   // Escape to dismiss, Tab confined to its own contents, and focus handed back
   // to the toggle on close. Without the trap, tabbing past the last menu item
   // walked into the inbox behind the backdrop with no way to tell.
