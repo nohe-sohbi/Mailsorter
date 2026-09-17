@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	gmailapi "google.golang.org/api/gmail/v1"
@@ -40,7 +41,7 @@ type attachmentView struct {
 //
 // The list endpoint deliberately omits bodies: it already fetches 100 messages
 // per page, and shipping 100 HTML payloads to render one would be wasteful. So
-// the body is fetched on demand, when the reader actually opens a message —
+// the body is fetched on demand, when the reader actually opens a message,
 // which, before this route existed, it never could, leaving the reader stuck on
 // "Contenu complet indisponible" for every email.
 //
@@ -82,9 +83,9 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 
 	markRead := r.URL.Query().Get("markRead") == "1"
 	labelIDs := msg.LabelIds
-	if markRead && contains(labelIDs, "UNREAD") {
-		if err := h.gmailService.ModifyMessage(gmailClient, messageID, nil, []string{"UNREAD"}); err == nil {
-			labelIDs = withoutLabel(labelIDs, "UNREAD")
+	if markRead && !mailbox.GmailIsRead(labelIDs) {
+		if err := h.applyVerb(ctx, gmailClient, messageID, "read", ""); err == nil {
+			labelIDs = mailbox.GmailAfter(labelIDs, mailbox.Mutation{Action: mailbox.ActionMarkRead})
 			// Keep the local cache honest so the next list render does not show
 			// the message as unread again.
 			h.db.Emails().UpdateOne(ctx,
@@ -106,7 +107,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 			Body:          plain,
 			LabelIDs:      labelIDs,
 			ReceivedDate:  date,
-			IsRead:        !contains(labelIDs, "UNREAD"),
+			IsRead:        mailbox.GmailIsRead(labelIDs),
 			UnsubURL:      unsubURL,
 			UnsubMailto:   unsubMailto,
 			UnsubOneClick: oneClick,
@@ -134,17 +135,6 @@ func isInlinePart(part *gmailapi.MessagePart) bool {
 		}
 	}
 	return false
-}
-
-// withoutLabel returns labels minus one entry, without mutating the input.
-func withoutLabel(labels []string, drop string) []string {
-	out := make([]string, 0, len(labels))
-	for _, l := range labels {
-		if l != drop {
-			out = append(out, l)
-		}
-	}
-	return out
 }
 
 // listAttachments walks the MIME tree for parts that carry a filename.

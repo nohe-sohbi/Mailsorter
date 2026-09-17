@@ -37,7 +37,7 @@ module.exports = {
         //
         // surface  : fond des cartes, champs, en-tête (remplace bg-white)
         // muted    : texte secondaire lisible (≥ 4,5:1 dans les deux thèmes)
-        // subtle   : décor uniquement — jamais de contenu
+        // subtle   : décor uniquement, jamais de contenu
         // hairline : filets et bordures
         surface: {
           DEFAULT: withAlpha('--surface'),

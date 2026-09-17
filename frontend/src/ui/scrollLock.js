@@ -17,7 +17,7 @@ export function lockScroll() {
     restorePadding = document.body.style.paddingRight;
     // Hiding the overflow removes the scrollbar, and on any platform whose
     // scrollbars take up space (Windows, most Linux, macOS set to always show)
-    // the page then widens by its thickness — everything jumps sideways the
+    // the page then widens by its thickness, and everything jumps sideways the
     // instant a dialog opens. Reserve the width we are about to reclaim.
     const gap = window.innerWidth - document.documentElement.clientWidth;
     if (gap > 0) {

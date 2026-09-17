@@ -226,7 +226,7 @@ function Inbox() {
   // Below lg the reader is a full-screen sheet; at lg and above it is a side
   // panel. Read synchronously at first render, not from an effect: initialising
   // to `false` would mount the desktop panel for one frame on a phone, then swap
-  // containers — remounting the reader and fetching the message twice.
+  // containers, remounting the reader and fetching the message twice.
   const [isNarrow, setIsNarrow] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches
   );
@@ -256,7 +256,7 @@ function Inbox() {
 
   // A selection is scoped to the list that produced it. Keeping it across a
   // query change meant "Archiver la sélection" could act on messages that were
-  // no longer on screen — invisible, unreviewable collateral.
+  // no longer on screen: invisible, unreviewable collateral.
   useEffect(() => {
     setSelectedEmails([]);
     setFocusedIndex(-1);
@@ -405,8 +405,8 @@ function Inbox() {
     const raw = searchQuery.trim();
     if (!raw) return runQuery(DEFAULT_QUERY);
     // Stay in the inbox unless the user explicitly says otherwise. Typing
-    // "facture" used to search the entire account — archive, spam and trash
-    // included — while the header still claimed to show the inbox.
+    // "facture" used to search the entire account (archive, spam and trash
+    // included) while the header still claimed to show the inbox.
     const scoped = /\b(?:in|label)\s*:|\bis\s*:\s*(?:sent|draft|trash|spam)\b/i.test(raw)
       ? raw
       : `${DEFAULT_QUERY} ${raw}`;
@@ -589,7 +589,7 @@ function Inbox() {
     ids.forEach((id) => aiService.rejectSuggestion(id).catch(() => {}));
     // No "Rétablir" here: rejection is persisted server-side and there is no
     // un-reject endpoint, so the button would only put rows back on screen that
-    // the next refresh would remove again. Rejecting costs nothing anyway —
+    // the next refresh would remove again. Rejecting costs nothing anyway:
     // nothing was done to the emails themselves.
     toast.info(`${ids.length} suggestion${plural(ids.length)} ignorée${plural(ids.length)}`);
   };
@@ -984,7 +984,7 @@ function Inbox() {
           if (cur) flagAction(cur, 'star');
           break;
         // '#' is Gmail's delete key but needs Alt+3 on a French AZERTY layout,
-        // and Alt-modified events are filtered out above — so it was simply
+        // and Alt-modified events are filtered out above, so it was simply
         // unreachable for the app's own audience. Delete/Backspace work anywhere.
         case '#':
         case 'Delete':
@@ -1079,7 +1079,7 @@ function Inbox() {
         </div>
       </div>
 
-      {/* Stats — each one is also the filter it describes */}
+      {/* Stats: each one is also the filter it describes */}
       {stats && (
         <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
           {STAT_CARDS.map(({ key, label, tone, Icon, query }) => (
@@ -1106,7 +1106,7 @@ function Inbox() {
         </div>
       )}
 
-      {/* Streak — folded into one compact strip. It used to occupy a full card
+      {/* Streak, folded into one compact strip. It used to occupy a full card
           of its own above the fold, pushing the first actual email off screen. */}
       <div className="card mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
         <span className="flex items-center gap-2">
@@ -1311,7 +1311,7 @@ function Inbox() {
                     <button
                       onClick={() => handleApplySuggestion(suggestion)}
                       className="rounded-lg p-2 text-positive-600 transition-colors hover:bg-positive-50"
-                      aria-label={`Appliquer : ${meta.label} — ${subject || 'sans sujet'}`}
+                      aria-label={`Appliquer : ${meta.label}, ${subject || 'sans sujet'}`}
                     >
                       <Check size={18} />
                     </button>
@@ -1725,7 +1725,7 @@ function Inbox() {
           </div>
         )}
 
-        {/* Reader — a side panel on a wide screen, a full-screen sheet below it.
+        {/* Reader: a side panel on a wide screen, a full-screen sheet below it.
             It used to be a grid cell that simply did not exist under lg, so
             tapping an email on a phone appeared to do nothing at all. */}
         {/* A side panel on a wide screen, a full-screen sheet below it. The
@@ -1738,7 +1738,7 @@ function Inbox() {
 
             Rendered as an element, never as <ReaderPanel />: a component defined
             inside this one gets a fresh identity on every render, so React would
-            tear it down and rebuild it each time — cancelling its own in-flight
+            tear it down and rebuild it each time, cancelling its own in-flight
             body request and leaving it stuck on the loading skeleton forever. */}
         {selectedEmail &&
           (readerIsOverlay ? (
@@ -1892,7 +1892,7 @@ function LabelPicker({ open, count, onClose, onPick }) {
       </label>
       {isNew && (
         <p className="mt-2 text-xs text-muted">
-          <span className="font-semibold text-caution-700">Nouveau libellé</span> — « {trimmed} » sera créé dans Gmail.
+          <span className="font-semibold text-caution-700">Nouveau libellé</span> : « {trimmed} » sera créé dans Gmail.
         </p>
       )}
       {labels && labels.length > 0 && (

@@ -31,6 +31,7 @@ var publicPrefixes = []string{
 	"/metrics",
 	"/api/auth/",
 	"/api/config/status",
+	"/api/providers",
 	"/api/waitlist",
 	"/api/billing/webhook",
 }

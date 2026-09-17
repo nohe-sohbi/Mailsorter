@@ -22,12 +22,12 @@ export function ConfirmProvider({ children }) {
   const resolveRef = useRef(null);
   const confirmButtonRef = useRef(null);
   // settle() closes the dialog in the same batch, so a "busy" state would never
-  // be observable in a render — a ref is what actually blocks a double submit.
+  // be observable in a render: a ref is what actually blocks a double submit.
   const submittingRef = useRef(false);
 
   const confirm = useCallback((options = {}) => {
     // A second confirm() while one is still pending would overwrite resolveRef
-    // and leave the first caller awaiting a promise nobody can ever settle —
+    // and leave the first caller awaiting a promise nobody can ever settle:
     // its `await confirm(...)` would hang, and the action behind it would be
     // silently dropped. Decline the older one instead.
     if (resolveRef.current) {

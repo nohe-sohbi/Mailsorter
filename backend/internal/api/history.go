@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -60,7 +62,7 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	// The cursor is (createdAt, _id), not createdAt alone. BSON stores dates to
 	// the millisecond and a bulk action writes its entries back to back with no
 	// I/O between them, so a page boundary landing inside such a burst would drop
-	// every sibling sharing that timestamp — silently, which is the worst way to
+	// every sibling sharing that timestamp: silently, which is the worst way to
 	// lose an audit trail. The _id tiebreaker also makes the sort total, so two
 	// requests cannot order equal timestamps differently.
 	if before := r.URL.Query().Get("before"); before != "" {
@@ -273,18 +275,16 @@ func (h *Handler) applyInverseAction(gmailClient *gmailapi.Service, messageID, i
 // resolves once per batch rather than per message. An "unlabel" with no id is a
 // no-op rather than a silent full-label wipe.
 func (h *Handler) applyInverseActionWithLabel(gmailClient *gmailapi.Service, messageID, inverse, labelID string) error {
-	switch inverse {
-	case "unarchive":
-		return h.gmailService.ModifyMessage(gmailClient, messageID, []string{"INBOX"}, nil)
-	case "untrash":
-		return h.gmailService.ModifyMessage(gmailClient, messageID, []string{"INBOX"}, []string{"TRASH"})
-	case "unread":
-		return h.gmailService.ModifyMessage(gmailClient, messageID, []string{"UNREAD"}, nil)
-	case "unlabel":
-		if labelID == "" {
-			return fmt.Errorf("aucun libellé à retirer")
-		}
-		return h.gmailService.ModifyMessage(gmailClient, messageID, nil, []string{labelID})
+	// The inverse vocabulary comes from activity.Inverse, which only ever emits
+	// verbs this understands. An unlabel with nothing to remove is the one case
+	// worth naming: it means the ledger entry did not record which label was
+	// applied, so there is nothing to undo.
+	if inverse == "unlabel" && labelID == "" {
+		return fmt.Errorf("aucun libellé à retirer")
 	}
-	return nil
+	err := h.applyVerb(context.Background(), gmailClient, messageID, inverse, labelID)
+	if errors.Is(err, mailbox.ErrUnknownAction) {
+		return nil
+	}
+	return err
 }

@@ -1,0 +1,27 @@
+# Local overlay: publishes the ports that docker-compose.yml deliberately does
+# not.
+#
+# The main file has no `ports` because Dokploy routes to the containers through
+# its own proxy, and a published host port there is at best useless and at worst
+# a collision. But that left `make up` telling every newcomer to open
+# localhost:3000 on a stack that bound nothing, which is the first thing anyone
+# running this locally hits.
+#
+# Kept as a SEPARATE file rather than docker-compose.override.yml on purpose:
+# Compose merges an override automatically, so the deployment would pick it up
+# too. It is opted into explicitly by `make up`.
+services:
+  backend:
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+
+  frontend:
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+  # Published so you can inspect the database with a GUI while developing. It is
+  # bound to the loopback interface, not 0.0.0.0: the credentials default to
+  # admin/password, so this must never be reachable from the network.
+  mongodb:
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"

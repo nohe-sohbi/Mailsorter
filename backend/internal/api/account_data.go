@@ -40,6 +40,10 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 		return h.db.AnalysisJobs()
 	case account.DatasetSavedSearches:
 		return h.db.SavedSearches()
+	case account.DatasetEmails:
+		return h.db.Emails()
+	case account.DatasetLabels:
+		return h.db.Labels()
 	}
 	return nil
 }
@@ -47,9 +51,10 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 // ExportAccount returns a single JSON document with everything Mailsorter stores
 // about the caller: a redacted account profile plus every user-owned dataset.
 // It is the data-portability half of the RGPD promise ("vos emails ne quittent
-// jamais votre contrôle"): emails themselves live in Gmail, but every artifact
-// Mailsorter derived is handed back in the open. OAuth tokens and Stripe IDs are
-// stripped via account.RedactUser.
+// jamais votre contrôle"): the mailbox itself lives in Gmail, but everything
+// Mailsorter keeps a copy of or derived from it is handed back in the open,
+// including the local mirror of the synced messages. OAuth tokens and Stripe IDs
+// are stripped via account.RedactUser.
 func (h *Handler) ExportAccount(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {

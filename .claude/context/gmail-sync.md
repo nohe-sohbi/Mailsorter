@@ -15,7 +15,7 @@ files:
   - backend/internal/models/models.go
 priority: high
 related: [auth-session-security, data-model, background-workers, rules-engine]
-last-verified: 2026-08-09
+last-verified: 2026-09-13
 ---
 # Gmail Sync
 
@@ -34,6 +34,7 @@ every ledger entry: the `gmail` package never touches Mongo.
 | API endpoints actually used | 8, listed below. No History API, no watch/push, no threads, no drafts, no attachments |
 | Resilience | Every Gmail call goes through `withRetry` / `retryErr` (`retry.go`) |
 | Sync model | Full poll of `in:inbox` on demand, upserted into Mongo. No incremental `historyId` cursor exists |
+| Payload size | `MessageFields` picks the per-message format: `FieldsFull` only where `Email.Body` is read (sync, rules), `FieldsMetadata` for the inbox listing, which names its headers in `metadataHeaders` |
 | State of truth | Gmail is authoritative for labels; Mongo holds the last synced projection plus the derived unsubscribe fields |
 
 ### Every Gmail endpoint this app calls
@@ -43,7 +44,7 @@ Grep-verified: these are the only `Users.*` calls in the repository.
 | Endpoint | Wrapper | Used by |
 |---|---|---|
 | `users.messages.list` | `ListMessagesWithPagination` | `GetEmails`, `syncInbox`, rules preview/apply |
-| `users.messages.get` (format `full`) | same, plus `GetMessage` | list hydration, `Unsubscribe`, `Snooze` |
+| `users.messages.get` | `fetchMessages` (8 at a time, order preserved), plus `GetMessage` | list hydration, `Unsubscribe`, `Snooze` |
 | `users.messages.modify` | `ModifyMessage` | every mutation (archive, trash, read, star, label, snooze, undo) |
 | `users.messages.send` | `SendMessage` | daily digest only (`digest_scheduler.go`) |
 | `users.labels.list` | `ListLabels` | `GetLabels`, `CreateLabel` dedupe, `GetMailboxStats` |

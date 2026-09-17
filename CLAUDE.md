@@ -46,6 +46,9 @@ being asked.
 4. **Every Gmail mutation is journaled and reversible.** Call `h.logAction(...)` with a
    `Source*` constant after any mutating action, and check `protect.Allowed` before any
    destructive one. A feature that mutates the inbox without a ledger entry is incomplete.
+   Perform the mutation through `h.applyVerb` (one verb) or `h.applyMutations` (several in
+   one call). Never call `gmailService.ModifyMessage` from a handler and never write a
+   Gmail label id there: that knowledge lives in `internal/mailbox` and nowhere else.
 5. **Cheap paths before expensive ones.** Deterministic rules run before the model; the
    shared analysis cache runs before an API call; cache hits and auto-pilot do not burn
    quota. New AI work must justify why it cannot be a rule or a cache hit.
@@ -67,7 +70,8 @@ backend/
 frontend/
   src/pages/             one file per route (10 routes)
   src/components/        shared non-route components (Header, EmailReader)
-  src/contexts/          EmailContext: the shared inbox cache
+  src/contexts/          EmailContext: the shared inbox cache.
+                         InstanceContext: what this deployment is (edition, billing, configured)
   src/services/api.js    every HTTP call in the app, grouped by service object
   src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
   src/lib/analytics.js   Umami tracker injection + track()
@@ -82,10 +86,10 @@ All commands verified against this working copy.
 
 | Goal | Command | Notes |
 |---|---|---|
-| Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080 |
+| Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 161 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 205 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
@@ -131,6 +135,8 @@ Everything below is pure by construction, and each one says so in its package do
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure | `Dataset*`, redaction helpers |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
+| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
+| `mailbox` | The provider-neutral verb vocabulary and its translation per transport. The ONLY place that knows Gmail's system label ids | `Action*`, `Parse`, `Destructive`, `Mutation`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter` |
 
 The outbound clients and primitives:
 
@@ -140,7 +146,7 @@ The outbound clients and primitives:
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
-| `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY` |
+| `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (per-user Gmail tokens) and the legacy `gmail_config` read at boot |
 | `config` | Env loading + `Validate()` fail-fast |
 | `database` | Mongo client, one accessor per collection, `EnsureIndexes` |
 | `models` | Every BSON/JSON struct. One file, `models.go` |
@@ -154,7 +160,8 @@ The outbound clients and primitives:
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
-| `ai_handlers.go` | The nine `/api/ai/*` endpoints, plus `/api/senders/*` and `getUserToken` |
+| `ai_handlers.go` | The nine `/api/ai/*` endpoints, plus `/api/senders/*` |
+| `tokens.go` | The user's Google credentials: `sealToken` / `openToken` (AES-256-GCM at rest), the legacy-plaintext migration, and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
 | `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
@@ -169,6 +176,8 @@ The outbound clients and primitives:
 | `account_data.go` | `datasetCollection`: the one bridge from `account.Dataset` to a Mongo collection. Export and delete both walk it |
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
+| `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
+| `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
 | `auto_sync.go` | 30 min per-user background inbox sync |
 
@@ -183,7 +192,7 @@ CORS -> recover -> request-id -> metrics -> logging -> rate-limit (20 r/s, burst
 `authMiddleware` deletes any inbound `X-User-Email`, verifies the `Authorization: Bearer`
 session token, then sets `X-User-Email` itself. Handlers read that header and can trust it.
 Public routes (`publicPrefixes` in `middleware.go`): `/health`, `/metrics`, `/api/auth/`,
-`/api/config/status`, `/api/waitlist`, `/api/billing/webhook`. On a public route a valid
+`/api/config/status`, `/api/providers`, `/api/waitlist`, `/api/billing/webhook`. On a public route a valid
 token still identifies the caller; a bad one is not an error.
 
 ### Adding an endpoint
@@ -228,8 +237,9 @@ not cron; a redeploy restarts them.
 
 ### Routes
 
-Declared in `src/App.js`. The app boots by calling `GET /api/config/status`; if the
-instance has no Gmail credentials every guarded route redirects to `/setup`.
+Declared in `src/App.js`. The app boots by calling `GET /api/config/status` once,
+through `InstanceProvider`; if the instance has no Gmail credentials every guarded
+route redirects to `/setup`.
 
 | Route | Page | Purpose |
 |---|---|---|
@@ -238,10 +248,10 @@ instance has no Gmail credentials every guarded route redirects to `/setup`.
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
 | `/history` | `pages/History.js` | Action ledger + undo |
-| `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist |
+| `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist. Redirects away in the `self-hosted` edition, which bills nobody |
 | `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour |
 | `/account` | `pages/Account.js` | Profile, usage, GDPR export and delete |
-| `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config |
+| `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config. Edition-aware: the own-project guide (6 steps, including "Publier l'application") self-hosted, the operator one (5 steps) otherwise, plus the reachable providers read from `GET /api/providers` |
 | `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token |
 
 `/emails` and `/triage` redirect to `/inbox`.
@@ -255,9 +265,19 @@ instance has no Gmail credentials every guarded route redirects to `/setup`.
   never imports axios.
 - The axios instance attaches `Authorization: Bearer <localStorage.accessToken>` on
   request, and on any 401 clears `accessToken` + `userEmail` and bounces to `/`.
-- `contexts/EmailContext.js` is the only shared store: emails, senders, subscriptions,
-  suggestions, stats, pagination, with a 5 minute cache and a 5 minute sync throttle.
-  Consume it with `useEmails()`. Everything else is local `useState`.
+- Two shared stores, and only two. `contexts/EmailContext.js` holds the inbox:
+  emails, senders, subscriptions, suggestions, stats, pagination, with a 5 minute
+  cache and a 5 minute sync throttle. Consume it with `useEmails()`.
+  `contexts/InstanceContext.js` holds the deployment: one `GET /api/config/status`
+  at boot, read by App, the header, Pricing and Setup through `useInstance()`
+  (`loading`, `error`, `reload`, `isConfigured`, `billingOn`, `edition`,
+  `selfHosted`). Never probe the instance from a component: App and Pricing each
+  called it separately and could disagree about the same instance for a few
+  hundred milliseconds. Everything else is local `useState`.
+- **The edition is a frontend concern too.** A `self-hosted` instance bills nobody,
+  so the header drops its pricing entry and `/pricing` redirects instead of
+  rendering a page with no offer. The SPA still hardcodes no provider: the connect
+  surfaces render whatever `GET /api/providers` returns.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
   state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`).
 
@@ -373,6 +393,7 @@ as a side effect of another change.
 | `MONGODB_URI` / `MONGO_ROOT_USERNAME` / `MONGO_ROOT_PASSWORD` / `PORT` / `BACKEND_PORT` | see `.env.example` | direct `go run` reads `MONGODB_URI` and `PORT` |
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` | optional | empty key keeps the waitlist CTA instead of checkout |
 | `ALLOWED_ORIGINS` | optional | comma separated. Empty falls back to localhost:3000, localhost, mailsorter.sohbi.dev. No rebuild needed |
+| `EDITION` | yes (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers: the Gmail API and Proton exist only in `self-hosted` |
 | `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest default 07:00 UTC |
 | `REACT_APP_API_URL`, `REACT_APP_UMAMI_WEBSITE_ID` | build args | **inlined into the static bundle at image build time.** Leave `REACT_APP_API_URL` unset so it defaults to `/` and the SPA calls the API same-origin through the nginx proxy |
 
@@ -404,7 +425,7 @@ and read the body (it reports `version` from `BUILD_VERSION`, and `checks.mongo`
 | AI cost control (cache, batching, quota) | `backend/internal/api/analysis.go`, `backend/internal/api/account.go` |
 | GDPR catalog | `backend/internal/account/account.go` + `backend/internal/api/account_data.go` |
 | Every frontend HTTP call | `frontend/src/services/api.js` |
-| Shared frontend state | `frontend/src/contexts/EmailContext.js` |
+| Shared frontend state | `frontend/src/contexts/EmailContext.js` (inbox), `frontend/src/contexts/InstanceContext.js` (edition, billing) |
 | Design tokens | `frontend/tailwind.config.js`, `frontend/src/index.css` |
 | SPA serving and cache headers | `frontend/nginx.conf` |
 | CI | `.github/workflows/ci.yml` |
@@ -425,9 +446,40 @@ Do not duplicate these into this file. Point at them.
 
 - **`REACT_APP_*` is frozen at image build time.** A runtime env var change does nothing to
   the SPA. This already caused one production incident (PR #15).
-- **`ENCRYPTION_KEY` is not rotatable in place.** Changing it orphans every AES-GCM value at rest.
+- **`ENCRYPTION_KEY` is not rotatable in place.** Changing it orphans every AES-GCM value at
+  rest, which now includes every user's Gmail token: each one has to reconnect their account.
+  It also invalidates every session token in the wild.
+- **Never write a Gmail token to Mongo directly.** `api/tokens.go` owns both directions:
+  `sealToken` on the way in, `openToken` on the way out. A value without the `enc:v1:`
+  prefix is a legacy plaintext token, re-sealed in place the first time it is read, so the
+  migration needs no backfill. A prefixed value that fails to decrypt is NOT treated as
+  plaintext: it becomes `errReauthRequired` (401) so the user reconnects.
+- **A message listing picks its own payload size.** `gmail.FieldsFull` downloads every MIME
+  part and is only for callers that read `Email.Body` (the sync, the rule engine).
+  `gmail.FieldsMetadata` is for anything that only renders sender, subject and snippet, and
+  its headers must be listed in `metadataHeaders` or Gmail returns none at all. Fetches run
+  8 at a time and the result keeps the listing order; that order is the mailbox order and
+  the page token only makes sense against it.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it.
+- **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so
+  the deployment file binds nothing to the host. Local runs need `compose.local.yml` on
+  top, which is what `make up` does. It is deliberately NOT named
+  `docker-compose.override.yml`, since Compose would merge that into the deployment too.
+- **No handler knows Gmail's label vocabulary.** `"INBOX"`, `"TRASH"`, `"UNREAD"` and
+  `"STARRED"` appear in exactly two files: `internal/mailbox/mailbox.go` (the translation)
+  and `internal/gmail/gmail.go` (the client). They used to appear 51 times across the tree.
+  Two traps the table encodes: untrashing must BOTH restore `INBOX` and drop `TRASH`, and
+  read state is the ABSENCE of `UNREAD`, so marking read removes rather than adds.
+- **`mailbox.Parse` accepts every spelling already in circulation.** `delete` and `trash`
+  are one act, `read` and `markRead` another, and both spellings sit in `action_log` rows
+  written over the life of the app. Dropping an alias would silently stop the undo history
+  resolving for every entry written the other way.
+- **The edition is not packaging, it is a capability gate.** `EDITION=hosted` can never
+  reach the Gmail API: a shared OAuth client is capped by Google at 100 authorizations for
+  the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an
+  app password instead. `internal/provider` holds that rule as data and a test enforces it,
+  so do not special-case a provider in a handler: add or fix its route in the catalog.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

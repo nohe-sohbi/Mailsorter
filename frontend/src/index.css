@@ -61,7 +61,7 @@
     --surface: 255 255 255;
     --surface-raised: 255 255 255;
     --surface-sunken: 248 250 252;
-    /* 5,7:1 sur surface — utilisable pour du vrai contenu. */
+    /* 5,7:1 sur surface : utilisable pour du vrai contenu. */
     --muted: 91 104 120;
     /* Décor uniquement : séparateurs, icônes accompagnées d'un libellé. */
     --subtle: 148 163 184;
@@ -307,7 +307,7 @@
        assuming a white page. Sanitising keeps those inline styles, so rendering
        one on the dark surface turns "color: #333 with no background" into black
        on near-black. The body therefore gets its own light canvas in BOTH
-       themes — which is exactly what every mail client does — rather than a
+       themes (which is exactly what every mail client does) rather than a
        promise that senders will cooperate.
        `color-scheme: light` also stops the browser from re-theming form
        controls and default colours inside it. */

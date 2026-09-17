@@ -12,7 +12,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"golang.org/x/oauth2"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
 
@@ -75,28 +74,11 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 		AppliedAt:  time.Now(),
 	}
 
-	var err error
-	switch pref.DefaultAction {
-	case "archive":
-		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, nil, []string{"INBOX"})
-	case "delete":
-		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{"TRASH"}, nil)
-	case "label":
-		labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, pref.DefaultLabel)
-		if lerr != nil {
-			return false
-		}
-		suggestion.LabelID = labelID
-		err = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{labelID}, nil)
-	case "keep":
-		// Nothing to mutate in Gmail.
-	default:
-		return false
-	}
-
+	labelID, err := h.applyVerdict(ctx, gmailClient, userEmail, email.MessageID, pref.DefaultAction, pref.DefaultLabel, "")
 	if err != nil {
 		return false
 	}
+	suggestion.LabelID = labelID
 
 	h.db.AISuggestions().InsertOne(ctx, suggestion)
 	h.logActionMeta(ctx, userEmail, email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From)
@@ -231,27 +213,8 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 
 	gmailClient := h.gmailService.GetClient(token)
 
-	// Apply action based on suggestion type
-	switch suggestion.Action {
-	case "archive":
-		err = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, nil, []string{"INBOX"})
-	case "delete":
-		err = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{"TRASH"}, nil)
-	case "label":
-		// Ensure label exists and get its ID. Use a distinct error name so the
-		// ModifyMessage failure below assigns to the outer `err` (checked after
-		// the switch) instead of a variable shadowed by `:=`.
-		labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, suggestion.LabelName)
-		if lerr != nil {
-			writeError(w, http.StatusInternalServerError, "Failed to create label: "+lerr.Error())
-			return
-		}
-		err = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{labelID}, nil)
-		suggestion.LabelID = labelID
-	case "keep":
-		// No action needed
-	}
-
+	labelID, err := h.applyVerdict(ctx, gmailClient, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
+	suggestion.LabelID = labelID
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
 		return
@@ -335,23 +298,8 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var applyErr error
-		switch suggestion.Action {
-		case "archive":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, nil, []string{"INBOX"})
-		case "delete":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{"TRASH"}, nil)
-		case "label":
-			labelID, lerr := h.ensureLabel(ctx, gmailClient, userEmail, suggestion.LabelName)
-			if lerr != nil {
-				applyErr = lerr
-				break
-			}
-			applyErr = h.gmailService.ModifyMessage(gmailClient, suggestion.EmailID, []string{labelID}, nil)
-			suggestion.LabelID = labelID
-		case "keep":
-			// No Gmail mutation required.
-		}
+		labelID, applyErr := h.applyVerdict(ctx, gmailClient, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
+		suggestion.LabelID = labelID
 
 		if applyErr != nil {
 			failed++
@@ -443,15 +391,9 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 			protectedSkipped++
 			continue
 		}
-		var applyErr error
-		switch req.Action {
-		case "archive":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, email.MessageID, nil, []string{"INBOX"})
-		case "delete":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{"TRASH"}, nil)
-		case "label":
-			applyErr = h.gmailService.ModifyMessage(gmailClient, email.MessageID, []string{labelID}, nil)
-		}
+		// labelID is resolved once before the loop: a bulk apply must not create
+		// the same label per message.
+		_, applyErr := h.applyVerdict(ctx, gmailClient, userEmail, email.MessageID, req.Action, "", labelID)
 		if applyErr == nil {
 			appliedCount++
 			h.logActionMeta(ctx, userEmail, email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
@@ -500,7 +442,7 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 	// Attach the subject/sender of each suggested email in one indexed lookup.
 	// The client used to find it by scanning the emails currently on screen,
 	// which meant any suggestion for a message outside the loaded page rendered
-	// as "Sans sujet · Expéditeur inconnu" — asking the user to approve an
+	// as "Sans sujet · Expéditeur inconnu", asking the user to approve an
 	// action on an email they cannot see.
 	ids := make([]string, 0, len(suggestions))
 	for _, s := range suggestions {
@@ -779,6 +721,31 @@ func (h *Handler) getSmartLabelNames(ctx context.Context, userEmail string) ([]s
 	return names, nil
 }
 
+// applyVerdict applies one AI verdict to one message.
+//
+// "keep" is not a mutation but a decision not to act, so it succeeds having
+// changed nothing. Everything else goes through the neutral vocabulary, which
+// also closed a latent hole: three of the four call sites this replaced had no
+// default branch, so an action they did not recognise left the error nil and
+// the message was then recorded, and counted, as applied without Gmail ever
+// being touched. An unknown verb now fails, loudly.
+//
+// The resolved label id comes back because the caller stores it on the
+// suggestion: it is what makes the action undoable later.
+func (h *Handler) applyVerdict(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID, action, labelName, labelID string) (string, error) {
+	if action == "keep" {
+		return "", nil
+	}
+	if action == "label" && labelID == "" {
+		resolved, err := h.ensureLabel(ctx, gmailClient, userEmail, labelName)
+		if err != nil {
+			return "", err
+		}
+		labelID = resolved
+	}
+	return labelID, h.applyVerb(ctx, gmailClient, messageID, action, labelID)
+}
+
 // senderOf returns the stored From of a message, or "" if unknown. Used to
 // consult the protected list when applying AI suggestions, which don't carry the
 // sender themselves.
@@ -788,44 +755,6 @@ func (h *Handler) senderOf(ctx context.Context, userEmail, messageID string) str
 		return e.From
 	}
 	return ""
-}
-
-func (h *Handler) getUserToken(ctx context.Context, userEmail string) (*oauth2.Token, error) {
-	var user models.User
-	err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
-	if err != nil {
-		return nil, err
-	}
-
-	token := &oauth2.Token{
-		AccessToken:  user.AccessToken,
-		RefreshToken: user.RefreshToken,
-		Expiry:       user.TokenExpiry,
-	}
-
-	// Refresh if expired. If we can't mint a fresh token (no refresh token, or the
-	// refresh was rejected), surface errReauthRequired so callers answer 401 and
-	// the SPA restarts OAuth. Returning the dead token here would instead yield a
-	// stream of opaque 500s the user can never escape.
-	if token.Expiry.Before(time.Now()) {
-		if user.RefreshToken == "" {
-			return nil, errReauthRequired
-		}
-		newToken, rerr := h.gmailService.RefreshToken(user.RefreshToken)
-		if rerr != nil {
-			return nil, errReauthRequired
-		}
-		token = newToken
-		h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail}, bson.M{
-			"$set": bson.M{
-				"accessToken": newToken.AccessToken,
-				"tokenExpiry": newToken.Expiry,
-				"updatedAt":   time.Now(),
-			},
-		})
-	}
-
-	return token, nil
 }
 
 func (h *Handler) ensureLabel(ctx context.Context, gmailClient interface{}, userEmail, labelName string) (string, error) {

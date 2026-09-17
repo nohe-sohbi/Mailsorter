@@ -103,7 +103,7 @@ function EmailReader({
   // One implementation, shared by the initial load and the retry button. The
   // retry used to be a second, inline copy with no cancellation guard, so a
   // slow response could paint the body of a message the panel had already
-  // moved off — and it never told the list the mail had been read.
+  // moved off, and it never told the list the mail had been read.
   const loadMessage = useCallback(
     (id) => {
       if (!id) return;

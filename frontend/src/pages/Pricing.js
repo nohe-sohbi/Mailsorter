@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { accountService, billingService, configService, waitlistService } from '../services/api';
+import { accountService, billingService, waitlistService } from '../services/api';
+import { useInstance } from '../contexts/InstanceContext';
 import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
 import { track } from '../lib/analytics';
@@ -56,7 +57,6 @@ function Pricing() {
   const [activity, setActivity] = useState(null);
   const [upgrading, setUpgrading] = useState(false);
   const [managing, setManaging] = useState(false);
-  const [instance, setInstance] = useState(null);
   const [joined, setJoined] = useState(() => localStorage.getItem(WAITLIST_KEY) === '1');
   const [waitlistEmail, setWaitlistEmail] = useState('');
   const [joining, setJoining] = useState(false);
@@ -65,18 +65,13 @@ function Pricing() {
   // Whether Pro can actually be bought comes from the PUBLIC instance probe,
   // not from /api/usage: logged-out visitors have no usage payload, and reading
   // billing state off a failed request would silently show the waitlist to
-  // everyone. null means "not answered yet", which is why the CTA waits rather
-  // than flashing the wrong button.
-  const billingOn = instance === null ? null : !!instance.billingOn;
-
-  useEffect(() => {
-    configService
-      .getStatus()
-      .then((r) => setInstance(r.data))
-      // Unreachable API: fall back to pre-launch, the state that cannot promise
-      // a checkout we may not be able to honour.
-      .catch(() => setInstance({ billingOn: false }));
-  }, []);
+  // everyone. The probe is the shared one, so this page cannot disagree with
+  // the header about the same instance. An unreachable API resolves to
+  // billing off there, the state that cannot promise a checkout we may not be
+  // able to honour. null means "not answered yet", which is why the CTA waits
+  // rather than flashing the wrong button.
+  const { loading: instanceUnknown, billingOn: canBuyPro } = useInstance();
+  const billingOn = instanceUnknown ? null : canBuyPro;
 
   useEffect(() => {
     if (!loggedIn) return;

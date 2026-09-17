@@ -74,7 +74,7 @@ export function ThemeProvider({ children }) {
 
   // A fixed, predictable rotation: clair → sombre → système → clair. The button
   // labels its own destination, so the order has to be stated once and read from
-  // one place — a cycle whose next step depended on the OS preference could not
+  // one place: a cycle whose next step depended on the OS preference could not
   // be announced truthfully.
   const nextTheme = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
   const cycleTheme = useCallback(() => setTheme(nextTheme), [nextTheme, setTheme]);

@@ -225,9 +225,9 @@ and the shortcuts can express the same things one message at a time.
 
 #### GET /api/emails/{id}
 
-Return a single message, decoded. `GET /api/emails` deliberately omits bodies —
-it ships up to 100 messages per page — so the reader fetches the one it is about
-to display.
+Return a single message, decoded. `GET /api/emails` deliberately omits bodies
+(it ships up to 100 messages per page), so the reader fetches the one it is
+about to display.
 
 **Query parameters:**
 - `markRead` (optional): `1` also removes the `UNREAD` label in Gmail and updates
@@ -610,13 +610,13 @@ Returns the caller's most recent ledger entries, newest first. Each entry is
 flagged `undoable` (it has a clean inverse and has not been undone yet).
 
 **Query parameters:**
-- `source` — optional filter (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
+- `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
   `snooze`, `unsubscribe`, `undo`)
-- `limit` — defaults to `50`, capped at `200`
-- `before` — RFC 3339 cursor: return entries strictly older than this. Pass the
+- `limit`: defaults to `50`, capped at `200`
+- `before`: RFC 3339 cursor, return entries strictly older than this. Pass the
   previous page's `nextBefore`. Cursoring on `createdAt` keeps paging stable
   while new actions land at the top.
-- `q` — free-text search over the acted-on message's subject and sender
+- `q`: free-text search over the acted-on message's subject and sender
 
 Entries carry `subject`/`from` so the history can say *which* email it is talking
 about. They are captured when the action is logged, and resolved from the stored
@@ -958,7 +958,7 @@ everything").
 List the caller's suggestions, filtered by `status` (default `pending`).
 
 **Response:** `200 OK`, an array of `AISuggestion` enriched with the identity of
-the email each one is about — `subject`, `from`, `snippet`, resolved in one
+the email each one is about: `subject`, `from`, `snippet`, resolved in one
 lookup. Without them the client had to find the message among those currently on
 screen, so any suggestion for an email outside the loaded page asked the user to
 approve an action on "Sans sujet · Expéditeur inconnu". The three fields are
@@ -1355,12 +1355,13 @@ Get all Gmail labels for a user.
 #### GET /api/config/status
 
 Public boot probe. The SPA calls it before any login to decide whether to show
-the setup instructions and whether Pro can be bought yet. It is the only public
-route under `/api/config/`, and it returns nothing beyond two booleans.
+the setup instructions, whether Pro can be bought yet, and which edition is
+running. It is the only public route under `/api/config/`, and it returns
+nothing beyond these three fields.
 
 **Response:** `200 OK`
 ```json
-{ "isConfigured": true, "billingOn": false }
+{ "isConfigured": true, "billingOn": false, "edition": "self-hosted" }
 ```
 
 `isConfigured` reflects the live OAuth client, whichever source its credentials
@@ -1368,6 +1369,81 @@ came from at boot. The credentials themselves are read from `GMAIL_CLIENT_ID`,
 `GMAIL_CLIENT_SECRET` and `GMAIL_REDIRECT_URL` and have **no HTTP surface**:
 they can be neither read nor written over the API, and both former
 `/api/config/gmail` routes return `404`.
+
+`edition` is `self-hosted` or `hosted`, from the `EDITION` environment variable.
+It decides which mailbox providers exist (see `GET /api/providers`) and whether
+there is anything to bill at all.
+
+---
+
+#### GET /api/providers
+
+Public. The mailbox catalog for the running edition: which providers this
+instance can reach, over which transport, with which credential, what each route
+can do, and what can stop it from working for a given user.
+
+Public because the connect screen runs before any account exists, and it carries
+no secret: provider names, hostnames, ports and help text.
+
+The SPA hardcodes no provider. It renders this payload, which is the same table
+`internal/api` connects with, so a provider offered on screen but unreachable by
+the backend is a state that cannot occur.
+
+**Response:** `200 OK`
+```json
+{
+  "edition": "self-hosted",
+  "providers": [
+    {
+      "key": "gmail",
+      "name": "Gmail",
+      "domains": ["gmail.com", "googlemail.com"],
+      "routes": [
+        {
+          "transport": "gmail-api",
+          "auth": "oauth",
+          "autodiscover": false,
+          "capabilities": {
+            "labels": true, "providerSearch": true, "stableIds": true,
+            "threads": true, "send": true, "push": true
+          },
+          "blockers": ["own-cloud-project"],
+          "note": "Pleine fidelite. L'utilisateur cree son projet Google Cloud..."
+        },
+        {
+          "transport": "imap",
+          "auth": "app-password",
+          "autodiscover": false,
+          "imap": { "host": "imap.gmail.com", "port": 993, "tls": "implicit" },
+          "smtp": { "host": "smtp.gmail.com", "port": 587, "tls": "starttls" },
+          "capabilities": {
+            "labels": true, "providerSearch": true, "stableIds": true,
+            "threads": true, "send": true, "push": false
+          },
+          "blockers": ["two-factor-required", "advanced-protection", "datacenter-ip"],
+          "note": "Aucune surface de conformite..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+Routes are ordered best first: a revocable token before a pasted full-mailbox
+credential. `autodiscover` means the endpoints are resolved from the domain when
+the user connects rather than carried here, so the screen must not promise
+settings it does not have.
+
+`blockers` are why this route can fail for this particular user, and the screen
+shows them BEFORE the attempt: every one of them otherwise surfaces as an
+authentication error nobody can act on. Current values: `two-factor-required`,
+`advanced-protection`, `admin-policy`, `admin-consent`, `paid-plan-required`,
+`local-only`, `own-cloud-project`, `datacenter-ip`.
+
+What the catalog offers depends on the edition. `hosted` never carries a
+`gmail-api` route (a shared OAuth client is capped by Google at 100
+authorizations for the life of the Cloud project) and never carries Proton
+(Bridge binds to `127.0.0.1`). Both exist in `self-hosted`.
 
 ---
 

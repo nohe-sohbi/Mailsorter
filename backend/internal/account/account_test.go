@@ -24,6 +24,23 @@ func TestDatasetsAreUniqueAndNonEmpty(t *testing.T) {
 	}
 }
 
+// The catalog drives BOTH the export and the erasure, so a per-user collection
+// missing from it is a collection no deletion ever touches. The mailbox mirror
+// was exactly that: it stores the decoded body of every synced message, and it
+// survived "delete my account" untouched.
+func TestDatasetsCoverTheMailboxMirror(t *testing.T) {
+	present := map[Dataset]bool{}
+	for _, d := range Datasets() {
+		present[d] = true
+	}
+
+	for _, want := range []Dataset{DatasetEmails, DatasetLabels} {
+		if !present[want] {
+			t.Errorf("Datasets() is missing %q: it would be neither exported nor erased", want)
+		}
+	}
+}
+
 func TestRedactUserDropsSecrets(t *testing.T) {
 	now := time.Now()
 	u := models.User{

@@ -43,7 +43,7 @@ apiClient.interceptors.response.use(
 // The API answers errors in two shapes: writeError produces {error, status},
 // while the older handlers use http.Error and produce bare text. Reading only
 // one of them silently discarded the real reason and left the UI showing a
-// generic "Réessayez" — and `data?.trim()` on a JSON object throws outright.
+// generic "Réessayez", and `data?.trim()` on a JSON object throws outright.
 export function apiError(err, fallback = 'Une erreur est survenue.') {
   const data = err?.response?.data;
   if (typeof data === 'string' && data.trim()) return data.trim();
@@ -228,6 +228,10 @@ export const ruleService = {
 // bought yet ({ isConfigured, billingOn }).
 export const configService = {
   getStatus: () => apiClient.get('/api/config/status'),
+  // The mailbox catalog for the running edition. The connect screen renders
+  // whatever this returns: no provider, hostname or help text is hardcoded in
+  // the SPA, so it can never offer a provider the backend cannot reach.
+  getProviders: () => apiClient.get('/api/providers'),
 };
 
 // Pro waitlist. Public on purpose: the people worth measuring are the ones who

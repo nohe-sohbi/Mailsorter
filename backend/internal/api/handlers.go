@@ -14,8 +14,10 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -47,6 +49,11 @@ type BillingConfig struct {
 // from configuration (BUILD_VERSION) at startup so /health and /metrics can
 // report exactly which build is live.
 var Version = "dev"
+
+// Edition is which distribution is running, set from configuration at startup.
+// It gates which mailbox providers this instance can offer: see
+// internal/provider, and the catalog served by GET /api/providers.
+var Edition = provider.EditionSelfHosted
 
 // AllowedOrigins is the CORS allow-list applied by SetupRoutes. It defaults to
 // the local-dev + public origins and is overridden from configuration
@@ -190,20 +197,33 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// Both tokens are encrypted before they touch the database: see tokens.go for
+	// why they are the one thing here that must never sit at rest in the clear.
+	sealedAccess, err := h.sealToken(token.AccessToken)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to secure credentials")
+		return
+	}
+	sealedRefresh, err := h.sealToken(token.RefreshToken)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to secure credentials")
+		return
+	}
+
 	filter := bson.M{"email": userEmail}
 	set := bson.M{
-		"accessToken": token.AccessToken,
+		"accessToken": sealedAccess,
 		"tokenExpiry": token.Expiry,
 		"updatedAt":   time.Now(),
 	}
 	// Google issues a refresh token only on the FIRST authorization for a given
 	// client and user, unless consent is forced. Every later authorization comes
-	// back with an empty one — and writing that over the stored token destroyed
+	// back with an empty one, and writing that over the stored token destroyed
 	// the account: the access token kept working for about an hour, then nothing
 	// could be refreshed and there was no way back from inside the app. Keep
 	// what we have unless Google actually hands us a new one.
-	if token.RefreshToken != "" {
-		set["refreshToken"] = token.RefreshToken
+	if sealedRefresh != "" {
+		set["refreshToken"] = sealedRefresh
 	}
 	update := bson.M{
 		"$set": set,
@@ -266,7 +286,11 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	// Get page token for pagination
 	pageToken := r.URL.Query().Get("pageToken")
 
-	resp, err := h.gmailService.ListMessagesWithPagination(gmailClient, query, maxResults, pageToken)
+	// Metadata only: this listing renders the sender, the subject and the snippet,
+	// and never touches Email.Body. Asking for full payloads here downloaded every
+	// MIME part of every message on screen, which is both the wait the user felt
+	// and the bulk of the account's Gmail quota.
+	resp, err := h.gmailService.ListMessagesWithPagination(gmailClient, query, maxResults, pageToken, gmail.FieldsMetadata)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails: "+err.Error())
 		return
@@ -287,7 +311,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 			Snippet:       msg.Snippet,
 			LabelIDs:      msg.LabelIds,
 			ReceivedDate:  date,
-			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			IsRead:        mailbox.GmailIsRead(msg.LabelIds),
 			UnsubURL:      unsubURL,
 			UnsubMailto:   unsubMailto,
 			UnsubOneClick: oneClick,
@@ -400,7 +424,7 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 			Snippet:       msg.Snippet,
 			LabelIDs:      msg.LabelIds,
 			ReceivedDate:  date,
-			IsRead:        !contains(msg.LabelIds, "UNREAD"),
+			IsRead:        mailbox.GmailIsRead(msg.LabelIds),
 			UnsubURL:      unsubURL,
 			UnsubMailto:   unsubMailto,
 			UnsubOneClick: oneClick,
@@ -466,27 +490,13 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch req.Action {
-	case "archive":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"INBOX"})
-	case "delete", "trash":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"TRASH"}, nil)
-	case "unarchive":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, nil)
-	case "untrash":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"INBOX"}, []string{"TRASH"})
-	case "read":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"UNREAD"})
-	case "unread":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"UNREAD"}, nil)
-	// Starring was reachable over the batch route but not here, so the single
-	// message path (what the reader and the shortcuts use) could not express
-	// "flag this one". The two vocabularies now match.
-	case "star":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, []string{"STARRED"}, nil)
-	case "unstar":
-		err = h.gmailService.ModifyMessage(gmailClient, req.MessageID, nil, []string{"STARRED"})
-	default:
+	// The verb vocabulary and its translation to Gmail labels live in
+	// internal/mailbox. Starring was reachable over the batch route but not
+	// here, so the single message path (what the reader and the shortcuts use)
+	// could not express "flag this one"; one vocabulary for both is what fixed
+	// that, and what stops the two from drifting again.
+	err = h.applyVerb(ctx, gmailClient, req.MessageID, req.Action, "")
+	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return
 	}
@@ -552,6 +562,7 @@ func (h *Handler) GetConfigStatus(w http.ResponseWriter, r *http.Request) {
 	status := models.InstanceStatus{
 		IsConfigured: h.gmailService.IsConfigured(),
 		BillingOn:    h.billingEnabled(),
+		Edition:      string(Edition),
 	}
 
 	writeJSON(w, http.StatusOK, status)

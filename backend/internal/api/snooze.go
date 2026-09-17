@@ -10,6 +10,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/snooze"
@@ -124,7 +125,12 @@ var errInvalidSnoozeDeadline = errors.New("choisissez une échéance valide")
 // than one per message.
 func (h *Handler) snoozeMessage(ctx context.Context, gmailClient *gmailapi.Service, userEmail, labelID string, identity models.Email, wakeAt, now time.Time) error {
 	messageID := identity.MessageID
-	if err := h.gmailService.ModifyMessage(gmailClient, messageID, []string{labelID}, []string{"INBOX"}); err != nil {
+	// One call, two verbs: tag it and take it out of the inbox. See
+	// mailbox.GmailLabelsFor for why this must not become two requests.
+	if err := h.applyMutations(ctx, gmailClient, messageID,
+		mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: labelID},
+		mailbox.Mutation{Action: mailbox.ActionArchive},
+	); err != nil {
 		return err
 	}
 
@@ -324,12 +330,17 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 // restoreSnoozed returns a message to the inbox, marks it unread and strips the
 // snooze label.
 func (h *Handler) restoreSnoozed(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID string) error {
-	add := []string{"INBOX", "UNREAD"}
-	remove := []string{}
-	if labelID, err := h.ensureLabel(ctx, gmailClient, userEmail, snoozeLabelName); err == nil {
-		remove = append(remove, labelID)
+	muts := []mailbox.Mutation{
+		{Action: mailbox.ActionUnarchive},
+		{Action: mailbox.ActionMarkUnread},
 	}
-	return h.gmailService.ModifyMessage(gmailClient, messageID, add, remove)
+	// Stripping the snooze label is best effort: if the label cannot be
+	// resolved the message still has to come back, which is the part the user
+	// is waiting for.
+	if labelID, err := h.ensureLabel(ctx, gmailClient, userEmail, snoozeLabelName); err == nil {
+		muts = append(muts, mailbox.Mutation{Action: mailbox.ActionUnlabel, LabelID: labelID})
+	}
+	return h.applyMutations(ctx, gmailClient, messageID, muts...)
 }
 
 // startSnoozeLoop launches the background sweeper that resurfaces due snoozes.

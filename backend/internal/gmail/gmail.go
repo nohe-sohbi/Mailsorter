@@ -125,19 +125,48 @@ type ListMessagesResponse struct {
 	ResultSizeEstimate int64
 }
 
+// MessageFields selects how much of each message a listing actually fetches.
+//
+// It matters more than it looks. Gmail's list call returns ids only, so a listing
+// costs one extra API call per message, and FieldsFull downloads every MIME part
+// of every one of them. The inbox list renders the sender, the subject and the
+// snippet, nothing else, so asking for full payloads there multiplied both the
+// wire size and the account's Gmail quota for data no screen displayed. Only
+// callers that read Email.Body need FieldsFull: the inbox sync (which stores the
+// body) and the rule engine (whose conditions can match on it).
+type MessageFields string
+
+const (
+	FieldsFull     MessageFields = "full"
+	FieldsMetadata MessageFields = "metadata"
+)
+
+// metadataHeaders are the headers a FieldsMetadata listing must still ask for:
+// everything ParseEmailHeaders and ParseUnsubscribe read. Gmail returns NO
+// header at all for a metadata request that names none, so an omission here
+// silently empties a field instead of failing.
+var metadataHeaders = []string{"From", "Subject", "To", "Date", "List-Unsubscribe", "List-Unsubscribe-Post"}
+
+// listFetchConcurrency bounds how many per-message fetches are in flight at
+// once. Sequential fetching made opening a mailbox a hundred round trips in
+// single file, which is where the wait came from. Gmail allows far more than
+// eight concurrent reads per user, but the point is a predictable speed-up, not
+// saturating a per-user quota that answers 429 when pushed.
+const listFetchConcurrency = 8
+
+// ListMessages lists messages with their full payload, for the callers that read
+// the message body.
 func (s *Service) ListMessages(gmailService *gmail.Service, query string, maxResults int64) ([]*gmail.Message, error) {
-	resp, err := s.ListMessagesWithPagination(gmailService, query, maxResults, "")
+	resp, err := s.ListMessagesWithPagination(gmailService, query, maxResults, "", FieldsFull)
 	if err != nil {
 		return nil, err
 	}
 	return resp.Messages, nil
 }
 
-func (s *Service) ListMessagesWithPagination(gmailService *gmail.Service, query string, maxResults int64, pageToken string) (*ListMessagesResponse, error) {
-	user := "me"
-
+func (s *Service) ListMessagesWithPagination(gmailService *gmail.Service, query string, maxResults int64, pageToken string, fields MessageFields) (*ListMessagesResponse, error) {
 	response, err := withRetry(s.retry, func() (*gmail.ListMessagesResponse, error) {
-		call := gmailService.Users.Messages.List(user).Q(query)
+		call := gmailService.Users.Messages.List("me").Q(query)
 		if maxResults > 0 {
 			call = call.MaxResults(maxResults)
 		}
@@ -150,22 +179,62 @@ func (s *Service) ListMessagesWithPagination(gmailService *gmail.Service, query 
 		return nil, err
 	}
 
-	messages := make([]*gmail.Message, 0, len(response.Messages))
+	ids := make([]string, 0, len(response.Messages))
 	for _, m := range response.Messages {
-		msg, err := withRetry(s.retry, func() (*gmail.Message, error) {
-			return gmailService.Users.Messages.Get(user, m.Id).Format("full").Do()
-		})
-		if err != nil {
-			continue
-		}
-		messages = append(messages, msg)
+		ids = append(ids, m.Id)
 	}
 
 	return &ListMessagesResponse{
-		Messages:           messages,
+		Messages:           s.fetchMessages(gmailService, ids, fields),
 		NextPageToken:      response.NextPageToken,
 		ResultSizeEstimate: response.ResultSizeEstimate,
 	}, nil
+}
+
+// fetchMessages retrieves every id concurrently, at most listFetchConcurrency at
+// a time, and returns the messages IN THE ORDER OF ids.
+//
+// The order is not cosmetic: the list order is the mailbox order the user reads,
+// and the pagination token only makes sense against it, so the concurrency is
+// not allowed to shuffle it. Each result is written to its own slot and the slots
+// are compacted afterwards.
+//
+// A message that cannot be fetched is left out rather than failing the listing:
+// one unreadable message must not blank out an entire mailbox.
+func (s *Service) fetchMessages(gmailService *gmail.Service, ids []string, fields MessageFields) []*gmail.Message {
+	slots := make([]*gmail.Message, len(ids))
+	inFlight := make(chan struct{}, listFetchConcurrency)
+	var wg sync.WaitGroup
+
+	for i, id := range ids {
+		wg.Add(1)
+		inFlight <- struct{}{}
+		go func(slot int, messageID string) {
+			defer wg.Done()
+			defer func() { <-inFlight }()
+
+			msg, err := withRetry(s.retry, func() (*gmail.Message, error) {
+				call := gmailService.Users.Messages.Get("me", messageID).Format(string(fields))
+				if fields == FieldsMetadata {
+					call = call.MetadataHeaders(metadataHeaders...)
+				}
+				return call.Do()
+			})
+			if err != nil {
+				return
+			}
+			slots[slot] = msg
+		}(i, id)
+	}
+	wg.Wait()
+
+	messages := make([]*gmail.Message, 0, len(ids))
+	for _, msg := range slots {
+		if msg != nil {
+			messages = append(messages, msg)
+		}
+	}
+	return messages
 }
 
 func (s *Service) GetMessage(gmailService *gmail.Service, messageID string) (*gmail.Message, error) {
@@ -348,7 +417,7 @@ func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, e
 
 	// Labels.List does not carry message counts, so each counter needs its own
 	// Labels.Get. Fetching every label meant 30-50 sequential round-trips on a
-	// typical account to fill six numbers — on the endpoint the inbox calls on
+	// typical account to fill six numbers, on the endpoint the inbox calls on
 	// every load. Only the system labels the stats actually report are fetched.
 	for _, label := range labels.Labels {
 		if !countedLabels[label.Id] {
@@ -374,8 +443,8 @@ func (s *Service) GetMailboxStats(gmailService *gmail.Service) (*MailboxStats, e
 		case "INBOX":
 			stats.InboxCount = uint64(labelDetail.MessagesTotal)
 			// Unread is read from INBOX, not from the UNREAD label: the latter
-			// counts unread messages across the WHOLE account — archive, spam and
-			// trash included — so the figure shown next to "Boîte de réception"
+			// counts unread messages across the WHOLE account (archive, spam and
+			// trash included), so the figure shown next to "Boîte de réception"
 			// could exceed the inbox total and never matched what Gmail displays.
 			stats.UnreadCount = uint64(labelDetail.MessagesUnread)
 		case "SENT":
@@ -421,6 +490,18 @@ func parseDateHeader(value string, internalDateMs int64) time.Time {
 }
 
 func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []string, date time.Time) {
+	// A message can arrive without a payload: a metadata listing returns only the
+	// headers it was asked for, and Gmail omits the object entirely when it has
+	// none to give. Dereferencing it blindly turned that into a panic, recovered
+	// as a 500 on the endpoint the inbox calls on every load. InternalDate is
+	// still worth reading in that case: it is the one field that survives.
+	if message == nil {
+		return
+	}
+	if message.Payload == nil {
+		return "", "", nil, parseDateHeader("", message.InternalDate)
+	}
+
 	var dateHeader string
 	for _, header := range message.Payload.Headers {
 		switch header.Name {

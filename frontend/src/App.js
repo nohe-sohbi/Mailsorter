@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Inbox from './pages/Inbox';
@@ -12,10 +12,10 @@ import Pricing from './pages/Pricing';
 import AuthCallback from './pages/AuthCallback';
 import Header from './components/Header';
 import { EmailProvider } from './contexts/EmailContext';
+import { InstanceProvider, useInstance } from './contexts/InstanceContext';
 import { ToastProvider } from './ui/Toast';
 import { ConfirmProvider } from './ui/Confirm';
 import { ThemeProvider } from './ui/theme';
-import { configService } from './services/api';
 import { Logo, Alert, Inbox as InboxIcon } from './ui/icons';
 import Spinner from './ui/Spinner';
 
@@ -30,7 +30,7 @@ function BootScreen({ children }) {
 // RequireAuth is the single place the session is checked. It used to be a
 // per-page copy-paste that four of the six screens simply skipped: they fired
 // their API calls, took a 401, and the axios interceptor recovered with a full
-// browser reload — losing all state and flashing the login page.
+// browser reload, losing all state and flashing the login page.
 function RequireAuth({ children }) {
   const navigate = useNavigate();
   const authed = Boolean(localStorage.getItem('userEmail') && localStorage.getItem('accessToken'));
@@ -61,30 +61,11 @@ function NotFound() {
 }
 
 function App() {
-  const [isConfigured, setIsConfigured] = useState(null);
-  const [error, setError] = useState(null);
+  // The deployment is probed once, in InstanceProvider, and read here. Pricing
+  // and the header read the same value instead of asking again.
+  const { loading, error, isConfigured, selfHosted, reload } = useInstance();
 
-  useEffect(() => {
-    checkConfiguration();
-  }, []);
-
-  const checkConfiguration = async () => {
-    // Back to the boot screen while the probe runs. Clearing only `error` left
-    // isConfigured at false, so the very next render fell through to the Router
-    // and every guarded route redirected to /setup — pressing "Réessayer"
-    // ejected the user into the deployment documentation instead of retrying.
-    setIsConfigured(null);
-    setError(null);
-    try {
-      const response = await configService.getStatus();
-      setIsConfigured(response.data.isConfigured);
-    } catch (err) {
-      setError('Connexion au serveur impossible.');
-      setIsConfigured(false);
-    }
-  };
-
-  if (isConfigured === null) {
+  if (loading) {
     return (
       <BootScreen>
         <div className="animate-fade-up">
@@ -108,7 +89,7 @@ function App() {
           <h1 className="text-xl font-bold text-ink-900">Le moteur ne répond pas</h1>
           <p className="text-sm text-muted">{error} Vérifiez que le backend tourne, puis réessayez.</p>
         </div>
-        <button onClick={checkConfiguration} className="btn-primary">
+        <button onClick={reload} className="btn-primary">
           Réessayer
         </button>
       </BootScreen>
@@ -134,7 +115,7 @@ function App() {
                 <Routes>
                   <Route
                     path="/setup"
-                    element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={() => setIsConfigured(true)} />}
+                    element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
                   />
                   <Route path="/" element={isConfigured ? <Login /> : <Navigate to="/setup" replace />} />
                   <Route path="/inbox" element={guard(<Inbox />)} />
@@ -143,7 +124,10 @@ function App() {
                   <Route path="/history" element={guard(<History />)} />
                   <Route path="/settings" element={guard(<Settings />)} />
                   <Route path="/account" element={guard(<Account />)} />
-                  <Route path="/pricing" element={<Pricing />} />
+                  {/* A self-hosted instance bills nobody, so there is no pricing
+                      page to land on: the route redirects rather than rendering
+                      an empty one. */}
+                  <Route path="/pricing" element={selfHosted ? <Navigate to="/" replace /> : <Pricing />} />
                   <Route path="/auth/callback" element={<AuthCallback />} />
                   {/* Redirects for legacy routes */}
                   <Route path="/emails" element={<Navigate to="/inbox" replace />} />
@@ -165,7 +149,9 @@ function App() {
 export default function AppWithTheme() {
   return (
     <ThemeProvider>
-      <App />
+      <InstanceProvider>
+        <App />
+      </InstanceProvider>
     </ThemeProvider>
   );
 }

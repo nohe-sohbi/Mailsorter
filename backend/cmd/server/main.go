@@ -122,6 +122,7 @@ func main() {
 	// Surface the running build, default digest hour and CORS allow-list to the
 	// API layer.
 	api.Version = cfg.BuildVersion
+	api.Edition = cfg.Edition
 	api.DefaultDigestHourUTC = cfg.DigestHourUTC
 	api.AllowedOrigins = cfg.AllowedOrigins
 
