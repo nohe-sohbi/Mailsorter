@@ -63,7 +63,8 @@ backend/
   cmd/server/            main: config -> db -> indexes -> services -> router -> serve
   cmd/test_decrypt/      one-off ops tool, reads the legacy gmail_config document
   internal/api/          the ONLY I/O layer: handlers, routes, middleware, schedulers
-  internal/{account,activity,digest,mailer,metrics,protect,rules,schedule,snooze}/
+  internal/{account,activity,digest,egress,mailbox,mailer,metrics,protect,
+            provider,rules,schedule,snooze}/
                          pure logic, no I/O, heavily unit-tested
   internal/{ai,billing,gmail}/   outbound clients (Mistral, Stripe, Gmail)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
@@ -137,6 +138,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary and its translation per transport. The ONLY place that knows Gmail's system label ids | `Action*`, `Parse`, `Destructive`, `Mutation`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter` |
+| `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 
 The outbound clients and primitives:
 
@@ -424,6 +426,7 @@ and read the body (it reports `version` from `BUILD_VERSION`, and `checks.mongo`
 | Env contract | `.env.example`, `backend/internal/config/config.go` |
 | AI cost control (cache, batching, quota) | `backend/internal/api/analysis.go`, `backend/internal/api/account.go` |
 | GDPR catalog | `backend/internal/account/account.go` + `backend/internal/api/account_data.go` |
+| Outbound request policy (SSRF guard) | `backend/internal/egress/egress.go` |
 | Every frontend HTTP call | `frontend/src/services/api.js` |
 | Shared frontend state | `frontend/src/contexts/EmailContext.js` (inbox), `frontend/src/contexts/InstanceContext.js` (edition, billing) |
 | Design tokens | `frontend/tailwind.config.js`, `frontend/src/index.css` |
@@ -480,6 +483,15 @@ Do not duplicate these into this file. Point at them.
   the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an
   app password instead. `internal/provider` holds that rule as data and a test enforces it,
   so do not special-case a provider in a handler: add or fix its route in the catalog.
+- **Any outbound request whose URL is not a constant goes through `internal/egress`.**
+  There is exactly one today: the RFC 8058 one-click unsubscribe, whose address
+  comes from the `List-Unsubscribe` header of a received email, so a stranger picks
+  it. Unguarded, that is a server-side request forgery: the server POSTs to its own
+  loopback API, to the datastore on the Docker bridge, or to 169.254.169.254 for the
+  host's credentials. The scheme check must be https-only, the address check must
+  run from the dialer's `Control` hook (not before the lookup, or DNS rebinding
+  walks past it), and every redirect hop must be re-judged. Mistral and Stripe are
+  safe for one reason only: their base URL is a constant.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

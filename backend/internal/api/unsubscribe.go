@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"regexp"
 	"time"
@@ -68,8 +69,14 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	case oneClick:
 		if err := h.gmailService.OneClickUnsubscribe(httpURL); err == nil {
 			method, status, done = "one-click", "done", true
+		} else {
+			// Not fatal: we fall through and hand the link to the client, who
+			// finishes in their own browser. But it is logged, because the URL
+			// came out of an email header and a refusal here is either a broken
+			// sender or a List-Unsubscribe aimed at this server's own network.
+			// Silently retrying by hand would hide the second one entirely.
+			log.Printf("unsubscribe: one-click refused for %s: %v", senderAddr, err)
 		}
-		// On failure we fall through and hand the https link to the client.
 	case httpURL == "" && mailto != "":
 		method = "mailto"
 	}

@@ -511,6 +511,15 @@ Unsubscribes from the sender of a given message. When the sender supports RFC
 `url` / `mailto` is returned for the client to open. Optionally archives the
 sender's backlog in the same call.
 
+The server-side POST is the one request in the API whose address is chosen by a
+stranger: it comes from the `List-Unsubscribe` header of a received email. It is
+therefore restricted by `internal/egress`, which requires `https` and refuses any
+address that is not publicly routable (loopback, RFC 1918, link-local including
+the cloud metadata endpoint, carrier-grade NAT), on the resolved address and on
+every redirect hop. A refused endpoint is not an error for the caller: the
+response falls back to `done: false` with the `url` for the client to open, which
+is where a request driven by a stranger belongs.
+
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
 

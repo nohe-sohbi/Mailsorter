@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/egress"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
@@ -631,27 +633,87 @@ func splitAngleList(v string) []string {
 	return out
 }
 
-// OneClickUnsubscribe performs an RFC 8058 one-click unsubscribe: an HTTP POST to
-// the sender's https endpoint with the body `List-Unsubscribe=One-Click`. It must
-// only be used when ParseUnsubscribe reported oneClick == true.
-func (s *Service) OneClickUnsubscribe(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return err
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("unsupported unsubscribe scheme: %s", u.Scheme)
-	}
+// maxUnsubscribeRedirects is how many hops the one-click POST will follow. Some
+// senders answer with a 302 to a confirmation page, so refusing redirects
+// outright would fail unsubscribes that worked; three is enough for that and
+// short enough that a redirect chain cannot be used as a scan.
+const maxUnsubscribeRedirects = 3
 
-	client := &http.Client{Timeout: 12 * time.Second}
+// newUnsubscribeRequest builds the RFC 8058 POST, after checking that the URL is
+// one this server may request at all. Split out from OneClickUnsubscribe so the
+// request's shape is testable without a network: the body is the literal the
+// RFC mandates, and a sender that receives anything else will not unsubscribe
+// the user.
+func newUnsubscribeRequest(rawURL string) (*http.Request, error) {
+	if _, err := egress.Parse(rawURL); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequest(http.MethodPost, rawURL, strings.NewReader("List-Unsubscribe=One-Click"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "Mailsorter/1.0 (+unsubscribe)")
+	return req, nil
+}
 
-	resp, err := client.Do(req)
+// checkUnsubscribeRedirect re-judges every hop. Checking only the URL the header
+// carried would be checking the one address the sender does not need to lie
+// about: a 302 is how an endpoint that looks public reaches something that is
+// not.
+func checkUnsubscribeRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxUnsubscribeRedirects {
+		return fmt.Errorf("unsubscribe: stopped after %d redirects", maxUnsubscribeRedirects)
+	}
+	return egress.Allowed(req.URL)
+}
+
+// unsubscribeClient is the hardened client the one-click POST goes through.
+//
+// The Control hook is the load-bearing part. It runs after the name is
+// resolved and before the socket connects, on the address actually being
+// dialled, which is the only place the check cannot be raced: a host that
+// answers with a public address when it is validated and a private one when it
+// is connected to (DNS rebinding) is caught here, and again on every redirect
+// hop, because each hop dials again.
+func unsubscribeClient() *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   5 * time.Second,
+		KeepAlive: 5 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			return egress.AllowedIP(net.ParseIP(host))
+		},
+	}
+	return &http.Client{
+		Timeout:       12 * time.Second,
+		CheckRedirect: checkUnsubscribeRedirect,
+		Transport: &http.Transport{
+			DialContext:         dialer.DialContext,
+			TLSHandshakeTimeout: 5 * time.Second,
+		},
+	}
+}
+
+// OneClickUnsubscribe performs an RFC 8058 one-click unsubscribe: an HTTPS POST
+// to the sender's endpoint with the body `List-Unsubscribe=One-Click`. It must
+// only be used when ParseUnsubscribe reported oneClick == true.
+//
+// The URL is chosen by whoever sent the email, so it is the one address in the
+// app a stranger controls. Everything it is allowed to reach is decided by
+// internal/egress; read that package before loosening anything here. Failing is
+// not costly: the caller hands the link to the user, who finishes in their own
+// browser, which is where a request driven by a stranger belongs.
+func (s *Service) OneClickUnsubscribe(rawURL string) error {
+	req, err := newUnsubscribeRequest(rawURL)
+	if err != nil {
+		return err
+	}
+
+	resp, err := unsubscribeClient().Do(req)
 	if err != nil {
 		return err
 	}
