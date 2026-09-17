@@ -277,3 +277,40 @@ func TestGmailAfterIgnoresAnUnknownAction(t *testing.T) {
 		t.Errorf("GmailAfter with an unknown action = %v, want the list unchanged %v", got, start)
 	}
 }
+
+// The two constructors exist so a call site says which KIND of id it is holding.
+// A bare string cannot: a Gmail id and an IMAP UID are both strings, and sending
+// one where the other is expected acts on a different message and reports
+// success.
+func TestRefSaysWhichKindOfIdentifierItCarries(t *testing.T) {
+	account := OnAccount("18c8c1f2a3b4d5e6")
+	if account.Scoped() {
+		t.Error("OnAccount produced a folder-scoped reference")
+	}
+	if account.ID != "18c8c1f2a3b4d5e6" || account.Folder != "" {
+		t.Errorf("OnAccount = %+v, want the id alone", account)
+	}
+
+	scoped := InFolder("INBOX", "42")
+	if !scoped.Scoped() {
+		t.Error("InFolder produced a reference with no folder")
+	}
+	if scoped.ID != "42" || scoped.Folder != "INBOX" {
+		t.Errorf("InFolder = %+v, want id 42 in INBOX", scoped)
+	}
+}
+
+// The string form goes into error messages, where a bare number would not say
+// enough to tell a misrouted UID from a Gmail id.
+func TestRefString(t *testing.T) {
+	cases := map[string]Ref{
+		"18c8c1f2a3b4d5e6":   OnAccount("18c8c1f2a3b4d5e6"),
+		"INBOX/42":           InFolder("INBOX", "42"),
+		"[Gmail]/All Mail/7": InFolder("[Gmail]/All Mail", "7"),
+	}
+	for want, ref := range cases {
+		if got := ref.String(); got != want {
+			t.Errorf("Ref%+v.String() = %q, want %q", ref, got, want)
+		}
+	}
+}

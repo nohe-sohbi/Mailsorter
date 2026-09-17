@@ -44,6 +44,8 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 		return h.db.Emails()
 	case account.DatasetLabels:
 		return h.db.Labels()
+	case account.DatasetMailAccounts:
+		return h.db.MailAccounts()
 	}
 	return nil
 }
@@ -76,7 +78,7 @@ func (h *Handler) ExportAccount(w http.ResponseWriter, r *http.Request) {
 		if coll == nil {
 			continue
 		}
-		rows := h.dumpUserRows(ctx, coll, userEmail)
+		rows := h.dumpUserRows(ctx, coll, userEmail, account.SecretFields(ds)...)
 		export[string(ds)] = rows
 	}
 
@@ -91,7 +93,7 @@ func (h *Handler) ExportAccount(w http.ResponseWriter, r *http.Request) {
 // the export is faithful regardless of the struct shape. Secrets only live on
 // the user record (handled separately via RedactUser), never on these per-user
 // collections. Returns an empty slice (not nil) so the JSON shows [] not null.
-func (h *Handler) dumpUserRows(ctx context.Context, coll *mongo.Collection, userEmail string) []bson.M {
+func (h *Handler) dumpUserRows(ctx context.Context, coll *mongo.Collection, userEmail string, secret ...string) []bson.M {
 	rows := make([]bson.M, 0)
 	cursor, err := coll.Find(ctx, bson.M{"userId": userEmail})
 	if err != nil {
@@ -99,6 +101,15 @@ func (h *Handler) dumpUserRows(ctx context.Context, coll *mongo.Collection, user
 	}
 	defer cursor.Close(ctx)
 	_ = cursor.All(ctx, &rows)
+	// Named by account.SecretFields, stripped here. A sealed app password is
+	// still a credential, and an export leaves the server: it ends up in a mail
+	// attachment, a backup, a support ticket, all places the encryption key's
+	// threat model never covered.
+	for _, row := range rows {
+		for _, field := range secret {
+			delete(row, field)
+		}
+	}
 	return rows
 }
 

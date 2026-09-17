@@ -39,14 +39,45 @@ const tokenCipherPrefix = "enc:v1:"
 // back a refresh token only on the first authorization, so "" means "keep what is
 // already on file", never "store this".
 func (h *Handler) sealToken(plain string) (string, error) {
+	sealed, err := h.sealSecret(plain)
+	if err != nil {
+		return "", fmt.Errorf("seal oauth token: %w", err)
+	}
+	return sealed, nil
+}
+
+// sealSecret is the same machinery under a name that does not say "oauth",
+// because a Google token is no longer the only credential Mailsorter stores: a
+// mailbox connected over IMAP is held open by an app password, which is exactly
+// as dangerous and needs exactly this treatment.
+func (h *Handler) sealSecret(plain string) (string, error) {
 	if plain == "" {
 		return "", nil
 	}
 	ciphertext, err := h.encryptor.Encrypt(plain)
 	if err != nil {
-		return "", fmt.Errorf("seal oauth token: %w", err)
+		return "", err
 	}
 	return tokenCipherPrefix + ciphertext, nil
+}
+
+// openSecret is openToken WITHOUT the legacy-plaintext path, and that
+// difference is the point. A Google token predates the encryption and so an
+// unprefixed value is a real, usable legacy token. No app password was ever
+// stored in the clear, so an unprefixed value here is corruption or tampering,
+// and handing it back as if it were a password would send it to a mail server.
+func (h *Handler) openSecret(stored string) (string, error) {
+	if stored == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(stored, tokenCipherPrefix) {
+		return "", fmt.Errorf("open secret: stored value is not sealed")
+	}
+	plain, err := h.encryptor.Decrypt(strings.TrimPrefix(stored, tokenCipherPrefix))
+	if err != nil {
+		return "", fmt.Errorf("open secret: %w", err)
+	}
+	return plain, nil
 }
 
 // openToken returns the usable token behind a stored value, and reports whether

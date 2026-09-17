@@ -511,6 +511,15 @@ Unsubscribes from the sender of a given message. When the sender supports RFC
 `url` / `mailto` is returned for the client to open. Optionally archives the
 sender's backlog in the same call.
 
+The server-side POST is the one request in the API whose address is chosen by a
+stranger: it comes from the `List-Unsubscribe` header of a received email. It is
+therefore restricted by `internal/egress`, which requires `https` and refuses any
+address that is not publicly routable (loopback, RFC 1918, link-local including
+the cloud metadata endpoint, carrier-grade NAT), on the resolved address and on
+every redirect hop. A refused endpoint is not an error for the caller: the
+response falls back to `done: false` with the `url` for the client to open, which
+is where a request driven by a stranger belongs.
+
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
 
@@ -538,6 +547,85 @@ sender's backlog in the same call.
 - `401 Unauthorized`: Missing user email
 - `404 Not Found`: Email not found
 - `422 Unprocessable Entity`: Sender exposes no unsubscribe link
+
+---
+
+## Mailbox Endpoints
+
+How a user connects a mailbox over IMAP, which is the hosted edition's way in:
+a shared OAuth client can never reach the Gmail API at scale (see the
+100-authorization cap in `internal/provider`), so the hosted service asks for an
+address and an app password instead.
+
+The stored app password is sealed with AES-256-GCM, exactly like a Google OAuth
+token, and it is never returned by any endpoint. It is also stripped from the
+RGPD export: `account.SecretFields` names it, and the export redacts it on the
+way out, because an export leaves the server and ends up in places the
+encryption key's threat model never covered.
+
+### Read the connected mailbox
+
+#### GET /api/mailbox
+
+**Headers:**
+- `Authorization: Bearer <session-token>` (required)
+
+**Response:** `200 OK`. `mailbox` is `null` when nothing is connected, which is
+a normal state rather than an error.
+```json
+{
+  "mailbox": {
+    "provider": "orange",
+    "transport": "imap",
+    "username": "someone@orange.fr",
+    "host": "imap.orange.fr",
+    "port": 993,
+    "tls": "implicit",
+    "createdAt": "2026-09-17T19:00:00Z",
+    "updatedAt": "2026-09-17T19:00:00Z"
+  }
+}
+```
+
+### Connect a mailbox
+
+#### POST /api/mailbox/connect
+
+Proves the connection works, then stores it. The connection is tested BEFORE
+anything is written: a password accepted on faith becomes a mailbox that fails
+on every later sync, with the failure surfacing far from the screen where it
+could be fixed.
+
+**Request Body:** an address and a password, and nothing else. The provider,
+host, port and TLS mode are resolved from the address against
+`internal/provider`. A body that could name its own host would let any caller
+make the server open an authenticated connection wherever they liked.
+```json
+{
+  "address": "someone@orange.fr",
+  "password": "app-password"
+}
+```
+
+**Response:** `200 OK`, the stored mailbox, in the shape `GET /api/mailbox`
+returns under `mailbox`.
+
+**Error Responses:**
+- `400 Bad Request`: missing address or password
+- `401 Unauthorized`: no session, or the provider rejected the credentials
+- `422 Unprocessable Entity`: this provider is not reachable over IMAP in the
+  running edition (Gmail in `self-hosted`, where the API route is used instead)
+- `502 Bad Gateway`: the mail server could not be reached
+
+### Disconnect
+
+#### DELETE /api/mailbox
+
+Forgets the connection, app password included. This is also how a user revokes
+Mailsorter's access without going through their provider. The mailbox itself is
+never touched.
+
+**Response:** `200 OK`, `{ "disconnected": true }`
 
 ---
 

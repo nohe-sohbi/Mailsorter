@@ -111,14 +111,61 @@ type Mutation struct {
 	LabelID string
 }
 
+// Ref names one message on whichever transport holds it.
+//
+// It exists because the two transports do not agree on what a message id IS,
+// and the disagreement is not cosmetic. A Gmail API message id names a message
+// on the account: it survives archiving, labelling and trashing, and one string
+// is enough to find it again. An IMAP UID names a message inside ONE folder, so
+// the same mail carries a different UID once it is moved, and a UID without its
+// folder points at whatever happens to hold that number in the mailbox that
+// happens to be selected.
+//
+// Passing a bare string through a shared interface would make those two look
+// alike, and the failure is silent: an action lands on a different message,
+// succeeds, and is journaled as if it had done what was asked. So the kind of
+// id a caller holds is part of the value, and an adapter handed the wrong kind
+// refuses rather than guesses.
+type Ref struct {
+	// ID is the message's identifier on its transport.
+	ID string
+	// Folder is the mailbox the ID is scoped to, and is empty when the ID is
+	// account-wide.
+	Folder string
+}
+
+// OnAccount names a message by an id that is valid across the whole account,
+// which is what the Gmail API hands out.
+func OnAccount(id string) Ref { return Ref{ID: id} }
+
+// InFolder names a message by an id that is only meaningful inside one folder,
+// which is what an IMAP UID is.
+func InFolder(folder, id string) Ref { return Ref{Folder: folder, ID: id} }
+
+// Scoped reports whether the reference carries a folder.
+func (r Ref) Scoped() bool { return r.Folder != "" }
+
+func (r Ref) String() string {
+	if r.Folder == "" {
+		return r.ID
+	}
+	return r.Folder + "/" + r.ID
+}
+
+// ErrWrongRefKind is returned by an adapter handed a reference the transport
+// cannot use: a folder-scoped one where ids are account-wide, or an
+// account-wide one where they are not. It is a caller bug, and a loud one on
+// purpose, because the alternative is acting on the wrong message.
+var ErrWrongRefKind = errors.New("mailbox: message reference does not match the transport")
+
 // Mailbox is what the I/O layer must provide to change a message. It is
 // deliberately narrow: reading is still done through the transport clients, and
-// widening this contract before there is a second implementation to widen it
-// for would be guessing.
+// widening this contract further, before there is a caller that needs it, would
+// be guessing.
 type Mailbox interface {
 	// Apply performs one mutation on one message. Applying to several messages
 	// is a loop by the caller, matching what every call site already does.
-	Apply(ctx context.Context, messageID string, m Mutation) error
+	Apply(ctx context.Context, ref Ref, m Mutation) error
 }
 
 // GmailLabelsFor translates SEVERAL mutations into one pair of label lists, so

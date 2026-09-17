@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	gmailapi "google.golang.org/api/gmail/v1"
@@ -27,15 +28,23 @@ type gmailService interface {
 	ModifyMessage(gmailService *gmailapi.Service, messageID string, addLabels, removeLabels []string) error
 }
 
-func (m gmailMailbox) Apply(ctx context.Context, messageID string, mut mailbox.Mutation) error {
-	return m.ApplyAll(ctx, messageID, mut)
+func (m gmailMailbox) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mutation) error {
+	return m.ApplyAll(ctx, ref, mut)
 }
 
 // ApplyAll performs several mutations in ONE modify call. A compound act (snooze
 // parks a message by labelling AND archiving it) must not be split into separate
 // requests: it would multiply the traffic on the sweeper that runs every minute,
 // and a failure between the two would leave the message visibly half-moved.
-func (m gmailMailbox) ApplyAll(ctx context.Context, messageID string, muts ...mailbox.Mutation) error {
+func (m gmailMailbox) ApplyAll(ctx context.Context, ref mailbox.Ref, muts ...mailbox.Mutation) error {
+	// A folder-scoped reference here means the caller is holding an IMAP UID and
+	// about to send it to Gmail as a message id. Gmail would answer 404 on a
+	// good day and act on an unrelated message on a bad one, so it is refused
+	// rather than ignored: the Gmail API has no folders, and a ref that carries
+	// one did not come from this transport.
+	if ref.Scoped() {
+		return fmt.Errorf("%w: gmail ids are account-wide, got %s", mailbox.ErrWrongRefKind, ref)
+	}
 	add, remove, err := mailbox.GmailLabelsFor(muts)
 	if err != nil {
 		return err
@@ -46,7 +55,7 @@ func (m gmailMailbox) ApplyAll(ctx context.Context, messageID string, muts ...ma
 	// which holds a connection) genuinely needs one, and adding it later would
 	// mean touching every call site a second time.
 	_ = ctx
-	return m.svc.ModifyMessage(m.client, messageID, add, remove)
+	return m.svc.ModifyMessage(m.client, ref.ID, add, remove)
 }
 
 // mailboxOf wraps an authenticated Gmail client as a Mailbox. Call sites hold a
@@ -60,16 +69,16 @@ func (h *Handler) mailboxOf(client *gmailapi.Service) mailbox.Mailbox {
 // handler that acts on a message. Resolving the verb here means an unsupported
 // action is refused once, in a typed way, instead of falling through a switch
 // default in each of the places that used to have one.
-func (h *Handler) applyVerb(ctx context.Context, client *gmailapi.Service, messageID, verb, labelID string) error {
+func (h *Handler) applyVerb(ctx context.Context, client *gmailapi.Service, ref mailbox.Ref, verb, labelID string) error {
 	action, err := mailbox.Parse(verb)
 	if err != nil {
 		return err
 	}
-	return h.mailboxOf(client).Apply(ctx, messageID, mailbox.Mutation{Action: action, LabelID: labelID})
+	return h.mailboxOf(client).Apply(ctx, ref, mailbox.Mutation{Action: action, LabelID: labelID})
 }
 
 // applyMutations performs a compound act in one call. Used where the intent is
 // several verbs at once rather than a verb the API accepted.
-func (h *Handler) applyMutations(ctx context.Context, client *gmailapi.Service, messageID string, muts ...mailbox.Mutation) error {
-	return gmailMailbox{svc: h.gmailService, client: client}.ApplyAll(ctx, messageID, muts...)
+func (h *Handler) applyMutations(ctx context.Context, client *gmailapi.Service, ref mailbox.Ref, muts ...mailbox.Mutation) error {
+	return gmailMailbox{svc: h.gmailService, client: client}.ApplyAll(ctx, ref, muts...)
 }

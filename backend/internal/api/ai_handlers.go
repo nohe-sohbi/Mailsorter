@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -743,7 +744,7 @@ func (h *Handler) applyVerdict(ctx context.Context, gmailClient *gmailapi.Servic
 		}
 		labelID = resolved
 	}
-	return labelID, h.applyVerb(ctx, gmailClient, messageID, action, labelID)
+	return labelID, h.applyVerb(ctx, gmailClient, mailbox.OnAccount(messageID), action, labelID)
 }
 
 // senderOf returns the stored From of a message, or "" if unknown. Used to

@@ -241,6 +241,41 @@ type Snooze struct {
 	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
+// MailAccount is the mailbox a user connected, and how to reach it again.
+//
+// One per user for now: there is no account entity in Mailsorter (the email
+// address IS the userId), so a second mailbox has nowhere to hang. The
+// collection is keyed and uniquely indexed on userId, which is the smallest
+// shape that works today and the natural place to grow when multi-account
+// arrives.
+//
+// Secret is the app password, sealed with AES-256-GCM by api/mail_accounts.go.
+// Its `json:"-"` is load-bearing: this struct is returned by GET /api/mailbox,
+// and a tag change would put a credential on the wire. The tag is enforced by a
+// test, not by attention.
+type MailAccount struct {
+	ID        string    `json:"id,omitempty" bson:"_id,omitempty"`
+	UserID    string    `json:"-" bson:"userId"`
+	Provider  string    `json:"provider" bson:"provider"`
+	Transport string    `json:"transport" bson:"transport"`
+	Username  string    `json:"username" bson:"username"`
+	Secret    string    `json:"-" bson:"secret"`
+	Host      string    `json:"host" bson:"host"`
+	Port      int       `json:"port" bson:"port"`
+	TLS       string    `json:"tls" bson:"tls"`
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+}
+
+// ConnectMailboxRequest is the body of POST /api/mailbox/connect. The provider,
+// host, port and TLS mode are NOT taken from the client: they are resolved from
+// the address against internal/provider, so a caller cannot point the server at
+// a host of their choosing.
+type ConnectMailboxRequest struct {
+	Address  string `json:"address"`
+	Password string `json:"password"`
+}
+
 // SnoozeRequest is the request body for POST /api/emails/snooze. Either Preset
 // (resolved server-side) or an explicit WakeAt (RFC 3339) must be provided.
 type SnoozeRequest struct {

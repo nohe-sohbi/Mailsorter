@@ -127,7 +127,7 @@ func (h *Handler) snoozeMessage(ctx context.Context, gmailClient *gmailapi.Servi
 	messageID := identity.MessageID
 	// One call, two verbs: tag it and take it out of the inbox. See
 	// mailbox.GmailLabelsFor for why this must not become two requests.
-	if err := h.applyMutations(ctx, gmailClient, messageID,
+	if err := h.applyMutations(ctx, gmailClient, mailbox.OnAccount(messageID),
 		mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: labelID},
 		mailbox.Mutation{Action: mailbox.ActionArchive},
 	); err != nil {
@@ -340,7 +340,7 @@ func (h *Handler) restoreSnoozed(ctx context.Context, gmailClient *gmailapi.Serv
 	if labelID, err := h.ensureLabel(ctx, gmailClient, userEmail, snoozeLabelName); err == nil {
 		muts = append(muts, mailbox.Mutation{Action: mailbox.ActionUnlabel, LabelID: labelID})
 	}
-	return h.applyMutations(ctx, gmailClient, messageID, muts...)
+	return h.applyMutations(ctx, gmailClient, mailbox.OnAccount(messageID), muts...)
 }
 
 // startSnoozeLoop launches the background sweeper that resurfaces due snoozes.

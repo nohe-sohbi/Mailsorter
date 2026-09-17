@@ -178,7 +178,7 @@ La carte du dépôt, les conventions et les pièges connus : [`CLAUDE.md`](CLAUD
 | `GET` | `/api/account/export` · `DELETE` `/api/account` | Export et suppression RGPD |
 | `GET` | `/health` · `/metrics` | Ping MongoDB, build, uptime, compteurs |
 
-Les 67 routes et leurs charges utiles : [`docs/API.md`](docs/API.md).
+Les 70 routes et leurs charges utiles : [`docs/API.md`](docs/API.md).
 
 ## Licence
 

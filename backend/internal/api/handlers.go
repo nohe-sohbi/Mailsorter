@@ -495,7 +495,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	// here, so the single message path (what the reader and the shortcuts use)
 	// could not express "flag this one"; one vocabulary for both is what fixed
 	// that, and what stops the two from drifting again.
-	err = h.applyVerb(ctx, gmailClient, req.MessageID, req.Action, "")
+	err = h.applyVerb(ctx, gmailClient, mailbox.OnAccount(req.MessageID), req.Action, "")
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return

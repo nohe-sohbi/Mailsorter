@@ -16,6 +16,7 @@ Solo-developer project. Production is live. The 12 roadmap phases are delivered
 | HTTP deps | `gorilla/mux` 1.8.1, `rs/cors` 1.10.1 | `backend/go.mod` |
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
 | Google | `golang.org/x/oauth2` 0.15.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
+| IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned | `backend/go.mod` |
 | AI | Mistral chat completions, hand-rolled HTTP client | `backend/internal/ai/mistral.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
 | Frontend | React 18.2, react-router-dom 6.21, axios 1.6, dompurify 3.0 | `frontend/package.json` |
@@ -28,6 +29,16 @@ There is no Stripe SDK, no icon library, no test framework beyond the standard
 library, and no metrics backend. Each of those is a deliberate, hand-rolled,
 dependency-free replacement. Do not add a library to replace one of them without
 being asked.
+
+`go-imap` is the one exception, and it is not a contradiction of that rule: it
+replaces nothing hand-rolled, and IMAP is not in the same class as those four. It
+is a stateful protocol with literals, continuation requests and nested response
+grammars, where a parsing bug means the wrong message is archived rather than a
+failed request. It is pinned to an exact version. It is a BETA on purpose: the
+v1.2.1 tag looks stabler but has not been published since May 2022, and four
+years without a fix on code that handles credentials and TLS is the larger risk.
+It also ships `imapserver/imapmemserver`, which is what lets `internal/imap` be
+tested against a real server rather than a mock.
 
 ## Code Quality Standards
 
@@ -49,6 +60,9 @@ being asked.
    Perform the mutation through `h.applyVerb` (one verb) or `h.applyMutations` (several in
    one call). Never call `gmailService.ModifyMessage` from a handler and never write a
    Gmail label id there: that knowledge lives in `internal/mailbox` and nowhere else.
+   Both take a `mailbox.Ref`, not a bare id: `mailbox.OnAccount(id)` for a Gmail API id,
+   `mailbox.InFolder(folder, uid)` for an IMAP one. Say which kind you hold; the adapter
+   refuses the other rather than acting on whatever message carries that number.
 5. **Cheap paths before expensive ones.** Deterministic rules run before the model; the
    shared analysis cache runs before an API call; cache hits and auto-pilot do not burn
    quota. New AI work must justify why it cannot be a rule or a cache hit.
@@ -63,9 +77,10 @@ backend/
   cmd/server/            main: config -> db -> indexes -> services -> router -> serve
   cmd/test_decrypt/      one-off ops tool, reads the legacy gmail_config document
   internal/api/          the ONLY I/O layer: handlers, routes, middleware, schedulers
-  internal/{account,activity,digest,mailer,metrics,protect,rules,schedule,snooze}/
+  internal/{account,activity,digest,egress,mailbox,mailer,metrics,protect,
+            provider,rules,schedule,snooze,unsubscribe}/
                          pure logic, no I/O, heavily unit-tested
-  internal/{ai,billing,gmail}/   outbound clients (Mistral, Stripe, Gmail)
+  internal/{ai,billing,gmail,imap}/  outbound clients (Mistral, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
 frontend/
   src/pages/             one file per route (10 routes)
@@ -133,10 +148,12 @@ Everything below is pure by construction, and each one says so in its package do
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML | `Digest` |
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
-| `account` | The single catalog of user-owned data driving BOTH export and erasure | `Dataset*`, redaction helpers |
+| `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
-| `mailbox` | The provider-neutral verb vocabulary and its translation per transport. The ONLY place that knows Gmail's system label ids | `Action*`, `Parse`, `Destructive`, `Mutation`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter` |
+| `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
+| `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
+| `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
 
 The outbound clients and primitives:
 
@@ -144,6 +161,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | Mistral client. Batching of 8, exponential backoff with jitter honoring `Retry-After`, fast-fail on 4xx |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
+| `imap` | The IMAP transport, for every route the hosted edition uses. Connect (TLS or STARTTLS, never cleartext), resolve the server's special folders, list a page, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
 | `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (per-user Gmail tokens) and the legacy `gmail_config` read at boot |
@@ -155,7 +173,7 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (66 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (70 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `publicPrefixes` |
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
@@ -177,6 +195,7 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored), read, disconnect. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
 | `auto_sync.go` | 30 min per-user background inbox sync |
@@ -215,7 +234,7 @@ original collections on a fresh volume, so `EnsureIndexes` is the real source of
 `users`, `emails`, `labels`, `gmail_config` (legacy, read-only fallback),
 `ai_suggestions`, `sender_preferences`, `smart_labels`, `analysis_jobs`,
 `analysis_cache`, `usage`, `unsubscribes`, `sorting_rules`, `protected_senders`,
-`snoozes`, `action_log`, `saved_searches`, `waitlist`.
+`snoozes`, `action_log`, `saved_searches`, `waitlist`, `mail_accounts`.
 
 Everything is scoped by `userId` (which is the user's email address) except
 `analysis_cache`, keyed by `sha256(lower(from) + "|" + lower(subject))` and shared
@@ -424,6 +443,7 @@ and read the body (it reports `version` from `BUILD_VERSION`, and `checks.mongo`
 | Env contract | `.env.example`, `backend/internal/config/config.go` |
 | AI cost control (cache, batching, quota) | `backend/internal/api/analysis.go`, `backend/internal/api/account.go` |
 | GDPR catalog | `backend/internal/account/account.go` + `backend/internal/api/account_data.go` |
+| Outbound request policy (SSRF guard) | `backend/internal/egress/egress.go` |
 | Every frontend HTTP call | `frontend/src/services/api.js` |
 | Shared frontend state | `frontend/src/contexts/EmailContext.js` (inbox), `frontend/src/contexts/InstanceContext.js` (edition, billing) |
 | Design tokens | `frontend/tailwind.config.js`, `frontend/src/index.css` |
@@ -449,6 +469,18 @@ Do not duplicate these into this file. Point at them.
 - **`ENCRYPTION_KEY` is not rotatable in place.** Changing it orphans every AES-GCM value at
   rest, which now includes every user's Gmail token: each one has to reconnect their account.
   It also invalidates every session token in the wild.
+- **A credential is sealed by `api/tokens.go` or it is not stored.** That file owns
+  the AES-256-GCM machinery for every secret Mailsorter keeps, not just Google's:
+  `sealSecret` / `openSecret` are the generic pair, and the IMAP app password in
+  `mail_accounts` goes through them. `openSecret` differs from `openToken` in one
+  way that matters: it REFUSES an unsealed value instead of treating it as legacy
+  plaintext, because no app password was ever stored in the clear, so an unprefixed
+  one is corruption or tampering and handing it back would send it to a mail server.
+- **Adding a per-user collection means two catalogs, not one.** `account.Datasets()`
+  makes erasure reach it (an account deleted while its app password stays on file is
+  the exact bug the last audit found), and `account.SecretFields` says which of its
+  columns must be stripped from the export. Export and erasure share the catalog, so
+  a new collection is exportable BY DEFAULT: if it holds a credential, say so there.
 - **Never write a Gmail token to Mongo directly.** `api/tokens.go` owns both directions:
   `sealToken` on the way in, `openToken` on the way out. A value without the `enc:v1:`
   prefix is a legacy plaintext token, re-sealed in place the first time it is read, so the
@@ -460,6 +492,14 @@ Do not duplicate these into this file. Point at them.
   its headers must be listed in `metadataHeaders` or Gmail returns none at all. Fetches run
   8 at a time and the result keeps the listing order; that order is the mailbox order and
   the page token only makes sense against it.
+- **An IMAP listing must PEEK or it marks the whole inbox read.** A plain
+  `BODY[...]` fetch sets `\Seen` on every message it touches, so a listing without
+  `Peek: true` empties the user's unread count just by rendering the screen, with
+  nothing in the ledger to explain it. `internal/imap/list.go` sets it, and a test
+  reads the flags back OFF THE SERVER after listing rather than trusting the
+  struct it just built. The same fetch asks for the two unsubscribe headers by
+  name rather than for `BODY[HEADER]`, which on marketing mail is routinely
+  larger than the text of the message.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it.
 - **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so
@@ -480,6 +520,28 @@ Do not duplicate these into this file. Point at them.
   the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an
   app password instead. `internal/provider` holds that rule as data and a test enforces it,
   so do not special-case a provider in a handler: add or fix its route in the catalog.
+- **Any outbound request whose URL is not a constant goes through `internal/egress`.**
+  There is exactly one today: the RFC 8058 one-click unsubscribe, whose address
+  comes from the `List-Unsubscribe` header of a received email, so a stranger picks
+  it. Unguarded, that is a server-side request forgery: the server POSTs to its own
+  loopback API, to the datastore on the Docker bridge, or to 169.254.169.254 for the
+  host's credentials. The scheme check must be https-only, the address check must
+  run from the dialer's `Control` hook (not before the lookup, or DNS rebinding
+  walks past it), and every redirect hop must be re-judged. Mistral and Stripe are
+  safe for one reason only: their base URL is a constant.
+- **An IMAP UID is NOT a message id, and `mailbox.Ref` is how the two stay apart.**
+  Over the Gmail API a message id names a message on the account and never
+  changes. Over IMAP a UID names a message inside one folder, so a move ends its
+  validity and the same mail has a different UID in its new folder. Both are
+  strings, so a bare string through a shared interface makes them look alike and
+  the failure is silent: the action lands on a different message, succeeds, and
+  is journaled as if it had done what was asked. Hence `Ref`, built by
+  `OnAccount` or `InFolder`, and two guards that both ship with the test that
+  fails without them: the Gmail adapter refuses a folder-scoped ref, and
+  `imap.Client` refuses an account-wide one rather than defaulting to the inbox.
+  `parseUID` refuses anything that is not entirely digits for the same reason: a
+  Gmail id like `18c8c1f2a3b4d5e6` starts with digits, and a parser that stopped
+  at the first letter would act on UID 18.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

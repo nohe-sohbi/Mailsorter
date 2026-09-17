@@ -58,6 +58,14 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// waiting a day to find out the Gmail grant lost its send scope.
 	r.HandleFunc("/api/account/digest/test", h.SendTestDigest).Methods("POST")
 	// RGPD: data portability (export) and right to erasure (delete).
+	// The mailbox connected over IMAP, which is how the hosted edition reaches
+	// mail at all. The body carries an address and a password and nothing else:
+	// the provider, host, port and TLS mode are resolved from
+	// internal/provider, so a caller cannot name the host the server connects to.
+	r.HandleFunc("/api/mailbox", h.GetMailbox).Methods("GET")
+	r.HandleFunc("/api/mailbox/connect", h.ConnectMailbox).Methods("POST")
+	r.HandleFunc("/api/mailbox", h.DisconnectMailbox).Methods("DELETE")
+
 	r.HandleFunc("/api/account/export", h.ExportAccount).Methods("GET")
 	r.HandleFunc("/api/account", h.DeleteAccount).Methods("DELETE")
 

@@ -282,7 +282,7 @@ func (h *Handler) applyInverseActionWithLabel(gmailClient *gmailapi.Service, mes
 	if inverse == "unlabel" && labelID == "" {
 		return fmt.Errorf("aucun libellé à retirer")
 	}
-	err := h.applyVerb(context.Background(), gmailClient, messageID, inverse, labelID)
+	err := h.applyVerb(context.Background(), gmailClient, mailbox.OnAccount(messageID), inverse, labelID)
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		return nil
 	}
