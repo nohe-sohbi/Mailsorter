@@ -173,28 +173,28 @@ func TestApplyChangesFlagsOnTheServer(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendMessage(t, c, "INBOX")
 
-	if err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionMarkRead}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionMarkRead}); err != nil {
 		t.Fatalf("markRead: %v", err)
 	}
 	if flags := flagsOf(t, c, "INBOX", uid); !has(flags, mailbox.FlagSeen) {
 		t.Errorf("after markRead, flags = %v, want %s present", flags, mailbox.FlagSeen)
 	}
 
-	if err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionMarkUnread}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionMarkUnread}); err != nil {
 		t.Fatalf("markUnread: %v", err)
 	}
 	if flags := flagsOf(t, c, "INBOX", uid); has(flags, mailbox.FlagSeen) {
 		t.Errorf("after markUnread, flags = %v, want %s gone", flags, mailbox.FlagSeen)
 	}
 
-	if err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionStar}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionStar}); err != nil {
 		t.Fatalf("star: %v", err)
 	}
 	if flags := flagsOf(t, c, "INBOX", uid); !has(flags, mailbox.FlagFlagged) {
 		t.Errorf("after star, flags = %v, want %s present", flags, mailbox.FlagFlagged)
 	}
 
-	if err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionUnstar}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionUnstar}); err != nil {
 		t.Fatalf("unstar: %v", err)
 	}
 	if flags := flagsOf(t, c, "INBOX", uid); has(flags, mailbox.FlagFlagged) {
@@ -210,7 +210,7 @@ func TestApplyArchiveMovesTheMessageOutOfTheInbox(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendMessage(t, c, "INBOX")
 
-	if err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionArchive}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionArchive}); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 	if n := countIn(t, c, "INBOX"); n != 0 {
@@ -225,7 +225,7 @@ func TestApplyTrashMovesTheMessageToTrash(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendMessage(t, c, "INBOX")
 
-	if err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionTrash}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionTrash}); err != nil {
 		t.Fatalf("trash: %v", err)
 	}
 	if n := countIn(t, c, "INBOX"); n != 0 {
@@ -242,14 +242,14 @@ func TestApplyUnarchiveBringsTheMessageBack(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendMessage(t, c, "INBOX")
 
-	if err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionArchive}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionArchive}); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 	// The move gave the message a new UID in its new folder, which is the IMAP
 	// fact the caller has to live with: the id it held is no longer valid.
 	archivedUID := firstUID(t, c, "Archive")
 
-	if err := c.Apply(context.Background(), "Archive", archivedUID, mailbox.Mutation{Action: mailbox.ActionUnarchive}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("Archive", archivedUID), mailbox.Mutation{Action: mailbox.ActionUnarchive}); err != nil {
 		t.Fatalf("unarchive: %v", err)
 	}
 	if n := countIn(t, c, "INBOX"); n != 1 {
@@ -280,7 +280,7 @@ func TestApplyIsHarmlessWhenTheMessageIsAlreadyThere(t *testing.T) {
 	appendMessage(t, c, "Archive")
 	uid := firstUID(t, c, "Archive")
 
-	if err := c.Apply(context.Background(), "Archive", uid, mailbox.Mutation{Action: mailbox.ActionArchive}); err != nil {
+	if err := c.Apply(context.Background(), mailbox.InFolder("Archive", uid), mailbox.Mutation{Action: mailbox.ActionArchive}); err != nil {
 		t.Fatalf("archiving an already archived message = %v, want no error", err)
 	}
 	if n := countIn(t, c, "Archive"); n != 1 {
@@ -295,7 +295,7 @@ func TestApplyReportsLabellingAsUnsupported(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendMessage(t, c, "INBOX")
 
-	err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: "Factures"})
+	err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: "Factures"})
 	if !errors.Is(err, mailbox.ErrNoIMAPEquivalent) {
 		t.Errorf("label over IMAP = %v, want mailbox.ErrNoIMAPEquivalent", err)
 	}
@@ -307,7 +307,7 @@ func TestApplyReportsAMissingFolder(t *testing.T) {
 	c := newTestServer(t, map[string][]imapv2.MailboxAttr{"INBOX": nil})
 	uid := appendMessage(t, c, "INBOX")
 
-	err := c.Apply(context.Background(), "INBOX", uid, mailbox.Mutation{Action: mailbox.ActionArchive})
+	err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionArchive})
 	if !errors.Is(err, ErrNoSuchFolder) {
 		t.Errorf("archive with no archive folder = %v, want ErrNoSuchFolder", err)
 	}
@@ -446,5 +446,23 @@ func TestParseUIDRejectsNonsense(t *testing.T) {
 	got, err := parseUID(" 42 ")
 	if err != nil || got != imapv2.UID(42) {
 		t.Errorf("parseUID(\" 42 \") = %v, %v; want 42", got, err)
+	}
+}
+
+// A reference with no folder is a caller holding a Gmail id, or a UID that lost
+// its folder on the way. Either way the number would be resolved against
+// whatever mailbox happens to be selected, so it is refused rather than
+// defaulted to the inbox: defaulting turns a wiring mistake into an action on
+// somebody's unrelated mail, reported as a success.
+func TestApplyRefusesAnAccountWideReference(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	appendMessage(t, c, "INBOX")
+
+	err := c.Apply(context.Background(), mailbox.OnAccount("1"), mailbox.Mutation{Action: mailbox.ActionArchive})
+	if !errors.Is(err, mailbox.ErrWrongRefKind) {
+		t.Errorf("Apply with an account-wide ref = %v, want mailbox.ErrWrongRefKind", err)
+	}
+	if n := countIn(t, c, "INBOX"); n != 1 {
+		t.Errorf("INBOX holds %d message(s); the refused action must not have moved anything", n)
 	}
 }

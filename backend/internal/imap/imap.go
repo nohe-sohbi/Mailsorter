@@ -170,23 +170,34 @@ func (c *Client) resolveFolders() error {
 	return nil
 }
 
-// Apply performs one mutation on one message, named by its UID in the folder
-// currently being worked on.
+// Client is a mailbox.Mailbox, asserted here so the contract is checked by the
+// compiler rather than by whoever wires it up.
+var _ mailbox.Mailbox = (*Client)(nil)
+
+// Apply performs one mutation on one message.
 //
-// The UID is scoped to a mailbox: it identifies a message inside a folder, not
-// on the account, so a move ends the validity of the UID the caller holds. That
-// is a property of IMAP rather than a shortcoming here, and it is why Apply
-// takes the folder explicitly instead of remembering one.
-func (c *Client) Apply(ctx context.Context, folder, uid string, m mailbox.Mutation) error {
+// The reference must be folder-scoped. An IMAP UID identifies a message inside
+// a mailbox, not on the account, so a UID without its folder points at whatever
+// happens to hold that number in whatever happens to be selected. Defaulting to
+// the inbox would turn a wiring mistake into a silent action on the wrong mail,
+// so an account-wide reference is refused instead.
+//
+// A move also ends the validity of the UID the caller holds: the same message
+// has a different one in its new folder. That is IMAP, not a shortcoming here,
+// and the caller has to re-resolve after a move.
+func (c *Client) Apply(ctx context.Context, ref mailbox.Ref, m mailbox.Mutation) error {
+	if !ref.Scoped() {
+		return fmt.Errorf("%w: an imap uid needs its folder, got %s", mailbox.ErrWrongRefKind, ref)
+	}
 	op, err := mailbox.IMAPOpFor(m)
 	if err != nil {
 		return err
 	}
-	num, err := parseUID(uid)
+	num, err := parseUID(ref.ID)
 	if err != nil {
 		return err
 	}
-	if err := c.selectFolder(folder); err != nil {
+	if err := c.selectFolder(ref.Folder); err != nil {
 		return err
 	}
 

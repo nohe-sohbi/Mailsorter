@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"go.mongodb.org/mongo-driver/bson"
@@ -166,7 +167,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		applyErr := h.applyVerb(ctx, gmailClient, id, req.Action, labelID)
+		applyErr := h.applyVerb(ctx, gmailClient, mailbox.OnAccount(id), req.Action, labelID)
 		if applyErr != nil {
 			res.Failed++
 			continue

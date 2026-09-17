@@ -60,6 +60,9 @@ tested against a real server rather than a mock.
    Perform the mutation through `h.applyVerb` (one verb) or `h.applyMutations` (several in
    one call). Never call `gmailService.ModifyMessage` from a handler and never write a
    Gmail label id there: that knowledge lives in `internal/mailbox` and nowhere else.
+   Both take a `mailbox.Ref`, not a bare id: `mailbox.OnAccount(id)` for a Gmail API id,
+   `mailbox.InFolder(folder, uid)` for an IMAP one. Say which kind you hold; the adapter
+   refuses the other rather than acting on whatever message carries that number.
 5. **Cheap paths before expensive ones.** Deterministic rules run before the model; the
    shared analysis cache runs before an API call; cache hits and auto-pilot do not burn
    quota. New AI work must justify why it cannot be a rule or a cache hit.
@@ -148,7 +151,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `account` | The single catalog of user-owned data driving BOTH export and erasure | `Dataset*`, redaction helpers |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
-| `mailbox` | The provider-neutral verb vocabulary and its translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
+| `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 
 The outbound clients and primitives:
@@ -504,16 +507,19 @@ Do not duplicate these into this file. Point at them.
   run from the dialer's `Control` hook (not before the lookup, or DNS rebinding
   walks past it), and every redirect hop must be re-judged. Mistral and Stripe are
   safe for one reason only: their base URL is a constant.
-- **An IMAP UID is NOT a message id.** Over the Gmail API a message id names a
-  message on the account and never changes. Over IMAP a UID names a message
-  inside one folder, so a move ends its validity and the same mail has a
-  different UID in its new folder. That is why `imap.Client.Apply` takes the
-  folder explicitly and why it refuses anything that is not entirely digits: a
+- **An IMAP UID is NOT a message id, and `mailbox.Ref` is how the two stay apart.**
+  Over the Gmail API a message id names a message on the account and never
+  changes. Over IMAP a UID names a message inside one folder, so a move ends its
+  validity and the same mail has a different UID in its new folder. Both are
+  strings, so a bare string through a shared interface makes them look alike and
+  the failure is silent: the action lands on a different message, succeeds, and
+  is journaled as if it had done what was asked. Hence `Ref`, built by
+  `OnAccount` or `InFolder`, and two guards that both ship with the test that
+  fails without them: the Gmail adapter refuses a folder-scoped ref, and
+  `imap.Client` refuses an account-wide one rather than defaulting to the inbox.
+  `parseUID` refuses anything that is not entirely digits for the same reason: a
   Gmail id like `18c8c1f2a3b4d5e6` starts with digits, and a parser that stopped
-  at the first letter would act on UID 18, archiving a different message and
-  journaling it as a success. This is also the piece still missing before IMAP
-  reaches the handlers: `mailbox.Mailbox` names a message with one string, and
-  IMAP needs two.
+  at the first letter would act on UID 18.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are
