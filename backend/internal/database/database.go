@@ -117,6 +117,13 @@ func (d *Database) Waitlist() *mongo.Collection {
 	return d.DB.Collection("waitlist")
 }
 
+// MailAccounts holds the mailbox each user connected: provider, transport,
+// username and a sealed app password. One row per user, enforced by a unique
+// index on userId.
+func (d *Database) MailAccounts() *mongo.Collection {
+	return d.DB.Collection("mail_accounts")
+}
+
 // EnsureIndexes creates the indexes that keep hot queries fast at scale.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
@@ -144,6 +151,10 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		// Unique on email so a visitor clicking twice (or across devices) is one
 		// signup, not two: the count has to mean something.
 		{d.Waitlist(), mongo.IndexModel{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)}},
+		// Unique on userId: connecting a second mailbox replaces the first
+		// rather than leaving two rows, one of which would be picked at random
+		// every time the account is read.
+		{d.MailAccounts(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}}, Options: options.Index().SetUnique(true)}},
 	}
 
 	var firstErr error

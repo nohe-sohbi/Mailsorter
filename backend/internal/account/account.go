@@ -42,6 +42,12 @@ const (
 	// writing it, export and erasure already cover it instead of silently
 	// drifting apart.
 	DatasetLabels Dataset = "labels"
+	// DatasetMailAccounts is the mailbox connection: which provider, over which
+	// transport, under which username. It is listed here because erasure must
+	// reach it (an account deleted while its app password stays on file is the
+	// exact bug the last audit found in this catalog), and its one secret field
+	// is redacted on the way out by SecretFields.
+	DatasetMailAccounts Dataset = "mailAccounts"
 )
 
 // Datasets returns the canonical, stable list of user-owned data categories. The
@@ -60,11 +66,31 @@ func Datasets() []Dataset {
 		DatasetActionLog,
 		DatasetJobs,
 		DatasetSavedSearches,
+		DatasetMailAccounts,
 		// Last, because they are the bulkiest: the settings a user recognizes
 		// should come first in an export they open themselves.
 		DatasetLabels,
 		DatasetEmails,
 	}
+}
+
+// SecretFields names the BSON fields of a dataset that must never leave the
+// server, not even in the owner's own export.
+//
+// Export and erasure share one catalog on purpose, which means adding a
+// collection makes its rows exportable by default. That default is right for
+// every dataset here but one: a mailbox connection carries a sealed app
+// password. Sealed is not the same as safe to hand out, because a downloaded
+// export outlives the encryption key's threat model: it ends up in a mail
+// attachment, a backup, a support ticket.
+//
+// It lives beside the catalog rather than in the API layer so that adding a
+// dataset and declaring its secrets are the same act, in the same file.
+func SecretFields(ds Dataset) []string {
+	if ds == DatasetMailAccounts {
+		return []string{"secret"}
+	}
+	return nil
 }
 
 // Profile is the redacted view of a user's account record, safe to include in an

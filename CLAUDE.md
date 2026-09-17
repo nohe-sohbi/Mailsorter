@@ -148,7 +148,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML | `Digest` |
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
-| `account` | The single catalog of user-owned data driving BOTH export and erasure | `Dataset*`, redaction helpers |
+| `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
@@ -172,7 +172,7 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (66 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (70 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `publicPrefixes` |
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
@@ -194,6 +194,7 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored), read, disconnect. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
 | `auto_sync.go` | 30 min per-user background inbox sync |
@@ -232,7 +233,7 @@ original collections on a fresh volume, so `EnsureIndexes` is the real source of
 `users`, `emails`, `labels`, `gmail_config` (legacy, read-only fallback),
 `ai_suggestions`, `sender_preferences`, `smart_labels`, `analysis_jobs`,
 `analysis_cache`, `usage`, `unsubscribes`, `sorting_rules`, `protected_senders`,
-`snoozes`, `action_log`, `saved_searches`, `waitlist`.
+`snoozes`, `action_log`, `saved_searches`, `waitlist`, `mail_accounts`.
 
 Everything is scoped by `userId` (which is the user's email address) except
 `analysis_cache`, keyed by `sha256(lower(from) + "|" + lower(subject))` and shared
@@ -467,6 +468,18 @@ Do not duplicate these into this file. Point at them.
 - **`ENCRYPTION_KEY` is not rotatable in place.** Changing it orphans every AES-GCM value at
   rest, which now includes every user's Gmail token: each one has to reconnect their account.
   It also invalidates every session token in the wild.
+- **A credential is sealed by `api/tokens.go` or it is not stored.** That file owns
+  the AES-256-GCM machinery for every secret Mailsorter keeps, not just Google's:
+  `sealSecret` / `openSecret` are the generic pair, and the IMAP app password in
+  `mail_accounts` goes through them. `openSecret` differs from `openToken` in one
+  way that matters: it REFUSES an unsealed value instead of treating it as legacy
+  plaintext, because no app password was ever stored in the clear, so an unprefixed
+  one is corruption or tampering and handing it back would send it to a mail server.
+- **Adding a per-user collection means two catalogs, not one.** `account.Datasets()`
+  makes erasure reach it (an account deleted while its app password stays on file is
+  the exact bug the last audit found), and `account.SecretFields` says which of its
+  columns must be stripped from the export. Export and erasure share the catalog, so
+  a new collection is exportable BY DEFAULT: if it holds a credential, say so there.
 - **Never write a Gmail token to Mongo directly.** `api/tokens.go` owns both directions:
   `sealToken` on the way in, `openToken` on the way out. A value without the `enc:v1:`
   prefix is a legacy plaintext token, re-sealed in place the first time it is read, so the

@@ -234,6 +234,17 @@ export const configService = {
   getProviders: () => apiClient.get('/api/providers'),
 };
 
+// The mailbox connected over IMAP, which is how the hosted edition reaches mail
+// at all. connect() sends an address and a password and nothing else: the
+// provider, host, port and TLS mode are resolved server-side from the address,
+// so the screen never picks the host the server connects to. The response never
+// carries the password back.
+export const mailboxService = {
+  get: () => apiClient.get('/api/mailbox'),
+  connect: (address, password) => apiClient.post('/api/mailbox/connect', { address, password }),
+  disconnect: () => apiClient.delete('/api/mailbox'),
+};
+
 // Pro waitlist. Public on purpose: the people worth measuring are the ones who
 // do not have an account yet.
 export const waitlistService = {
