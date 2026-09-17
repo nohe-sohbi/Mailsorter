@@ -70,7 +70,8 @@ backend/
 frontend/
   src/pages/             one file per route (10 routes)
   src/components/        shared non-route components (Header, EmailReader)
-  src/contexts/          EmailContext: the shared inbox cache
+  src/contexts/          EmailContext: the shared inbox cache.
+                         InstanceContext: what this deployment is (edition, billing, configured)
   src/services/api.js    every HTTP call in the app, grouped by service object
   src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
   src/lib/analytics.js   Umami tracker injection + track()
@@ -236,8 +237,9 @@ not cron; a redeploy restarts them.
 
 ### Routes
 
-Declared in `src/App.js`. The app boots by calling `GET /api/config/status`; if the
-instance has no Gmail credentials every guarded route redirects to `/setup`.
+Declared in `src/App.js`. The app boots by calling `GET /api/config/status` once,
+through `InstanceProvider`; if the instance has no Gmail credentials every guarded
+route redirects to `/setup`.
 
 | Route | Page | Purpose |
 |---|---|---|
@@ -246,10 +248,10 @@ instance has no Gmail credentials every guarded route redirects to `/setup`.
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
 | `/history` | `pages/History.js` | Action ledger + undo |
-| `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist |
+| `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist. Redirects away in the `self-hosted` edition, which bills nobody |
 | `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour |
 | `/account` | `pages/Account.js` | Profile, usage, GDPR export and delete |
-| `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config |
+| `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config. Edition-aware: the own-project guide (6 steps, including "Publier l'application") self-hosted, the operator one (5 steps) otherwise, plus the reachable providers read from `GET /api/providers` |
 | `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token |
 
 `/emails` and `/triage` redirect to `/inbox`.
@@ -263,9 +265,19 @@ instance has no Gmail credentials every guarded route redirects to `/setup`.
   never imports axios.
 - The axios instance attaches `Authorization: Bearer <localStorage.accessToken>` on
   request, and on any 401 clears `accessToken` + `userEmail` and bounces to `/`.
-- `contexts/EmailContext.js` is the only shared store: emails, senders, subscriptions,
-  suggestions, stats, pagination, with a 5 minute cache and a 5 minute sync throttle.
-  Consume it with `useEmails()`. Everything else is local `useState`.
+- Two shared stores, and only two. `contexts/EmailContext.js` holds the inbox:
+  emails, senders, subscriptions, suggestions, stats, pagination, with a 5 minute
+  cache and a 5 minute sync throttle. Consume it with `useEmails()`.
+  `contexts/InstanceContext.js` holds the deployment: one `GET /api/config/status`
+  at boot, read by App, the header, Pricing and Setup through `useInstance()`
+  (`loading`, `error`, `reload`, `isConfigured`, `billingOn`, `edition`,
+  `selfHosted`). Never probe the instance from a component: App and Pricing each
+  called it separately and could disagree about the same instance for a few
+  hundred milliseconds. Everything else is local `useState`.
+- **The edition is a frontend concern too.** A `self-hosted` instance bills nobody,
+  so the header drops its pricing entry and `/pricing` redirects instead of
+  rendering a page with no offer. The SPA still hardcodes no provider: the connect
+  surfaces render whatever `GET /api/providers` returns.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
   state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`).
 
@@ -413,7 +425,7 @@ and read the body (it reports `version` from `BUILD_VERSION`, and `checks.mongo`
 | AI cost control (cache, batching, quota) | `backend/internal/api/analysis.go`, `backend/internal/api/account.go` |
 | GDPR catalog | `backend/internal/account/account.go` + `backend/internal/api/account_data.go` |
 | Every frontend HTTP call | `frontend/src/services/api.js` |
-| Shared frontend state | `frontend/src/contexts/EmailContext.js` |
+| Shared frontend state | `frontend/src/contexts/EmailContext.js` (inbox), `frontend/src/contexts/InstanceContext.js` (edition, billing) |
 | Design tokens | `frontend/tailwind.config.js`, `frontend/src/index.css` |
 | SPA serving and cache headers | `frontend/nginx.conf` |
 | CI | `.github/workflows/ci.yml` |
