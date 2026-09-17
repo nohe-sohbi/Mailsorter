@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/egress"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
@@ -606,31 +607,11 @@ func ParseUnsubscribe(message *gmail.Message) (httpURL, mailto string, oneClick 
 			listUnsubPost = hdr.Value
 		}
 	}
-	for _, token := range splitAngleList(listUnsub) {
-		low := strings.ToLower(token)
-		switch {
-		case (strings.HasPrefix(low, "https://") || strings.HasPrefix(low, "http://")) && httpURL == "":
-			httpURL = token
-		case strings.HasPrefix(low, "mailto:") && mailto == "":
-			mailto = token
-		}
-	}
-	oneClick = httpURL != "" && strings.Contains(strings.ToLower(listUnsubPost), "one-click")
-	return
-}
-
-// splitAngleList parses a comma-separated list of <...>-wrapped URIs.
-func splitAngleList(v string) []string {
-	out := make([]string, 0, 2)
-	for _, part := range strings.Split(v, ",") {
-		part = strings.TrimSpace(part)
-		part = strings.TrimPrefix(part, "<")
-		part = strings.TrimSuffix(part, ">")
-		if part = strings.TrimSpace(part); part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
+	// The parsing itself is in internal/unsubscribe: the headers belong to the
+	// message, not to the way it was fetched, and the IMAP listing reads the
+	// same two values off a different wire.
+	links := unsubscribe.Parse(listUnsub, listUnsubPost)
+	return links.URL, links.Mailto, links.OneClick
 }
 
 // maxUnsubscribeRedirects is how many hops the one-click POST will follow. Some

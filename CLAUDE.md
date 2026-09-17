@@ -78,7 +78,7 @@ backend/
   cmd/test_decrypt/      one-off ops tool, reads the legacy gmail_config document
   internal/api/          the ONLY I/O layer: handlers, routes, middleware, schedulers
   internal/{account,activity,digest,egress,mailbox,mailer,metrics,protect,
-            provider,rules,schedule,snooze}/
+            provider,rules,schedule,snooze,unsubscribe}/
                          pure logic, no I/O, heavily unit-tested
   internal/{ai,billing,gmail,imap}/  outbound clients (Mistral, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
@@ -153,6 +153,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
+| `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
 
 The outbound clients and primitives:
 
@@ -160,7 +161,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | Mistral client. Batching of 8, exponential backoff with jitter honoring `Retry-After`, fast-fail on 4xx |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport, for every route the hosted edition uses. Connect (TLS or STARTTLS, never cleartext), resolve the server's special folders, apply a mutation |
+| `imap` | The IMAP transport, for every route the hosted edition uses. Connect (TLS or STARTTLS, never cleartext), resolve the server's special folders, list a page, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
 | `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (per-user Gmail tokens) and the legacy `gmail_config` read at boot |
@@ -491,6 +492,14 @@ Do not duplicate these into this file. Point at them.
   its headers must be listed in `metadataHeaders` or Gmail returns none at all. Fetches run
   8 at a time and the result keeps the listing order; that order is the mailbox order and
   the page token only makes sense against it.
+- **An IMAP listing must PEEK or it marks the whole inbox read.** A plain
+  `BODY[...]` fetch sets `\Seen` on every message it touches, so a listing without
+  `Peek: true` empties the user's unread count just by rendering the screen, with
+  nothing in the ledger to explain it. `internal/imap/list.go` sets it, and a test
+  reads the flags back OFF THE SERVER after listing rather than trusting the
+  struct it just built. The same fetch asks for the two unsubscribe headers by
+  name rather than for `BODY[HEADER]`, which on marketing mail is routinely
+  larger than the text of the message.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it.
 - **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so

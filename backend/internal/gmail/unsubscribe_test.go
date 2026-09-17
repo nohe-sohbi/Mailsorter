@@ -13,17 +13,6 @@ import (
 	gmailapi "google.golang.org/api/gmail/v1"
 )
 
-func TestSplitAngleList(t *testing.T) {
-	in := "<https://x.com/u>, <mailto:u@x.com>"
-	got := splitAngleList(in)
-	if len(got) != 2 || got[0] != "https://x.com/u" || got[1] != "mailto:u@x.com" {
-		t.Fatalf("splitAngleList parsed %#v", got)
-	}
-	if len(splitAngleList("")) != 0 {
-		t.Fatal("empty input should yield no entries")
-	}
-}
-
 func msg(headers map[string]string) *gmailapi.Message {
 	m := &gmailapi.Message{Payload: &gmailapi.MessagePart{}}
 	for name, value := range headers {
