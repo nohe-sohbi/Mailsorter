@@ -134,7 +134,7 @@ func (h *Handler) archiveBySender(ctx context.Context, gmailClient *gmailapi.Ser
 
 	n := 0
 	for _, e := range emails {
-		if err := h.applyVerb(ctx, gmailClient, mailbox.OnAccount(e.MessageID), "archive", ""); err == nil {
+		if err := h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(e.MessageID), "archive", ""); err == nil {
 			n++
 			h.logActionMeta(ctx, userEmail, e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
 		}

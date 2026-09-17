@@ -29,6 +29,26 @@ import (
 // expired. Previously this logic was copy-pasted across handlers (and missing
 // entirely from sync/labels, which would fail once the access token aged out).
 func (h *Handler) gmailClientFor(ctx context.Context, userEmail string) (*gmailapi.Service, error) {
+	// The guard, and the reason this function still exists separately from
+	// newGmailClient. Most of the app was written when every user was a Gmail
+	// user, and those paths have not been ported. Refusing here means each of
+	// them answers "not on this transport yet" instead of sending an IMAP UID
+	// to Gmail as a message id, which would act on an unrelated message and
+	// journal it as a success. Every path that IS ported opens a session
+	// instead and never comes through here.
+	transport, _, err := h.transportFor(ctx, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	if transport != provider.TransportGmailAPI {
+		return nil, fmt.Errorf("%w: mailbox is reached over %s", errWrongTransport, transport)
+	}
+	return h.newGmailClient(ctx, userEmail)
+}
+
+// newGmailClient builds the client without asking which transport the user is
+// on. Only openSession may call it, because openSession has already asked.
+func (h *Handler) newGmailClient(ctx context.Context, userEmail string) (*gmailapi.Service, error) {
 	token, err := h.getUserToken(ctx, userEmail)
 	if err != nil {
 		return nil, err
@@ -386,12 +406,29 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 // and the background auto-sync scheduler so both behave identically. It returns
 // how many emails were persisted, how many were seen, and how many had a rule
 // applied.
+// syncInbox mirrors the caller's inbox into Mongo, through whichever transport
+// their mailbox is reached by.
+//
+// This is the fork the whole edition split was for. Everything above it (the
+// handler, the auto-sync loop) asks for a sync and gets one; only this function
+// knows there are two ways to perform it.
 func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		return 0, 0, 0, err
 	}
+	defer session.Close()
 
+	if session.Transport == provider.TransportIMAP {
+		// Rules do not run on this half yet, so the count is zero rather than a
+		// number the user cannot trust. See syncInboxIMAP.
+		synced, total, err = h.syncInboxIMAP(ctx, userEmail, session)
+		return synced, total, 0, err
+	}
+	return h.syncInboxGmail(ctx, userEmail, session.gmail)
+}
+
+func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailClient *gmailapi.Service) (synced, total, rulesApplied int, err error) {
 	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 100)
 	if err != nil {
 		return 0, 0, 0, err
@@ -484,20 +521,31 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
+	defer session.Close()
 
-	// The verb vocabulary and its translation to Gmail labels live in
+	// The verb vocabulary and its translation per transport live in
 	// internal/mailbox. Starring was reachable over the batch route but not
 	// here, so the single message path (what the reader and the shortcuts use)
 	// could not express "flag this one"; one vocabulary for both is what fixed
 	// that, and what stops the two from drifting again.
-	err = h.applyVerb(ctx, gmailClient, mailbox.OnAccount(req.MessageID), req.Action, "")
+	//
+	// The reference is built by the session rather than here, because what a
+	// message id MEANS depends on the transport and this handler has no opinion
+	// about that: it holds a string the client sent.
+	err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
+		return
+	}
+	if errors.Is(err, mailbox.ErrNoIMAPEquivalent) {
+		// A capability the connection does not have, not a failure. Saying so
+		// with 501 keeps it apart from "your request was wrong".
+		writeTransportError(w)
 		return
 	}
 
@@ -516,7 +564,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		if action == "trash" {
 			action = "delete"
 		}
-		meta := h.emailIdentity(ctx, gmailClient, userEmail, req.MessageID)
+		meta := h.identityIn(ctx, session, userEmail, req.MessageID)
 		h.logActionMeta(ctx, userEmail, req.MessageID, action, SourceDirect, meta.Subject, meta.From)
 	}
 

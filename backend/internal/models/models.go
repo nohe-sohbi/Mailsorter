@@ -58,16 +58,21 @@ type SettingsUpdate struct {
 }
 
 type Email struct {
-	ID           string    `json:"id" bson:"_id,omitempty"`
-	MessageID    string    `json:"messageId" bson:"messageId"`
-	UserID       string    `json:"userId" bson:"userId"`
-	ThreadID     string    `json:"threadId" bson:"threadId"`
-	From         string    `json:"from" bson:"from"`
-	To           []string  `json:"to" bson:"to"`
-	Subject      string    `json:"subject" bson:"subject"`
-	Body         string    `json:"body" bson:"body"`
-	Snippet      string    `json:"snippet" bson:"snippet"`
-	LabelIDs     []string  `json:"labelIds" bson:"labelIds"`
+	ID        string   `json:"id" bson:"_id,omitempty"`
+	MessageID string   `json:"messageId" bson:"messageId"`
+	UserID    string   `json:"userId" bson:"userId"`
+	ThreadID  string   `json:"threadId" bson:"threadId"`
+	From      string   `json:"from" bson:"from"`
+	To        []string `json:"to" bson:"to"`
+	Subject   string   `json:"subject" bson:"subject"`
+	Body      string   `json:"body" bson:"body"`
+	Snippet   string   `json:"snippet" bson:"snippet"`
+	LabelIDs  []string `json:"labelIds" bson:"labelIds"`
+	// Folder is the mailbox the message lives in, and it is set only on the
+	// IMAP transport, where it is half of the message's identity: a UID means
+	// nothing without the folder it is a UID in. Empty on the Gmail API, whose
+	// message ids name a message on the account.
+	Folder       string    `json:"folder,omitempty" bson:"folder,omitempty"`
 	ReceivedDate time.Time `json:"receivedDate" bson:"receivedDate"`
 	IsRead       bool      `json:"isRead" bson:"isRead"`
 	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.
