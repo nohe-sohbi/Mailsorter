@@ -85,7 +85,7 @@ backend/
   internal/{ai,billing,gmail,imap}/  outbound clients (Mistral, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
 frontend/
-  src/pages/             one file per route (10 routes)
+  src/pages/             one file per route (11 routes)
   src/components/        shared non-route components (Header, EmailReader)
   src/contexts/          EmailContext: the shared inbox cache.
                          InstanceContext: what this deployment is (edition, billing, configured)
@@ -271,7 +271,8 @@ route redirects to `/setup`.
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
 | `/history` | `pages/History.js` | Action ledger + undo |
 | `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist. Redirects away in the `self-hosted` edition, which bills nobody |
-| `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour |
+| `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour, and the way in to `/connect` |
+| `/connect` | `pages/Connect.js` | Connect a mailbox over IMAP. Detects the provider from the address against the catalog the SERVER returned, and shows that route's blockers BEFORE the attempt, because each of them otherwise surfaces as "credentials refused" |
 | `/account` | `pages/Account.js` | Profile, usage, GDPR export and delete |
 | `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config. Edition-aware: the own-project guide (6 steps, including "Publier l'application") self-hosted, the operator one (5 steps) otherwise, plus the reachable providers read from `GET /api/providers` |
 | `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token |
@@ -300,6 +301,12 @@ route redirects to `/setup`.
   so the header drops its pricing entry and `/pricing` redirects instead of
   rendering a page with no offer. The SPA still hardcodes no provider: the connect
   surfaces render whatever `GET /api/providers` returns.
+- **A `Route.Note` in `internal/provider/catalog.go` is USER-FACING COPY.** It reads
+  like a developer note in the source and it is rendered verbatim on `/connect`, so
+  it follows the UI-string rule: French, accented, ASCII punctuation. The same goes
+  for a new `Blocker`: add its French sentence to `BLOCKER_COPY` in `Connect.js` or
+  the screen silently drops it, which is worse than showing nothing, because the
+  blocker is the reason the connection is about to fail.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
   state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`).
 
