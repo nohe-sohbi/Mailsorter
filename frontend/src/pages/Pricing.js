@@ -6,7 +6,9 @@ import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
 import { track } from '../lib/analytics';
 import Spinner from '../ui/Spinner';
-import { Logo, Check, Bolt, Sparkles, Shield, Google } from '../ui/icons';
+import PublicFooter from '../components/PublicFooter';
+import { hasJoinedWaitlist, rememberWaitlistJoin } from '../lib/waitlist';
+import { Logo, Check, Bolt, Sparkles, Shield, Google, Clock } from '../ui/icons';
 import { actionMeta } from '../ui/actions';
 
 const PLANS = [
@@ -36,17 +38,15 @@ const PLANS = [
       'Emails analysés illimités',
       'Tri automatique à chaque synchro',
       'Digest quotidien par email',
-      'Plusieurs comptes Gmail',
+      // Le multi-comptes demande un modèle `account` distinct du userId, qui
+      // n'existe pas (docs/ROADMAP.md, "Reste à brancher"). La ligne reste,
+      // marquée : la vendre sans le dire était la seule ligne fausse du plan.
+      { label: 'Plusieurs comptes Gmail', soon: true },
       'Support prioritaire',
     ],
   },
 ];
 
-
-// Local hint that this browser already signed up, so we show the confirmed
-// state instead of the form. The server is the real record: signing up again
-// from another device is an idempotent upsert, not a duplicate.
-const WAITLIST_KEY = 'mailsorter_pro_waitlist';
 
 function Pricing() {
   const navigate = useNavigate();
@@ -57,7 +57,7 @@ function Pricing() {
   const [activity, setActivity] = useState(null);
   const [upgrading, setUpgrading] = useState(false);
   const [managing, setManaging] = useState(false);
-  const [joined, setJoined] = useState(() => localStorage.getItem(WAITLIST_KEY) === '1');
+  const [joined, setJoined] = useState(hasJoinedWaitlist);
   const [waitlistEmail, setWaitlistEmail] = useState('');
   const [joining, setJoining] = useState(false);
 
@@ -106,7 +106,7 @@ function Pricing() {
       window.location.href = data.url;
     } catch (err) {
       const status = err.response?.status;
-      if (status === 503) toast.error('Le paiement n’est pas encore activé. Réessayez bientôt.');
+      if (status === 503) toast.error("Le paiement n'est pas encore activé. Réessayez bientôt.");
       else if (status === 409) toast.info('Vous êtes déjà abonné à Pro.');
       else toast.error('Impossible de démarrer le paiement. Réessayez.');
       setUpgrading(false);
@@ -121,7 +121,7 @@ function Pricing() {
     } catch (err) {
       const status = err.response?.status;
       if (status === 404) toast.info('Aucun abonnement à gérer pour le moment.');
-      else toast.error('Impossible d’ouvrir le portail de facturation.');
+      else toast.error("Impossible d'ouvrir le portail de facturation.");
       setManaging(false);
     }
   };
@@ -139,12 +139,12 @@ function Pricing() {
       await waitlistService.join(email);
       // Boolean only: the address itself must never reach the analytics.
       track('waitlist_join', { loggedIn });
-      localStorage.setItem(WAITLIST_KEY, '1');
+      rememberWaitlistJoin();
       setJoined(true);
       setWaitlistEmail('');
-      toast.success('C’est noté. On vous écrit dès l’ouverture de Pro. 🚀');
+      toast.success("C'est noté. On vous écrit dès l'ouverture de Pro. 🚀");
     } catch (err) {
-      if (err.response?.status === 400) toast.error('Cette adresse email n’est pas valide.');
+      if (err.response?.status === 400) toast.error("Cette adresse email n'est pas valide.");
       else toast.error('Inscription impossible pour le moment. Réessayez.');
     } finally {
       setJoining(false);
@@ -209,7 +209,7 @@ function Pricing() {
               {isPro && billingOn && (
                 <button onClick={handleManage} disabled={managing} className="btn-secondary mt-4 w-full">
                   {managing ? <Spinner size={16} /> : <Shield size={16} />}
-                  {managing ? 'Redirection…' : 'Gérer mon abonnement'}
+                  {managing ? 'Redirection...' : 'Gérer mon abonnement'}
                 </button>
               )}
             </div>
@@ -257,9 +257,20 @@ function Pricing() {
                 plan.highlight && 'ring-2 ring-brand-500 shadow-card'
               )}
             >
+              {/* Un plan que personne ne peut encore souscrire ne peut pas
+                  être "le plus populaire" : tant que le paiement n'est pas
+                  ouvert, la puce dit ce qui est vrai. */}
               {plan.highlight && (
                 <span className="absolute -top-3 left-7 chip bg-brand-fill text-white shadow-soft">
-                  <Bolt size={13} /> Le plus populaire
+                  {billingOn === false ? (
+                    <>
+                      <Clock size={13} /> Bientôt disponible
+                    </>
+                  ) : (
+                    <>
+                      <Bolt size={13} /> Le plus populaire
+                    </>
+                  )}
                 </span>
               )}
               <h3 className="text-lg font-bold text-ink-900">{plan.name}</h3>
@@ -269,14 +280,26 @@ function Pricing() {
                 <span className="text-sm text-muted">{plan.cadence}</span>
               </div>
               <ul className="mt-6 space-y-3">
-                {plan.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2.5 text-sm text-ink-700">
-                    <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-positive-100 text-positive-600">
-                      <Check size={12} />
-                    </span>
-                    {f}
-                  </li>
-                ))}
+                {plan.features.map((f) => {
+                  const label = typeof f === 'string' ? f : f.label;
+                  const soon = typeof f === 'string' ? false : f.soon;
+                  return (
+                    <li key={label} className="flex items-start gap-2.5 text-sm text-ink-700">
+                      <span
+                        className={cn(
+                          'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full',
+                          soon ? 'bg-caution-100 text-caution-700' : 'bg-positive-100 text-positive-600'
+                        )}
+                      >
+                        {soon ? <Clock size={11} /> : <Check size={12} />}
+                      </span>
+                      <span className={cn('flex flex-wrap items-center gap-2', soon && 'text-muted')}>
+                        {label}
+                        {soon && <span className="chip bg-caution-50 text-caution-700">Bientôt</span>}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
               <div className="mt-7">
                 {plan.highlight ? (
@@ -290,7 +313,7 @@ function Pricing() {
                     billingOn ? (
                       <button onClick={handleManage} disabled={managing} className="btn-primary w-full">
                         {managing ? <Spinner size={18} /> : <Shield size={16} />}
-                        {managing ? 'Redirection…' : 'Gérer mon abonnement'}
+                        {managing ? 'Redirection...' : 'Gérer mon abonnement'}
                       </button>
                     ) : (
                       <button disabled className="btn-primary w-full cursor-default opacity-80">
@@ -301,7 +324,7 @@ function Pricing() {
                     loggedIn ? (
                       <button onClick={handleUpgrade} disabled={upgrading} className="btn-primary w-full">
                         {upgrading ? <Spinner size={18} /> : <Bolt size={16} />}
-                        {upgrading ? 'Redirection…' : 'Passer à Pro'}
+                        {upgrading ? 'Redirection...' : 'Passer à Pro'}
                       </button>
                     ) : (
                       <button onClick={() => navigate('/')} className="btn-primary w-full">
@@ -352,6 +375,8 @@ function Pricing() {
         <p className="mt-10 flex items-center justify-center gap-2 text-center text-xs text-muted">
           <Shield size={14} /> Paiements sécurisés · Données chiffrées · Résiliation en un clic
         </p>
+
+        <PublicFooter />
       </div>
     </div>
   );

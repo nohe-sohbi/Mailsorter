@@ -233,3 +233,27 @@ export const Google = ({ size = 18, className = '' }) => (
     <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3a12 12 0 0 1-4.1 5.6l6.2 5.2C39.9 35.5 44 30.3 44 24c0-1.2-.1-2.4-.4-3.5z" />
   </svg>
 );
+
+// Added for the public surface: the privacy section (Lock), the self-hosting
+// pitch (Server) and the footer's source link (Code).
+export const Lock = make(
+  <>
+    <rect x="4" y="10" width="16" height="11" rx="2" />
+    <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+  </>
+);
+
+export const Server = make(
+  <>
+    <rect x="3" y="4" width="18" height="7" rx="2" />
+    <rect x="3" y="13" width="18" height="7" rx="2" />
+    <path d="M7 7.5h.01M7 16.5h.01" />
+  </>
+);
+
+export const Code = make(
+  <>
+    <path d="m9 17-5-5 5-5" />
+    <path d="m15 7 5 5-5 5" />
+  </>
+);
