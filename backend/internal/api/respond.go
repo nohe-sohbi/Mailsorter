@@ -14,13 +14,21 @@ import (
 // clears the session and restarts OAuth instead of looping on opaque 500s.
 var errReauthRequired = errors.New("gmail authorization expired; re-authentication required")
 
-// writeAuthError maps a getUserToken / gmailClientFor failure to the right
-// status: 401 when the grant is dead (SPA re-runs OAuth), 404 when the account
-// row is gone, 500 for anything else.
+// writeAuthError maps a getUserToken / gmailClientFor / openSession failure to
+// the right status: 401 when the grant is dead (SPA re-runs OAuth), 404 when the
+// account row is gone, 501 when the path has not been ported to the caller's
+// transport, 500 for anything else.
+//
+// The 501 branch is the visible half of the guard in gmailClientFor. Every
+// handler already routes its credential failures through here, so adding the
+// case in one place is what turns "a confusing 500" into "this does not work on
+// an IMAP mailbox yet" across the whole unported surface at once.
 func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errReauthRequired):
 		writeError(w, http.StatusUnauthorized, "Gmail authorization expired. Please reconnect your account.")
+	case errors.Is(err, errWrongTransport):
+		writeTransportError(w)
 	case errors.Is(err, mongo.ErrNoDocuments):
 		writeError(w, http.StatusNotFound, "User not found")
 	default:

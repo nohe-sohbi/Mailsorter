@@ -60,9 +60,11 @@ tested against a real server rather than a mock.
    Perform the mutation through `h.applyVerb` (one verb) or `h.applyMutations` (several in
    one call). Never call `gmailService.ModifyMessage` from a handler and never write a
    Gmail label id there: that knowledge lives in `internal/mailbox` and nowhere else.
-   Both take a `mailbox.Ref`, not a bare id: `mailbox.OnAccount(id)` for a Gmail API id,
-   `mailbox.InFolder(folder, uid)` for an IMAP one. Say which kind you hold; the adapter
-   refuses the other rather than acting on whatever message carries that number.
+   Both take a `mailbox.Mailbox` and a `mailbox.Ref`, not a client and a bare id. On a
+   ported path, open a session and let it build both: `session.Mailbox()` and
+   `session.RefFor(ctx, id)` know the transport, which is the thing a handler holding a
+   string from the client does not. On a Gmail-only path, `h.mailboxOf(client)` and
+   `mailbox.OnAccount(id)`.
 5. **Cheap paths before expensive ones.** Deterministic rules run before the model; the
    shared analysis cache runs before an API call; cache hits and auto-pilot do not burn
    quota. New AI work must justify why it cannot be a rule or a cache hit.
@@ -83,7 +85,7 @@ backend/
   internal/{ai,billing,gmail,imap}/  outbound clients (Mistral, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
 frontend/
-  src/pages/             one file per route (10 routes)
+  src/pages/             one file per route (11 routes)
   src/components/        shared non-route components (Header, EmailReader)
   src/contexts/          EmailContext: the shared inbox cache.
                          InstanceContext: what this deployment is (edition, billing, configured)
@@ -196,6 +198,7 @@ The outbound clients and primitives:
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
 | `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored), read, disconnect. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
+| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport` |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
 | `auto_sync.go` | 30 min per-user background inbox sync |
@@ -268,7 +271,8 @@ route redirects to `/setup`.
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
 | `/history` | `pages/History.js` | Action ledger + undo |
 | `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist. Redirects away in the `self-hosted` edition, which bills nobody |
-| `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour |
+| `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour, and the way in to `/connect` |
+| `/connect` | `pages/Connect.js` | Connect a mailbox over IMAP. Detects the provider from the address against the catalog the SERVER returned, and shows that route's blockers BEFORE the attempt, because each of them otherwise surfaces as "credentials refused" |
 | `/account` | `pages/Account.js` | Profile, usage, GDPR export and delete |
 | `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config. Edition-aware: the own-project guide (6 steps, including "Publier l'application") self-hosted, the operator one (5 steps) otherwise, plus the reachable providers read from `GET /api/providers` |
 | `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token |
@@ -297,6 +301,12 @@ route redirects to `/setup`.
   so the header drops its pricing entry and `/pricing` redirects instead of
   rendering a page with no offer. The SPA still hardcodes no provider: the connect
   surfaces render whatever `GET /api/providers` returns.
+- **A `Route.Note` in `internal/provider/catalog.go` is USER-FACING COPY.** It reads
+  like a developer note in the source and it is rendered verbatim on `/connect`, so
+  it follows the UI-string rule: French, accented, ASCII punctuation. The same goes
+  for a new `Blocker`: add its French sentence to `BLOCKER_COPY` in `Connect.js` or
+  the screen silently drops it, which is worse than showing nothing, because the
+  blocker is the reason the connection is about to fail.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
   state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`).
 
@@ -542,6 +552,19 @@ Do not duplicate these into this file. Point at them.
   `parseUID` refuses anything that is not entirely digits for the same reason: a
   Gmail id like `18c8c1f2a3b4d5e6` starts with digits, and a parser that stopped
   at the first letter would act on UID 18.
+- **A user's transport is resolved per request, and NEVER guessed.** `transportFor`
+  reads `mail_accounts`: a row means IMAP, `mongo.ErrNoDocuments` means the Google
+  OAuth path, and any OTHER error fails the request. That third branch is the whole
+  point. Falling back to Gmail on a datastore hiccup would silently turn an IMAP user
+  into a Gmail user and send their UIDs to Gmail as message ids. A test pins it by
+  pointing Mongo at a dead address and asserting an error rather than a transport.
+- **Most of the app is still Gmail-only, and `gmailClientFor` is the guard that
+  makes that safe.** It refuses a user whose mailbox is reached another way, so every
+  unported path answers 501 ("pas encore disponible sur une boite IMAP") through
+  `writeAuthError` instead of acting on the wrong message. Ported so far: `syncInbox`
+  and `EmailAction`. Everything else (rules, AI, snooze, unsubscribe, attachments,
+  labels) refuses. When porting one, open a session instead of calling
+  `gmailClientFor`, and delete nothing from the guard.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { protectService, accountService, authService } from '../services/api';
+import { protectService, accountService, authService, mailboxService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { track } from '../lib/analytics';
-import { Settings as SettingsIcon, Shield, X, Mail, Refresh, Google, Search } from '../ui/icons';
+import { Link } from 'react-router-dom';
+import { Settings as SettingsIcon, Shield, X, Mail, Refresh, Google, Search, ChevronRight } from '../ui/icons';
 import Modal from '../ui/Modal';
 import Spinner from '../ui/Spinner';
 
@@ -561,7 +562,65 @@ function Settings() {
       )}
 
       <GmailAccount />
+      <MailboxAccount />
       <ProtectedSenders />
+    </div>
+  );
+}
+
+// MailboxAccount is the way in to /connect. It lives here, beside the Gmail
+// account card, because it is the same question asked differently: how does
+// Mailsorter reach your mail. A user of the hosted service has no other path,
+// Google offering them none.
+function MailboxAccount() {
+  const [mailbox, setMailbox] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    mailboxService
+      .get()
+      .then(({ data }) => {
+        if (!cancelled) setMailbox(data.mailbox || null);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className="card animate-fade-up mt-6 p-7">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50">
+          <Mail size={18} className="text-brand-600" />
+        </span>
+        <h2 className="text-lg font-bold text-ink-900">Boîte mail</h2>
+      </div>
+      <p className="mb-5 text-sm text-muted">
+        Branchez une boîte en IMAP avec un mot de passe d'application. C'est le chemin des
+        fournisseurs autres que Gmail, et le seul sur le service en ligne.
+      </p>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-muted">
+          <Spinner size={16} /> Lecture
+        </div>
+      ) : mailbox ? (
+        <div className="rounded-xl border border-hairline/70 bg-ink-50/60 px-4 py-3">
+          <p className="text-xs font-bold uppercase tracking-wider text-ink-500">Branchée</p>
+          <p className="mt-1 break-all font-mono text-sm text-ink-800">{mailbox.username}</p>
+        </div>
+      ) : (
+        <p className="text-sm text-muted">Aucune boîte branchée pour l'instant.</p>
+      )}
+
+      <Link to="/connect" className="btn-secondary mt-6">
+        {mailbox ? 'Gérer la boîte' : 'Brancher une boîte'} <ChevronRight size={16} />
+      </Link>
     </div>
   );
 }

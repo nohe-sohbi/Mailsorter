@@ -84,7 +84,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 	markRead := r.URL.Query().Get("markRead") == "1"
 	labelIDs := msg.LabelIds
 	if markRead && !mailbox.GmailIsRead(labelIDs) {
-		if err := h.applyVerb(ctx, gmailClient, mailbox.OnAccount(messageID), "read", ""); err == nil {
+		if err := h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(messageID), "read", ""); err == nil {
 			labelIDs = mailbox.GmailAfter(labelIDs, mailbox.Mutation{Action: mailbox.ActionMarkRead})
 			// Keep the local cache honest so the next list render does not show
 			// the message as unread again.

@@ -744,7 +744,7 @@ func (h *Handler) applyVerdict(ctx context.Context, gmailClient *gmailapi.Servic
 		}
 		labelID = resolved
 	}
-	return labelID, h.applyVerb(ctx, gmailClient, mailbox.OnAccount(messageID), action, labelID)
+	return labelID, h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(messageID), action, labelID)
 }
 
 // senderOf returns the stored From of a message, or "" if unknown. Used to

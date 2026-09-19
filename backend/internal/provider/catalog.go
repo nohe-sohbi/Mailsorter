@@ -69,8 +69,8 @@ var catalog = []Provider{
 				SendPerDay:     500,
 				MaxConnections: 0,
 				Blockers:       []Blocker{BlockerOwnCloudProject},
-				Note: "Pleine fidelite. L'utilisateur cree son projet Google Cloud, ce qui le place dans " +
-					"l'exemption d'usage personnel: aucune verification, aucun audit. Il DOIT publier " +
+				Note: "Pleine fidélité. L'utilisateur crée son projet Google Cloud, ce qui le place dans " +
+					"l'exemption d'usage personnel: aucune vérification, aucun audit. Il DOIT publier " +
 					"l'application, sans quoi l'autorisation expire tous les sept jours.",
 			},
 			{
@@ -93,10 +93,10 @@ var catalog = []Provider{
 					BlockerAdvancedProtection,
 					BlockerDatacenterIP,
 				},
-				Note: "Aucune surface de conformite: pas de client OAuth, donc rien a verifier et aucun " +
-					"plafond. Les limites reelles sont ailleurs: environ 2,5 Go par jour et par compte, " +
-					"partages avec le telephone et l'ordinateur de l'utilisateur, donc ne jamais " +
-					"telecharger le corps d'un message sans qu'une regle le demande.",
+				Note: "Aucune surface de conformité: pas de client OAuth, donc rien à vérifier et aucun " +
+					"plafond. Les limites réelles sont ailleurs: environ 2,5 Go par jour et par compte, " +
+					"partagés avec le téléphone et l'ordinateur de l'utilisateur, donc ne jamais " +
+					"télécharger le corps d'un message sans qu'une règle le demande.",
 			},
 		},
 	},
@@ -113,10 +113,10 @@ var catalog = []Provider{
 				Caps:       CapLabels | CapProviderSearch | CapStableIDs | CapThreads | CapServerSend | CapPush,
 				SendPerDay: 2000,
 				Blockers:   []Blocker{BlockerOwnCloudProject, BlockerAdminPolicy},
-				Note: "La meilleure route du catalogue pour une entreprise: en application interne a " +
-					"l'organisation, Google exempte de la verification ET du plafond, sans ecran " +
-					"d'avertissement. L'organisation possede le projet Cloud, ce qui suppose " +
-					"l'auto-hebergement.",
+				Note: "La meilleure route du catalogue pour une entreprise: en application interne à " +
+					"l'organisation, Google exempte de la vérification ET du plafond, sans écran " +
+					"d'avertissement. L'organisation possède le projet Cloud, ce qui suppose " +
+					"l'auto-hébergement.",
 			},
 			{
 				Transport:      TransportIMAP,
@@ -134,9 +134,9 @@ var catalog = []Provider{
 					BlockerDatacenterIP,
 				},
 				Note: "Peu fiable en entreprise: l'administrateur dispose de trois interrupteurs " +
-					"independants, dont un qui restreint l'IMAP aux clients OAuth approuves et exclut " +
-					"donc les mots de passe d'application par construction. Detecter les trois " +
-					"separement plutot que d'afficher une erreur d'authentification.",
+					"indépendants, dont un qui restreint l'IMAP aux clients OAuth approuvés et exclut " +
+					"donc les mots de passe d'application par construction. Détecter les trois " +
+					"séparément plutôt que d'afficher une erreur d'authentification.",
 			},
 		},
 	},
@@ -154,10 +154,10 @@ var catalog = []Provider{
 				// becomes a single move.
 				Caps:           CapStableIDs | CapThreads | CapServerSend | CapPush,
 				MaxConnections: 4,
-				Note: "Le seul fournisseur ou l'edition hebergee garde l'ergonomie actuelle: un bouton, " +
-					"un jeton revocable, aucun mot de passe stocke, et surtout AUCUN plafond " +
-					"d'utilisateurs sur une application non verifiee. L'envoi passe par Graph, jamais " +
-					"par SMTP: Microsoft a supprime l'authentification simple sur IMAP et POP en " +
+				Note: "Le seul fournisseur où l'édition hébergée garde l'ergonomie actuelle: un bouton, " +
+					"un jeton révocable, aucun mot de passe stocké, et surtout AUCUN plafond " +
+					"d'utilisateurs sur une application non vérifiée. L'envoi passe par Graph, jamais " +
+					"par SMTP: Microsoft a supprimé l'authentification simple sur IMAP et POP en " +
 					"septembre 2024, il n'existe donc pas de route par mot de passe d'application.",
 			},
 		},
@@ -175,8 +175,8 @@ var catalog = []Provider{
 				Blockers:       []Blocker{BlockerAdminConsent},
 				Note: "Les permissions de courrier ne sont pas en consentement libre dans un locataire " +
 					"d'entreprise: un administrateur doit approuver l'application pour tout le " +
-					"locataire. C'est une etape humaine par client, pas une barriere Microsoft, et " +
-					"il n'existe aucun equivalent payant de l'audit Google.",
+					"locataire. C'est une étape humaine par client, pas une barrière Microsoft, et " +
+					"il n'existe aucun équivalent payant de l'audit Google.",
 			},
 		},
 	},
@@ -192,10 +192,10 @@ var catalog = []Provider{
 				IMAP:      &Endpoint{Host: "imap.orange.fr", Port: 993, TLS: TLSImplicit},
 				SMTP:      &Endpoint{Host: "smtp.orange.fr", Port: 465, TLS: TLSImplicit},
 				Caps:      CapServerSend,
-				Note: "La plus grande boite non-Gmail de France, et aucune approbation a demander. " +
-					"Orange appelle son identifiant une cle d'acces, generee dans l'espace securite du " +
-					"compte: ce n'est pas le mot de passe du compte, et c'est la premiere source de " +
-					"confusion a l'inscription.",
+				Note: "La plus grande boîte non-Gmail de France, et aucune approbation à demander. " +
+					"Orange appelle son identifiant une clé d'accès, générée dans l'espace sécurité du " +
+					"compte: ce n'est pas le mot de passe du compte, et c'est la première source de " +
+					"confusion à l'inscription.",
 			},
 		},
 	},
@@ -228,9 +228,9 @@ var catalog = []Provider{
 				SMTP:      &Endpoint{Host: "smtp.mail.me.com", Port: 587, TLS: TLSSTARTTLS},
 				Caps:      CapServerSend,
 				Blockers:  []Blocker{BlockerTwoFactorRequired},
-				Note: "Apple n'offre ni OAuth ni API publique. Le mot de passe dedie n'est affiche qu'une " +
-					"seule fois a sa creation, ce qui en fait la pire inscription du catalogue: " +
-					"prevoir de le dire avant, pas apres.",
+				Note: "Apple n'offre ni OAuth ni API publique. Le mot de passe dédié n'est affiché qu'une " +
+					"seule fois à sa création, ce qui en fait la pire inscription du catalogue: " +
+					"prévoir de le dire avant, pas après.",
 			},
 		},
 	},
@@ -277,8 +277,8 @@ var catalog = []Provider{
 				Editions:  bothEditions,
 				Caps:      CapServerSend,
 				Blockers:  []Blocker{BlockerPaidPlanRequired, BlockerTwoFactorRequired},
-				Note: "Zoho a retire l'IMAP aux nouveaux comptes gratuits. Les comptes payants le " +
-					"gardent, ce qui preselectionne des utilisateurs qui paient deja pour leur courrier.",
+				Note: "Zoho a retiré l'IMAP aux nouveaux comptes gratuits. Les comptes payants le " +
+					"gardent, ce qui présélectionne des utilisateurs qui paient déjà pour leur courrier.",
 			},
 		},
 	},
@@ -354,9 +354,9 @@ var catalog = []Provider{
 				SMTP:     &Endpoint{Host: "127.0.0.1", Port: 1025, TLS: TLSSTARTTLS},
 				Caps:     CapServerSend,
 				Blockers: []Blocker{BlockerLocalOnly, BlockerPaidPlanRequired},
-				Note: "Le seul fournisseur que l'edition hebergee ne pourra jamais servir, et la " +
-					"meilleure illustration de ce que l'auto-hebergement debloque: Mailsorter tourne " +
-					"sur la machine ou tourne Bridge, donc il voit une boite que personne d'autre ne " +
+				Note: "Le seul fournisseur que l'édition hébergée ne pourra jamais servir, et la " +
+					"meilleure illustration de ce que l'auto-hébergement débloque: Mailsorter tourne " +
+					"sur la machine où tourne Bridge, donc il voit une boîte que personne d'autre ne " +
 					"peut voir.",
 			},
 		},
@@ -370,9 +370,9 @@ var catalog = []Provider{
 				Auth:      AuthPassword,
 				Editions:  bothEditions,
 				Caps:      CapServerSend,
-				Note: "Le filet: tout serveur IMAP, y compris auto-heberge. Les reglages sont resolus " +
+				Note: "Le filet: tout serveur IMAP, y compris auto-hébergé. Les réglages sont résolus " +
 					"par les enregistrements SRV du domaine puis par la base de configuration " +
-					"Mozilla, et l'utilisateur peut toujours les saisir a la main.",
+					"Mozilla, et l'utilisateur peut toujours les saisir à la main.",
 			},
 		},
 	},

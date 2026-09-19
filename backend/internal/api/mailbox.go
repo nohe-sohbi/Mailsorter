@@ -69,16 +69,31 @@ func (h *Handler) mailboxOf(client *gmailapi.Service) mailbox.Mailbox {
 // handler that acts on a message. Resolving the verb here means an unsupported
 // action is refused once, in a typed way, instead of falling through a switch
 // default in each of the places that used to have one.
-func (h *Handler) applyVerb(ctx context.Context, client *gmailapi.Service, ref mailbox.Ref, verb, labelID string) error {
+// It takes a Mailbox rather than a Gmail client so the same bridge serves both
+// transports: a Gmail-only path passes h.mailboxOf(client), and a path that has
+// been ported passes session.Mailbox(). One function, so a verb cannot mean one
+// thing on one transport and something else on the other.
+func (h *Handler) applyVerb(ctx context.Context, mb mailbox.Mailbox, ref mailbox.Ref, verb, labelID string) error {
 	action, err := mailbox.Parse(verb)
 	if err != nil {
 		return err
 	}
-	return h.mailboxOf(client).Apply(ctx, ref, mailbox.Mutation{Action: action, LabelID: labelID})
+	return mb.Apply(ctx, ref, mailbox.Mutation{Action: action, LabelID: labelID})
 }
 
 // applyMutations performs a compound act in one call. Used where the intent is
 // several verbs at once rather than a verb the API accepted.
-func (h *Handler) applyMutations(ctx context.Context, client *gmailapi.Service, ref mailbox.Ref, muts ...mailbox.Mutation) error {
-	return gmailMailbox{svc: h.gmailService, client: client}.ApplyAll(ctx, ref, muts...)
+// Compound acts are folded into one call where the transport allows it (the
+// Gmail API does), and run in order where it does not (IMAP, where a flag
+// change and a move are different commands).
+func (h *Handler) applyMutations(ctx context.Context, mb mailbox.Mailbox, ref mailbox.Ref, muts ...mailbox.Mutation) error {
+	if gm, ok := mb.(gmailMailbox); ok {
+		return gm.ApplyAll(ctx, ref, muts...)
+	}
+	for _, m := range muts {
+		if err := mb.Apply(ctx, ref, m); err != nil {
+			return err
+		}
+	}
+	return nil
 }

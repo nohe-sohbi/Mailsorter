@@ -7,6 +7,7 @@ import Settings from './pages/Settings';
 import Account from './pages/Account';
 import Rules from './pages/Rules';
 import Snoozed from './pages/Snoozed';
+import Connect from './pages/Connect';
 import History from './pages/History';
 import Pricing from './pages/Pricing';
 import AuthCallback from './pages/AuthCallback';
@@ -123,6 +124,10 @@ function App() {
                   <Route path="/snoozed" element={guard(<Snoozed />)} />
                   <Route path="/history" element={guard(<History />)} />
                   <Route path="/settings" element={guard(<Settings />)} />
+                  {/* Brancher une boite par IMAP. Garde comme les autres: on
+                      branche une boite SUR un compte, donc il faut deja etre
+                      connecte a Mailsorter. */}
+                  <Route path="/connect" element={guard(<Connect />)} />
                   <Route path="/account" element={guard(<Account />)} />
                   {/* A self-hosted instance bills nobody, so there is no pricing
                       page to land on: the route redirects rather than rendering
