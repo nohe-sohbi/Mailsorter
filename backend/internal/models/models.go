@@ -122,7 +122,15 @@ type GmailConfig struct {
 // before the visitor has any account.
 type InstanceStatus struct {
 	IsConfigured bool `json:"isConfigured"`
-	BillingOn    bool `json:"billingOn"`
+	// MailboxSignIn says whether this instance can sign someone in with an
+	// address and an app password. It is the SECOND door, and the SPA needs it
+	// at boot for the same reason it needs IsConfigured: an instance with no
+	// Google credentials is not unusable any more, it is an instance where the
+	// only way in is a mailbox. Gating the whole app on IsConfigured alone sent
+	// every hosted visitor to a setup screen telling them to create a Google
+	// Cloud project, which that edition can never use.
+	MailboxSignIn bool `json:"mailboxSignIn"`
+	BillingOn     bool `json:"billingOn"`
 	// Edition is "self-hosted" or "hosted". The SPA needs it at boot, before
 	// any login, because it decides which mailbox providers exist and whether
 	// there is anything to bill at all. It is the one place the frontend learns

@@ -159,6 +159,18 @@ function ConfidenceRing({ value = 0, color = 'rgb(var(--brand-600))' }) {
   );
 }
 
+// The display name out of a From header.
+//
+// The quotes are the part that is easy to forget: RFC 5322 wraps a display name
+// in them as soon as it contains anything special, and the IMAP listing writes
+// that form for every named sender, so "Acme News" rendered with its quotes and
+// the avatar letter was a quotation mark. EmailReader, Snoozed and History each
+// strip them already; this file was the one that did not.
+function senderLabel(from) {
+  if (!from) return '';
+  return from.split('<')[0].replace(/"/g, '').trim() || from;
+}
+
 const STAT_CARDS = [
   { key: 'inboxCount', label: 'Boîte de réception', tone: 'text-brand-600', Icon: InboxIcon, query: DEFAULT_QUERY },
   { key: 'unreadCount', label: 'Non lus', tone: 'text-caution-700', Icon: Mail, query: 'in:inbox is:unread' },
@@ -172,7 +184,7 @@ function Inbox() {
   const confirm = useConfirm();
   const {
     emails, senders, subscriptions, suggestions, stats, pagination, error, activeQuery,
-    loading, loadingMore, fetchData, loadMoreEmails, removeEmails, patchEmail,
+    loading, loadingMore, errorRetryable, fetchData, loadMoreEmails, removeEmails, patchEmail,
     removeSuggestion, removeSuggestions, restoreSuggestions, markUnsubscribed,
   } = useEmails();
 
@@ -1303,7 +1315,7 @@ function Inbox() {
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold text-ink-900">{subject || '(Sans sujet)'}</div>
                     <div className="truncate text-xs text-muted">
-                      <span>{from?.split('<')[0]?.trim() || from || 'Expéditeur inconnu'}</span>
+                      <span>{senderLabel(from) || 'Expéditeur inconnu'}</span>
                       {suggestion.reasoning ? ` · ${suggestion.reasoning}` : ''}
                     </div>
                   </div>
@@ -1408,11 +1420,25 @@ function Inbox() {
                 className="flex flex-wrap items-center gap-3 border-b border-hairline bg-danger-50 px-4 py-2.5"
               >
                 <span className="flex-1 text-sm text-danger-700">
-                  Actualisation impossible : {error} Les emails affichés datent de la dernière synchronisation réussie.
+                  {errorRetryable
+                    ? `Actualisation impossible : ${error} Les emails affichés datent de la dernière synchronisation réussie.`
+                    : error}
                 </span>
-                <button onClick={() => fetchData({ forceRefresh: true, sync: true })} className="btn-secondary btn-sm">
-                  Réessayer
-                </button>
+                {errorRetryable ? (
+                  <button onClick={() => fetchData({ forceRefresh: true, sync: true })} className="btn-secondary btn-sm">
+                    Réessayer
+                  </button>
+                ) : (
+                  /* Retrying is the one thing that cannot help here: the filter does
+                     not exist on this mailbox. Getting back to one that works is what
+                     the user actually needs. */
+                  <button
+                    onClick={() => { setSearchQuery(''); runQuery(DEFAULT_QUERY); }}
+                    className="btn-secondary btn-sm"
+                  >
+                    Revenir à la boîte
+                  </button>
+                )}
               </div>
             )}
 
@@ -1460,7 +1486,7 @@ function Inbox() {
             ) : (
               <ul className="divide-y divide-[rgb(var(--hairline))]">
                 {emails.map((email, idx) => {
-                  const name = email.from?.split('<')[0]?.trim() || email.from || '?';
+                  const name = senderLabel(email.from) || '?';
                   const isActive = selectedEmail?.messageId === email.messageId;
                   const isChecked = selectedEmails.includes(email.messageId);
                   const isFocused = idx === focusedIndex;

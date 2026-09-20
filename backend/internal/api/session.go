@@ -147,7 +147,7 @@ func (s *mailSession) RefFor(ctx context.Context, messageID string) mailbox.Ref 
 // transport yet.
 func writeTransportError(w http.ResponseWriter) {
 	writeError(w, http.StatusNotImplemented,
-		"Cette action n'est pas encore disponible sur une boite branchee en IMAP.")
+		"Cette action n'est pas encore disponible sur une boîte branchée en IMAP.")
 }
 
 // syncInboxIMAP is the IMAP half of syncInbox: read a page of the inbox and

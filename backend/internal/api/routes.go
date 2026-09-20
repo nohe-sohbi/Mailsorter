@@ -16,6 +16,10 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// Auth routes
 	r.HandleFunc("/api/auth/url", h.GetAuthURL).Methods("GET")
 	r.HandleFunc("/api/auth/callback", h.HandleAuthCallback).Methods("GET")
+	// Signing in with a mailbox, which is also how an account is created. Public
+	// by the /api/auth/ prefix, and the only public route that takes a
+	// credential, so it carries a throttle of its own: see auth_mailbox.go.
+	r.HandleFunc("/api/auth/mailbox", h.SignInWithMailbox).Methods("POST")
 
 	// Email routes
 	r.HandleFunc("/api/emails", h.GetEmails).Methods("GET")

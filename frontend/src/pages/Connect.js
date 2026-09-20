@@ -4,7 +4,8 @@ import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
 import Spinner from '../ui/Spinner';
-import { Mail, Shield, Check, Alert, Refresh, Trash } from '../ui/icons';
+import { Mail, Shield, Check, Refresh, Trash } from '../ui/icons';
+import { detectProvider, ProviderBriefing } from '../components/MailboxBriefing';
 
 // Connecting a mailbox over IMAP.
 //
@@ -17,56 +18,10 @@ import { Mail, Shield, Check, Alert, Refresh, Trash } from '../ui/icons';
 // The password asked for is not an account password: it is an app password,
 // revocable and limited to mail. The copy says so because it is the first
 // question anyone asked for one has.
-
-// BLOCKER_COPY translates the catalog's blocker vocabulary. These are
-// enumeration values, not providers: writing them out here does not recreate
-// the list the server owns.
 //
-// Showing them BEFORE the attempt is the whole point. Every one of these
-// otherwise surfaces as "credentials refused", and the user goes off to
-// regenerate a password that was working fine.
-const BLOCKER_COPY = {
-  'two-factor-required':
-    "La validation en deux étapes doit être activée sur votre compte avant de pouvoir créer un mot de passe d'application.",
-  'advanced-protection':
-    "Un compte inscrit au programme Protection Avancée ne peut pas créer de mot de passe d'application. Une double authentification par clé de sécurité seule produit le même blocage.",
-  'admin-policy':
-    "L'administrateur de votre organisation peut avoir désactivé cet accès. Dans ce cas rien de ce que vous ferez ici ne débloquera la situation.",
-  'admin-consent': "Un administrateur doit approuver l'application pour votre organisation avant votre première connexion.",
-  'paid-plan-required': "Ce fournisseur réserve l'accès IMAP à ses offres payantes.",
-  'local-only': "Ce fournisseur n'est joignable que depuis la machine où vous faites tourner Mailsorter.",
-  'own-cloud-project': "Ce chemin demande votre propre projet Google Cloud.",
-  'datacenter-ip':
-    "Ce fournisseur note les connexions selon leur origine et refuse parfois celles qui viennent d'un hébergeur. Si la connexion échoue sans raison visible, c'est la première piste.",
-};
-
-// CAP_COPY names what a route can do, so the user learns what they give up
-// before connecting rather than discovering it in use.
-const CAP_COPY = {
-  labels: 'Étiquettes',
-  providerSearch: 'Recherche côté serveur',
-  threads: 'Conversations',
-  send: 'Envoi',
-};
-
-function normalizeDomain(address) {
-  const at = address.lastIndexOf('@');
-  if (at < 0 || at === address.length - 1) return '';
-  return address.slice(at + 1).trim().toLowerCase();
-}
-
-// detectProvider does client-side what provider.Detect does server-side, over
-// the same catalog. It is an aid while typing, not a decision: the server
-// resolves again on connect and its answer is the one that counts.
-function detectProvider(providers, address) {
-  const domain = normalizeDomain(address);
-  if (!domain) return null;
-  const match = providers.find((p) => (p.domains || []).includes(domain));
-  if (match) return match;
-  // The catalog always ends with a generic IMAP entry, which is a valid answer
-  // rather than a failure.
-  return providers.find((p) => !(p.domains || []).length) || null;
-}
+// The provider catalog copy (blockers, capabilities, the briefing panel) is
+// shared with the login screen, which asks the same question to sign someone
+// in: see components/MailboxBriefing.js.
 
 function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
   return (
@@ -102,63 +57,6 @@ function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
         Déconnecter efface le mot de passe enregistré. C'est aussi la façon de retirer l'accès de
         Mailsorter sans passer par votre fournisseur. Votre boîte n'est pas touchée.
       </p>
-    </div>
-  );
-}
-
-function ProviderBriefing({ provider }) {
-  const route = provider?.routes?.[0];
-  if (!route) return null;
-
-  const blockers = (route.blockers || []).filter((b) => BLOCKER_COPY[b]);
-  const caps = Object.entries(CAP_COPY).filter(([key]) => route.capabilities?.[key]);
-  const missing = Object.entries(CAP_COPY).filter(([key]) => !route.capabilities?.[key]);
-
-  return (
-    <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-6">
-      <div className="flex items-center gap-2">
-        <span className="chip bg-brand-50 text-brand-700">{provider.name}</span>
-        {route.autodiscover ? (
-          <span className="text-xs text-muted">Réglages détectés à la connexion</span>
-        ) : (
-          route.imap && (
-            <span className="font-mono text-xs text-muted">
-              {route.imap.host}:{route.imap.port}
-            </span>
-          )
-        )}
-      </div>
-
-      {route.note && <p className="mt-3 text-sm leading-relaxed text-ink-600">{route.note}</p>}
-
-      {blockers.length > 0 && (
-        <ul className="mt-4 space-y-2.5">
-          {blockers.map((b) => (
-            <li key={b} className="flex gap-2.5">
-              <Alert size={15} className="mt-0.5 shrink-0 text-caution-600" />
-              <span className="text-xs leading-relaxed text-ink-600">{BLOCKER_COPY[b]}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {caps.length > 0 && (
-        <div className="mt-4 border-t border-hairline/70 pt-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-500">Disponible</p>
-          <ul className="mt-2 flex flex-wrap gap-1.5">
-            {caps.map(([key, label]) => (
-              <li key={key} className="chip bg-positive-50 text-positive-700">
-                {label}
-              </li>
-            ))}
-          </ul>
-          {missing.length > 0 && (
-            <p className="mt-3 text-xs leading-relaxed text-muted">
-              Pas sur cette boîte : {missing.map(([, label]) => label.toLowerCase()).join(', ')}.
-            </p>
-          )}
-        </div>
-      )}
     </div>
   );
 }

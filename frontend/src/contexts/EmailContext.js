@@ -16,6 +16,15 @@ export function EmailProvider({ children }) {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  // Whether retrying the same call could ever succeed. A 501 means the feature
+  // does not exist on this user's transport, so a "Réessayer" button would send
+  // them back to a filter that can never work.
+  const [errorRetryable, setErrorRetryable] = useState(true);
+
+  const reportError = useCallback((err) => {
+    setError(errorMessage(err));
+    setErrorRetryable(err?.response?.status !== 501);
+  }, []);
   // The query the emails on screen actually came from. "Charger plus" and any
   // refresh must reuse THIS, not whatever is currently typed in the search box:
   // paging with a half-typed query silently mixed two different result sets.
@@ -64,6 +73,7 @@ export function EmailProvider({ children }) {
       setActiveQuery(query);
       setLoading(true);
       setError('');
+      setErrorRetryable(true);
 
       try {
         const now = Date.now();
@@ -103,7 +113,7 @@ export function EmailProvider({ children }) {
         // it the screen falls back to an empty list, which the inbox used to
         // celebrate as "Inbox Zero atteint 🎉", the exact opposite of the truth.
         if (emailsRes.status === 'rejected') {
-          setError(errorMessage(emailsRes.reason));
+          reportError(emailsRes.reason);
           setLoading(false);
           return { emails, senders, suggestions, stats: newStats };
         }
@@ -136,13 +146,13 @@ export function EmailProvider({ children }) {
 
         return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats };
       } catch (err) {
-        if (!isStale()) setError(errorMessage(err));
+        if (!isStale()) reportError(err);
         return { emails, senders, suggestions, stats };
       } finally {
         if (!isStale()) setLoading(false);
       }
     },
-    [emails, senders, suggestions, stats, isCacheValid]
+    [emails, senders, suggestions, stats, isCacheValid, reportError]
   );
 
   const loadMoreEmails = useCallback(async () => {
@@ -176,11 +186,11 @@ export function EmailProvider({ children }) {
         });
       }
     } catch (err) {
-      setError(errorMessage(err));
+      reportError(err);
     } finally {
       setLoadingMore(false);
     }
-  }, [pagination.nextPageToken, loadingMore]);
+  }, [pagination.nextPageToken, loadingMore, reportError]);
 
   // Optimistic removal: a triaged email must leave the list immediately, or
   // burst keyboard triage (j, e, j, e…) works against a list that never moves.
@@ -231,6 +241,7 @@ export function EmailProvider({ children }) {
     loadingMore,
     error,
     setError,
+    errorRetryable,
     activeQuery,
     fetchData,
     loadMoreEmails,
@@ -250,13 +261,23 @@ export function EmailProvider({ children }) {
 // French-speaking user can act on rather than a raw googleapi string.
 function errorMessage(err) {
   const status = err?.response?.status;
+  const raw = err?.response?.data;
+  // writeError sends { error, status }; older routes send a bare string.
+  const serverSaid = (typeof raw === 'string' ? raw : raw?.error)?.trim?.() || '';
+
   if (status === 429) return 'Trop de requêtes vers Gmail. Patientez quelques instants.';
   if (status === 402) return 'Quota mensuel atteint.';
   if (status === 401) return 'Session expirée. Reconnectez-vous.';
+  // 501 is checked BEFORE the 5xx catch-all, and it is the one 5xx whose message
+  // must reach the user verbatim. It means the feature does not exist on their
+  // transport yet, so "réessayez" would send them back to a button that can
+  // never work, and the server's sentence names the filter that is missing.
+  if (status === 501) {
+    return serverSaid || "Cette action n'est pas encore disponible sur cette boîte.";
+  }
   if (status >= 500 || status === 502) return 'Gmail est momentanément injoignable. Réessayez.';
   if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
-  const raw = err?.response?.data;
-  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (serverSaid) return serverSaid;
   return err?.message || 'Une erreur inattendue est survenue.';
 }
 

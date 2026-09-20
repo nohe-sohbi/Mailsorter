@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +37,103 @@ import (
 // waiting on the other end of it.
 const connectTimeout = 30 * time.Second
 
+// The three ways a connect attempt fails, as identities rather than as strings,
+// so the authenticated route and the public sign-in map them to the same
+// statuses without either one restating the mapping.
+var (
+	errMailboxNoRoute     = errors.New("api: this address has no IMAP route in this edition")
+	errMailboxRejected    = errors.New("api: the provider refused these credentials")
+	errMailboxUnreachable = errors.New("api: the provider could not be reached")
+)
+
+// connectAndStore proves the credentials against the real server, then stores
+// the connection under userEmail.
+//
+// Both callers go through here, and that is the point: the sealing and the
+// upsert are one piece of code, so a change to how a credential is kept cannot
+// apply to one entry point and not the other.
+func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, password string) (models.MailAccount, error) {
+	// Resolved, not received. Detect always answers (it falls back to the
+	// generic IMAP entry), so the failure below is about the EDITION rather
+	// than about an unknown provider.
+	p := provider.Detect(address)
+	route, err := provider.Pick(p.Key, Edition)
+	if err != nil || route.IMAP == nil {
+		return models.MailAccount{}, errMailboxNoRoute
+	}
+
+	client, err := imap.Connect(ctx, imap.Credentials{
+		Endpoint: *route.IMAP,
+		Username: address,
+		Password: password,
+	})
+	if err != nil {
+		// A rejected password is the user's to fix and says so; anything else is
+		// the server or the provider being unreachable, and saying "wrong
+		// password" there would send them to regenerate a perfectly good one.
+		if errors.Is(err, imap.ErrAuth) {
+			return models.MailAccount{}, errMailboxRejected
+		}
+		return models.MailAccount{}, fmt.Errorf("%w: %v", errMailboxUnreachable, err)
+	}
+	client.Close()
+
+	sealed, err := h.sealSecret(password)
+	if err != nil {
+		return models.MailAccount{}, fmt.Errorf("seal mailbox secret: %w", err)
+	}
+
+	now := time.Now()
+	account := models.MailAccount{
+		UserID:    userEmail,
+		Provider:  p.Key,
+		Transport: string(route.Transport),
+		Username:  address,
+		Host:      route.IMAP.Host,
+		Port:      route.IMAP.Port,
+		TLS:       string(route.IMAP.TLS),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if _, err := h.db.MailAccounts().UpdateOne(ctx,
+		bson.M{"userId": userEmail},
+		bson.M{
+			"$set": bson.M{
+				"provider":  account.Provider,
+				"transport": account.Transport,
+				"username":  account.Username,
+				"secret":    sealed,
+				"host":      account.Host,
+				"port":      account.Port,
+				"tls":       account.TLS,
+				"updatedAt": now,
+			},
+			"$setOnInsert": bson.M{"userId": userEmail, "createdAt": now},
+		},
+		options.Update().SetUpsert(true),
+	); err != nil {
+		return models.MailAccount{}, fmt.Errorf("store mail account: %w", err)
+	}
+	return account, nil
+}
+
+// writeMailboxConnectError maps a connectAndStore failure to an answer.
+func writeMailboxConnectError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errMailboxNoRoute):
+		writeError(w, http.StatusUnprocessableEntity,
+			"Cette boîte ne se connecte pas par IMAP sur cette instance.")
+	case errors.Is(err, errMailboxRejected):
+		writeError(w, http.StatusUnauthorized,
+			"Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.")
+	case errors.Is(err, errMailboxUnreachable):
+		writeError(w, http.StatusBadGateway, "Connexion au serveur de mail impossible.")
+	default:
+		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer la connexion.")
+	}
+}
+
 // ConnectMailbox proves an IMAP connection works, then stores it.
 func (h *Handler) ConnectMailbox(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
@@ -54,80 +152,14 @@ func (h *Handler) ConnectMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolved, not received. Detect always answers (it falls back to the
-	// generic IMAP entry), so the failure below is about the EDITION rather
-	// than about an unknown provider.
-	p := provider.Detect(address)
-	route, err := provider.Pick(p.Key, Edition)
-	if err != nil || route.IMAP == nil {
-		writeError(w, http.StatusUnprocessableEntity,
-			"Cette boite ne se connecte pas par IMAP sur cette instance.")
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), connectTimeout)
 	defer cancel()
 
-	client, err := imap.Connect(ctx, imap.Credentials{
-		Endpoint: *route.IMAP,
-		Username: address,
-		Password: req.Password,
-	})
+	account, err := h.connectAndStore(ctx, userEmail, address, req.Password)
 	if err != nil {
-		// A rejected password is the user's to fix and says so; anything else is
-		// the server or the provider being unreachable, and saying "wrong
-		// password" there would send them to regenerate a perfectly good one.
-		if errors.Is(err, imap.ErrAuth) {
-			writeError(w, http.StatusUnauthorized,
-				"Identifiants refuses par le fournisseur. Verifiez le mot de passe d'application.")
-			return
-		}
-		writeError(w, http.StatusBadGateway, "Connexion au serveur de mail impossible.")
+		writeMailboxConnectError(w, err)
 		return
 	}
-	client.Close()
-
-	sealed, err := h.sealSecret(req.Password)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer la connexion.")
-		return
-	}
-
-	now := time.Now()
-	account := models.MailAccount{
-		UserID:    userEmail,
-		Provider:  p.Key,
-		Transport: string(route.Transport),
-		Username:  address,
-		Host:      route.IMAP.Host,
-		Port:      route.IMAP.Port,
-		TLS:       string(route.IMAP.TLS),
-		UpdatedAt: now,
-	}
-
-	_, err = h.db.MailAccounts().UpdateOne(ctx,
-		bson.M{"userId": userEmail},
-		bson.M{
-			"$set": bson.M{
-				"provider":  account.Provider,
-				"transport": account.Transport,
-				"username":  account.Username,
-				"secret":    sealed,
-				"host":      account.Host,
-				"port":      account.Port,
-				"tls":       account.TLS,
-				"updatedAt": now,
-			},
-			"$setOnInsert": bson.M{"userId": userEmail, "createdAt": now},
-		},
-		options.Update().SetUpsert(true),
-	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer la connexion.")
-		return
-	}
-
-	account.CreatedAt = now
 	writeJSON(w, http.StatusOK, account)
 }
 
@@ -174,7 +206,7 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": userEmail})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Impossible de deconnecter la boite.")
+		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"disconnected": res.DeletedCount > 0})

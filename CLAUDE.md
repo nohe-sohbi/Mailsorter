@@ -16,7 +16,7 @@ Solo-developer project. Production is live. The 12 roadmap phases are delivered
 | HTTP deps | `gorilla/mux` 1.8.1, `rs/cors` 1.10.1 | `backend/go.mod` |
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
 | Google | `golang.org/x/oauth2` 0.15.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
-| IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned | `backend/go.mod` |
+| IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned, plus its companion `go-message` v0.18.2 (already in the graph, promoted to direct for MIME body parsing) | `backend/go.mod` |
 | AI | Mistral chat completions, hand-rolled HTTP client | `backend/internal/ai/mistral.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
 | Frontend | React 18.2, react-router-dom 6.21, axios 1.6, dompurify 3.0 | `frontend/package.json` |
@@ -87,7 +87,9 @@ backend/
 frontend/
   src/pages/             one file per route (13 routes)
   src/components/        shared non-route components (Header, EmailReader,
-                         PublicFooter and LegalLayout for the logged-out surface)
+                         PublicFooter and LegalLayout for the logged-out surface,
+                         MailboxBriefing for the two screens that ask for an
+                         address and an app password)
   src/contexts/          EmailContext: the shared inbox cache.
                          InstanceContext: what this deployment is (edition, billing, configured)
   src/services/api.js    every HTTP call in the app, grouped by service object
@@ -147,7 +149,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset | `Matches`, `Validate`, `Preview`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
 | `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted | `Allowed`, `ActionArchive/Trash/Delete` |
 | `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
-| `search` | What makes a saved search valid, its identity, and its default name | `Normalize`, `Key`, `SuggestName`, `MaxPerUser` |
+| `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML | `Digest` |
@@ -177,7 +179,7 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (70 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (71 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `publicPrefixes` |
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
@@ -199,7 +201,9 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
-| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored), read, disconnect. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored), read, disconnect. `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
+| `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which is ALSO how an account is created. The sign-in throttle and the guard against taking over a Google account |
+| `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
 | `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport` |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
@@ -262,12 +266,15 @@ not cron; a redeploy restarts them.
 ### Routes
 
 Declared in `src/App.js`. The app boots by calling `GET /api/config/status` once,
-through `InstanceProvider`; if the instance has no Gmail credentials every guarded
-route redirects to `/setup`.
+through `InstanceProvider`; if the instance has NO WAY IN AT ALL
+(`isUsable` = `isConfigured || mailboxSignIn`) every guarded route redirects to
+`/setup`. Not on `isConfigured` alone: an instance reachable only over IMAP is a
+working instance, and gating on Google sent every hosted visitor to a screen
+telling them to create a Google Cloud project that edition can never use.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | `pages/Login.js` | Marketing landing + Google sign-in. Also the public trust surface: what Google will be asked for, what leaves for the model, the FAQ, the reachable providers read from `GET /api/providers`, and an email capture for a visitor not ready to hand over a mailbox |
+| `/` | `pages/Login.js` | Marketing landing + whichever doors this instance has: Google when `isConfigured`, the mailbox form when `mailboxSignIn`. Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what Google will be asked for, what leaves for the model, the FAQ, the reachable providers read from `GET /api/providers`, and an email capture for a visitor not ready to hand over a mailbox |
 | `/inbox` | `pages/Inbox.js` | The cockpit: triage, suggestions, bulk apply, keyboard shortcuts (1068 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
@@ -283,11 +290,24 @@ route redirects to `/setup`.
 
 `/emails` and `/triage` redirect to `/inbox`.
 
-An unconfigured instance no longer sends everyone to `/setup`. That screen asks the
+An instance with NO WAY IN no longer sends everyone to `/setup`. That screen asks the
 reader to fill in environment variables and restart the service, which is the right
 screen for the owner of a self-hosted instance and useless to a visitor on a hosted
 one. So `self-hosted` still redirects there, `hosted` renders `Unavailable` in
 `App.js` instead, and `/setup` stays reachable by its own address for the operator.
+
+"No way in" is `!isUsable`, not `!isConfigured`: missing Google credentials is not
+the same as being unreachable, since a mailbox sign-in is a door of its own. A
+hosted instance with an IMAP route in its catalog renders the landing page and its
+sign-in form, and is never called unavailable.
+
+Which makes `Unavailable` a safety net rather than a screen anyone reaches today:
+both editions carry IMAP routes (14 self-hosted, 13 hosted), so `mailboxSignIn` is
+true whenever the server answers at all, and mailbox sign-in needs no instance
+config, no OAuth app and no env var. Keep the screen: it is the right answer for an
+edition that ever ships without an IMAP route. Do not reach for it to explain a
+blank page, and do not wire new behaviour behind it. An instance whose server does
+not answer gets the boot-error screen instead, which is a different branch.
 
 ### Data access and state
 
@@ -314,9 +334,12 @@ one. So `self-hosted` still redirects there, `hosted` renders `Unavailable` in
 - **A `Route.Note` in `internal/provider/catalog.go` is USER-FACING COPY.** It reads
   like a developer note in the source and it is rendered verbatim on `/connect`, so
   it follows the UI-string rule: French, accented, ASCII punctuation. The same goes
-  for a new `Blocker`: add its French sentence to `BLOCKER_COPY` in `Connect.js` or
-  the screen silently drops it, which is worse than showing nothing, because the
-  blocker is the reason the connection is about to fail.
+  for a new `Blocker`: add its French sentence to `BLOCKER_COPY` in
+  `components/MailboxBriefing.js` or the screen silently drops it, which is worse
+  than showing nothing, because the blocker is the reason the connection is about
+  to fail. That file is shared: `/connect` and the login page both ask for an
+  address and an app password, and two copies of that table would be two copies
+  that drift.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
   state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`).
 
@@ -527,6 +550,27 @@ Do not duplicate these into this file. Point at them.
   struct it just built. The same fetch asks for the two unsubscribe headers by
   name rather than for `BODY[HEADER]`, which on marketing mail is routinely
   larger than the text of the message.
+- **On IMAP the listing is served from the mirror, not from the mailbox.** Over the
+  Gmail API `GET /api/emails` hands the query to Google. Over IMAP there is nobody
+  to hand it to: `IMAP SEARCH` is a round trip on a stateful socket with a folder
+  selected, and a listing runs on every page load, every chip and every keystroke.
+  So `mirror.go` answers from what `syncInboxIMAP` wrote, which means a message that
+  arrived since the last sync is not in the answer, and `resultSizeEstimate` counts
+  what is mirrored. Two rules that come with it: a query term the mirror cannot
+  answer is REFUSED (501, naming the term) rather than dropped, because a dropped
+  `has:attachment` renders as a full inbox under a button that says otherwise; and a
+  datastore that cannot be read is an ERROR, never an empty list, because an empty
+  list renders as "Inbox Zero atteint" and gives the user nothing to retry.
+- **Free text from a query goes into a `$regex`, so it goes through `regexp.QuoteMeta`.**
+  `containsInsensitive` in `mirror.go` is the only place a user-typed string becomes a
+  pattern. Unescaped, a "(" is a syntax error that fails the whole listing and a "."
+  silently matches any character, so a search for `a.com` would return `axcom`.
+- **An IMAP message has no labels and no star in the mirror.** `models.Email.LabelIDs`
+  is empty on that transport on purpose (a message is in one folder, which `Folder`
+  carries), and `\Flagged` is not stored at all. Do not add an `IsStarred` field to
+  `models.Email` to fix the missing star: the reader does
+  `merged.isStarred ?? merged.labelIds.includes('STARRED')`, and `??` only falls
+  through on null, so a Go bool that always marshals would break the star on Gmail.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it.
 - **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so
@@ -542,6 +586,25 @@ Do not duplicate these into this file. Point at them.
   are one act, `read` and `markRead` another, and both spellings sit in `action_log` rows
   written over the life of the app. Dropping an alias would silently stop the undo history
   resolving for every entry written the other way.
+- **Connecting a mailbox IS registering, and there is no other sign-up.** Mailsorter
+  never invents a password, so it has none to hash, reset, confirm or email: the
+  mail server is the authority, and an app password it accepts proves identity
+  better than a confirmation link. `POST /api/auth/mailbox` is therefore both the
+  first sign-up and every later sign-in, and it is PUBLIC. Two things hold it
+  safe and neither may be removed: a throttle far below the global limiter
+  (~1 attempt / 3 s, burst 5) keyed on the caller AND on the address, because it
+  is the one route where a stranger makes the server try a password against a
+  real mail provider; and a 409 when the address already has Google credentials,
+  because a stored `mail_accounts` row wins over a Google token in `transportFor`,
+  so accepting would hand the account to whoever holds the app password. That
+  check fails CLOSED: a datastore error is a 500, never "no Google".
+- **The boot gate is `isConfigured || mailboxSignIn`, never `isConfigured` alone.**
+  `GET /api/config/status` reports both doors, and `mailboxSignIn` is computed
+  from `provider.ForEdition(Edition)` rather than from the edition name, so the
+  catalog stays the single source. Gating on Google alone made the hosted edition
+  literally impossible to enter: every route, `/` included, redirected to a setup
+  screen instructing the visitor to create a Google Cloud project that edition can
+  never use.
 - **The edition is not packaging, it is a capability gate.** `EDITION=hosted` can never
   reach the Gmail API: a shared OAuth client is capped by Google at 100 authorizations for
   the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an
@@ -578,10 +641,12 @@ Do not duplicate these into this file. Point at them.
 - **Most of the app is still Gmail-only, and `gmailClientFor` is the guard that
   makes that safe.** It refuses a user whose mailbox is reached another way, so every
   unported path answers 501 ("pas encore disponible sur une boite IMAP") through
-  `writeAuthError` instead of acting on the wrong message. Ported so far: `syncInbox`
-  and `EmailAction`. Everything else (rules, AI, snooze, unsubscribe, attachments,
-  labels) refuses. When porting one, open a session instead of calling
-  `gmailClientFor`, and delete nothing from the guard.
+  `writeAuthError` instead of acting on the wrong message. Ported so far: `syncInbox`,
+  `EmailAction`, `GetEmails`, `GetEmail` and `GetMailboxStats`, which is the set that
+  makes a connected mailbox usable at all. Everything else (rules, AI, snooze,
+  unsubscribe, attachments, labels, undo, batch, digest) refuses: 12 call sites left.
+  When porting one, open a session instead of calling `gmailClientFor`, and delete
+  nothing from the guard.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are
