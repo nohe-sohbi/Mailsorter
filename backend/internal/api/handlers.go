@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
@@ -281,12 +282,6 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
-	if err != nil {
-		writeAuthError(w, err)
-		return
-	}
-
 	query := r.URL.Query().Get("q")
 	if query == "" {
 		query = "in:inbox"
@@ -305,6 +300,36 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 
 	// Get page token for pagination
 	pageToken := r.URL.Query().Get("pageToken")
+
+	transport, _, err := h.transportFor(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	if transport == provider.TransportIMAP {
+		// Served from the stored mailbox rather than from the provider: see the
+		// file comment in mirror.go for why a listing does not open a socket.
+		page, err := h.listFromMirror(ctx, userEmail, query, maxResults, pageToken)
+		if err != nil {
+			var unsupported errUnsupportedQuery
+			if errors.As(err, &unsupported) {
+				writeError(w, http.StatusNotImplemented,
+					"Ce filtre n'est pas encore disponible sur une boîte branchée en IMAP : "+
+						strings.Join(unsupported.terms, " "))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "Failed to fetch emails: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+		return
+	}
+
+	gmailClient, err := h.newGmailClient(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
 
 	// Metadata only: this listing renders the sender, the subject and the snippet,
 	// and never touches Email.Body. Asking for full payloads here downloaded every
@@ -358,7 +383,22 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	transport, _, err := h.transportFor(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	if transport == provider.TransportIMAP {
+		stats, err := h.statsFromMirror(ctx, userEmail)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to get mailbox stats: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, stats)
+		return
+	}
+
+	gmailClient, err := h.newGmailClient(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return

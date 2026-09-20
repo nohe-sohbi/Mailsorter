@@ -61,7 +61,7 @@ func (h *Handler) ConnectMailbox(w http.ResponseWriter, r *http.Request) {
 	route, err := provider.Pick(p.Key, Edition)
 	if err != nil || route.IMAP == nil {
 		writeError(w, http.StatusUnprocessableEntity,
-			"Cette boite ne se connecte pas par IMAP sur cette instance.")
+			"Cette boîte ne se connecte pas par IMAP sur cette instance.")
 		return
 	}
 
@@ -79,7 +79,7 @@ func (h *Handler) ConnectMailbox(w http.ResponseWriter, r *http.Request) {
 		// password" there would send them to regenerate a perfectly good one.
 		if errors.Is(err, imap.ErrAuth) {
 			writeError(w, http.StatusUnauthorized,
-				"Identifiants refuses par le fournisseur. Verifiez le mot de passe d'application.")
+				"Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.")
 			return
 		}
 		writeError(w, http.StatusBadGateway, "Connexion au serveur de mail impossible.")
@@ -174,7 +174,7 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": userEmail})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Impossible de deconnecter la boite.")
+		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"disconnected": res.DeletedCount > 0})

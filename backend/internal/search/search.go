@@ -1,12 +1,14 @@
-// Package search owns the rules of a saved search: what makes one valid, how it
-// is normalized before storage, and how many a user may keep.
+// Package search owns Gmail's query language as this app uses it: what makes a
+// saved search valid, how it is normalized before storage, how many a user may
+// keep, and what a query string actually asks for (parse.go).
 //
 // The inbox already speaks Gmail's query language, which is what makes it
 // powerful and also what makes it unusable twice: nobody retypes
 // "in:inbox from:linkedin.com is:unread older_than:7d" every morning. Saving one
 // turns a query someone worked out once into a filter they click. The deciding
-// part (is this name usable, is this query plausible, is the list full) is pure
-// and lives here; only the api package stores anything.
+// part (is this name usable, is this query plausible, is the list full, what
+// does this query constrain) is pure and lives here; only the api package
+// stores anything or looks anything up.
 package search
 
 import (

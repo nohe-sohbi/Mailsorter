@@ -141,31 +141,46 @@ Get a list of emails.
 
 **Query Parameters:**
 - `q` (optional): Gmail search query (default: "in:inbox")
+- `maxResults` (optional): page size, default 50, capped at 500
+- `pageToken` (optional): opaque, echoed back from a previous answer
 
 **Response:**
 ```json
-[
-  {
-    "id": "",
-    "messageId": "18c8c1f2a3b4d5e6",
-    "userId": "user@gmail.com",
-    "threadId": "18c8c1f2a3b4d5e6",
-    "from": "sender@example.com",
-    "to": ["user@gmail.com"],
-    "subject": "Test Email",
-    "snippet": "This is a test email...",
-    "labelIds": ["INBOX", "UNREAD"],
-    "receivedDate": "2024-01-01T12:00:00Z",
-    "isRead": false,
-    "createdAt": "2024-01-01T12:00:00Z"
-  }
-]
+{
+  "emails": [
+    {
+      "id": "",
+      "messageId": "18c8c1f2a3b4d5e6",
+      "userId": "user@gmail.com",
+      "threadId": "18c8c1f2a3b4d5e6",
+      "from": "sender@example.com",
+      "to": ["user@gmail.com"],
+      "subject": "Test Email",
+      "snippet": "This is a test email...",
+      "labelIds": ["INBOX", "UNREAD"],
+      "receivedDate": "2024-01-01T12:00:00Z",
+      "isRead": false,
+      "createdAt": "2024-01-01T12:00:00Z"
+    }
+  ],
+  "nextPageToken": "",
+  "resultSizeEstimate": 120
+}
 ```
+
+Bodies are deliberately omitted: the page carries up to 500 messages and the
+reader fetches the one it opens (`GET /api/emails/{id}`).
+
+On a mailbox reached over IMAP the answer is served from the stored mailbox and
+`labelIds` is empty, because a message there is in one folder rather than in a
+set of labels; `folder` carries that folder instead. See "Transports and what
+works on each".
 
 **Error Responses:**
 - `401 Unauthorized`: Missing user email
 - `404 Not Found`: User not found
 - `500 Internal Server Error`: Failed to fetch emails
+- `501 Not Implemented`: a query term a stored mailbox cannot answer (IMAP only)
 
 ### Sync Emails
 
@@ -230,7 +245,8 @@ Return a single message, decoded. `GET /api/emails` deliberately omits bodies
 about to display.
 
 **Query parameters:**
-- `markRead` (optional): `1` also removes the `UNREAD` label in Gmail and updates
+- `markRead` (optional): `1` also marks the message read in the mailbox (the
+  `UNREAD` label goes on Gmail, the `\Seen` flag is set over IMAP) and updates
   the local cache. Opening an email is user intent rather than automation, so
   this is **not** written to the action ledger.
 
@@ -259,10 +275,16 @@ below). A part without one carries its data inline in the message payload and is
 not downloadable; inline images a newsletter references are filtered out
 entirely.
 
+On a mailbox reached over IMAP the fetch PEEKS: it downloads the body without
+setting `\Seen`, so opening a message stays distinct from reading it and only
+`markRead=1` changes the flag. `attachments` and `labelIds` come back empty
+there: the download route has not been ported, and a chip that answers 501 when
+clicked is worse than no chip.
+
 **Error Responses:**
 - `400 Bad Request`: Missing id
 - `401 Unauthorized`: Missing or expired session
-- `502 Bad Gateway`: Gmail could not return the message
+- `502 Bad Gateway`: the mailbox could not return the message
 
 ---
 
@@ -566,6 +588,29 @@ mailbox is on IMAP, rather than acting on the wrong message. Ported so far:
 |---|---|
 | `POST /api/emails/sync` (no rules applied) | Rules, AI suggestions, snooze, unsubscribe, attachments, labels |
 | `POST /api/emails/action` (archive, trash, read, unread, star, unstar) | `label` / `unlabel`, which plain IMAP cannot express at all |
+| `GET /api/emails` (served from the stored mailbox, see below) | the `has:`, `larger:`, `smaller:`, `label:`, `filename:`, `is:starred` and non-inbox `in:` query terms |
+| `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
+| `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters |
+
+### The listing is served from the stored mailbox on IMAP
+
+Over the Gmail API a listing is a call to Google: the query goes out as written.
+Over IMAP there is nobody to hand it to. `IMAP SEARCH` is a round trip on a
+stateful socket with a folder selected, and a listing runs on every page load,
+every filter chip and every keystroke, so `GET /api/emails` answers from the
+mirror that `POST /api/emails/sync` writes.
+
+Two consequences worth knowing:
+
+- A message that arrived since the last sync is not in the answer. The SPA syncs
+  before it lists, and a background loop syncs every 30 min, so the window is
+  the one the inbox already had.
+- `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
+
+A query term the mirror cannot answer is **refused with 501, naming the term**,
+rather than dropped. Dropping `has:attachment` does not produce an error, it
+produces a full inbox under a button labelled "Pieces jointes", and nothing on
+screen would say the filter did nothing.
 
 ## Mailbox Endpoints
 
@@ -657,6 +702,13 @@ unsubscribes) over the trailing 7 days, not just applied AI suggestions.
 #### GET /api/stats
 
 Live counts pulled from Gmail for the current mailbox.
+
+On a mailbox reached over IMAP the counters are read from the stored mailbox
+instead: `totalMessages`, `inboxCount` and `unreadCount` are the mirror's, and
+the sent, draft, spam, trash and `labelStats` counters stay at zero rather than
+being invented. A counter that cannot be read is an error, never a zero: an
+empty inbox is a state the app celebrates, so it must not be what a failed
+count looks like.
 
 **Response:** `200 OK` (a `MailboxStats`)
 ```json

@@ -10,6 +10,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
@@ -45,11 +46,14 @@ type attachmentView struct {
 // which, before this route existed, it never could, leaving the reader stuck on
 // "Contenu complet indisponible" for every email.
 //
-// With ?markRead=1 the message is also marked read in Gmail, mirroring what
-// opening an email means everywhere else. That is user intent rather than
+// With ?markRead=1 the message is also marked read in the mailbox, mirroring
+// what opening an email means everywhere else. That is user intent rather than
 // automation, so it is not written to the action ledger: the history exists to
 // show what Mailsorter did on the user's behalf, and would drown in "Lu"
 // entries otherwise.
+//
+// Both transports are served here, and they diverge after the fetch rather than
+// before it: see getEmailIMAP for what a message does not carry over IMAP.
 func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -65,11 +69,20 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	markRead := r.URL.Query().Get("markRead") == "1"
+
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
+	defer session.Close()
+
+	if session.Transport == provider.TransportIMAP {
+		h.getEmailIMAP(ctx, w, session, userEmail, messageID, markRead)
+		return
+	}
+	gmailClient := session.gmail
 
 	msg, err := h.gmailService.GetMessage(gmailClient, messageID)
 	if err != nil {
@@ -81,10 +94,9 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 	unsubURL, unsubMailto, oneClick := gmail.ParseUnsubscribe(msg)
 	plain, html := gmail.GetEmailBodies(msg)
 
-	markRead := r.URL.Query().Get("markRead") == "1"
 	labelIDs := msg.LabelIds
 	if markRead && !mailbox.GmailIsRead(labelIDs) {
-		if err := h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(messageID), "read", ""); err == nil {
+		if err := h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), "read", ""); err == nil {
 			labelIDs = mailbox.GmailAfter(labelIDs, mailbox.Mutation{Action: mailbox.ActionMarkRead})
 			// Keep the local cache honest so the next list render does not show
 			// the message as unread again.
@@ -173,4 +185,41 @@ func listAttachments(msg *gmailapi.Message) []attachmentView {
 	}
 	walk(msg.Payload, 0)
 	return out
+}
+
+// getEmailIMAP is the IMAP half of GetEmail.
+//
+// The two halves differ in more than their transport. Over the Gmail API the
+// message carries its labels and its attachment parts, and the reader renders
+// both. Over IMAP there are no labels, and the attachment list is left empty
+// rather than filled from the MIME tree: the download route has not been
+// ported, so a chip here would be a button that answers 501 when clicked, which
+// is worse than not offering it.
+func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, session *mailSession, userEmail, messageID string, markRead bool) {
+	ref := session.RefFor(ctx, messageID)
+
+	msg, err := session.imapc.Fetch(ctx, ref.Folder, ref.ID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Impossible de charger cet email : "+err.Error())
+		return
+	}
+
+	msg.UserID = userEmail
+	if markRead && !msg.IsRead {
+		if err := h.applyVerb(ctx, session.Mailbox(), ref, "read", ""); err == nil {
+			msg.IsRead = true
+			// Keep the stored mailbox honest so the next listing, which is
+			// served FROM it on this transport, does not show the message as
+			// unread again.
+			h.db.Emails().UpdateOne(ctx,
+				bson.M{"userId": userEmail, "messageId": messageID},
+				bson.M{"$set": bson.M{"isRead": true}},
+			)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, messageView{
+		Email:    msg.Email,
+		BodyHTML: msg.HTML,
+	})
 }
