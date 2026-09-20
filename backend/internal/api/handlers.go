@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
@@ -95,6 +96,22 @@ type Handler struct {
 	jobQueue     chan string
 	metrics      *metrics.Registry
 	startedAt    time.Time
+
+	// The sign-in limiter is built on first use rather than in the constructor,
+	// so it exists whatever built this Handler. A nil limiter would not fail
+	// loudly, it would silently lift the one throttle standing between an
+	// unauthenticated caller and somebody else's mail provider.
+	signInOnce sync.Once
+	signIn     *rateLimiter
+}
+
+// signInLimiter is the throttle on the public mailbox sign-in. See signInLimit
+// in auth_mailbox.go for why it is so much tighter than the global one.
+func (h *Handler) signInLimiter() *rateLimiter {
+	h.signInOnce.Do(func() {
+		h.signIn = newRateLimiter(signInRatePerSec, signInBurst)
+	})
+	return h.signIn
 }
 
 func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig, authManager *auth.Manager) *Handler {
@@ -648,12 +665,29 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 // writable over HTTP; see cmd/server/main.go for how they are loaded.
 func (h *Handler) GetConfigStatus(w http.ResponseWriter, r *http.Request) {
 	status := models.InstanceStatus{
-		IsConfigured: h.gmailService.IsConfigured(),
-		BillingOn:    h.billingEnabled(),
-		Edition:      string(Edition),
+		IsConfigured:  h.gmailService.IsConfigured(),
+		MailboxSignIn: mailboxSignInAvailable(),
+		BillingOn:     h.billingEnabled(),
+		Edition:       string(Edition),
 	}
 
 	writeJSON(w, http.StatusOK, status)
+}
+
+// mailboxSignInAvailable reports whether this edition can reach any mailbox
+// over IMAP, which is what POST /api/auth/mailbox needs to be able to do
+// anything. Read from the catalog rather than from the edition name: the
+// question is which routes exist, and internal/provider is the one place that
+// knows.
+func mailboxSignInAvailable() bool {
+	for _, p := range provider.ForEdition(Edition) {
+		for _, route := range p.Routes {
+			if route.Transport == provider.TransportIMAP {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Helper functions

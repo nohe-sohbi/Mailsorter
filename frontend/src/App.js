@@ -64,7 +64,7 @@ function NotFound() {
 function App() {
   // The deployment is probed once, in InstanceProvider, and read here. Pricing
   // and the header read the same value instead of asking again.
-  const { loading, error, isConfigured, selfHosted, reload } = useInstance();
+  const { loading, error, isConfigured, isUsable, selfHosted, reload } = useInstance();
 
   if (loading) {
     return (
@@ -80,7 +80,7 @@ function App() {
     );
   }
 
-  if (error && !isConfigured) {
+  if (error && !isUsable) {
     return (
       <BootScreen>
         <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-danger-50 text-danger-600">
@@ -97,7 +97,10 @@ function App() {
     );
   }
 
-  const guard = (element) => (isConfigured ? <RequireAuth>{element}</RequireAuth> : <Navigate to="/setup" replace />);
+  // Gated on "is there a way in at all", not on "does Google work here": an
+  // instance whose only door is a mailbox is a working instance, and sending it
+  // to /setup made the hosted edition impossible to enter.
+  const guard = (element) => (isUsable ? <RequireAuth>{element}</RequireAuth> : <Navigate to="/setup" replace />);
 
   return (
     <Router>
@@ -114,11 +117,15 @@ function App() {
               <Header />
               <main id="main">
                 <Routes>
+                  {/* /setup is the briefing for an instance with no way in. It stays
+                      reachable on an instance that merely lacks Google credentials, so
+                      an operator can still read what to set, but it no longer swallows
+                      the landing page of an instance that signs people in by mailbox. */}
                   <Route
                     path="/setup"
                     element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
                   />
-                  <Route path="/" element={isConfigured ? <Login /> : <Navigate to="/setup" replace />} />
+                  <Route path="/" element={isUsable ? <Login /> : <Navigate to="/setup" replace />} />
                   <Route path="/inbox" element={guard(<Inbox />)} />
                   <Route path="/rules" element={guard(<Rules />)} />
                   <Route path="/snoozed" element={guard(<Snoozed />)} />

@@ -36,7 +36,7 @@ export function InstanceProvider({ children }) {
       // and this is "known, and nothing works". Defaulting edition to
       // self-hosted is the safe half of the guess: it hides paid surfaces
       // rather than offering a checkout against a server that is not answering.
-      setInstance({ isConfigured: false, billingOn: false, edition: 'self-hosted' });
+      setInstance({ isConfigured: false, mailboxSignIn: false, billingOn: false, edition: 'self-hosted' });
     }
   }, []);
 
@@ -49,6 +49,12 @@ export function InstanceProvider({ children }) {
     error,
     reload: load,
     isConfigured: !!instance?.isConfigured,
+    mailboxSignIn: !!instance?.mailboxSignIn,
+    // Whether this deployment has ANY way in. It used to be the Gmail
+    // credentials alone, which was true while Google was the only door; an
+    // instance reachable only over IMAP was sent to a setup screen telling it
+    // to create a Google Cloud project it can never use.
+    isUsable: !!instance?.isConfigured || !!instance?.mailboxSignIn,
     billingOn: !!instance?.billingOn,
     edition: instance?.edition || 'self-hosted',
     selfHosted: (instance?.edition || 'self-hosted') === 'self-hosted',

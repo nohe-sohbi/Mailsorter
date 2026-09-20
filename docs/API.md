@@ -5,8 +5,9 @@ Base URL: `http://localhost:8080`
 ## Authentication
 
 Authenticated endpoints require a **session token** in the `Authorization` header.
-The token is issued by `GET /api/auth/callback` after a successful Google login;
-it is an HMAC-signed, expiring value that identifies the user.
+The token is issued by `GET /api/auth/callback` after a successful Google login,
+or by `POST /api/auth/mailbox` after a mailbox accepted an address and an app
+password. It is an HMAC-signed, expiring value that identifies the user.
 
 ```
 Authorization: Bearer <session-token>
@@ -125,6 +126,64 @@ Validate the OAuth `state`, exchange the authorization code, and return a signed
 **Error Responses:**
 - `400 Bad Request`: Missing code parameter
 - `500 Internal Server Error`: Failed to exchange code or get user profile
+
+---
+
+#### POST /api/auth/mailbox
+
+Sign in with a mailbox. **This is also how an account is created.**
+
+There is no separate sign-up route because there is nothing to sign up for:
+Mailsorter never invents a password, so it has none to set, confirm or reset.
+The mail server is the authority. If it accepts the address and the app
+password, the caller is who they say they are, and that is a stronger proof of
+identity than a confirmation link. The first request and every one after it are
+the same request.
+
+Without this route the hosted edition has no first door at all: it can never
+reach the Gmail API (see the 100-authorization cap in `internal/provider`), so
+the OAuth callback above is unusable there.
+
+Public. The body carries an address and a password and **nothing else**: the
+provider, host, port and TLS mode are resolved from `internal/provider`, so a
+caller cannot name the host the server connects to.
+
+**Request Body:**
+```json
+{ "address": "vous@orange.fr", "password": "<mot de passe d'application>" }
+```
+
+**Response:** `200 OK`
+```json
+{ "accessToken": "<session-token>", "userEmail": "vous@orange.fr" }
+```
+
+On success the mailbox is stored (same row `POST /api/mailbox/connect` writes,
+app password sealed with AES-256-GCM) and the user document is upserted. A
+sign-in with a rotated app password stores the new one, which is why losing an
+app password is a trip to the provider rather than a support ticket.
+
+**Throttling.** This is the only public route that makes the server try a
+password against somebody else's mail provider, so it carries a limit far below
+the global one: roughly **one attempt every 3 seconds, burst 5**, keyed on the
+caller **and** on the address, so neither rotating addresses from one machine
+nor hammering one address from many gets a free pass. Over it: `429` with
+`Retry-After`.
+
+**Error Responses:**
+- `400 Bad Request`: address or password missing
+- `401 Unauthorized`: the provider refused the credentials. An unknown address
+  and a wrong password answer identically: the provider is what refused, and it
+  does not say which. Distinguishing them would make this route an address
+  oracle
+- `409 Conflict`: this address already signs in through Google. A stored mailbox
+  row takes precedence over a Google token (see "Transports and what works on
+  each"), so accepting here would move the account to IMAP for whoever holds the
+  app password. Switching is still possible from inside the app, where control
+  of the Google account was already proved
+- `422 Unprocessable Entity`: this address has no IMAP route in this edition
+- `429 Too Many Requests`: throttled, see above
+- `502 Bad Gateway`: the provider could not be reached
 
 ---
 
@@ -1511,15 +1570,22 @@ Get all Gmail labels for a user.
 
 #### GET /api/config/status
 
-Public boot probe. The SPA calls it before any login to decide whether to show
-the setup instructions, whether Pro can be bought yet, and which edition is
-running. It is the only public route under `/api/config/`, and it returns
-nothing beyond these three fields.
+Public boot probe. The SPA calls it before any login to decide whether the
+instance has any way in at all, whether Pro can be bought yet, and which edition
+is running. It is the only public route under `/api/config/`, and it returns
+nothing beyond these four fields.
 
 **Response:** `200 OK`
 ```json
-{ "isConfigured": true, "billingOn": false, "edition": "self-hosted" }
+{ "isConfigured": true, "mailboxSignIn": true, "billingOn": false, "edition": "self-hosted" }
 ```
+
+`mailboxSignIn` says whether `POST /api/auth/mailbox` can do anything here: it
+is true when the running edition has at least one provider reachable over IMAP.
+It is the **second door**, and the SPA gates its whole boot on
+`isConfigured || mailboxSignIn`. Gating on `isConfigured` alone sent every
+visitor of an instance with no Google credentials to a setup screen telling them
+to create a Google Cloud project, which the hosted edition can never use.
 
 `isConfigured` reflects the live OAuth client, whichever source its credentials
 came from at boot. The credentials themselves are read from `GMAIL_CLIENT_ID`,
@@ -1528,8 +1594,8 @@ they can be neither read nor written over the API, and both former
 `/api/config/gmail` routes return `404`.
 
 `edition` is `self-hosted` or `hosted`, from the `EDITION` environment variable.
-It decides which mailbox providers exist (see `GET /api/providers`) and whether
-there is anything to bill at all.
+It decides which mailbox providers exist (see `GET /api/providers`), hence
+`mailboxSignIn`, and whether there is anything to bill at all.
 
 ---
 

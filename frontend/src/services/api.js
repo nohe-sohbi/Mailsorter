@@ -64,6 +64,12 @@ export const authService = {
     if (state) params.set('state', state);
     return apiClient.get(`/api/auth/callback?${params.toString()}`);
   },
+  // Signing in with a mailbox, which is also how an account is created: there
+  // is no separate sign-up call because there is no password of ours to set.
+  // The mail server is what proves the identity, so the first request and every
+  // one after it are the same request.
+  signInWithMailbox: (address, password) =>
+    apiClient.post('/api/auth/mailbox', { address, password }),
 };
 
 export const emailService = {

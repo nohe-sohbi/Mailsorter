@@ -184,9 +184,9 @@ func TestWaitlistIsReachableWithoutASession(t *testing.T) {
 }
 
 // The boot probe stays public: the SPA calls it before any login to decide
-// whether to show the setup instructions, whether Pro can be bought yet, and
+// whether the instance has any way in at all, whether Pro can be bought yet, and
 // which edition is running (which decides the providers on offer and whether
-// there is anything to bill at all). Those three fields and nothing else: the
+// there is anything to bill at all). Those four fields and nothing else: the
 // payload is readable by anyone, so it stays a deliberate list rather than a
 // place things accumulate.
 func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
@@ -205,14 +205,21 @@ func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("decode /api/config/status: %v", err)
 	}
-	if len(body) != 3 {
-		t.Errorf("status payload = %#v, want only isConfigured, billingOn and edition", body)
+	if len(body) != 4 {
+		t.Errorf("status payload = %#v, want only isConfigured, mailboxSignIn, billingOn and edition", body)
 	}
 	// The test server has neither credentials nor Stripe, so both are false.
 	for _, key := range []string{"isConfigured", "billingOn"} {
 		if v, ok := body[key].(bool); !ok || v {
 			t.Errorf("%s = %#v, want false on a bare instance", key, body[key])
 		}
+	}
+	// The second door, and the one that makes an instance with no Google
+	// credentials usable rather than broken. It is read from the provider
+	// catalog, which offers IMAP in every edition, so a false here means the
+	// SPA would send every visitor to /setup.
+	if v, ok := body["mailboxSignIn"].(bool); !ok || !v {
+		t.Errorf("mailboxSignIn = %#v, want true: this edition reaches mailboxes over IMAP", body["mailboxSignIn"])
 	}
 	// The edition is never empty: the SPA branches on it at boot, and an empty
 	// string would silently read as neither edition.
