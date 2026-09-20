@@ -113,7 +113,7 @@ function Header() {
   // Hidden on auth/marketing surfaces. /pricing is public and ships its own
   // header, so rendering this one on top gave a signed-in visitor two stacked
   // headers and two logos.
-  const hiddenPaths = ['/', '/setup', '/auth/callback', '/pricing'];
+  const hiddenPaths = ['/', '/setup', '/auth/callback', '/pricing', '/confidentialite', '/conditions'];
   if (!userEmail || hiddenPaths.includes(location.pathname)) {
     return null;
   }

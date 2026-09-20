@@ -8,12 +8,40 @@
       name="description"
       content="Mailsorter, l'IA qui vide votre boîte Gmail. Triez, archivez et étiquetez des centaines d'emails en un clic. Reprenez le contrôle de votre inbox."
     />
+
+    <!--
+      Les URL absolues ci-dessous désignent l'instance publique. Un partage
+      social a besoin d'une adresse absolue (une image relative n'est pas
+      suivie par la plupart des plateformes), et il n'y a pas de variable
+      d'environnement ici : index.html n'est pas traversé par le bundler au
+      runtime. Une instance auto-hébergée sur un autre domaine remplace ces
+      trois lignes, ou les retire.
+      L'image est générée depuis docs/assets/og-image.source.html (Chromium
+      headless, 1200x630).
+    -->
+    <link rel="canonical" href="https://mailsorter.sohbi.dev/" />
+    <meta property="og:url" content="https://mailsorter.sohbi.dev/" />
+    <meta property="og:image" content="https://mailsorter.sohbi.dev/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Mailsorter : votre boîte mail, triée pendant que vous dormez." />
+    <meta property="og:site_name" content="Mailsorter" />
+    <meta property="og:locale" content="fr_FR" />
     <meta property="og:title" content="Mailsorter : Inbox Zero propulsé par l'IA" />
     <meta
       property="og:description"
       content="Laissez l'IA trier votre Gmail à votre place. Inbox Zero en quelques minutes, pas en quelques heures."
     />
     <meta property="og:type" content="website" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Mailsorter : Inbox Zero propulsé par l'IA" />
+    <meta
+      name="twitter:description"
+      content="Laissez l'IA trier votre Gmail à votre place. Inbox Zero en quelques minutes, pas en quelques heures."
+    />
+    <meta name="twitter:image" content="https://mailsorter.sohbi.dev/og-image.png" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="preconnect" href="https://api.fontshare.com" crossorigin />
@@ -27,9 +55,48 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%231d4ed8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpath d='M7 11l9 6 9-6' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='7' y='9' width='18' height='14' rx='2.5' fill='none' stroke='white' stroke-width='2.4'/%3E%3C/svg%3E"
     />
     <title>Mailsorter : Inbox Zero propulsé par l'IA</title>
+
+    <!--
+      Données structurées. Volontairement limitées à ce qui est vrai et
+      vérifiable : le prix du palier gratuit et la nature du logiciel. Pas de
+      note moyenne ni de nombre d'avis, qui seraient inventés.
+    -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Mailsorter",
+        "applicationCategory": "BusinessApplication",
+        "operatingSystem": "Web",
+        "url": "https://mailsorter.sohbi.dev/",
+        "description": "Mailsorter trie votre boîte Gmail avec l'IA. Chaque action est proposée, validée par vous, journalisée et réversible.",
+        "inLanguage": "fr",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "EUR",
+          "description": "200 emails analysés par mois, sans carte bancaire."
+        }
+      }
+    </script>
   </head>
   <body>
-    <noscript>Vous devez activer JavaScript pour utiliser Mailsorter.</noscript>
+    <noscript>
+      <div style="max-width:32rem;margin:15vh auto;padding:0 1.5rem;font-family:system-ui,sans-serif;color:#0f172a;text-align:center">
+        <h1 style="font-size:1.25rem;margin:0 0 .5rem">Mailsorter a besoin de JavaScript</h1>
+        <p style="margin:0 0 1rem;color:#475569;line-height:1.6">
+          L'application est une interface qui s'exécute dans votre navigateur : sans JavaScript, elle ne
+          peut afficher ni votre boîte ni vos règles. Activez-le, puis rechargez cette page.
+        </p>
+        <!-- Pas de lien vers /confidentialite ni /conditions ici : le SPA sert
+             index.html pour toute adresse, donc ces liens ramèneraient sans
+             JavaScript à ce même message. -->
+        <p style="color:#475569;line-height:1.6">
+          Une question ? Écrivez-nous à
+          <a href="mailto:nohe@sohbi.dev" style="color:#2563eb">nohe@sohbi.dev</a>.
+        </p>
+      </div>
+    </noscript>
     <div id="root"></div>
   </body>
 </html>

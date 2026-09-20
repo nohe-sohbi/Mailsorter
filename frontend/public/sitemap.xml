@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Les seules adresses qui valent d'etre indexees: celles qu'un visiteur non
+  connecte peut atteindre et qui ont un contenu propre. /inbox, /rules et les
+  autres ecrans applicatifs sont derriere la session et renverraient la page de
+  connexion, /auth/callback n'a de sens qu'avec un code, et /setup s'adresse a
+  l'exploitant. Comme le domaine est celui de l'instance publique, une instance
+  auto-hebergee remplace ce fichier ou le retire.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://mailsorter.sohbi.dev/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://mailsorter.sohbi.dev/pricing</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://mailsorter.sohbi.dev/confidentialite</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://mailsorter.sohbi.dev/conditions</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+</urlset>

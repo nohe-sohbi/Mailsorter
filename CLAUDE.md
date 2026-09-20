@@ -85,13 +85,15 @@ backend/
   internal/{ai,billing,gmail,imap}/  outbound clients (Mistral, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
 frontend/
-  src/pages/             one file per route (11 routes)
-  src/components/        shared non-route components (Header, EmailReader)
+  src/pages/             one file per route (13 routes)
+  src/components/        shared non-route components (Header, EmailReader,
+                         PublicFooter and LegalLayout for the logged-out surface)
   src/contexts/          EmailContext: the shared inbox cache.
                          InstanceContext: what this deployment is (edition, billing, configured)
   src/services/api.js    every HTTP call in the app, grouped by service object
   src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
   src/lib/analytics.js   Umami tracker injection + track()
+  src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
 docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, assets/
 mongo-init/init-db.js    collections + indexes seeded on a fresh Mongo container
@@ -265,7 +267,7 @@ route redirects to `/setup`.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | `pages/Login.js` | Marketing landing + Google sign-in |
+| `/` | `pages/Login.js` | Marketing landing + Google sign-in. Also the public trust surface: what Google will be asked for, what leaves for the model, the FAQ, the reachable providers read from `GET /api/providers`, and an email capture for a visitor not ready to hand over a mailbox |
 | `/inbox` | `pages/Inbox.js` | The cockpit: triage, suggestions, bulk apply, keyboard shortcuts (1068 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
@@ -275,9 +277,17 @@ route redirects to `/setup`.
 | `/connect` | `pages/Connect.js` | Connect a mailbox over IMAP. Detects the provider from the address against the catalog the SERVER returned, and shows that route's blockers BEFORE the attempt, because each of them otherwise surfaces as "credentials refused" |
 | `/account` | `pages/Account.js` | Profile, usage, GDPR export and delete |
 | `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config. Edition-aware: the own-project guide (6 steps, including "Publier l'application") self-hosted, the operator one (5 steps) otherwise, plus the reachable providers read from `GET /api/providers` |
-| `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token |
+| `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token. The ONLY callback: `Login` used to handle `?code=` too, in a path `GMAIL_REDIRECT_URL` could never reach |
+| `/confidentialite` | `pages/Privacy.js` | Privacy policy. Public and unconditional, including before the instance is configured: Google's OAuth verification expects it reachable from the home page |
+| `/conditions` | `pages/Terms.js` | Terms of use |
 
 `/emails` and `/triage` redirect to `/inbox`.
+
+An unconfigured instance no longer sends everyone to `/setup`. That screen asks the
+reader to fill in environment variables and restart the service, which is the right
+screen for the owner of a self-hosted instance and useless to a visitor on a hosted
+one. So `self-hosted` still redirects there, `hosted` renders `Unavailable` in
+`App.js` instead, and `/setup` stays reachable by its own address for the operator.
 
 ### Data access and state
 
@@ -474,6 +484,13 @@ Do not duplicate these into this file. Point at them.
 
 ## Known Gotchas
 
+- **The public domain is hardcoded in three files, on purpose.** `public/index.html`
+  (canonical, `og:url`, `og:image`), `public/sitemap.xml` and `public/robots.txt` carry
+  `https://mailsorter.sohbi.dev` in full. A social share needs an ABSOLUTE image URL, and
+  `index.html` is not traversed by the bundler at runtime, so there is no env var to read
+  here: an instance on another domain edits those three files or drops them. The share
+  image itself is generated from `docs/assets/og-image.source.html` with headless Chromium
+  at 1200x630.
 - **`REACT_APP_*` is frozen at image build time.** A runtime env var change does nothing to
   the SPA. This already caused one production incident (PR #15).
 - **`ENCRYPTION_KEY` is not rotatable in place.** Changing it orphans every AES-GCM value at

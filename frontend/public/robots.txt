@@ -3,3 +3,16 @@
 # (try_files ... /index.html) servirait la page d'accueil en guise de robots.txt.
 User-agent: *
 Allow: /
+
+# Les ecrans applicatifs sont derriere la session: les explorer ne rend que la
+# page de connexion, et /auth/callback n'a de sens qu'avec un code OAuth.
+Disallow: /inbox
+Disallow: /rules
+Disallow: /snoozed
+Disallow: /history
+Disallow: /settings
+Disallow: /account
+Disallow: /setup
+Disallow: /auth/
+
+Sitemap: https://mailsorter.sohbi.dev/sitemap.xml
