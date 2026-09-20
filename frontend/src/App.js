@@ -11,13 +11,16 @@ import Connect from './pages/Connect';
 import History from './pages/History';
 import Pricing from './pages/Pricing';
 import AuthCallback from './pages/AuthCallback';
+import Privacy from './pages/Privacy';
+import Terms from './pages/Terms';
 import Header from './components/Header';
 import { EmailProvider } from './contexts/EmailContext';
 import { InstanceProvider, useInstance } from './contexts/InstanceContext';
 import { ToastProvider } from './ui/Toast';
 import { ConfirmProvider } from './ui/Confirm';
 import { ThemeProvider } from './ui/theme';
-import { Logo, Alert, Inbox as InboxIcon } from './ui/icons';
+import { Logo, Alert, Inbox as InboxIcon, Mail } from './ui/icons';
+import { CONTACT_EMAIL } from './components/PublicFooter';
 import Spinner from './ui/Spinner';
 
 function BootScreen({ children }) {
@@ -25,6 +28,31 @@ function BootScreen({ children }) {
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-ink-50 px-6 text-center">
       {children}
     </div>
+  );
+}
+
+// What a visitor sees when a HOSTED instance is not wired up.
+//
+// Until now every public route redirected to /setup, which asks the reader to
+// fill in GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET and GMAIL_REDIRECT_URL and then
+// restart the service. On a self-hosted instance that is the right screen: the
+// reader owns the deployment. On a hosted one the visitor owns none of it, and
+// was handed an environment-variable briefing they could do nothing with.
+function Unavailable() {
+  return (
+    <BootScreen>
+      <Logo size={52} />
+      <div className="max-w-sm space-y-2">
+        <h1 className="font-display text-xl font-bold text-ink-900">Service momentanément indisponible</h1>
+        <p className="text-sm text-muted">
+          Mailsorter n'est pas encore connecté à Google sur cette instance. La connexion sera
+          rétablie dès que l'exploitant aura terminé la configuration.
+        </p>
+      </div>
+      <a href={`mailto:${CONTACT_EMAIL}`} className="btn-secondary">
+        <Mail size={16} /> Prévenir l'exploitant
+      </a>
+    </BootScreen>
   );
 }
 
@@ -74,7 +102,7 @@ function App() {
         </div>
         <div className="flex items-center gap-3 text-muted">
           <Spinner size={18} className="text-brand-600" />
-          <span className="text-sm font-medium">Démarrage de Mailsorter…</span>
+          <span className="text-sm font-medium">Démarrage de Mailsorter...</span>
         </div>
       </BootScreen>
     );
@@ -97,10 +125,14 @@ function App() {
     );
   }
 
+  // Unconfigured: the owner of a self-hosted instance gets the setup briefing,
+  // a visitor on a hosted one gets an honest "unavailable" instead of a list of
+  // environment variables they do not control.
+  const unconfigured = () => (selfHosted ? <Navigate to="/setup" replace /> : <Unavailable />);
   // Gated on "is there a way in at all", not on "does Google work here": an
-  // instance whose only door is a mailbox is a working instance, and sending it
-  // to /setup made the hosted edition impossible to enter.
-  const guard = (element) => (isUsable ? <RequireAuth>{element}</RequireAuth> : <Navigate to="/setup" replace />);
+  // instance whose only door is a mailbox is a working instance, and calling it
+  // unconfigured made the hosted edition impossible to enter.
+  const guard = (element) => (isUsable ? <RequireAuth>{element}</RequireAuth> : unconfigured());
 
   return (
     <Router>
@@ -117,15 +149,17 @@ function App() {
               <Header />
               <main id="main">
                 <Routes>
-                  {/* /setup is the briefing for an instance with no way in. It stays
-                      reachable on an instance that merely lacks Google credentials, so
-                      an operator can still read what to set, but it no longer swallows
-                      the landing page of an instance that signs people in by mailbox. */}
+                  {/* /setup stays reachable by its address whatever the
+                      edition: it is the operator's screen, and an operator on a
+                      hosted instance still needs it. It is simply no longer
+                      where a visitor is sent, and on an instance that signs
+                      people in by mailbox it no longer swallows the landing
+                      page either. */}
                   <Route
                     path="/setup"
                     element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
                   />
-                  <Route path="/" element={isUsable ? <Login /> : <Navigate to="/setup" replace />} />
+                  <Route path="/" element={isUsable ? <Login /> : unconfigured()} />
                   <Route path="/inbox" element={guard(<Inbox />)} />
                   <Route path="/rules" element={guard(<Rules />)} />
                   <Route path="/snoozed" element={guard(<Snoozed />)} />
@@ -141,6 +175,11 @@ function App() {
                       an empty one. */}
                   <Route path="/pricing" element={selfHosted ? <Navigate to="/" replace /> : <Pricing />} />
                   <Route path="/auth/callback" element={<AuthCallback />} />
+                  {/* Public and unconditional. Google's OAuth verification
+                      expects the privacy policy to be reachable from the home
+                      page, so it cannot depend on the instance being wired. */}
+                  <Route path="/confidentialite" element={<Privacy />} />
+                  <Route path="/conditions" element={<Terms />} />
                   {/* Redirects for legacy routes */}
                   <Route path="/emails" element={<Navigate to="/inbox" replace />} />
                   <Route path="/triage" element={<Navigate to="/inbox" replace />} />
