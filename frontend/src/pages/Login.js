@@ -313,9 +313,12 @@ function Login() {
                 </li>
               ))}
             </ul>
+            {/* Le compte Mailsorter s'ouvre avec Google, et la boite se branche
+                ensuite depuis l'application, ecran Connexion d'une boite. Dire
+                l'ordre evite la lecture inverse : que seul Gmail est servi. */}
             <p className="mt-3 text-xs text-ink-500">
-              La connexion se fait aujourd'hui par Gmail. Les autres fournisseurs sont joignables par
-              le serveur et arrivent dans l'application.
+              Vous ouvrez votre compte avec Google, puis vous branchez la boite de votre choix
+              depuis l'application.
             </p>
           </section>
         )}

@@ -550,6 +550,23 @@ is where a request driven by a stranger belongs.
 
 ---
 
+## Transports and what works on each
+
+A user's mailbox is reached either through the Gmail API (the Google OAuth path,
+and the only one before `mail_accounts` existed) or over IMAP (a mailbox
+connected through the endpoints below). The transport is resolved per request
+from the stored connection, never guessed: a datastore failure fails the request
+rather than resolving to Gmail.
+
+Most of the API was written when every user was a Gmail user and has not been
+ported. Those endpoints answer **`501 Not Implemented`** for a caller whose
+mailbox is on IMAP, rather than acting on the wrong message. Ported so far:
+
+| Works on IMAP | Answers 501 on IMAP |
+|---|---|
+| `POST /api/emails/sync` (no rules applied) | Rules, AI suggestions, snooze, unsubscribe, attachments, labels |
+| `POST /api/emails/action` (archive, trash, read, unread, star, unstar) | `label` / `unlabel`, which plain IMAP cannot express at all |
+
 ## Mailbox Endpoints
 
 How a user connects a mailbox over IMAP, which is the hosted edition's way in:

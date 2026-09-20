@@ -167,7 +167,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		applyErr := h.applyVerb(ctx, gmailClient, mailbox.OnAccount(id), req.Action, labelID)
+		applyErr := h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(id), req.Action, labelID)
 		if applyErr != nil {
 			res.Failed++
 			continue

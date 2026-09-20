@@ -127,9 +127,6 @@ donc apres un clic de plus.
 ### Importantes
 
 **M-04. Savoir que mon fournisseur est supporte.** **[Corrige]**
-`GET /api/providers`, donc par le meme catalogue que celui avec lequel le serveur se
-connecte. Un echec de la requete coute la bande, pas la page. La bande dit aussi
-honnetement que la connexion se fait aujourd'hui par Gmail.
 La landing ne parle que de Gmail, en dur, alors que le catalogue backend expose
 seize fournisseurs (`internal/provider`, revendique dans le `README`). Un
 visiteur Outlook, Proton ou Fastmail repart en pensant que le produit ne le
@@ -137,6 +134,10 @@ concerne pas. `GET /api/providers` est une route publique : la landing pourrait
 l'afficher, elle ne l'appelle pas.
 
 > Bande "Boites joignables par cette instance" sur la landing, alimentee par
+> `GET /api/providers`, donc par le meme catalogue que celui avec lequel le serveur se
+> connecte. Un echec de la requete coute la bande, pas la page. La bande dit l'ordre
+> reel : on ouvre son compte avec Google, puis on branche la boite de son choix
+> depuis l'application, sur l'ecran `/connect` livre par la PR #31.
 
 **M-05. Voir le vrai produit.** **[Non corrige]** Voir section 4.
 La maquette du hero est un faux ecran dessine en HTML, avec des donnees

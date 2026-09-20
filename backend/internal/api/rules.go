@@ -445,7 +445,7 @@ func (h *Handler) applyOneAction(ctx context.Context, gmailClient *gmailapi.Serv
 
 	// An action the rules engine validated but this transport does not know is
 	// skipped rather than failed: it must not abort the rest of the ruleset.
-	err := h.applyVerb(ctx, gmailClient, mailbox.OnAccount(messageID), a.Type, labelID)
+	err := h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(messageID), a.Type, labelID)
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		return nil
 	}
