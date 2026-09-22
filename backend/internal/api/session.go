@@ -32,6 +32,9 @@ import (
 //     silently turns an IMAP user into a Gmail user, which is the same wrong
 //     mailbox by another route.
 
+// errNoMailboxConnected indicates that no mailbox (IMAP or Gmail) has been linked yet.
+var errNoMailboxConnected = errors.New("api: no mailbox connected for this account")
+
 // errWrongTransport means the caller's mailbox is not reachable the way this
 // code path assumes. It is not a failure of the request: it is a feature that
 // has not been ported to the user's transport yet, and it maps to 501 so the
@@ -65,9 +68,26 @@ func (h *Handler) transportFor(ctx context.Context, userEmail string) (provider.
 	err := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&account)
 	switch {
 	case err == nil:
-		return provider.TransportIMAP, account, nil
+		if account.Transport == string(provider.TransportIMAP) {
+			return provider.TransportIMAP, account, nil
+		}
+		if account.Transport == "gmail" {
+			return provider.TransportGmailAPI, account, nil
+		}
+		return provider.Transport(account.Transport), account, nil
 	case errors.Is(err, mongo.ErrNoDocuments):
-		return provider.TransportGmailAPI, models.MailAccount{}, nil
+		// Check whether user has direct Google OAuth tokens
+		var user models.User
+		uErr := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user)
+		if uErr == nil && (user.AccessToken != "" || user.RefreshToken != "") {
+			return provider.TransportGmailAPI, models.MailAccount{
+				UserID:    userEmail,
+				Provider:  "google",
+				Transport: "gmail",
+				Username:  user.Email,
+			}, nil
+		}
+		return "", models.MailAccount{}, errNoMailboxConnected
 	default:
 		// Deliberately NOT a fallback to Gmail. See the file comment: guessing
 		// here sends one user's identifiers to another user's kind of mailbox.

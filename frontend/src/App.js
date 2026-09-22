@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Inbox from './pages/Inbox';
@@ -21,6 +21,7 @@ import { ConfirmProvider } from './ui/Confirm';
 import { ThemeProvider } from './ui/theme';
 import { Logo, Alert, Inbox as InboxIcon, Mail } from './ui/icons';
 import { CONTACT_EMAIL } from './components/PublicFooter';
+import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
 
 function BootScreen({ children }) {
@@ -69,6 +70,56 @@ function RequireAuth({ children }) {
   }, [authed, navigate]);
 
   return authed ? children : null;
+}
+
+function RequireMailbox({ children }) {
+  const navigate = useNavigate();
+  const [ready, setReady] = useState(() => Boolean(localStorage.getItem('hasMailbox')));
+  const [checking, setChecking] = useState(() => !localStorage.getItem('hasMailbox'));
+
+  useEffect(() => {
+    if (localStorage.getItem('hasMailbox')) {
+      setReady(true);
+      setChecking(false);
+      return;
+    }
+    let cancelled = false;
+    mailboxService
+      .get()
+      .then(({ data }) => {
+        if (cancelled) return;
+        if (data?.mailbox) {
+          localStorage.setItem('hasMailbox', 'true');
+          setReady(true);
+        } else {
+          localStorage.removeItem('hasMailbox');
+          navigate('/connect', { replace: true });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setReady(true);
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
+
+  if (checking) {
+    return (
+      <BootScreen>
+        <div className="flex items-center gap-3 text-muted">
+          <Spinner size={18} className="text-brand-600" />
+          <span className="text-sm font-medium">Chargement de votre boîte...</span>
+        </div>
+      </BootScreen>
+    );
+  }
+
+  return ready ? children : null;
 }
 
 function NotFound() {
@@ -132,7 +183,7 @@ function App() {
   // Gated on "is there a way in at all", not on "does Google work here": an
   // instance whose only door is a mailbox is a working instance, and calling it
   // unconfigured made the hosted edition impossible to enter.
-  const guard = (element) => (isUsable ? <RequireAuth>{element}</RequireAuth> : unconfigured());
+  const guard = (element, requireMailbox = false) => (isUsable ? <RequireAuth>{requireMailbox ? <RequireMailbox>{element}</RequireMailbox> : element}</RequireAuth> : unconfigured());
 
   return (
     <Router>
@@ -160,10 +211,10 @@ function App() {
                     element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
                   />
                   <Route path="/" element={isUsable ? <Login /> : unconfigured()} />
-                  <Route path="/inbox" element={guard(<Inbox />)} />
-                  <Route path="/rules" element={guard(<Rules />)} />
-                  <Route path="/snoozed" element={guard(<Snoozed />)} />
-                  <Route path="/history" element={guard(<History />)} />
+                  <Route path="/inbox" element={guard(<Inbox />, true)} />
+                  <Route path="/rules" element={guard(<Rules />, true)} />
+                  <Route path="/snoozed" element={guard(<Snoozed />, true)} />
+                  <Route path="/history" element={guard(<History />, true)} />
                   <Route path="/settings" element={guard(<Settings />)} />
                   {/* Brancher une boite par IMAP. Garde comme les autres: on
                       branche une boite SUR un compte, donc il faut deja etre

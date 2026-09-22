@@ -32,6 +32,7 @@ function AuthCallback() {
       const response = await authService.handleCallback(code, state);
       localStorage.setItem('userEmail', response.data.userEmail);
       localStorage.setItem('accessToken', response.data.accessToken);
+      localStorage.setItem('hasMailbox', 'true');
       track('login_done');
       navigate('/inbox');
     } catch (err) {

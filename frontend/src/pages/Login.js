@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { authService, configService, waitlistService, apiError } from '../services/api';
+import { authService, configService, waitlistService, mailboxService, apiError } from '../services/api';
 import { useInstance } from '../contexts/InstanceContext';
 import { track } from '../lib/analytics';
 import { hasJoinedWaitlist, rememberWaitlistJoin } from '../lib/waitlist';
@@ -9,11 +9,8 @@ import {
   Logo, Google, Sparkles, Archive, Tag, Users, Shield, Bolt, Check, BellOff,
   Lock, Server, Undo, Mail, ChevronDown,
 } from '../ui/icons';
-import { detectProvider, ProviderBriefing } from '../components/MailboxBriefing';
 import Spinner from '../ui/Spinner';
 
-// La landing fait des promesses, donc elle doit savoir lesquelles ce déploiement
-// peut tenir. Voir la carte "Libellés intelligents" plus bas.
 const GMAIL_ONLY = 'labels';
 
 const FEATURES = [
@@ -38,16 +35,6 @@ const FEATURES = [
     text: 'Archivez ou supprimez des centaines d\'emails d\'un coup. Inbox Zero en minutes, pas en heures.',
   },
   {
-    // Les routes /api/smart-labels existent et sont testées, mais aucun écran ne
-    // les appelle encore. La carte reste, marquée : annoncer la fonctionnalité
-    // sans dire qu'elle n'est pas livrée était la seule promesse fausse de cette
-    // page.
-    //
-    // Deux marques, deux axes. `soon` dit "pas encore livré", ce qui est vrai
-    // partout. `needs` dit "impossible ici" : les libellés n'existent que sur
-    // l'API Gmail, plain IMAP n'a pas la notion (cf. internal/mailbox), donc sur
-    // une instance dont la seule porte est une boîte, "Bientôt" serait une
-    // promesse qui n'arrivera jamais.
     Icon: Tag,
     title: 'Libellés intelligents',
     text: 'Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.',
@@ -56,36 +43,36 @@ const FEATURES = [
   },
 ];
 
-const stepsFor = (googleDoor) => [
-  googleDoor
-    ? { n: '01', title: 'Connectez Gmail', text: 'Authentification Google sécurisée. Aucun mot de passe stocké.' }
-    : {
-        n: '01',
-        title: 'Branchez votre boîte',
-        text: 'Une adresse et un mot de passe d\'application, révocable chez votre fournisseur.',
-      },
-  { n: '02', title: 'Lancez l\'analyse', text: 'L\'IA passe votre boîte au crible et propose une action par email.' },
-  { n: '03', title: 'Validez d\'un geste', text: 'Acceptez, ajustez, ou laissez l\'auto-pilote faire le ménage.' },
+const STEPS = [
+  {
+    n: '01',
+    title: 'Créez votre compte',
+    text: 'Inscription en 10 secondes. Vos accès et vos préférences restent sous votre contrôle.',
+  },
+  {
+    n: '02',
+    title: 'Définissez la boîte à ranger',
+    text: 'Connectez Gmail en un clic ou n\'importe quelle messagerie (Orange, Outlook, Yahoo...) avec un mot de passe d\'application.',
+  },
+  {
+    n: '03',
+    title: 'Laissez l\'IA faire le tri',
+    text: 'L\'IA analyse et propose un tri sur mesure. Validez en un clic ou activez l\'autopilote.',
+  },
 ];
 
-// Quatre chiffres, quatre faits vérifiables dans ce dépôt. Les précédents
-// ("10x plus rapide", "moins de 2 min pour vider 500 emails") n'avaient aucune
-// mesure derrière et fragilisaient les affirmations voisines, qui sont vraies.
 const FACTS = [
-  { big: '0', small: 'mot de passe stocké', title: 'La connexion passe par OAuth Google, aucun mot de passe ne transite.' },
-  { big: 'AES-256', small: 'jetons chiffrés au repos', title: 'Votre jeton Google est scellé en AES-256-GCM avant d\'atteindre la base.' },
+  { big: '0', small: 'mot de passe stocké', title: 'La connexion passe par OAuth Google ou mot de passe d\'application scellé.' },
+  { big: 'AES-256', small: 'chiffré au repos', title: 'Vos identifiants et jetons sont scellés en AES-256-GCM avant d\'atteindre la base.' },
   { big: '200', small: 'emails analysés / mois offerts', title: 'Quota du plan gratuit. Le cache et l\'auto-pilote ne le consomment pas.' },
   { big: '1 clic', small: 'pour annuler une action', title: 'Chaque action est journalisée avec son inverse, et annulable depuis l\'historique.' },
 ];
 
-// Ce que Mailsorter fait de vos emails, dit avant le clic plutôt qu'après.
-// C'est l'objection numéro un d'un outil qui demande un accès Gmail complet, et
-// la page n'y répondait que par une puce "OAuth Google sécurisé".
 const TRUST = [
   {
     Icon: Lock,
-    title: 'Ce que Google vous demandera',
-    text: 'Lire et modifier votre boîte (archiver, étiqueter, corbeille), gérer vos libellés, et vous envoyer à vous-même le récap quotidien si vous l\'activez. Rien d\'autre.',
+    title: 'Ce que Mailsorter vous demandera',
+    text: 'Lire et ranger votre boîte (archiver, étiqueter, corbeille), gérer vos libellés, et vous envoyer le récap quotidien si vous l\'activez. Rien d\'autre.',
   },
   {
     Icon: Sparkles,
@@ -95,19 +82,19 @@ const TRUST = [
   {
     Icon: Undo,
     title: 'Rien d\'irréversible',
-    text: 'Supprimer, c\'est envoyer à la corbeille Gmail, récupérable 30 jours. Chaque action est journalisée avec son origine et s\'annule d\'un clic.',
+    text: 'Supprimer, c\'est envoyer à la corbeille, récupérable 30 jours. Chaque action est journalisée avec son origine et s\'annule d\'un clic.',
   },
   {
     Icon: Shield,
     title: 'Vos données, reprises quand vous voulez',
-    text: 'Un export JSON complet et une suppression définitive, tous les deux en libre-service. Supprimer votre compte ne touche pas votre boîte Gmail.',
+    text: 'Un export JSON complet et une suppression définitive, tous les deux en libre-service. Supprimer votre compte ne touche pas vos emails.',
   },
 ];
 
 const FAQ = [
   {
     q: 'Est-ce que vous lisez mes emails ?',
-    a: "Le serveur les lit pour les trier, et en garde une copie dans la base de l'instance pour afficher votre boîte sans rappeler Google à chaque clic. Personne ne les consulte. Le détail de ce qui est conservé est dans la politique de confidentialité.",
+    a: "Le serveur les lit pour les trier, et en garde une copie dans la base de l'instance pour afficher votre boîte sans rappeler votre fournisseur à chaque clic. Personne ne les consulte. Le détail de ce qui est conservé est dans la politique de confidentialité.",
   },
   {
     q: 'Mes emails partent-ils chez un fournisseur d\'IA ?',
@@ -115,11 +102,11 @@ const FAQ = [
   },
   {
     q: 'Que se passe-t-il si Mailsorter se trompe ?',
-    a: "Rien d'irréversible. Une suppression part à la corbeille Gmail, récupérable 30 jours. Chaque action est inscrite dans un journal qui dit qui l'a décidée, et les actions réversibles s'annulent d'un clic. Vous pouvez aussi protéger des expéditeurs, qui ne seront jamais archivés ni supprimés automatiquement.",
+    a: "Rien d'irréversible. Une suppression part à la corbeille, récupérable 30 jours. Chaque action est inscrite dans un journal qui dit qui l'a décidée, et les actions réversibles s'annulent d'un clic. Vous pouvez aussi protéger des expéditeurs, qui ne seront jamais archivés ni supprimés automatiquement.",
   },
   {
-    q: 'Dois-je tout valider à la main ?',
-    a: "Au début, oui : l'IA propose, vous disposez. Ensuite vous automatisez ce qui est évident, par des règles ou un auto-pilote par expéditeur. Un aperçu montre ce que vos règles feraient avant qu'elles ne touchent quoi que ce soit.",
+    q: 'Comment fonctionne la connexion de ma boîte mail ?',
+    a: "Dans un premier temps, vous créez votre compte Mailsorter avec un email et un mot de passe. Ensuite, vous choisissez la boîte mail à ranger : soit Gmail via la connexion Google sécurisée, soit toute autre messagerie avec un mot de passe d'application délivré par votre fournisseur.",
   },
   {
     q: 'Combien ça coûte ?',
@@ -131,124 +118,293 @@ const FAQ = [
   },
 ];
 
-// Signing in with a mailbox, which is also how an account is created.
-//
-// There is no separate sign-up form because there is nothing to sign up for:
-// Mailsorter never invents a password, so it has none to set, confirm or reset.
-// The mail server is the authority, and an app password it accepts is a
-// stronger proof of identity than any confirmation link. The copy has to say
-// that out loud, because "mot de passe" next to an email address reads as an
-// account password and that is the one thing it must not be.
-function MailboxSignIn({ providers, onSignedIn }) {
-  const [address, setAddress] = useState('');
+function AuthBox({ isConfigured, onSignedIn }) {
+  const [mode, setMode] = useState('register'); // 'register' | 'login'
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const detected = useMemo(() => detectProvider(providers, address), [providers, address]);
-
-  const submit = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || googleBusy) return;
     setBusy(true);
     setError('');
+
     try {
-      const { data } = await authService.signInWithMailbox(address.trim(), password);
-      localStorage.setItem('userEmail', data.userEmail);
-      localStorage.setItem('accessToken', data.accessToken);
-      // No address, no provider: a count of successful sign-ins and nothing else.
-      track('login_done', { method: 'mailbox' });
-      onSignedIn();
+      if (mode === 'register') {
+        const { data } = await authService.register(email.trim(), password);
+        localStorage.setItem('userEmail', data.userEmail);
+        localStorage.setItem('accessToken', data.accessToken);
+        localStorage.removeItem('hasMailbox');
+        track('register_done');
+        onSignedIn('/connect');
+      } else {
+        const { data } = await authService.login(email.trim(), password);
+        localStorage.setItem('userEmail', data.userEmail);
+        localStorage.setItem('accessToken', data.accessToken);
+        track('login_done');
+        try {
+          const { data: mbData } = await mailboxService.get();
+          if (mbData?.mailbox) {
+            localStorage.setItem('hasMailbox', 'true');
+            onSignedIn('/inbox');
+          } else {
+            localStorage.removeItem('hasMailbox');
+            onSignedIn('/connect');
+          }
+        } catch {
+          onSignedIn('/connect');
+        }
+      }
     } catch (err) {
-      setError(apiError(err, 'Connexion impossible. Réessayez.'));
+      setError(apiError(err, 'Une erreur est survenue. Vérifiez vos identifiants.'));
       setBusy(false);
     }
   };
 
+  const handleGoogleLogin = async () => {
+    setGoogleBusy(true);
+    setError('');
+    try {
+      const response = await authService.getAuthUrl();
+      track('login_start', { provider: 'google' });
+      window.location.href = response.data.authUrl;
+    } catch (err) {
+      setError('Impossible de démarrer la connexion Google. Réessayez.');
+      setGoogleBusy(false);
+    }
+  };
+
   return (
-    <form onSubmit={submit} className="mt-6 w-full max-w-xl space-y-3">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block">
-          <span className="sr-only">Adresse email</span>
-          <input
-            type="email"
-            required
-            autoComplete="username"
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            placeholder="vous@orange.fr"
-            className="input w-full"
-          />
-        </label>
-        <label className="block">
-          <span className="sr-only">Mot de passe d'application</span>
-          <input
-            type="password"
-            required
-            /* new-password, not current-password: what goes here is issued by the
-               provider and pasted once, never the account password a manager
-               would helpfully fill in. */
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Mot de passe d'application"
-            className="input w-full"
-          />
-        </label>
+    <div id="auth-box" className="mt-8 w-full max-w-md rounded-2xl border border-hairline bg-surface p-6 shadow-card animate-fade-up">
+      {/* Switcher Inscription / Connexion */}
+      <div className="flex rounded-xl bg-ink-100/70 p-1">
+        <button
+          type="button"
+          onClick={() => { setMode('register'); setError(''); }}
+          className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
+            mode === 'register' ? 'bg-surface text-ink-900 shadow-sm' : 'text-ink-600 hover:text-ink-900'
+          }`}
+        >
+          Créer un compte
+        </button>
+        <button
+          type="button"
+          onClick={() => { setMode('login'); setError(''); }}
+          className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
+            mode === 'login' ? 'bg-surface text-ink-900 shadow-sm' : 'text-ink-600 hover:text-ink-900'
+          }`}
+        >
+          Se connecter
+        </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <button type="submit" disabled={busy} className="btn-primary px-6 py-3 text-base">
+      <div className="mt-4 text-left">
+        <h2 className="text-base font-bold text-ink-900">
+          {mode === 'register' ? 'Créer mon compte Mailsorter' : 'Connexion à Mailsorter'}
+        </h2>
+        <p className="mt-1 text-xs leading-relaxed text-ink-500">
+          {mode === 'register'
+            ? 'Étape 1 sur 2 · Vous définirez la boîte mail à ranger juste après.'
+            : 'Accédez à votre espace de tri.'}
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="mt-4 space-y-3 text-left">
+        <div>
+          <label htmlFor="auth-email" className="block text-xs font-bold text-ink-700">
+            Adresse email
+          </label>
+          <input
+            id="auth-email"
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="vous@exemple.com"
+            className="input mt-1 w-full text-sm"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="auth-password" className="block text-xs font-bold text-ink-700">
+            Mot de passe
+          </label>
+          <input
+            id="auth-password"
+            type="password"
+            required
+            minLength={mode === 'register' ? 8 : undefined}
+            autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={mode === 'register' ? '8 caractères minimum' : 'Votre mot de passe'}
+            className="input mt-1 w-full text-sm"
+          />
+        </div>
+
+        <button type="submit" disabled={busy || googleBusy} className="btn-primary mt-2 w-full py-3 text-sm">
           {busy ? (
             <>
-              <Spinner size={18} className="text-white" /> Connexion en cours
+              <Spinner size={18} className="text-white" /> Chargement...
+            </>
+          ) : mode === 'register' ? (
+            <>
+              <Sparkles size={16} /> Créer mon compte gratuit
+            </>
+          ) : (
+            'Se connecter'
+          )}
+        </button>
+
+        {isConfigured && (
+          <>
+            <div className="my-3 flex items-center gap-3">
+              <span className="h-px flex-1 bg-hairline" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">ou</span>
+              <span className="h-px flex-1 bg-hairline" />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              disabled={busy || googleBusy}
+              className="btn-secondary w-full py-2.5 text-sm"
+            >
+              {googleBusy ? (
+                <>
+                  <Spinner size={16} /> Redirection Google...
+                </>
+              ) : (
+                <>
+                  <Google size={18} /> Continuer avec Google
+                </>
+              )}
+            </button>
+          </>
+        )}
+
+        {mode === 'register' && (
+          <p className="pt-2 text-center text-xs text-ink-500">
+            <Check size={14} className="inline text-positive-600 mr-1" /> Gratuit · Sans carte bancaire
+          </p>
+        )}
+
+        {error && (
+          <div className="mt-3 rounded-xl border border-danger-100 bg-danger-50 px-3.5 py-2 text-xs text-danger-700">
+            {error}
+          </div>
+        )}
+      </form>
+    </div>
+  );
+}
+
+const DEMO_SUGGESTIONS = [
+  { Icon: Archive, from: 'Medium Digest', act: 'Archiver', conf: 96 },
+  { Icon: Tag, from: 'Amazon', act: 'Libellé · Achats', conf: 92 },
+  { Icon: Sparkles, from: 'Promo Casino', act: 'Supprimer', conf: 88 },
+];
+
+// La démo de la landing était inerte : cliquer sur "Tout appliquer" ne réagissait
+// pas, et le visiteur retenait ça plutôt que la promesse. Elle rejoue maintenant
+// un cycle d'application complet, en pur client (aucun appel, aucune boîte), puis
+// se réinitialise pour qu'on la rejoue.
+function SuggestionsDemo() {
+  const [applied, setApplied] = useState(0);
+  const [running, setRunning] = useState(false);
+  const timers = useRef([]);
+
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+
+  const play = () => {
+    if (running || applied === DEMO_SUGGESTIONS.length) return;
+    setRunning(true);
+    track('suggestions_demo_play', { count: DEMO_SUGGESTIONS.length });
+    DEMO_SUGGESTIONS.forEach((_, i) => {
+      timers.current.push(setTimeout(() => setApplied(i + 1), 500 * (i + 1)));
+    });
+    timers.current.push(
+      setTimeout(() => {
+        setRunning(false);
+        timers.current.push(setTimeout(() => setApplied(0), 2600));
+      }, 500 * DEMO_SUGGESTIONS.length + 150)
+    );
+  };
+
+  const done = applied === DEMO_SUGGESTIONS.length;
+  const remaining = DEMO_SUGGESTIONS.length - applied;
+  const badge =
+    running || applied > 0
+      ? done
+        ? 'Tout appliqué'
+        : `${remaining} restante${remaining > 1 ? 's' : ''}`
+      : `${DEMO_SUGGESTIONS.length} prêtes`;
+
+  return (
+    <div className="card p-3 shadow-card">
+      <div className="rounded-2xl bg-ink-50 p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <span className="text-sm font-semibold text-ink-700">Suggestions IA</span>
+          <span className={done ? 'chip bg-positive-50 text-positive-700' : 'chip bg-brand-50 text-brand-700'}>
+            {badge}
+          </span>
+        </div>
+        <div className="space-y-2.5">
+          {DEMO_SUGGESTIONS.map((r, i) => {
+            const isDone = i < applied;
+            return (
+              <div key={r.from} className="flex items-center gap-3 rounded-xl border border-hairline bg-surface p-3">
+                <span
+                  className={
+                    isDone
+                      ? 'flex h-9 w-9 items-center justify-center rounded-lg bg-positive-50 text-positive-600'
+                      : 'flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600'
+                  }
+                >
+                  {isDone ? <Check size={18} /> : <r.Icon size={18} />}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className={isDone ? 'truncate text-sm font-semibold text-ink-400 line-through' : 'truncate text-sm font-semibold text-ink-900'}>
+                    {r.from}
+                  </div>
+                  <div className={isDone ? 'text-xs text-positive-600' : 'text-xs text-ink-500'}>
+                    {isDone ? 'Action appliquée' : r.act}
+                  </div>
+                </div>
+                <span className="chip bg-positive-50 text-positive-700">{isDone ? 'Fait' : `${r.conf}%`}</span>
+              </div>
+            );
+          })}
+        </div>
+        <button onClick={play} disabled={running || done} className="btn-primary mt-4 w-full py-3">
+          {running ? (
+            <>
+              <Spinner size={16} className="text-white" /> Application...
+            </>
+          ) : done ? (
+            <>
+              <Check size={16} /> Tout appliqué
             </>
           ) : (
             <>
-              <Mail size={18} /> Brancher ma boîte
+              <Bolt size={16} /> Tout appliquer
             </>
           )}
         </button>
-        <span className="text-sm text-ink-500">
-          Première fois ou retour : c'est le même formulaire.
-        </span>
       </div>
-
-      {detected && <ProviderBriefing provider={detected} />}
-
-      {error && (
-        <div className="inline-flex items-center gap-2 rounded-xl border border-danger-100 bg-danger-50 px-4 py-2.5 text-sm text-danger-700">
-          {error}
-        </div>
-      )}
-    </form>
+    </div>
   );
 }
 
 function Login() {
   const navigate = useNavigate();
-  // La page de tarifs n'existe pas sur une instance auto-hébergée, qui ne
-  // facture personne : sans cette lecture, le bouton "Tarifs" menait à une
-  // redirection vers la page qu'on venait de quitter. Le Header applique déjà
-  // cette règle, la landing ne la connaissait pas.
   const { isConfigured, selfHosted, billingOn } = useInstance();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
   const [providers, setProviders] = useState([]);
 
-  // Les portes que cette instance a réellement. Google demande des identifiants
-  // OAuth dans l'environnement ; le formulaire de boîte demande au moins un
-  // fournisseur joignable en IMAP dans cette édition. Les deux viennent du
-  // serveur : une instance hébergée, qui ne peut jamais atteindre l'API Gmail,
-  // en montre une, une auto-hébergée configurée en montre deux, et rien dans le
-  // SPA ne décide ça.
-  const mailboxDoor = useMemo(
-    () => providers.some((p) => (p.routes || []).some((r) => r.transport === 'imap')),
-    [providers]
-  );
-
-  // Une promesse que le déploiement ne peut pas tenir est pire qu'une promesse
-  // qu'il ne fait pas.
   const features = useMemo(
     () => FEATURES.filter((f) => !f.needs || (f.needs === GMAIL_ONLY && isConfigured)),
     [isConfigured]
@@ -260,16 +416,15 @@ function Login() {
   const [waitlistError, setWaitlistError] = useState('');
 
   useEffect(() => {
-    if (localStorage.getItem('userEmail')) navigate('/inbox');
-    // Le code OAuth était aussi traité ici, en doublon d'AuthCallback, alors que
-    // GMAIL_REDIRECT_URL ne désigne qu'une seule adresse (/auth/callback). Ce
-    // second chemin ne pouvait donc pas être emprunté, et avait déjà divergé :
-    // il ne lisait pas le paramètre `error` renvoyé par un refus Google.
+    if (localStorage.getItem('userEmail')) {
+      if (localStorage.getItem('hasMailbox')) {
+        navigate('/inbox');
+      } else {
+        navigate('/connect');
+      }
+    }
   }, [navigate]);
 
-  // Ce que cette instance sait réellement joindre, lu dans le même catalogue que
-  // celui avec lequel le serveur se connecte. Un échec coûte une bande, pas la
-  // page.
   useEffect(() => {
     let cancelled = false;
     configService
@@ -283,23 +438,6 @@ function Login() {
     };
   }, []);
 
-  const handleLogin = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const response = await authService.getAuthUrl();
-      track('login_start');
-      window.location.href = response.data.authUrl;
-    } catch (err) {
-      setError('Impossible de démarrer la connexion. Réessayez.');
-      setLoading(false);
-    }
-  };
-
-  // Le seul appel à l'action était "Continuer avec Gmail", qui exige tout de
-  // suite un accès complet à la boîte. Un visiteur intéressé mais pas prêt à
-  // autoriser ça au premier contact n'avait aucun moyen de se manifester, alors
-  // que la capture d'adresse existait déjà, une page plus loin.
   const handleWaitlist = async (e) => {
     e.preventDefault();
     const email = waitlistEmail.trim();
@@ -315,6 +453,15 @@ function Login() {
       setWaitlistError(apiError(err, 'Inscription impossible pour le moment. Réessayez.'));
     } finally {
       setJoining(false);
+    }
+  };
+
+  const scrollToAuth = () => {
+    const el = document.getElementById('auth-box');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+      const input = el.querySelector('input');
+      if (input) input.focus();
     }
   };
 
@@ -336,10 +483,12 @@ function Login() {
                 Tarifs
               </button>
             )}
-            <span className="hidden chip border border-hairline bg-surface text-ink-600 sm:inline-flex">
-              <Shield size={14} className="text-brand-600" />{' '}
-              {isConfigured ? 'OAuth Google sécurisé' : "Mot de passe d'application, révocable"}
-            </span>
+            <button
+              onClick={scrollToAuth}
+              className="text-sm font-semibold text-brand-600 transition-colors hover:text-brand-700"
+            >
+              Connexion / Inscription
+            </button>
           </div>
         </nav>
 
@@ -355,108 +504,39 @@ function Login() {
               <span className="text-brand-600">triée pendant que vous dormez.</span>
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-600">
-              Mailsorter lit, comprend et range vos emails à votre place{isConfigured ? ', Gmail compris' : ''}.
+              Mailsorter lit, comprend et range vos emails à votre place.
               Stop au scroll infini : atteignez l'Inbox Zero en quelques clics, et gardez-la propre pour
               toujours.
             </p>
 
-            {isConfigured && (
-              <div className="mt-8 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
-                <button onClick={handleLogin} disabled={loading} className="btn-primary px-6 py-3.5 text-base">
-                  {loading ? (
-                    <>
-                      <Spinner size={20} className="text-white" /> Connexion...
-                    </>
-                  ) : (
-                    <>
-                      <Google size={20} /> Continuer avec Gmail
-                    </>
-                  )}
-                </button>
-                <div className="flex items-center gap-2 text-sm text-ink-500">
-                  <Check size={16} className="text-positive-600" /> Gratuit · Sans carte bancaire
-                </div>
-              </div>
-            )}
+            {/* Formulaire d'inscription / connexion au compte MailSorter */}
+            <AuthBox isConfigured={isConfigured} onSignedIn={(to) => navigate(to)} />
 
-            {mailboxDoor && (
-              <>
-                {isConfigured && (
-                  <div className="mt-8 flex items-center gap-4">
-                    <span className="h-px flex-1 bg-hairline" />
-                    <span className="text-xs font-semibold uppercase tracking-wider text-ink-500">ou</span>
-                    <span className="h-px flex-1 bg-hairline" />
-                  </div>
-                )}
-                <p className={isConfigured ? 'mt-6 text-sm text-ink-600' : 'mt-8 text-sm text-ink-600'}>
-                  Branchez n'importe quelle boîte avec un <strong>mot de passe d'application</strong>,
-                  délivré par votre fournisseur et révocable quand vous voulez. Ce n'est jamais le mot
-                  de passe de votre compte.
-                </p>
-                <MailboxSignIn providers={providers} onSignedIn={() => navigate('/inbox')} />
-              </>
-            )}
-
-            <p className="mt-4 text-sm text-ink-500">
-              Pas encore prêt à donner accès à votre boîte ?{' '}
+            <p className="mt-4 text-xs text-ink-500">
+              Pas encore prêt à commencer ?{' '}
               <a href="#garder-contact" className="font-semibold text-brand-600 underline-offset-2 hover:underline">
                 Laissez-nous votre adresse
               </a>
               .
             </p>
-
-            {error && (
-              <div className="mt-5 inline-flex items-center gap-2 rounded-xl border border-danger-100 bg-danger-50 px-4 py-2.5 text-sm text-danger-700">
-                {error}
-              </div>
-            )}
           </div>
 
-          {/* Illustration de l'écran de suggestions. Annoncée comme telle : ce
-              n'est pas une capture du produit, et la faire passer pour une
-              capture est exactement ce qu'on reproche aux pages de vente. */}
+          {/* Démo de l'écran de suggestions. Annoncée comme telle : ce n'est pas
+              une capture du produit, et la faire passer pour une capture est
+              exactement ce qu'on reproche aux pages de vente. Elle est jouable en
+              revanche, en pur client : le bouton rejoue l'application, sans
+              toucher à une boîte. */}
           <div className="animate-fade-up [animation-delay:120ms]">
-            <div className="card p-3 shadow-card">
-              <div className="rounded-2xl bg-ink-50 p-5">
-                <div className="mb-4 flex items-center justify-between">
-                  <span className="text-sm font-semibold text-ink-700">Suggestions IA</span>
-                  <span className="chip bg-brand-50 text-brand-700">3 prêtes</span>
-                </div>
-                <div className="space-y-2.5">
-                  {[
-                    { Icon: Archive, from: 'Medium Digest', act: 'Archiver', conf: 96 },
-                    { Icon: Tag, from: 'Amazon', act: 'Libellé · Achats', conf: 92 },
-                    { Icon: Sparkles, from: 'Promo Casino', act: 'Supprimer', conf: 88 },
-                  ].map((r, i) => (
-                    <div key={i} className="flex items-center gap-3 rounded-xl border border-hairline bg-surface p-3">
-                      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
-                        <r.Icon size={18} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-semibold text-ink-900">{r.from}</div>
-                        <div className="text-xs text-ink-500">{r.act}</div>
-                      </div>
-                      <span className="chip bg-positive-50 text-positive-700">{r.conf}%</span>
-                    </div>
-                  ))}
-                </div>
-                <button className="btn-primary mt-4 w-full py-3" tabIndex={-1} aria-hidden>
-                  <Bolt size={16} /> Tout appliquer
-                </button>
-              </div>
-            </div>
-            <p className="mt-2 text-center text-xs text-ink-400">Illustration de l'écran de suggestions</p>
+            <SuggestionsDemo />
+            <p className="mt-2 text-center text-xs text-ink-400">Démo de l'écran de suggestions</p>
           </div>
         </section>
 
-        {/* Boîtes joignables : lu sur le serveur, jamais codé en dur. La page ne
-            parlait que de Gmail alors que le catalogue en connaît bien plus, et
-            un visiteur Outlook ou Proton repartait en croyant que le produit ne
-            le concernait pas. */}
+        {/* Boîtes joignables */}
         {providers.length > 0 && (
           <section className="mt-14 rounded-2xl border border-hairline bg-surface/60 px-6 py-5">
             <p className="text-xs font-semibold uppercase tracking-wider text-ink-500">
-              Boîtes joignables par cette instance
+              Messageries prises en charge
             </p>
             <ul className="mt-3 flex flex-wrap gap-1.5">
               {providers.map((p) => (
@@ -465,12 +545,9 @@ function Login() {
                 </li>
               ))}
             </ul>
-            {/* Le compte Mailsorter s'ouvre avec Google, et la boite se branche
-                ensuite depuis l'application, ecran Connexion d'une boite. Dire
-                l'ordre evite la lecture inverse : que seul Gmail est servi. */}
             <p className="mt-3 text-xs text-ink-500">
-              Vous ouvrez votre compte avec Google, puis vous branchez la boite de votre choix
-              depuis l'application.
+              Vous créez votre compte Mailsorter, puis vous branchez la boîte de votre choix
+              (Gmail, Orange, Outlook, Yahoo...) en toute sécurité.
             </p>
           </section>
         )}
@@ -512,7 +589,7 @@ function Login() {
             Trois étapes. Zéro effort.
           </h2>
           <div className="mt-10 grid gap-4 md:grid-cols-3">
-            {stepsFor(isConfigured).map(({ n, title, text }) => (
+            {STEPS.map(({ n, title, text }) => (
               <div key={n} className="card p-6">
                 <div className="font-display text-4xl font-bold text-ink-200">{n}</div>
                 <h3 className="mt-3 text-lg font-bold text-ink-900">{title}</h3>
@@ -576,8 +653,7 @@ function Login() {
           </a>
         </section>
 
-        {/* FAQ. <details> plutôt qu'un accordéon maison : l'ouverture, le
-            clavier et la recherche dans la page marchent sans une ligne de JS. */}
+        {/* FAQ */}
         <section className="mt-24">
           <h2 className="font-display text-3xl font-bold tracking-tight text-ink-900 sm:text-4xl">
             Les questions qu'on nous pose.
@@ -604,32 +680,16 @@ function Login() {
             Reprenez le contrôle de votre inbox.
           </h2>
           <p className="mx-auto mt-3 max-w-md text-white/85">
-            {isConfigured ? 'Connectez Gmail' : 'Branchez votre boîte'} et regardez le désordre disparaître.
-            C'est gratuit, et ça prend 30 secondes.
+            Créez votre compte en 10 secondes et regardez le désordre disparaître.
+            C'est gratuit, et sans carte bancaire.
           </p>
-          {isConfigured ? (
-            <button
-              onClick={handleLogin}
-              disabled={loading}
-              className="mt-8 inline-flex items-center justify-center gap-3 rounded-xl bg-surface px-7 py-3.5 text-base font-bold text-brand-700 shadow-soft transition-colors hover:bg-brand-50 disabled:opacity-60"
-            >
-              {loading ? <Spinner size={20} className="text-brand-600" /> : <Google size={20} />}
-              Commencer maintenant
-            </button>
-          ) : (
-            /* Sans porte Google, ce bouton lancerait un OAuth que l'instance ne
-               peut pas terminer. Il renvoie vers le formulaire, en haut. */
-            <a
-              href="#top"
-              onClick={(e) => {
-                e.preventDefault();
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className="mt-8 inline-flex items-center justify-center gap-3 rounded-xl bg-surface px-7 py-3.5 text-base font-bold text-brand-700 shadow-soft transition-colors hover:bg-brand-50"
-            >
-              <Mail size={20} /> Commencer maintenant
-            </a>
-          )}
+          <button
+            onClick={scrollToAuth}
+            className="mt-8 inline-flex items-center justify-center gap-3 rounded-xl bg-surface px-7 py-3.5 text-base font-bold text-brand-700 shadow-soft transition-colors hover:bg-brand-50"
+          >
+            <Sparkles size={20} />
+            Commencer maintenant
+          </button>
         </section>
 
         {/* Garder le contact sans donner sa boîte */}

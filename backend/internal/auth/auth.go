@@ -94,6 +94,12 @@ func (m *Manager) VerifySession(token string) (string, error) {
 // OAuth flow. Because it is signed, the callback can trust it without storing
 // anything server-side.
 func (m *Manager) IssueState() string {
+	return m.IssueStateFor("")
+}
+
+// IssueStateFor optionally embeds an account email to bind the OAuth callback
+// to an existing authenticated user session.
+func (m *Manager) IssueStateFor(userEmail string) string {
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
 		// Fall back to a time-seeded nonce; signature still guarantees integrity.
@@ -101,27 +107,39 @@ func (m *Manager) IssueState() string {
 	}
 	exp := time.Now().Add(m.stateTTL).Unix()
 	payload := hex.EncodeToString(nonce) + "|" + strconv.FormatInt(exp, 10)
+	if userEmail != "" {
+		payload += "|" + userEmail
+	}
 	return sign(m.stateKey, payload)
 }
 
 // VerifyState reports whether an OAuth state value is authentic and unexpired.
 func (m *Manager) VerifyState(state string) error {
+	_, err := m.VerifyStateEmail(state)
+	return err
+}
+
+// VerifyStateEmail validates an OAuth state value and returns any embedded account email.
+func (m *Manager) VerifyStateEmail(state string) (string, error) {
 	payload, err := verify(m.stateKey, state)
 	if err != nil {
-		return err
+		return "", err
 	}
-	sep := strings.LastIndex(payload, "|")
-	if sep < 0 {
-		return ErrMalformedToken
+	parts := strings.Split(payload, "|")
+	if len(parts) < 2 {
+		return "", ErrMalformedToken
 	}
-	exp, err := strconv.ParseInt(payload[sep+1:], 10, 64)
+	exp, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return ErrMalformedToken
+		return "", ErrMalformedToken
 	}
 	if time.Now().Unix() > exp {
-		return ErrExpired
+		return "", ErrExpired
 	}
-	return nil
+	if len(parts) >= 3 {
+		return parts[2], nil
+	}
+	return "", nil
 }
 
 // sign encodes payload and appends a base64url HMAC-SHA256 signature.

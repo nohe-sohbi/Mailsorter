@@ -5,9 +5,9 @@ Base URL: `http://localhost:8080`
 ## Authentication
 
 Authenticated endpoints require a **session token** in the `Authorization` header.
-The token is issued by `GET /api/auth/callback` after a successful Google login,
-or by `POST /api/auth/mailbox` after a mailbox accepted an address and an app
-password. It is an HMAC-signed, expiring value that identifies the user.
+The token is issued by `POST /api/auth/register` or `POST /api/auth/login` for
+Mailsorter accounts, by `GET /api/auth/callback` after a Google login, or by
+`POST /api/auth/mailbox`. It is an HMAC-signed, expiring value that identifies the user.
 
 ```
 Authorization: Bearer <session-token>
@@ -85,6 +85,65 @@ to keep cardinality bounded.
 ---
 
 ## Auth Endpoints
+
+### Register Account
+
+#### POST /api/auth/register
+
+Create a new independent Mailsorter account with email and password.
+
+**Request Body:**
+```json
+{
+  "email": "vous@exemple.com",
+  "password": "motdepasse123"
+}
+```
+
+**Response:** `201 Created`
+```json
+{
+  "accessToken": "<session-token>",
+  "userEmail": "vous@exemple.com"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid email format or password shorter than 8 characters
+- `409 Conflict`: An account with this email already exists
+- `429 Too Many Requests`: Rate limit exceeded
+
+---
+
+### Login Account
+
+#### POST /api/auth/login
+
+Log in to an existing Mailsorter account with email and password.
+
+**Request Body:**
+```json
+{
+  "email": "vous@exemple.com",
+  "password": "motdepasse123"
+}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "accessToken": "<session-token>",
+  "userEmail": "vous@exemple.com"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing credentials or account linked with Google SSO
+- `401 Unauthorized`: Invalid credentials
+- `429 Too Many Requests`: Rate limit exceeded
+
+---
+
 
 ### Get Authorization URL
 

@@ -10,6 +10,7 @@ type User struct {
 	AccessToken  string    `json:"-" bson:"accessToken"`
 	RefreshToken string    `json:"-" bson:"refreshToken"`
 	TokenExpiry  time.Time `json:"-" bson:"tokenExpiry"`
+	PasswordHash string    `json:"-" bson:"passwordHash,omitempty"`
 	// Billing. Plan is "free" (default/empty) or "pro".
 	Plan                 string    `json:"plan" bson:"plan,omitempty"`
 	StripeCustomerID     string    `json:"-" bson:"stripeCustomerId,omitempty"`
@@ -89,6 +90,18 @@ type Label struct {
 	Name      string    `json:"name" bson:"name"`
 	Color     string    `json:"color" bson:"color"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+}
+
+// RegisterRequest is the body for POST /api/auth/register.
+type RegisterRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// LoginRequest is the body for POST /api/auth/login.
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type AuthResponse struct {

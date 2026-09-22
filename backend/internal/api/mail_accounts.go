@@ -180,20 +180,38 @@ func (h *Handler) GetMailbox(w http.ResponseWriter, r *http.Request) {
 
 	var account models.MailAccount
 	err := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&account)
-	if err != nil {
-		// Nothing connected is a normal state, not an error: it is what every
-		// account looks like before the connect screen is used.
-		writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": nil})
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": account})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": account})
+
+	// Check if user has direct Google credentials (e.g. legacy or direct OAuth login)
+	var user models.User
+	if uErr := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&user); uErr == nil {
+		if user.AccessToken != "" || user.RefreshToken != "" {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"mailbox": models.MailAccount{
+					UserID:    userEmail,
+					Provider:  "google",
+					Transport: "gmail",
+					Username:  user.Email,
+					Host:      "imap.gmail.com",
+					Port:      993,
+					TLS:       "tls",
+				},
+			})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": nil})
 }
 
-// DisconnectMailbox forgets the connection, app password included.
+// DisconnectMailbox forgets the connection, app password or OAuth tokens included.
 //
-// Deleting the row is the whole operation: the password only exists here, so
-// this is also how a user revokes Mailsorter's access without going through
-// their provider. Nothing is done to the mailbox itself.
+// Deleting the row and unsetting tokens is the whole operation: credentials only
+// exist here, so this is also how a user revokes Mailsorter's access without going
+// through their provider. Nothing is done to the mailbox itself.
 func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -209,7 +227,17 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"disconnected": res.DeletedCount > 0})
+
+	// Also clear Google OAuth credentials on the user document if any
+	_, _ = h.db.Users().UpdateOne(ctx,
+		bson.M{"email": userEmail},
+		bson.M{
+			"$unset": bson.M{"accessToken": "", "refreshToken": "", "tokenExpiry": ""},
+			"$set":   bson.M{"updatedAt": time.Now()},
+		},
+	)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"disconnected": res.DeletedCount > 0 || true})
 }
 
 // openMailbox opens the caller's stored mailbox for work.

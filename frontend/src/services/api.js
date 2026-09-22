@@ -53,6 +53,10 @@ export function apiError(err, fallback = 'Une erreur est survenue.') {
 }
 
 export const authService = {
+  register: (email, password) =>
+    apiClient.post('/api/auth/register', { email, password }),
+  login: (email, password) =>
+    apiClient.post('/api/auth/login', { email, password }),
   // reconnect forces Google's consent screen. Google only hands back a refresh
   // token on a first authorization or when consent is re-granted, so repairing a
   // revoked grant without it produces an access token that expires in an hour

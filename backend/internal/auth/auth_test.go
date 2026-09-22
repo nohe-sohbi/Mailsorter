@@ -100,3 +100,19 @@ func mutate(s string) string {
 	}
 	return string(c) + s[1:]
 }
+
+func TestStateWithUserEmailRoundTrip(t *testing.T) {
+	m := NewManager("test-secret")
+	state := m.IssueStateFor("user@example.com")
+	email, err := m.VerifyStateEmail(state)
+	if err != nil {
+		t.Fatalf("VerifyStateEmail returned error: %v", err)
+	}
+	if email != "user@example.com" {
+		t.Fatalf("got %q, want user@example.com", email)
+	}
+	// VerifyState should also succeed
+	if err := m.VerifyState(state); err != nil {
+		t.Fatalf("VerifyState returned error: %v", err)
+	}
+}

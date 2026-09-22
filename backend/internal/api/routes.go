@@ -14,6 +14,8 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/metrics", h.Metrics).Methods("GET")
 
 	// Auth routes
+	r.HandleFunc("/api/auth/register", h.Register).Methods("POST")
+	r.HandleFunc("/api/auth/login", h.Login).Methods("POST")
 	r.HandleFunc("/api/auth/url", h.GetAuthURL).Methods("GET")
 	r.HandleFunc("/api/auth/callback", h.HandleAuthCallback).Methods("GET")
 	// Signing in with a mailbox, which is also how an account is created. Public

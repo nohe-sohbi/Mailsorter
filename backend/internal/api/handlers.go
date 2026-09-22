@@ -187,9 +187,11 @@ func (h *Handler) metricsMiddleware(next http.Handler) http.Handler {
 
 // Auth endpoints
 func (h *Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
-	// Signed, expiring state to prevent CSRF on the OAuth callback. It is
-	// stateless: the callback verifies the signature, no server storage needed.
-	state := h.auth.IssueState()
+	// Signed, expiring state to prevent CSRF on the OAuth callback.
+	// If the user is already authenticated on MailSorter, embed their email
+	// in the state so the callback binds this mailbox to their account.
+	userEmail := r.Header.Get("X-User-Email")
+	state := h.auth.IssueStateFor(userEmail)
 
 	// ?reconnect=1 is the "Reconnecter Gmail" path in the settings: the caller
 	// already has an account and is repairing a grant, which needs the consent
@@ -213,7 +215,8 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// Reject the callback unless it carries the signed state we issued. This is
 	// what stops a forged redirect (CSRF) from completing a login.
 	state := r.URL.Query().Get("state")
-	if err := h.auth.VerifyState(state); err != nil {
+	linkedUserEmail, err := h.auth.VerifyStateEmail(state)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid OAuth state")
 		return
 	}
@@ -225,10 +228,15 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	gmailClient := h.gmailService.GetClient(token)
-	userEmail, err := h.gmailService.GetUserProfile(gmailClient)
+	gmailUserEmail, err := h.gmailService.GetUserProfile(gmailClient)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to get user profile: "+err.Error())
 		return
+	}
+
+	accountOwner := gmailUserEmail
+	if linkedUserEmail != "" {
+		accountOwner = linkedUserEmail
 	}
 
 	// Store user in database
@@ -248,7 +256,7 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := bson.M{"email": userEmail}
+	filter := bson.M{"email": accountOwner}
 	set := bson.M{
 		"accessToken": sealedAccess,
 		"tokenExpiry": token.Expiry,
@@ -266,7 +274,7 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	update := bson.M{
 		"$set": set,
 		"$setOnInsert": bson.M{
-			"email":     userEmail,
+			"email":     accountOwner,
 			"createdAt": time.Now(),
 		},
 	}
@@ -278,13 +286,32 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Also record in mail_accounts that this user's active mailbox is Google Gmail
+	now := time.Now()
+	_, _ = h.db.MailAccounts().UpdateOne(ctx,
+		bson.M{"userId": accountOwner},
+		bson.M{
+			"$set": bson.M{
+				"provider":  "google",
+				"transport": "gmail",
+				"username":  gmailUserEmail,
+				"host":      "imap.gmail.com",
+				"port":      993,
+				"tls":       "tls",
+				"updatedAt": now,
+			},
+			"$setOnInsert": bson.M{"userId": accountOwner, "createdAt": now},
+		},
+		options.Update().SetUpsert(true),
+	)
+
 	// Hand the browser our own signed session token, never the raw Gmail
 	// access token, which must stay server-side.
-	sessionToken := h.auth.IssueSession(userEmail)
+	sessionToken := h.auth.IssueSession(accountOwner)
 
 	writeJSON(w, http.StatusOK, models.TokenResponse{
 		AccessToken: sessionToken,
-		UserEmail:   userEmail,
+		UserEmail:   accountOwner,
 	})
 }
 

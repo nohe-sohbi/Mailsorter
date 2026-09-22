@@ -586,11 +586,11 @@ Do not duplicate these into this file. Point at them.
   are one act, `read` and `markRead` another, and both spellings sit in `action_log` rows
   written over the life of the app. Dropping an alias would silently stop the undo history
   resolving for every entry written the other way.
-- **Connecting a mailbox IS registering, and there is no other sign-up.** Mailsorter
-  never invents a password, so it has none to hash, reset, confirm or email: the
-  mail server is the authority, and an app password it accepts proves identity
-  better than a confirmation link. `POST /api/auth/mailbox` is therefore both the
-  first sign-up and every later sign-in, and it is PUBLIC. Two things hold it
+- **MailSorter account registration is decoupled from mailbox connection.** Users can
+  register and sign in to their MailSorter account (`POST /api/auth/register`,
+  `POST /api/auth/login`) with email and password (bcrypt-hashed), or via Google SSO.
+  Once authenticated, they define the mailbox to sort on `/connect` either via Google
+  OAuth or via IMAP with an app password (`POST /api/mailbox/connect`). Two things hold it
   safe and neither may be removed: a throttle far below the global limiter
   (~1 attempt / 3 s, burst 5) keyed on the caller AND on the address, because it
   is the one route where a stranger makes the server try a password against a

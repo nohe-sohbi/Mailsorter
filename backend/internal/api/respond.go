@@ -25,6 +25,8 @@ var errReauthRequired = errors.New("gmail authorization expired; re-authenticati
 // an IMAP mailbox yet" across the whole unported surface at once.
 func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errNoMailboxConnected):
+		writeError(w, http.StatusPreconditionRequired, "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.")
 	case errors.Is(err, errReauthRequired):
 		writeError(w, http.StatusUnauthorized, "Gmail authorization expired. Please reconnect your account.")
 	case errors.Is(err, errWrongTransport):
