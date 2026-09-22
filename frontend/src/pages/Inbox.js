@@ -40,6 +40,7 @@ const SHORTCUTS = [
   ['X', "Sélectionner l'email ciblé"],
   ['E', 'Archiver'],
   ['Suppr / Retour arrière', 'Supprimer'],
+  ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
   ['S', 'Mettre en favori'],
   ['A', 'Tout appliquer (suggestions)'],
@@ -191,6 +192,10 @@ function Inbox() {
   const [view, setView] = useState('emails');
   const [selectedEmails, setSelectedEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
+  const [triageMode, setTriageMode] = useState(false);
+  const [triageIndex, setTriageIndex] = useState(0);
+  const [triageIds, setTriageIds] = useState([]);
+  const [triageLabeling, setTriageLabeling] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [applyingAll, setApplyingAll] = useState(false);
@@ -772,6 +777,7 @@ function Inbox() {
     // Optimistic: the row leaves immediately so a burst of j/e/j/e actually
     // walks down the list instead of hammering the same message.
     removeEmails(email.messageId);
+    setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
       await emailService.action(email.messageId, action);
       bumpGamify(1);
@@ -815,6 +821,7 @@ function Inbox() {
   const handleSnooze = async (email, choice) => {
     setSelectedEmail(null);
     removeEmails(email.messageId);
+    setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
       await emailService.snooze(email.messageId, choice);
       // `custom` rather than the instant itself: an exact wake time is personal
@@ -827,6 +834,130 @@ function Inbox() {
       fetchData({ forceRefresh: true, sync: false });
     }
   };
+
+  // --- Step-by-step triage for selected emails ------------------------------
+  const handleStartStepTriage = () => {
+    if (selectedEmails.length === 0) return;
+    setTriageMode(true);
+    setTriageIndex(0);
+    setTriageIds([...selectedEmails]);
+    const first = emails.find((e) => e.messageId === selectedEmails[0]) || { messageId: selectedEmails[0] };
+    setSelectedEmail(first);
+    track('step_triage_start', { count: selectedEmails.length });
+    setAnnouncement(`Tri pas-à-pas démarré pour ${selectedEmails.length} emails`);
+  };
+
+  const handleExitTriage = useCallback(() => {
+    setTriageMode(false);
+    setAnnouncement('Tri pas-à-pas terminé');
+  }, []);
+
+  const handleTriageNext = useCallback(() => {
+    if (triageIndex < triageIds.length - 1) {
+      const nextIdx = triageIndex + 1;
+      setTriageIndex(nextIdx);
+      const nextId = triageIds[nextIdx];
+      const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
+      setSelectedEmail(nextEmail);
+    }
+  }, [triageIndex, triageIds, emails]);
+
+  const handleTriagePrev = useCallback(() => {
+    if (triageIndex > 0) {
+      const prevIdx = triageIndex - 1;
+      setTriageIndex(prevIdx);
+      const prevId = triageIds[prevIdx];
+      const prevEmail = emails.find((e) => e.messageId === prevId) || { messageId: prevId };
+      setSelectedEmail(prevEmail);
+    }
+  }, [triageIndex, triageIds, emails]);
+
+  const handleTriageAction = useCallback(
+    async (action) => {
+      const currentId = triageIds[triageIndex];
+      if (!currentId) return;
+      const cur = emails.find((e) => e.messageId === currentId) || { messageId: currentId };
+
+      directAction(cur, action);
+
+      setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
+      const nextIds = triageIds.filter((id) => id !== currentId);
+      setTriageIds(nextIds);
+
+      if (nextIds.length === 0) {
+        setTriageMode(false);
+        setSelectedEmail(null);
+        toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
+        return;
+      }
+
+      const nextIdx = Math.min(triageIndex, nextIds.length - 1);
+      setTriageIndex(nextIdx);
+      const nextId = nextIds[nextIdx];
+      const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
+      setSelectedEmail(nextEmail);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [triageIds, triageIndex, emails, directAction]
+  );
+
+  const handleTriageKeep = useCallback(() => {
+    const currentId = triageIds[triageIndex];
+    if (!currentId) return;
+    const cur = emails.find((e) => e.messageId === currentId) || { messageId: currentId };
+
+    flagAction(cur, 'read');
+
+    setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
+    const nextIds = triageIds.filter((id) => id !== currentId);
+    setTriageIds(nextIds);
+    toast.info('Email conservé dans la boîte');
+
+    if (nextIds.length === 0) {
+      setTriageMode(false);
+      setSelectedEmail(null);
+      toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
+      return;
+    }
+
+    const nextIdx = Math.min(triageIndex, nextIds.length - 1);
+    setTriageIndex(nextIdx);
+    const nextId = nextIds[nextIdx];
+    const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
+    setSelectedEmail(nextEmail);
+  },
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [triageIds, triageIndex, emails, flagAction]
+  );
+
+  const handleTriageSnooze = useCallback(
+    async (choice) => {
+      const currentId = triageIds[triageIndex];
+      if (!currentId) return;
+      const cur = emails.find((e) => e.messageId === currentId) || { messageId: currentId };
+
+      await handleSnooze(cur, choice);
+
+      setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
+      const nextIds = triageIds.filter((id) => id !== currentId);
+      setTriageIds(nextIds);
+
+      if (nextIds.length === 0) {
+        setTriageMode(false);
+        setSelectedEmail(null);
+        toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
+        return;
+      }
+
+      const nextIdx = Math.min(triageIndex, nextIds.length - 1);
+      setTriageIndex(nextIdx);
+      const nextId = nextIds[nextIdx];
+      const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
+      setSelectedEmail(nextEmail);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [triageIds, triageIndex, emails, handleSnooze]
+  );
 
   const handleProtect = async (email) => {
     try {
@@ -938,6 +1069,14 @@ function Inbox() {
     }
   };
 
+  // The open message, as the LIST currently knows it rather than as it was when
+  // the row was clicked. selectedEmail is a snapshot: without this, every
+  // optimistic patch (read, starred) landed in the list and left the reader
+  // showing the old state, so its own favourite toggle never flipped.
+  const openEmail = selectedEmail
+    ? emails.find((e) => e.messageId === selectedEmail.messageId) || selectedEmail
+    : null;
+
   // --- Keyboard shortcuts --------------------------------------------------
   useEffect(() => {
     const onKey = (e) => {
@@ -952,13 +1091,46 @@ function Inbox() {
           el.blur();
           return;
         }
+        if (triageMode) {
+          handleExitTriage();
+          return;
+        }
         if (selectedEmail) setSelectedEmail(null);
         else if (selectedEmails.length) setSelectedEmails([]);
         return;
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      // A dialog owns the keyboard while it is open.
-      if (document.querySelector('[role="dialog"]')) return;
+      // A dialog owns the keyboard while it is open (except reader overlay on mobile).
+      if (document.querySelector('[role="dialog"]') && !readerIsOverlay) return;
+
+      // In triage mode, single keystrokes act on the currently inspected email
+      if (triageMode && openEmail) {
+        if (e.key === 'e' || e.key === 'E') {
+          e.preventDefault();
+          handleTriageAction('archive');
+          return;
+        }
+        if (e.key === '#' || e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault();
+          handleTriageAction('delete');
+          return;
+        }
+        if (e.key === 'c' || e.key === 'C') {
+          e.preventDefault();
+          handleTriageKeep();
+          return;
+        }
+        if (e.key === 'j' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          handleTriageNext();
+          return;
+        }
+        if (e.key === 'k' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          handleTriagePrev();
+          return;
+        }
+      }
 
       if (e.key === '?') { setShowShortcuts((s) => !s); return; }
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
@@ -1010,7 +1182,7 @@ function Inbox() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails, focusedIndex, view, visibleSuggestions, selectedEmail, selectedEmails]);
+  }, [emails, focusedIndex, view, visibleSuggestions, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
 
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
   const goalHit = gamify.today >= gamify.goal;
@@ -1019,28 +1191,39 @@ function Inbox() {
 
   const activeFilter = QUICK_FILTERS.find((f) => f.query === activeQuery);
 
-  // The open message, as the LIST currently knows it rather than as it was when
-  // the row was clicked. selectedEmail is a snapshot: without this, every
-  // optimistic patch (read, starred) landed in the list and left the reader
-  // showing the old state, so its own favourite toggle never flipped.
-  const openEmail = selectedEmail
-    ? emails.find((e) => e.messageId === selectedEmail.messageId) || selectedEmail
-    : null;
+
 
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
   const readerPanel = openEmail ? (
     <EmailReader
       email={openEmail}
-      onClose={() => setSelectedEmail(null)}
+      onClose={() => {
+        setSelectedEmail(null);
+        if (triageMode) setTriageMode(false);
+      }}
       onRead={(id) => patchEmail(id, { isRead: true })}
-      onArchive={() => handleReaderAction(openEmail, 'archive')}
-      onDelete={() => handleReaderAction(openEmail, 'delete')}
-      onSnooze={(choice) => handleSnooze(openEmail, choice)}
+      onArchive={() => (triageMode ? handleTriageAction('archive') : handleReaderAction(openEmail, 'archive'))}
+      onDelete={() => (triageMode ? handleTriageAction('delete') : handleReaderAction(openEmail, 'delete'))}
+      onSnooze={(choice) => (triageMode ? handleTriageSnooze(choice) : handleSnooze(openEmail, choice))}
       onFlag={(action) => flagAction(openEmail, action)}
       onProtect={() => handleProtect(openEmail)}
       onUnsubscribe={() => handleUnsubscribe({ messageId: openEmail.messageId })}
       unsubscribing={unsubscribing === openEmail.messageId}
+      triage={
+        triageMode && triageIds.length > 0
+          ? {
+              current: triageIndex + 1,
+              total: triageIds.length,
+              hasPrev: triageIndex > 0,
+              hasNext: triageIndex < triageIds.length - 1,
+              onPrev: handleTriagePrev,
+              onNext: handleTriageNext,
+              onKeep: handleTriageKeep,
+              onLabel: () => setTriageLabeling(true),
+            }
+          : null
+      }
     />
   ) : null;
 
@@ -1343,33 +1526,78 @@ function Inbox() {
       )}
 
       {/* Main content */}
-      <div className={cn('grid gap-4', selectedEmail ? 'lg:grid-cols-[1fr_minmax(380px,460px)]' : 'grid-cols-1')}>
+      <div
+        className={cn(
+          'grid gap-4',
+          triageMode
+            ? 'lg:grid-cols-[minmax(320px,360px)_1fr]'
+            : selectedEmail
+            ? 'lg:grid-cols-[1fr_minmax(380px,460px)]'
+            : 'grid-cols-1'
+        )}
+      >
         {view === 'emails' ? (
           <div className="card overflow-hidden">
             {/* List toolbar: selection lives here, and so do the actions on it */}
-            <div className="flex flex-wrap items-center gap-2 border-b border-hairline px-3 py-2 sm:px-4">
-              <button
-                onClick={handleSelectAll}
-                role="checkbox"
-                aria-checked={allSelected ? 'true' : hasSelection ? 'mixed' : 'false'}
-                disabled={emails.length === 0}
-                className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs font-semibold text-muted hover:bg-ink-100 hover:text-ink-900 disabled:opacity-40"
-              >
-                <span
-                  className={cn(
-                    'flex h-4 w-4 items-center justify-center rounded border',
-                    allSelected || hasSelection ? 'border-brand-600 bg-brand-fill text-white' : 'border-ink-300'
-                  )}
-                  aria-hidden
+            {triageMode ? (
+              <div className="flex items-center justify-between gap-2 border-b border-hairline bg-brand-50/70 px-3 py-2.5 sm:px-4">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-brand-600 text-white">
+                    <Sparkles size={13} />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-brand-900 truncate">Tri pas-à-pas</div>
+                    <div className="text-[11px] text-brand-700">
+                      {triageIds.length} email{plural(triageIds.length)} restant{plural(triageIds.length)}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleExitTriage}
+                  className="btn-ghost btn-xs text-brand-700 hover:bg-brand-100 hover:text-brand-900 shrink-0"
+                  title="Quitter le mode tri pas-à-pas (Échap)"
                 >
-                  {allSelected ? <Check size={11} /> : hasSelection ? <span className="h-0.5 w-2 rounded bg-white" /> : null}
-                </span>
-                {allSelected ? 'Tout désélectionner' : 'Tout sélectionner'}
-              </button>
+                  Quitter
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 border-b border-hairline px-3 py-2 sm:px-4">
+                <button
+                  onClick={handleSelectAll}
+                  role="checkbox"
+                  aria-checked={allSelected ? 'true' : hasSelection ? 'mixed' : 'false'}
+                  disabled={emails.length === 0}
+                  className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs font-semibold text-muted hover:bg-ink-100 hover:text-ink-900 disabled:opacity-40"
+                >
+                  <span
+                    className={cn(
+                      'flex h-4 w-4 items-center justify-center rounded border',
+                      allSelected || hasSelection ? 'border-brand-600 bg-brand-fill text-white' : 'border-ink-300'
+                    )}
+                    aria-hidden
+                  >
+                    {allSelected ? <Check size={11} /> : hasSelection ? <span className="h-0.5 w-2 rounded bg-white" /> : null}
+                  </span>
+                  {allSelected ? 'Tout désélectionner' : 'Tout sélectionner'}
+                </button>
 
-              {hasSelection ? (
-                <div className="flex flex-wrap items-center gap-1">
-                  <span className="chip bg-brand-100 text-brand-700">{selectedEmails.length} sélectionné{selectedEmails.length > 1 ? 's' : ''}</span>
+                {hasSelection ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="chip bg-brand-100 text-brand-700 font-semibold">
+                      {selectedEmails.length} sélectionné{selectedEmails.length > 1 ? 's' : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleStartStepTriage}
+                      disabled={bulkBusy}
+                      className="btn-primary btn-sm flex items-center gap-1.5 shadow-sm"
+                      title="Trier ces emails un par un"
+                    >
+                      <Sparkles size={14} />
+                      <span>Trier un par un</span>
+                    </button>
+                    <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />
                   {BULK_ACTIONS.map((key) => {
                     const meta = actionMeta(key);
                     return (
@@ -1410,6 +1638,7 @@ function Inbox() {
                 </span>
               )}
             </div>
+            )}
 
             {/* An error with results still on screen: the list stays (it is
                 still valid, just stale) but the failure has to be visible and
@@ -1485,7 +1714,10 @@ function Inbox() {
               />
             ) : (
               <ul className="divide-y divide-[rgb(var(--hairline))]">
-                {emails.map((email, idx) => {
+                {(triageMode
+                  ? triageIds.map((id) => emails.find((e) => e.messageId === id) || { messageId: id, subject: 'Chargement...' })
+                  : emails
+                ).map((email, idx) => {
                   const name = senderLabel(email.from) || '?';
                   const isActive = selectedEmail?.messageId === email.messageId;
                   const isChecked = selectedEmails.includes(email.messageId);
@@ -1526,7 +1758,16 @@ function Inbox() {
                         )}
                       </span>
                       <button
-                        onClick={() => { setFocusedIndex(idx); setSelectedEmail(email); }}
+                        onClick={() => {
+                          if (triageMode) {
+                            const foundIdx = triageIds.indexOf(email.messageId);
+                            if (foundIdx !== -1) setTriageIndex(foundIdx);
+                            setSelectedEmail(email);
+                          } else {
+                            setFocusedIndex(idx);
+                            setSelectedEmail(email);
+                          }
+                        }}
                         className="min-w-0 flex-1 text-left"
                       >
                         <span className="flex items-baseline justify-between gap-2">
@@ -1535,6 +1776,11 @@ function Inbox() {
                             {!email.isRead && <span className="sr-only"> (non lu)</span>}
                           </span>
                           <span className="flex shrink-0 items-center gap-1.5">
+                            {triageMode && isActive && (
+                              <span className="chip bg-brand-100 text-brand-800 text-[10px] font-bold">
+                                En cours
+                              </span>
+                            )}
                             {/* Starring had no visible effect at all: the action
                                 fired, and the row looked exactly the same. */}
                             {(email.isStarred || (email.labelIds || []).includes('STARRED')) && (
@@ -1571,7 +1817,7 @@ function Inbox() {
                   );
                 })}
 
-                {pagination.nextPageToken && (
+                {pagination.nextPageToken && !triageMode && (
                   <li className="p-3">
                     <button onClick={loadMoreEmails} disabled={loadingMore} className="btn-secondary w-full">
                       {loadingMore ? <Spinner size={18} /> : null}
@@ -1784,14 +2030,31 @@ function Inbox() {
           ))}
       </div>
 
-      {/* Label picker for the bulk "Étiqueter" action */}
+      {/* Label picker for the bulk "Étiqueter" action and triage mode */}
       <LabelPicker
-        open={labelPickerOpen}
-        count={selectedEmails.length}
-        onClose={() => setLabelPickerOpen(false)}
-        onPick={(name) => {
+        open={labelPickerOpen || triageLabeling}
+        count={triageLabeling ? 1 : selectedEmails.length}
+        onClose={() => {
           setLabelPickerOpen(false);
-          runBulk('label', name);
+          setTriageLabeling(false);
+        }}
+        onPick={async (name) => {
+          if (triageLabeling) {
+            setTriageLabeling(false);
+            const currentId = triageIds[triageIndex];
+            if (currentId) {
+              try {
+                await emailService.batchAction([currentId], 'label', name);
+                toast.success(`Étiquette "${name}" appliquée`);
+                handleTriageNext();
+              } catch {
+                toast.error("Impossible d'appliquer l'étiquette");
+              }
+            }
+          } else {
+            setLabelPickerOpen(false);
+            runBulk('label', name);
+          }
         }}
       />
 

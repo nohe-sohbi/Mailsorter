@@ -87,6 +87,7 @@ export const Check = make(<path d="M20 6 9 17l-5-5" />);
 export const X = make(<path d="M18 6 6 18M6 6l12 12" />);
 export const Menu = make(<path d="M4 6h16M4 12h16M4 18h16" />);
 export const ChevronRight = make(<path d="m9 6 6 6-6 6" />);
+export const ChevronLeft = make(<path d="m15 18-6-6 6-6" />);
 export const Shield = make(
   <>
     <path d="M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6l8-3z" />

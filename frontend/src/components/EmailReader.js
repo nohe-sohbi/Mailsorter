@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { emailService, labelService, apiError } from '../services/api';
-import { X, Archive, Trash, Mail, BellOff, Shield, Paperclip, Star, Download } from '../ui/icons';
+import { X, Archive, Trash, Mail, BellOff, Shield, Paperclip, Star, Download, ChevronLeft, ChevronRight, Check, Sparkles, Tag } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 import { ErrorState } from '../ui/primitives';
 import { useToast } from '../ui/Toast';
@@ -82,6 +82,7 @@ function EmailReader({
   onFlag,
   unsubscribing,
   onRead,
+  triage,
 }) {
   const toast = useToast();
   const [full, setFull] = useState(null);
@@ -224,12 +225,83 @@ function EmailReader({
       className="flex h-full w-full flex-col overflow-hidden bg-surface"
       aria-label={`Email : ${merged.subject || 'sans sujet'}`}
     >
+      {triage && (
+        <div className="flex flex-col gap-1.5 border-b border-hairline bg-brand-50/60 px-3 py-2 sm:px-5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="flex h-5 w-5 items-center justify-center rounded bg-brand-600 text-white font-bold text-[10px]">
+                <Sparkles size={11} />
+              </span>
+              <span className="text-xs font-bold text-brand-900">Tri pas-à-pas</span>
+              <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-800">
+                {triage.current} / {triage.total}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={triage.onPrev}
+                disabled={!triage.hasPrev}
+                className="btn-ghost btn-xs flex items-center gap-1 disabled:opacity-30"
+                title="Email précédent (Flèche gauche ou K)"
+              >
+                <ChevronLeft size={13} />
+                <span className="hidden sm:inline">Précédent</span>
+              </button>
+              {triage.onKeep && (
+                <button
+                  type="button"
+                  onClick={triage.onKeep}
+                  className="btn-secondary btn-xs flex items-center gap-1 border-brand-200 text-brand-700 hover:bg-brand-100"
+                  title="Conserver dans la boîte et marquer comme lu (C)"
+                >
+                  <Check size={13} />
+                  <span>Conserver</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={triage.onNext}
+                disabled={!triage.hasNext}
+                className="btn-ghost btn-xs flex items-center gap-1 disabled:opacity-30"
+                title="Passer a l'email suivant sans modifier (Flèche droite ou J)"
+              >
+                <span className="hidden sm:inline">Passer</span>
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          </div>
+          <div className="h-1 w-full overflow-hidden rounded-full bg-brand-100">
+            <div
+              className="h-full bg-brand-600 transition-all duration-300 ease-out"
+              style={{ width: `${Math.max(6, Math.round((triage.current / triage.total) * 100))}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-2 border-b border-hairline px-3 py-2 sm:px-5 sm:py-3">
-        <button ref={closeRef} onClick={onClose} className="btn-ghost btn-sm btn-icon" aria-label="Fermer le lecteur">
+        <button
+          ref={closeRef}
+          onClick={onClose}
+          className="btn-ghost btn-sm btn-icon"
+          aria-label={triage ? 'Quitter le tri pas-a-pas' : 'Fermer le lecteur'}
+          title={triage ? 'Quitter le tri pas-a-pas (Échap)' : 'Fermer le lecteur (Échap)'}
+        >
           <X size={18} />
         </button>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           {onSnooze && <SnoozeButton onSnooze={onSnooze} ariaLabel="Reporter cet email" />}
+          {triage?.onLabel && (
+            <button
+              onClick={triage.onLabel}
+              className="btn-ghost btn-sm btn-icon"
+              aria-label="Étiqueter cet email"
+              title="Étiqueter cet email (L)"
+            >
+              <Tag size={18} />
+            </button>
+          )}
           {onFlag && (
             <>
               {/* Favori and "unread again" are the two things a reader is for
@@ -268,16 +340,29 @@ function EmailReader({
               <Shield size={18} />
             </button>
           )}
-          <button onClick={onArchive} className="btn-ghost btn-sm btn-icon" aria-label="Archiver" title="Archiver">
+          <button
+            onClick={onArchive}
+            className={cn(
+              'btn-ghost btn-sm',
+              triage ? 'flex items-center gap-1 px-2.5 font-medium text-ink-800 hover:bg-brand-50 hover:text-brand-700' : 'btn-icon'
+            )}
+            aria-label="Archiver"
+            title="Archiver (E)"
+          >
             <Archive size={18} />
+            {triage && <span className="hidden sm:inline">Archiver</span>}
           </button>
           <button
             onClick={onDelete}
-            className="btn-ghost btn-sm btn-icon text-danger-600 hover:bg-danger-50"
+            className={cn(
+              'btn-ghost btn-sm text-danger-600 hover:bg-danger-50',
+              triage ? 'flex items-center gap-1 px-2.5 font-medium' : 'btn-icon'
+            )}
             aria-label="Supprimer"
-            title="Supprimer"
+            title="Supprimer (Suppr)"
           >
             <Trash size={18} />
+            {triage && <span className="hidden sm:inline">Supprimer</span>}
           </button>
         </div>
       </div>
