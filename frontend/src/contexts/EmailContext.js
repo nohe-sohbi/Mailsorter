@@ -203,6 +203,12 @@ export function EmailProvider({ children }) {
     setEmails((prev) => prev.map((e) => (e.messageId === messageId ? { ...e, ...patch } : e)));
   }, []);
 
+  const addSuggestion = useCallback((sug) => {
+    if (!sug) return;
+    const id = sug.id || sug._id;
+    setSuggestions((prev) => [sug, ...prev.filter((s) => (s.id || s._id) !== id)]);
+  }, []);
+
   const removeSuggestion = useCallback((suggestionId) => {
     setSuggestions((prev) => prev.filter((s) => (s.id || s._id) !== suggestionId));
   }, []);
@@ -247,6 +253,7 @@ export function EmailProvider({ children }) {
     loadMoreEmails,
     removeEmails,
     patchEmail,
+    addSuggestion,
     removeSuggestion,
     removeSuggestions,
     restoreSuggestions,

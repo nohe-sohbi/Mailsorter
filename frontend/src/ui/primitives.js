@@ -147,3 +147,24 @@ export function LiveAnnouncer({ message }) {
     </span>
   );
 }
+
+export function ConfidenceRing({ value = 0, color = "rgb(var(--brand-600))" }) {
+  const pct = Math.round((value || 0) * 100);
+  const r = 13;
+  const c = 2 * Math.PI * r;
+  return (
+    <div className="relative h-9 w-9 shrink-0" title={`Confiance ${pct}%`}>
+      <svg viewBox="0 0 32 32" className="h-9 w-9 -rotate-90" aria-hidden>
+        <circle cx="16" cy="16" r={r} fill="none" stroke="rgb(var(--ink-200))" strokeWidth="3" />
+        <circle
+          cx="16" cy="16" r={r} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}
+        />
+      </svg>
+      <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-ink-700">
+        {pct}
+      </span>
+      <span className="sr-only">Confiance {pct} %</span>
+    </div>
+  );
+}

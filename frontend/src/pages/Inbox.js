@@ -44,6 +44,7 @@ const SHORTCUTS = [
   ['U', 'Marquer comme lu'],
   ['S', 'Mettre en favori'],
   ['A', 'Tout appliquer (suggestions)'],
+  ['I', "Demander un tri IA (dans l'email)"],
   ['R', 'Synchroniser'],
   ['/', 'Rechercher'],
   ['Échap', 'Fermer le lecteur ou vider la sélection'],
@@ -186,8 +187,10 @@ function Inbox() {
   const {
     emails, senders, subscriptions, suggestions, stats, pagination, error, activeQuery,
     loading, loadingMore, errorRetryable, fetchData, loadMoreEmails, removeEmails, patchEmail,
-    removeSuggestion, removeSuggestions, restoreSuggestions, markUnsubscribed,
+    addSuggestion, removeSuggestion, removeSuggestions, restoreSuggestions, markUnsubscribed,
   } = useEmails();
+
+  const [aiAnalyzingId, setAiAnalyzingId] = useState(null);
 
   const [view, setView] = useState('emails');
   const [selectedEmails, setSelectedEmails] = useState([]);
@@ -544,7 +547,10 @@ function Inbox() {
       await aiService.applySuggestion(id);
       track('suggestion_applied', { action: act });
       bumpGamify(1);
-      if (act !== 'keep') removeEmails(suggestion.emailId);
+      if (act !== 'keep') {
+        removeEmails(suggestion.emailId);
+        setSelectedEmail((prev) => (prev?.messageId === suggestion.emailId ? null : prev));
+      }
       const msg = `${actionMeta(act).past}`;
       if (isReversible(act)) undoToast(suggestion.emailId, act, msg);
       else toast.success(msg);
@@ -560,6 +566,60 @@ function Inbox() {
     const id = suggestion.id || suggestion._id;
     removeSuggestion(id);
     aiService.rejectSuggestion(id).catch(() => restoreSuggestions([suggestion]));
+  };
+
+  const handleAiAnalyzeSingle = async (emailToAnalyze) => {
+    const id = emailToAnalyze?.messageId;
+    if (!id) return;
+    setAiAnalyzingId(id);
+    try {
+      const { data } = await aiService.analyzeEmails([id]);
+      if (data?.autoApplied > 0) {
+        toast.success("Règle expéditeur auto-appliquée !");
+        removeEmails(id);
+        if (triageMode) handleTriageNext();
+        else setSelectedEmail(null);
+        fetchData({ forceRefresh: true, sync: false });
+        return;
+      }
+      if (data?.suggestions && data.suggestions.length > 0) {
+        const newSug = data.suggestions[0];
+        addSuggestion(newSug);
+        toast.success("Recommandation IA prête", { duration: 1800 });
+      } else {
+        toast.info("Aucune action particulière recommandée pour cet email.");
+      }
+    } catch (err) {
+      if (!handleQuotaError(err)) {
+        toast.error(apiError(err, "L'analyse IA a échoué. Réessayez."));
+      }
+    } finally {
+      setAiAnalyzingId(null);
+    }
+  };
+
+  const handleTriageApplySuggestion = async (suggestion) => {
+    const act = suggestion.action;
+    await handleApplySuggestion(suggestion);
+    if (act !== 'keep') {
+      const currentId = suggestion.emailId;
+      setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
+      const nextIds = triageIds.filter((id) => id !== currentId);
+      setTriageIds(nextIds);
+
+      if (nextIds.length === 0) {
+        setTriageMode(false);
+        setSelectedEmail(null);
+        toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
+        return;
+      }
+
+      const nextIdx = Math.min(triageIndex, nextIds.length - 1);
+      setTriageIndex(nextIdx);
+      const nextId = nextIds[nextIdx];
+      const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
+      setSelectedEmail(nextEmail);
+    }
   };
 
   const handleApplyAll = async () => {
@@ -1120,6 +1180,11 @@ function Inbox() {
           handleTriageKeep();
           return;
         }
+        if (e.key === 'i' || e.key === 'I') {
+          e.preventDefault();
+          handleAiAnalyzeSingle(openEmail);
+          return;
+        }
         if (e.key === 'j' || e.key === 'ArrowRight') {
           e.preventDefault();
           handleTriageNext();
@@ -1132,6 +1197,11 @@ function Inbox() {
         }
       }
 
+      if (openEmail && (e.key === 'i' || e.key === 'I')) {
+        e.preventDefault();
+        handleAiAnalyzeSingle(openEmail);
+        return;
+      }
       if (e.key === '?') { setShowShortcuts((s) => !s); return; }
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
       if (e.key === 'r') { handleSync(); return; }
@@ -1193,6 +1263,10 @@ function Inbox() {
 
 
 
+  const openEmailSuggestion = openEmail
+    ? suggestions.find((s) => s.emailId === openEmail.messageId)
+    : null;
+
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
   const readerPanel = openEmail ? (
@@ -1210,6 +1284,11 @@ function Inbox() {
       onProtect={() => handleProtect(openEmail)}
       onUnsubscribe={() => handleUnsubscribe({ messageId: openEmail.messageId })}
       unsubscribing={unsubscribing === openEmail.messageId}
+      aiSuggestion={openEmailSuggestion}
+      onAiAnalyze={handleAiAnalyzeSingle}
+      aiAnalyzing={aiAnalyzingId === openEmail.messageId}
+      onApplySuggestion={triageMode ? handleTriageApplySuggestion : handleApplySuggestion}
+      onRejectSuggestion={handleRejectSuggestion}
       triage={
         triageMode && triageIds.length > 0
           ? {

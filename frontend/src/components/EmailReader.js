@@ -3,7 +3,8 @@ import DOMPurify from 'dompurify';
 import { emailService, labelService, apiError } from '../services/api';
 import { X, Archive, Trash, Mail, BellOff, Shield, Paperclip, Star, Download, ChevronLeft, ChevronRight, Check, Sparkles, Tag } from '../ui/icons';
 import Spinner from '../ui/Spinner';
-import { ErrorState } from '../ui/primitives';
+import { ErrorState, ConfidenceRing } from '../ui/primitives';
+import { actionMeta } from '../ui/actions';
 import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
@@ -83,6 +84,11 @@ function EmailReader({
   unsubscribing,
   onRead,
   triage,
+  aiSuggestion,
+  onAiAnalyze,
+  aiAnalyzing,
+  onApplySuggestion,
+  onRejectSuggestion,
 }) {
   const toast = useToast();
   const [full, setFull] = useState(null);
@@ -291,6 +297,34 @@ function EmailReader({
           <X size={18} />
         </button>
         <div className="flex items-center gap-1">
+          {onAiAnalyze && (
+            <button
+              type="button"
+              onClick={() => onAiAnalyze(merged)}
+              disabled={aiAnalyzing}
+              className={cn(
+                'btn-ghost btn-sm',
+                triage
+                  ? 'flex items-center gap-1.5 px-2.5 font-medium text-brand-700 hover:bg-brand-50'
+                  : 'btn-icon text-brand-600 hover:bg-brand-50 hover:text-brand-700',
+                aiSuggestion && 'bg-brand-50 text-brand-700 ring-1 ring-brand-200'
+              )}
+              aria-label="Demander un tri IA"
+              title={aiSuggestion ? 'Recommandation IA disponible' : 'Demander un tri IA (I)'}
+            >
+              {aiAnalyzing ? (
+                <Spinner size={18} className="text-brand-600" />
+              ) : (
+                <Sparkles
+                  size={18}
+                  className={cn(
+                    aiSuggestion ? 'fill-brand-600 text-brand-600' : 'fill-brand-100 text-brand-600'
+                  )}
+                />
+              )}
+              {triage && <span className="hidden sm:inline">Tri IA</span>}
+            </button>
+          )}
           {onSnooze && <SnoozeButton onSnooze={onSnooze} ariaLabel="Reporter cet email" />}
           {triage?.onLabel && (
             <button
@@ -395,6 +429,76 @@ function EmailReader({
             </time>
           )}
         </div>
+
+        {/* AI Analyzing banner */}
+        {aiAnalyzing && (
+          <div className="mt-4 flex items-center gap-3 rounded-xl border border-brand-200/80 bg-brand-50/60 px-4 py-3 text-brand-900 animate-pulse">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
+              <Sparkles size={18} className="animate-spin" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-bold text-brand-900">Analyse IA en cours?</div>
+              <div className="text-xs text-brand-700/80">Recherche de la meilleure action pour cet email</div>
+            </div>
+          </div>
+        )}
+
+        {/* AI Suggestion Card */}
+        {!aiAnalyzing && aiSuggestion && (() => {
+          const meta = actionMeta(aiSuggestion.action);
+          return (
+            <div className="mt-4 overflow-hidden rounded-xl border border-brand-200/90 bg-gradient-to-r from-brand-50/90 via-white to-brand-50/50 p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3 min-w-0 flex-1">
+                  <ConfidenceRing value={aiSuggestion.confidence} color={meta.ring} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-brand-700">
+                        <Sparkles size={13} className="fill-brand-200" />
+                        Recommandation IA
+                      </span>
+                      <span className={cn('chip shrink-0 py-0.5 text-xs font-semibold', meta.chip)}>
+                        <meta.Icon size={12} />
+                        {aiSuggestion.action === 'label'
+                          ? `?tiqueter : ${aiSuggestion.labelName || 'Libell?'}`
+                          : meta.label}
+                      </span>
+                    </div>
+                    {aiSuggestion.reasoning && (
+                      <p className="mt-1 text-xs leading-relaxed text-ink-700">
+                        ? {aiSuggestion.reasoning} ?
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2 self-end sm:self-center">
+                  {onApplySuggestion && (
+                    <button
+                      type="button"
+                      onClick={() => onApplySuggestion(aiSuggestion)}
+                      className="btn-primary btn-sm flex items-center gap-1.5 shadow-sm"
+                      title="Appliquer cette recommandation"
+                    >
+                      <Check size={14} />
+                      <span>Appliquer</span>
+                    </button>
+                  )}
+                  {onRejectSuggestion && (
+                    <button
+                      type="button"
+                      onClick={() => onRejectSuggestion(aiSuggestion)}
+                      className="btn-ghost btn-sm text-xs text-muted hover:text-ink-800"
+                      title="Ignorer cette recommandation"
+                    >
+                      <X size={14} />
+                      <span className="hidden sm:inline">Ignorer</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {canUnsubscribe && onUnsubscribe && (
           <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-caution-100 bg-caution-50 px-4 py-3">
