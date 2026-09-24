@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -205,16 +206,14 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user token
-	token, err := h.getUserToken(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
+	defer session.Close()
 
-	gmailClient := h.gmailService.GetClient(token)
-
-	labelID, err := h.applyVerdict(ctx, gmailClient, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
+	labelID, err := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 	suggestion.LabelID = labelID
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
@@ -230,7 +229,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 			"labelId":   suggestion.LabelID,
 		}},
 	)
-	meta := h.emailIdentity(ctx, gmailClient, userEmail, suggestion.EmailID)
+	meta := h.identityIn(ctx, session, userEmail, suggestion.EmailID)
 	h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
@@ -258,12 +257,12 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	token, err := h.getUserToken(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-	gmailClient := h.gmailService.GetClient(token)
+	defer session.Close()
 
 	protectedList := h.protectedValues(ctx, userEmail)
 	applied := 0
@@ -299,7 +298,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		labelID, applyErr := h.applyVerdict(ctx, gmailClient, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
+		labelID, applyErr := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 		suggestion.LabelID = labelID
 
 		if applyErr != nil {
@@ -720,6 +719,25 @@ func (h *Handler) getSmartLabelNames(ctx context.Context, userEmail string) ([]s
 		names[i] = l.Name
 	}
 	return names, nil
+}
+
+func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
+	if action == "keep" {
+		return "", nil
+	}
+	if action == "label" {
+		if session.Transport == provider.TransportIMAP {
+			return "", nil
+		}
+		if labelID == "" && session.gmail != nil {
+			resolved, err := h.ensureLabel(ctx, session.gmail, userEmail, labelName)
+			if err != nil {
+				return "", err
+			}
+			labelID = resolved
+		}
+	}
+	return labelID, h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), action, labelID)
 }
 
 // applyVerdict applies one AI verdict to one message.

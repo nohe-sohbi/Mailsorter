@@ -130,7 +130,7 @@ IMPORTANT pour les labels - sois PRECIS et SPECIFIQUE:
   * Administration: "Administratif"
 - NE PAS utiliser de labels trop génériques comme "E-commerce"
 - Préfère des labels orientés ACTION/TYPE plutôt que SOURCE`,
-		email.From, email.Subject, truncate(email.Snippet, 200), labelsContext)
+		email.From, email.Subject, truncate(emailSnippet(email), 200), labelsContext)
 
 	response, err := c.chat(prompt)
 	if err != nil {
@@ -252,7 +252,7 @@ func (c *MistralClient) AnalyzeBatch(emails []models.Email, existingLabels []str
 	var list strings.Builder
 	for i, e := range emails {
 		fmt.Fprintf(&list, "%d. De: %s | Sujet: %s | Extrait: %s\n",
-			i+1, e.From, e.Subject, truncate(e.Snippet, 160))
+			i+1, e.From, e.Subject, truncate(emailSnippet(e), 160))
 	}
 
 	labelsContext := ""
@@ -424,6 +424,17 @@ func parseRetryAfter(v string) time.Duration {
 		return time.Duration(secs) * time.Second
 	}
 	return 0
+}
+
+func emailSnippet(e models.Email) string {
+	s := strings.TrimSpace(e.Snippet)
+	if s == "" {
+		s = strings.TrimSpace(e.Body)
+	}
+	if s == "" {
+		return "(Contenu non disponible)"
+	}
+	return s
 }
 
 // Helper function to truncate strings

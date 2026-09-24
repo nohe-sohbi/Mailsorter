@@ -213,18 +213,19 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 	}
 
 	msg.UserID = userEmail
+	msg.Folder = ref.Folder
 	if markRead && !msg.IsRead {
 		if err := h.applyVerb(ctx, session.Mailbox(), ref, "read", ""); err == nil {
 			msg.IsRead = true
-			// Keep the stored mailbox honest so the next listing, which is
-			// served FROM it on this transport, does not show the message as
-			// unread again.
-			h.db.Emails().UpdateOne(ctx,
-				bson.M{"userId": userEmail, "messageId": messageID},
-				bson.M{"$set": bson.M{"isRead": true}},
-			)
 		}
 	}
+
+	opts := options.Update().SetUpsert(true)
+	h.db.Emails().UpdateOne(ctx,
+		bson.M{"userId": userEmail, "messageId": messageID},
+		bson.M{"$set": msg.Email},
+		opts,
+	)
 
 	writeJSON(w, http.StatusOK, messageView{
 		Email:    msg.Email,
