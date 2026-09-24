@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -38,7 +39,7 @@ func normalizeMistralModel(m string) string {
 	m = strings.TrimSpace(m)
 	switch m {
 	case "", "mistral-large-2411", "mistral-large-2407", "mistral-large-2402":
-		return "mistral-large-latest"
+		return "mistral-small-latest"
 	default:
 		return m
 	}
@@ -338,31 +339,61 @@ func (c *MistralClient) chat(prompt string) (string, error) {
 // errors) fail fast. The LLM is the flakiest dependency in the request path, so
 // a single 429 no longer collapses a whole analysis batch down to "keep".
 func (c *MistralClient) chatTokens(prompt string, maxTokens int) (string, error) {
-	reqBody := chatRequest{
-		Model: c.model,
-		Messages: []chatMessage{
-			{Role: "user", Content: prompt},
-		},
-		Temperature: 0.3, // Low temperature for consistent responses
-		MaxTokens:   maxTokens,
-	}
+	currentModel := c.model
 
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
+	for {
+		reqBody := chatRequest{
+			Model: currentModel,
+			Messages: []chatMessage{
+				{Role: "user", Content: prompt},
+			},
+			Temperature: 0.3, // Low temperature for consistent responses
+			MaxTokens:   maxTokens,
+		}
 
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		content, retryable, retryAfter, err := c.doChat(jsonBody)
-		if err == nil {
-			return content, nil
+		jsonBody, err := json.Marshal(reqBody)
+		if err != nil {
+			return "", err
 		}
-		lastErr = err
-		if !retryable || attempt >= c.maxRetries {
-			return "", lastErr
+
+		var lastErr error
+		fallbackNeeded := false
+		for attempt := 0; ; attempt++ {
+			content, retryable, retryAfter, err := c.doChat(jsonBody)
+			if err == nil {
+				return content, nil
+			}
+			lastErr = err
+
+			// Check for model tier or invalid model error to trigger fallback
+			errStr := err.Error()
+			if strings.Contains(errStr, "tier_not_allowed") || strings.Contains(errStr, "invalid_model") {
+				if currentModel != "mistral-small-latest" {
+					log.Printf("Mistral model %s not available (%v), falling back to mistral-small-latest", currentModel, err)
+					currentModel = "mistral-small-latest"
+					c.model = "mistral-small-latest"
+					fallbackNeeded = true
+					break
+				} else if currentModel != "open-mistral-nemo" {
+					log.Printf("Mistral model %s not available (%v), falling back to open-mistral-nemo", currentModel, err)
+					currentModel = "open-mistral-nemo"
+					c.model = "open-mistral-nemo"
+					fallbackNeeded = true
+					break
+				}
+			}
+
+			if !retryable || attempt >= c.maxRetries {
+				break
+			}
+			c.sleep(c.backoff(attempt, retryAfter))
 		}
-		c.sleep(c.backoff(attempt, retryAfter))
+
+		if fallbackNeeded {
+			continue
+		}
+
+		return "", lastErr
 	}
 }
 

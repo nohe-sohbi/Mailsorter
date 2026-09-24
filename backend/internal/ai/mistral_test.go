@@ -119,3 +119,35 @@ func TestBackoffHonorsRetryAfterAndCap(t *testing.T) {
 		t.Errorf("jittered backoff out of expected range: %v", d)
 	}
 }
+
+func TestChatFallbackOnTierNotAllowed(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"type":"tier_not_allowed","message":"not allowed"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(okBody))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL)
+	c.model = "mistral-large-latest"
+
+	got, err := c.chat("ping")
+	if err != nil {
+		t.Fatalf("expected success after model fallback, got error: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("content = %q, want %q", got, "hello")
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 attempts (1st failed with tier_not_allowed, 2nd succeeded), got %d", calls)
+	}
+	if c.model != "mistral-small-latest" {
+		t.Errorf("c.model = %q, want mistral-small-latest", c.model)
+	}
+}
