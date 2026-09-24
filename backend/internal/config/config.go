@@ -63,7 +63,7 @@ func Load() *Config {
 		GmailRedirectURL:    getEnv("GMAIL_REDIRECT_URL", "http://localhost:3000/auth/callback"),
 		EncryptionKey:       getEnv("ENCRYPTION_KEY", "default-dev-key-change-in-production"),
 		MistralAPIKey:       getEnv("MISTRAL_API_KEY", ""),
-		MistralModel:        getEnv("MISTRAL_MODEL", "mistral-large-2411"),
+		MistralModel:        getEnv("MISTRAL_MODEL", "mistral-large-latest"),
 		MistralMaxRetries:   getEnvInt("MISTRAL_MAX_RETRIES", 2),
 		StripeSecretKey:     getEnv("STRIPE_SECRET_KEY", ""),
 		StripePriceID:       getEnv("STRIPE_PRICE_ID", ""),

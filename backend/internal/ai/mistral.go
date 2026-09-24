@@ -34,10 +34,20 @@ type MistralClient struct {
 	sleep      func(time.Duration)
 }
 
+func normalizeMistralModel(m string) string {
+	m = strings.TrimSpace(m)
+	switch m {
+	case "", "mistral-large-2411", "mistral-large-2407", "mistral-large-2402":
+		return "mistral-large-latest"
+	default:
+		return m
+	}
+}
+
 func NewMistralClient(apiKey, model string) *MistralClient {
 	return &MistralClient{
 		apiKey:  apiKey,
-		model:   model,
+		model:   normalizeMistralModel(model),
 		baseURL: mistralAPIURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
