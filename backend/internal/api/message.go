@@ -12,6 +12,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
 
@@ -127,6 +128,13 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 		BodyHTML:    html,
 		Attachments: listAttachments(msg),
 	}
+
+	opts := options.Update().SetUpsert(true)
+	h.db.Emails().UpdateOne(ctx,
+		bson.M{"userId": userEmail, "messageId": messageID},
+		bson.M{"$set": view.Email},
+		opts,
+	)
 
 	writeJSON(w, http.StatusOK, view)
 }

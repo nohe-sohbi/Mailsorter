@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -43,11 +45,43 @@ func (h *Handler) runAnalysis(
 	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
 	protectedList := h.protectedValues(ctx, userEmail)
 
+	// Best-effort Gmail client for on-demand fetch + sender auto-pilot.
+	var gmailClient *gmailapi.Service
+	if token, terr := h.getUserToken(ctx, userEmail); terr == nil {
+		gmailClient = h.gmailService.GetClient(token)
+	}
+
 	emails := make([]models.Email, 0, len(emailIDs))
 	for _, id := range emailIDs {
 		var e models.Email
 		if err := h.db.Emails().FindOne(ctx, bson.M{"messageId": id, "userId": userEmail}).Decode(&e); err == nil {
 			emails = append(emails, e)
+		} else if gmailClient != nil {
+			if msg, gerr := h.gmailService.GetMessage(gmailClient, id); gerr == nil {
+				from, subject, to, date := gmail.ParseEmailHeaders(msg)
+				unsubURL, unsubMailto, oneClick := gmail.ParseUnsubscribe(msg)
+				plain, _ := gmail.GetEmailBodies(msg)
+				e = models.Email{
+					MessageID:     msg.Id,
+					UserID:        userEmail,
+					ThreadID:      msg.ThreadId,
+					From:          from,
+					To:            to,
+					Subject:       subject,
+					Body:          plain,
+					Snippet:       msg.Snippet,
+					LabelIDs:      msg.LabelIds,
+					ReceivedDate:  date,
+					IsRead:        mailbox.GmailIsRead(msg.LabelIds),
+					UnsubURL:      unsubURL,
+					UnsubMailto:   unsubMailto,
+					UnsubOneClick: oneClick,
+					CreatedAt:     time.Now(),
+				}
+				opts := options.Update().SetUpsert(true)
+				h.db.Emails().UpdateOne(ctx, bson.M{"messageId": id, "userId": userEmail}, bson.M{"$set": e}, opts)
+				emails = append(emails, e)
+			}
 		}
 	}
 	p.Total = len(emails)
@@ -59,12 +93,6 @@ func (h *Handler) runAnalysis(
 		if onProgress != nil {
 			onProgress(p)
 		}
-	}
-
-	// Best-effort Gmail client for sender auto-pilot.
-	var gmailClient *gmailapi.Service
-	if token, terr := h.getUserToken(ctx, userEmail); terr == nil {
-		gmailClient = h.gmailService.GetClient(token)
 	}
 
 	// Pass 1: resolve auto-pilot + cache hits, collect the rest for batching.

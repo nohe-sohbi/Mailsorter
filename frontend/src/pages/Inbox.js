@@ -587,7 +587,8 @@ function Inbox() {
         addSuggestion(newSug);
         toast.success("Recommandation IA prête", { duration: 1800 });
       } else {
-        toast.info("Aucune action particulière recommandée pour cet email.");
+        await fetchData({ forceRefresh: true, sync: false });
+        toast.error("Impossible d'obtenir une recommandation IA pour cet email.");
       }
     } catch (err) {
       if (!handleQuotaError(err)) {
