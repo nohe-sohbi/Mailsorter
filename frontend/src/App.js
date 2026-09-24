@@ -23,6 +23,7 @@ import { Logo, Alert, Inbox as InboxIcon, Mail } from './ui/icons';
 import { CONTACT_EMAIL } from './components/PublicFooter';
 import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
+import { isAuthed } from './lib/session';
 
 function BootScreen({ children }) {
   return (
@@ -63,7 +64,7 @@ function Unavailable() {
 // browser reload, losing all state and flashing the login page.
 function RequireAuth({ children }) {
   const navigate = useNavigate();
-  const authed = Boolean(localStorage.getItem('userEmail') && localStorage.getItem('accessToken'));
+  const authed = isAuthed();
 
   useEffect(() => {
     if (!authed) navigate('/', { replace: true });

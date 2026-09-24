@@ -7,7 +7,7 @@ import { cn } from '../ui/cn';
 import { track } from '../lib/analytics';
 import Spinner from '../ui/Spinner';
 import PublicFooter from '../components/PublicFooter';
-import { hasJoinedWaitlist, rememberWaitlistJoin } from '../lib/waitlist';
+import { hasJoinedWaitlist, rememberWaitlistJoin, waitlistEmail as getWaitlistEmail } from '../lib/waitlist';
 import { Logo, Check, Bolt, Sparkles, Shield, Google, Clock } from '../ui/icons';
 import { actionMeta } from '../ui/actions';
 
@@ -58,7 +58,7 @@ function Pricing() {
   const [upgrading, setUpgrading] = useState(false);
   const [managing, setManaging] = useState(false);
   const [joined, setJoined] = useState(hasJoinedWaitlist);
-  const [waitlistEmail, setWaitlistEmail] = useState('');
+  const [waitlistEmail, setWaitlistEmail] = useState(getWaitlistEmail);
   const [joining, setJoining] = useState(false);
 
   const isPro = usage?.plan === 'pro';
@@ -139,7 +139,7 @@ function Pricing() {
       await waitlistService.join(email);
       // Boolean only: the address itself must never reach the analytics.
       track('waitlist_join', { loggedIn });
-      rememberWaitlistJoin();
+      rememberWaitlistJoin(email);
       setJoined(true);
       setWaitlistEmail('');
       toast.success("C'est noté. On vous écrit dès l'ouverture de Pro. 🚀");

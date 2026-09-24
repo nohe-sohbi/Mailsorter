@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { authService, configService, waitlistService, mailboxService, apiError } from '../services/api';
+import { authService, configService, waitlistService, apiError } from '../services/api';
 import { useInstance } from '../contexts/InstanceContext';
 import { track } from '../lib/analytics';
-import { hasJoinedWaitlist, rememberWaitlistJoin } from '../lib/waitlist';
+import { hasJoinedWaitlist, rememberWaitlistJoin, waitlistEmail as getWaitlistEmail, forgetWaitlistJoin } from '../lib/waitlist';
+import { isAuthed } from '../lib/session';
 import PublicFooter, { SOURCE_URL } from '../components/PublicFooter';
 import {
   Logo, Google, Sparkles, Archive, Tag, Users, Shield, Bolt, Check, BellOff,
@@ -144,19 +145,9 @@ function AuthBox({ isConfigured, onSignedIn }) {
         const { data } = await authService.login(email.trim(), password);
         localStorage.setItem('userEmail', data.userEmail);
         localStorage.setItem('accessToken', data.accessToken);
+        localStorage.removeItem('hasMailbox');
         track('login_done');
-        try {
-          const { data: mbData } = await mailboxService.get();
-          if (mbData?.mailbox) {
-            localStorage.setItem('hasMailbox', 'true');
-            onSignedIn('/inbox');
-          } else {
-            localStorage.removeItem('hasMailbox');
-            onSignedIn('/connect');
-          }
-        } catch {
-          onSignedIn('/connect');
-        }
+        onSignedIn('/inbox');
       }
     } catch (err) {
       setError(apiError(err, 'Une erreur est survenue. Vérifiez vos identifiants.'));
@@ -402,7 +393,7 @@ function SuggestionsDemo() {
 
 function Login() {
   const navigate = useNavigate();
-  const { isConfigured, selfHosted, billingOn } = useInstance();
+  const { loading, isConfigured, selfHosted, billingOn } = useInstance();
   const [providers, setProviders] = useState([]);
 
   const features = useMemo(
@@ -410,13 +401,13 @@ function Login() {
     [isConfigured]
   );
 
-  const [waitlistEmail, setWaitlistEmail] = useState('');
+  const [waitlistEmail, setWaitlistEmail] = useState(getWaitlistEmail);
   const [joining, setJoining] = useState(false);
   const [joined, setJoined] = useState(hasJoinedWaitlist);
   const [waitlistError, setWaitlistError] = useState('');
 
   useEffect(() => {
-    if (localStorage.getItem('userEmail')) {
+    if (isAuthed()) {
       if (localStorage.getItem('hasMailbox')) {
         navigate('/inbox');
       } else {
@@ -446,7 +437,7 @@ function Login() {
     setWaitlistError('');
     try {
       await waitlistService.join(email, 'landing');
-      rememberWaitlistJoin();
+      rememberWaitlistJoin(email);
       setJoined(true);
       track('waitlist_join', { source: 'landing' });
     } catch (err) {
@@ -455,6 +446,14 @@ function Login() {
       setJoining(false);
     }
   };
+
+  const handleResetWaitlist = () => {
+    forgetWaitlistJoin();
+    setJoined(false);
+    setWaitlistError('');
+  };
+
+  const currentWaitlistEmail = waitlistEmail || getWaitlistEmail();
 
   const scrollToAuth = () => {
     const el = document.getElementById('auth-box');
@@ -699,14 +698,35 @@ function Login() {
           </span>
           <h3 className="text-lg font-bold text-ink-900">Pas encore prêt ?</h3>
           <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-ink-600">
-            Laissez votre adresse : vous serez prévenu des nouveautés et de l'ouverture du plan Pro.
-            Pas d'accès à votre boîte, pas de compte à créer.
+            {!loading && !selfHosted && billingOn
+              ? 'Le plan Pro est disponible dès maintenant.'
+              : "Laissez votre adresse : vous serez prévenu des nouveautés et de l'ouverture du plan Pro. Pas d'accès à votre boîte, pas de compte à créer."}
           </p>
 
-          {joined ? (
-            <p className="mt-5 inline-flex items-center gap-2 rounded-xl bg-positive-50 px-4 py-2.5 text-sm font-semibold text-positive-700">
-              <Check size={16} /> C'est noté. On vous écrit.
-            </p>
+          {!loading && !selfHosted && billingOn ? (
+            <div className="mt-5 flex justify-center">
+              <button
+                type="button"
+                onClick={() => navigate('/pricing')}
+                className="btn-secondary shrink-0"
+              >
+                Découvrir les tarifs Pro
+              </button>
+            </div>
+          ) : joined ? (
+            <div className="mt-5 flex flex-col items-center justify-center gap-2 sm:flex-row">
+              <span className="inline-flex items-center gap-2 rounded-xl bg-positive-50 px-4 py-2.5 text-sm font-semibold text-positive-700">
+                <Check size={16} />
+                {currentWaitlistEmail ? `C'est noté, ${currentWaitlistEmail}. On vous écrit.` : "C'est noté. On vous écrit."}
+              </span>
+              <button
+                type="button"
+                onClick={handleResetWaitlist}
+                className="text-xs font-semibold text-ink-500 underline-offset-2 hover:text-ink-800 hover:underline"
+              >
+                Changer d'adresse
+              </button>
+            </div>
           ) : (
             <form onSubmit={handleWaitlist} className="mx-auto mt-5 flex max-w-md flex-col gap-2 sm:flex-row">
               <label htmlFor="landing-email" className="sr-only">
@@ -727,22 +747,9 @@ function Login() {
             </form>
           )}
 
-          {waitlistError && (
+          {!loading && !selfHosted && billingOn ? null : waitlistError && (
             <p role="alert" className="mt-3 text-sm text-danger-700">
               {waitlistError}
-            </p>
-          )}
-
-          {!selfHosted && billingOn && (
-            <p className="mt-4 text-xs text-ink-500">
-              Le plan Pro est déjà disponible :{' '}
-              <button
-                onClick={() => navigate('/pricing')}
-                className="font-semibold text-brand-600 underline-offset-2 hover:underline"
-              >
-                voir les tarifs
-              </button>
-              .
             </p>
           )}
         </section>

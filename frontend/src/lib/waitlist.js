@@ -11,16 +11,39 @@ const KEY = 'mailsorter_pro_waitlist';
 
 export function hasJoinedWaitlist() {
   try {
-    return localStorage.getItem(KEY) === '1';
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return false;
+    if (raw === '1') return true;
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed?.joined);
   } catch {
     return false;
   }
 }
 
-export function rememberWaitlistJoin() {
+export function waitlistEmail() {
   try {
-    localStorage.setItem(KEY, '1');
+    const raw = localStorage.getItem(KEY);
+    if (!raw || raw === '1') return '';
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.email === 'string' ? parsed.email : '';
+  } catch {
+    return '';
+  }
+}
+
+export function rememberWaitlistJoin(email = '') {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({ joined: true, email: (email || '').trim() }));
   } catch {
     /* storage unavailable: the server still recorded the join */
+  }
+}
+
+export function forgetWaitlistJoin() {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* storage unavailable */
   }
 }

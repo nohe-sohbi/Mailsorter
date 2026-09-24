@@ -49,3 +49,4 @@ backend/credentials.json
 # Recette / scratch
 .playwright-mcp/
 _scratch/
+.superpowers/
