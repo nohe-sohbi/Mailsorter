@@ -2,9 +2,9 @@
 
 Date : 2026-09-24. Statut : validé en brainstorming, à relire avant le plan d'implémentation.
 
-Maquettes de référence (locales, non versionnées) :
-`.superpowers/brainstorm/46865-1790278425/content/landing-v3.html` (la landing validée)
-et `.superpowers/brainstorm/46865-1790278425/content/moodboard.html` (le système visuel validé).
+Maquettes de référence, versionnées à côté de cette spec :
+`docs/superpowers/specs/2026-09-24-landing-grand-hotel/landing-mockup.html` (la landing validée)
+et `docs/superpowers/specs/2026-09-24-landing-grand-hotel/moodboard-mockup.html` (le système visuel validé).
 Elles font foi pour le rendu et les interactions. Pour les textes, cette spec prime : trois
 phrases y ont été corrigées après vérification dans le code (section 10).
 
@@ -100,6 +100,7 @@ sous `.dark .theme-hotel`, pilotée par le réglage jour / nuit / auto existant 
 | `--h-teal` | `#2F6F73` | `#4F9A96` | protégé, sûr |
 | `--h-teal-soft` / `--h-teal-text` | `#D5E7E4` / `#2F6F73` | `#1E3533` / `#7CC4BF` | encadré "protégé" |
 | `--h-offset` | `#7A2E3B` | `#000000` | ombre décalée pleine |
+| `--h-pile-1` / `--h-pile-2` | `#F8ECDC` / `#F1E1CC` | `#241620` / `#1F131B` | cartes en retrait dans une pile |
 
 Principes : une couleur, un sens ; bordures de 1,5 px et ombres décalées pleines, aucune
 ombre floue sur l'interface, aucun dégradé ; angles droits sauf boutons d'ascenseur, badges
@@ -113,7 +114,10 @@ par le thème hôtel.
 Exception assumée à la règle "Tailwind only" : le thème est une feuille de style confinée,
 parce qu'un thème débranchable ne peut pas vivre dans `index.css`. Tailwind reste utilisé
 pour la mise en page, avec un groupe de couleurs `hotel` qui pointe vers les variables.
-Les classes de composants du thème sont préfixées `h-` (`h-btn`, `h-card`, `h-tag`...).
+Les classes des briques du thème sont préfixées `ht-` (`ht-btn`, `ht-card`, `ht-tag`...), celles
+propres à la landing `hl-`. Pas `h-` : `h-card` se lirait comme un utilitaire de hauteur Tailwind.
+Et pas de nom générique (`.panel`, `.toast`) : une feuille chargée par la landing reste chargée
+après la navigation, elle restylerait le dashboard.
 
 ### Moodboard (`docs/design/moodboard.html`)
 
@@ -317,11 +321,13 @@ utilisé par les deux landings. `Login.js` garde exactement son rendu.
    - une règle peut mettre à la corbeille (`rules.ActionTrash`), d'où "sans votre accord"
      plutôt que "sans vous demander" ;
    - le dépôt de `SOURCE_URL` est public.
-2. **Base de travail** : `main` à `fbf24e1`. Les modifications qui étaient non commitées au début
+2. **Base de travail** : `main` à `a164424`. Les modifications qui étaient non commitées au début
    du brainstorming (`session.js`, `waitlist.js`, `App.js`, `Pricing.js`) sont dans `09d8517`.
-   Branche de travail : `claude/landing-grand-hotel`.
-3. **Polices** : chargement par `@import` dans `hotel.css` ou par une balise injectée au montage,
-   à confirmer selon le comportement du bundler de CRA.
+   Branche de travail : `claude/landing-grand-hotel`, dans le worktree
+   `.claude/worktrees/landing-grand-hotel` pour ne pas bousculer le travail en cours sur `main`.
+3. **Polices** : tranché, une balise `<link>` injectée une seule fois au montage du thème
+   (`ui/hotel/useHotelFonts.js`). Un `@import` dans `hotel.css` dépendrait de l'ordre des
+   feuilles dans le bloc CSS découpé par CRA, qu'on ne contrôle pas.
 
 ## 11. Documentation à mettre à jour
 
