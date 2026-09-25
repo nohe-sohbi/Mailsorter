@@ -184,11 +184,11 @@ func TestWaitlistIsReachableWithoutASession(t *testing.T) {
 }
 
 // The boot probe stays public: the SPA calls it before any login to decide
-// whether the instance has any way in at all, whether Pro can be bought yet, and
-// which edition is running (which decides the providers on offer and whether
-// there is anything to bill at all). Those four fields and nothing else: the
-// payload is readable by anyone, so it stays a deliberate list rather than a
-// place things accumulate.
+// whether the instance has any way in at all, whether Pro can be bought yet, which
+// landing to render, and which edition is running (which decides the providers on
+// offer and whether there is anything to bill at all). Those five fields and
+// nothing else: the payload is readable by anyone, so it stays a deliberate list
+// rather than a place things accumulate.
 func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	srv := newRoutedTestServer(t)
 
@@ -205,8 +205,8 @@ func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatalf("decode /api/config/status: %v", err)
 	}
-	if len(body) != 4 {
-		t.Errorf("status payload = %#v, want only isConfigured, mailboxSignIn, billingOn and edition", body)
+	if len(body) != 5 {
+		t.Errorf("status payload = %#v, want only isConfigured, mailboxSignIn, billingOn, edition and uiTheme", body)
 	}
 	// The test server has neither credentials nor Stripe, so both are false.
 	for _, key := range []string{"isConfigured", "billingOn"} {
@@ -225,6 +225,11 @@ func TestConfigStatusIsPublicAndMinimal(t *testing.T) {
 	// string would silently read as neither edition.
 	if edition, ok := body["edition"].(string); !ok || edition == "" {
 		t.Errorf("edition = %#v, want a non-empty edition string", body["edition"])
+	}
+	// The landing is chosen from this at boot; an empty string would read as
+	// "unknown" and silently serve the classic landing.
+	if theme, ok := body["uiTheme"].(string); !ok || theme == "" {
+		t.Errorf("uiTheme = %#v, want a non-empty theme string", body["uiTheme"])
 	}
 }
 

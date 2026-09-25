@@ -123,6 +123,7 @@ func main() {
 	// API layer.
 	api.Version = cfg.BuildVersion
 	api.Edition = cfg.Edition
+	api.UITheme = cfg.UITheme
 	api.DefaultDigestHourUTC = cfg.DigestHourUTC
 	api.AllowedOrigins = cfg.AllowedOrigins
 

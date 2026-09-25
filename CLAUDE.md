@@ -456,6 +456,7 @@ as a side effect of another change.
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` | optional | empty key keeps the waitlist CTA instead of checkout |
 | `ALLOWED_ORIGINS` | optional | comma separated. Empty falls back to localhost:3000, localhost, mailsorter.sohbi.dev. No rebuild needed |
 | `EDITION` | yes (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers: the Gmail API and Proton exist only in `self-hosted` |
+| `UI_THEME` | optional (defaults to `hotel`) | `hotel` or `classic`: which landing `/` renders, read at runtime from `GET /api/config/status`, so switching is a backend restart, not a rebuild. Boot **refuses** anything else. `?ui=hotel\|classic` previews the other one for one tab |
 | `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest default 07:00 UTC |
 | `REACT_APP_API_URL`, `REACT_APP_UMAMI_WEBSITE_ID` | build args | **inlined into the static bundle at image build time.** Leave `REACT_APP_API_URL` unset so it defaults to `/` and the SPA calls the API same-origin through the nginx proxy |
 
