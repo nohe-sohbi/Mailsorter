@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import Login from './pages/Login';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import Inbox from './pages/Inbox';
 import Setup from './pages/Setup';
 import Settings from './pages/Settings';
@@ -24,6 +23,7 @@ import { CONTACT_EMAIL } from './components/PublicFooter';
 import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
 import { isAuthed } from './lib/session';
+import { effectiveUiTheme } from './lib/uiTheme';
 
 function BootScreen({ children }) {
   return (
@@ -55,6 +55,31 @@ function Unavailable() {
         <Mail size={16} /> Prévenir l'exploitant
       </a>
     </BootScreen>
+  );
+}
+
+// Both landings are separate chunks: a visitor downloads only the one this
+// instance serves, fonts included.
+const ClassicLanding = lazy(() => import('./pages/Login'));
+const HotelLanding = lazy(() => import('./pages/HotelLanding'));
+
+// The landing on /, chosen at runtime from UI_THEME (see lib/uiTheme.js), so
+// the Grand Hotel theme can be unplugged without a rebuild.
+function Landing() {
+  const { uiTheme } = useInstance();
+  const { search } = useLocation();
+  const theme = useMemo(() => effectiveUiTheme(uiTheme, search), [uiTheme, search]);
+  const Page = theme === 'hotel' ? HotelLanding : ClassicLanding;
+  return (
+    <Suspense
+      fallback={
+        <BootScreen>
+          <Spinner size={18} className="text-brand-600" />
+        </BootScreen>
+      }
+    >
+      <Page />
+    </Suspense>
   );
 }
 
@@ -211,7 +236,7 @@ function App() {
                     path="/setup"
                     element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
                   />
-                  <Route path="/" element={isUsable ? <Login /> : unconfigured()} />
+                  <Route path="/" element={isUsable ? <Landing /> : unconfigured()} />
                   <Route path="/inbox" element={guard(<Inbox />, true)} />
                   <Route path="/rules" element={guard(<Rules />, true)} />
                   <Route path="/snoozed" element={guard(<Snoozed />, true)} />
