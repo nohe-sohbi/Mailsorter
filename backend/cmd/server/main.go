@@ -93,14 +93,25 @@ func main() {
 		}
 	}
 
-	// Initialize Mistral AI client
-	var aiClient *ai.MistralClient
-	if cfg.MistralAPIKey != "" {
-		aiClient = ai.NewMistralClient(cfg.MistralAPIKey, cfg.MistralModel)
-		aiClient.SetMaxRetries(cfg.MistralMaxRetries)
-		log.Println("Mistral AI client initialized")
+	// Initialize AI provider registry (multi-provider with fallback).
+	// Backward compatible: MISTRAL_API_KEY still works as the primary.
+	var providerConfigs []ai.ProviderConfig
+	for _, pc := range cfg.AIProviderConfigs() {
+		providerConfigs = append(providerConfigs, ai.ProviderConfig{
+			Name:       pc.Name,
+			APIKey:     pc.APIKey,
+			Model:      pc.Model,
+			BaseURL:    pc.BaseURL,
+			MaxRetries: pc.MaxRetries,
+			Priority:   pc.Priority,
+			Enabled:    pc.Enabled,
+		})
+	}
+	aiRegistry := ai.NewRegistry(providerConfigs)
+	if aiRegistry.Available() {
+		log.Printf("AI providers initialized: %s", aiRegistry.ProviderName())
 	} else {
-		log.Println("Warning: MISTRAL_API_KEY not set - AI features disabled")
+		log.Println("Warning: no AI provider configured - AI features disabled")
 	}
 
 	// Initialize Stripe billing (optional)
@@ -127,7 +138,7 @@ func main() {
 	api.AllowedOrigins = cfg.AllowedOrigins
 
 	// Initialize API handler
-	handler := api.NewHandler(db, gmailService, encryptor, aiClient, billingCfg, authManager)
+	handler := api.NewHandler(db, gmailService, encryptor, aiRegistry, billingCfg, authManager)
 
 	// Setup routes
 	router := handler.SetupRoutes()

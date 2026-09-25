@@ -119,6 +119,13 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/ai/suggestions", h.GetSuggestions).Methods("GET")
 	r.HandleFunc("/api/ai/suggestions/{id}/reject", h.RejectSuggestion).Methods("POST")
 
+	// AI Provider / Settings (BYOK) routes
+	r.HandleFunc("/api/ai/providers", h.GetAIProviders).Methods("GET")
+	r.HandleFunc("/api/ai/settings", h.GetAISettings).Methods("GET")
+	r.HandleFunc("/api/ai/settings", h.UpdateAISettings).Methods("PUT")
+	r.HandleFunc("/api/ai/settings", h.DeleteAISettings).Methods("DELETE")
+	r.HandleFunc("/api/ai/settings/test", h.TestAISettings).Methods("POST")
+
 	// Senders routes
 	r.HandleFunc("/api/senders", h.GetSenders).Methods("GET")
 	r.HandleFunc("/api/senders/rule", h.CreateSenderRule).Methods("POST")

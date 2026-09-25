@@ -553,3 +553,15 @@ type WaitlistInput struct {
 	Email  string `json:"email"`
 	Source string `json:"source"`
 }
+
+// AIProviderSettings stores per-user AI provider configuration (BYOK).
+// The APIKey is encrypted at rest via the instance's Encryptor.
+type AIProviderSettings struct {
+	UserID    string    `json:"userId" bson:"userId"`
+	Provider  string    `json:"provider" bson:"provider"`     // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
+	APIKey    string    `json:"-" bson:"apiKey"`               // encrypted, never in JSON responses
+	Model     string    `json:"model" bson:"model"`
+	BaseURL   string    `json:"baseUrl" bson:"baseUrl"`
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+}

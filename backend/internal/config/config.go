@@ -40,6 +40,14 @@ type Config struct {
 	MistralAPIKey       string
 	MistralModel        string
 	MistralMaxRetries   int
+	OpenAIAPIKey        string
+	OpenAIModel         string
+	OpenAIBaseURL       string
+	AnthropicAPIKey     string
+	AnthropicModel      string
+	OllamaModel         string
+	OllamaBaseURL       string
+	AIFallbackProvider  string
 	StripeSecretKey     string
 	StripePriceID       string
 	StripeWebhookSecret string
@@ -65,6 +73,14 @@ func Load() *Config {
 		MistralAPIKey:       getEnv("MISTRAL_API_KEY", ""),
 		MistralModel:        getEnv("MISTRAL_MODEL", "mistral-small-latest"),
 		MistralMaxRetries:   getEnvInt("MISTRAL_MAX_RETRIES", 2),
+		OpenAIAPIKey:        getEnv("OPENAI_API_KEY", ""),
+		OpenAIModel:         getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIBaseURL:       getEnv("OPENAI_BASE_URL", ""),
+		AnthropicAPIKey:     getEnv("ANTHROPIC_API_KEY", ""),
+		AnthropicModel:      getEnv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+		OllamaModel:         getEnv("OLLAMA_MODEL", ""),
+		OllamaBaseURL:       getEnv("OLLAMA_BASE_URL", "http://localhost:11434"),
+		AIFallbackProvider:  getEnv("AI_FALLBACK_PROVIDER", ""),
 		StripeSecretKey:     getEnv("STRIPE_SECRET_KEY", ""),
 		StripePriceID:       getEnv("STRIPE_PRICE_ID", ""),
 		StripeWebhookSecret: getEnv("STRIPE_WEBHOOK_SECRET", ""),
@@ -141,4 +157,67 @@ func getEnvList(key string, defaultValue []string) []string {
 		return defaultValue
 	}
 	return out
+}
+
+// AIProviderConfigs builds the ordered list of AI provider configs from
+// environment variables. The primary provider is Mistral (backward-compatible),
+// with optional fallback providers.
+func (c *Config) AIProviderConfigs() []struct {
+	Name       string
+	APIKey     string
+	Model      string
+	BaseURL    string
+	MaxRetries int
+	Priority   int
+	Enabled    bool
+} {
+	type pc = struct {
+		Name       string
+		APIKey     string
+		Model      string
+		BaseURL    string
+		MaxRetries int
+		Priority   int
+		Enabled    bool
+	}
+	var configs []pc
+
+	// Primary: Mistral (backward-compatible, priority 0)
+	if c.MistralAPIKey != "" {
+		configs = append(configs, pc{
+			Name: "mistral", APIKey: c.MistralAPIKey, Model: c.MistralModel,
+			MaxRetries: c.MistralMaxRetries, Priority: 0, Enabled: true,
+		})
+	}
+
+	// Secondary providers (priority 10+)
+	if c.OpenAIAPIKey != "" {
+		configs = append(configs, pc{
+			Name: "openai", APIKey: c.OpenAIAPIKey, Model: c.OpenAIModel,
+			BaseURL: c.OpenAIBaseURL, MaxRetries: 2, Priority: 10, Enabled: true,
+		})
+	}
+	if c.AnthropicAPIKey != "" {
+		configs = append(configs, pc{
+			Name: "anthropic", APIKey: c.AnthropicAPIKey, Model: c.AnthropicModel,
+			MaxRetries: 2, Priority: 20, Enabled: true,
+		})
+	}
+	if c.OllamaModel != "" {
+		configs = append(configs, pc{
+			Name: "ollama", Model: c.OllamaModel, BaseURL: c.OllamaBaseURL,
+			Priority: 30, Enabled: true,
+		})
+	}
+
+	// If a fallback is named but not already primary, bump it up
+	if c.AIFallbackProvider != "" {
+		for i := range configs {
+			if configs[i].Name == c.AIFallbackProvider && configs[i].Priority > 5 {
+				configs[i].Priority = 5
+			}
+		}
+	}
+
+	return configs
 }

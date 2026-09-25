@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { protectService, accountService, authService, mailboxService } from '../services/api';
+import { protectService, accountService, authService, mailboxService, aiService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { track } from '../lib/analytics';
 import { Link } from 'react-router-dom';
-import { Settings as SettingsIcon, Shield, X, Mail, Refresh, Google, Search, ChevronRight } from '../ui/icons';
+import { Settings as SettingsIcon, Shield, X, Mail, Refresh, Google, Search, ChevronRight, Sparkles, Check, Alert } from '../ui/icons';
 import Modal from '../ui/Modal';
 import Spinner from '../ui/Spinner';
 
@@ -497,6 +497,390 @@ function ProtectedSenders() {
 // are account-level actions rather than preferences, so they moved to /account.
 // Reconnecting Gmail stayed: it re-runs the OAuth flow for this user only and
 // changes nothing for anyone else.
+
+function AISettingsCard() {
+  const { toast } = useToast();
+  const confirm = useConfirm();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [providers, setProviders] = useState([]);
+  const [currentSettings, setCurrentSettings] = useState(null);
+
+  const [selectedProvider, setSelectedProvider] = useState('mistral');
+  const [apiKey, setApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [model, setModel] = useState('');
+  const [customModel, setCustomModel] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+
+  const loadAI = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [provRes, setRes] = await Promise.all([
+        aiService.getProviders(),
+        aiService.getSettings(),
+      ]);
+      const provList = provRes.data || [];
+      setProviders(provList);
+      const s = setRes.data || {};
+      setCurrentSettings(s);
+
+      if (s.configured && s.provider) {
+        setSelectedProvider(s.provider);
+        const match = provList.find((p) => p.name === s.provider);
+        if (match && match.models && match.models.includes(s.model)) {
+          setModel(s.model);
+          setCustomModel('');
+        } else if (s.model) {
+          setModel('custom');
+          setCustomModel(s.model);
+        } else {
+          setModel(match?.defaultModel || '');
+        }
+        setBaseUrl(s.baseUrl || '');
+      } else {
+        setSelectedProvider(s.provider || 'mistral');
+        const match = provList.find((p) => p.name === (s.provider || 'mistral'));
+        setModel(match?.defaultModel || '');
+      }
+    } catch (err) {
+      console.error('Failed to load AI settings:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAI();
+  }, [loadAI]);
+
+  const activeProvider = useMemo(() => {
+    return (
+      providers.find((p) => p.name === selectedProvider) || {
+        name: selectedProvider,
+        displayName: selectedProvider,
+        requiresApiKey: true,
+        requiresUrl: false,
+        defaultModel: '',
+        models: [],
+      }
+    );
+  }, [providers, selectedProvider]);
+
+  const handleSelectProvider = (name) => {
+    setSelectedProvider(name);
+    setTestResult(null);
+    const info = providers.find((p) => p.name === name);
+    if (!info) return;
+
+    if (currentSettings?.configured && currentSettings.provider === name) {
+      if (info.models?.includes(currentSettings.model)) {
+        setModel(currentSettings.model);
+        setCustomModel('');
+      } else if (currentSettings.model) {
+        setModel('custom');
+        setCustomModel(currentSettings.model);
+      } else {
+        setModel(info.defaultModel || '');
+      }
+      setBaseUrl(currentSettings.baseUrl || '');
+    } else {
+      setModel(info.defaultModel || '');
+      setCustomModel('');
+      if (name === 'ollama') {
+        setBaseUrl('http://localhost:11434');
+      } else {
+        setBaseUrl('');
+      }
+    }
+  };
+
+  const effectiveModel = model === 'custom' ? customModel.trim() : model;
+
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const payload = {
+        provider: selectedProvider,
+        apiKey: apiKey.trim(),
+        model: effectiveModel,
+        baseUrl: baseUrl.trim(),
+      };
+      await aiService.testSettings(payload);
+      setTestResult({
+        success: true,
+        message: 'Connexion réussie ! Le modèle répond correctement.',
+      });
+      toast.success('Test réussi : votre IA est opérationnelle.');
+    } catch (err) {
+      const msg = errText(err, 'Échec du test de connexion.');
+      setTestResult({ success: false, message: msg });
+      toast.error(msg);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleSave = async (e) => {
+    if (e) e.preventDefault();
+    setSaving(true);
+    setTestResult(null);
+    try {
+      const payload = {
+        provider: selectedProvider,
+        apiKey: apiKey.trim(),
+        model: effectiveModel,
+        baseUrl: baseUrl.trim(),
+      };
+      await aiService.updateSettings(payload);
+      toast.success('Configuration IA enregistrée avec succès.');
+      setApiKey('');
+      await loadAI();
+    } catch (err) {
+      toast.error(errText(err, "Erreur lors de l'enregistrement."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    const ok = await confirm({
+      title: "Rétablir l'IA de l'instance ?",
+      message:
+        "Votre clé et vos paramètres personnalisés seront effacés. Le tri automatique réutilisera le fournisseur IA par défaut du serveur.",
+      confirmLabel: 'Rétablir',
+      danger: true,
+    });
+    if (!ok) return;
+
+    try {
+      await aiService.deleteSettings();
+      toast.success("Fournisseur d'IA de l'instance rétabli.");
+      setApiKey('');
+      setTestResult(null);
+      await loadAI();
+    } catch (err) {
+      toast.error(errText(err, 'Erreur lors de la réinitialisation.'));
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="card animate-fade-up mt-6 flex justify-center p-8">
+        <Spinner size={24} className="text-brand-500" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="card animate-fade-up mt-6 p-7">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-400">
+            <Sparkles size={18} />
+          </span>
+          <div>
+            <h2 className="font-display text-lg font-bold text-ink-900">Intelligence Artificielle & Fournisseurs</h2>
+          </div>
+        </div>
+
+        {currentSettings?.configured ? (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Clé personnalisée active ({currentSettings.provider})
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-ink-100 px-3 py-1 text-xs font-medium text-muted border border-hairline">
+            Fournisseur instance ({currentSettings?.provider || 'Défaut'})
+          </span>
+        )}
+      </div>
+
+      <p className="mb-5 text-sm text-muted">
+        Configurez le modèle d'IA pour le tri et l'analyse de vos emails. Vous pouvez utiliser le fournisseur par défaut de l'instance ou apporter votre propre clé API (Bring Your Own Key).
+      </p>
+
+      {/* Provider selection */}
+      <div className="mb-5">
+        <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-muted">
+          Sélectionnez un fournisseur
+        </label>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {providers.map((p) => {
+            const isSelected = selectedProvider === p.name;
+            const isCurrent = currentSettings?.configured && currentSettings.provider === p.name;
+            return (
+              <button
+                key={p.name}
+                type="button"
+                onClick={() => handleSelectProvider(p.name)}
+                className={`flex flex-col items-start rounded-xl border p-3 text-left transition-all ${
+                  isSelected
+                    ? 'border-brand-500 bg-brand-50/50 shadow-sm dark:bg-brand-950/20'
+                    : 'border-hairline hover:border-ink-300 hover:bg-ink-50/50'
+                }`}
+              >
+                <div className="flex w-full items-center justify-between">
+                  <span className="text-sm font-semibold text-ink-900">{p.displayName}</span>
+                  {isSelected && <Check size={14} className="text-brand-600" />}
+                </div>
+                <span className="mt-1 text-xs text-muted">
+                  {p.requiresApiKey ? 'Clé API requise' : 'Auto-hébergé / Local'}
+                </span>
+                {isCurrent && (
+                  <span className="mt-1.5 inline-block rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                    Actif
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Config form */}
+      <form onSubmit={handleSave} className="space-y-4 rounded-xl border border-hairline/80 bg-ink-50/40 p-4">
+        {activeProvider.requiresApiKey && (
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="text-xs font-semibold text-ink-900">
+                Clé API {activeProvider.displayName}
+              </label>
+              {currentSettings?.configured && currentSettings.provider === selectedProvider && currentSettings.apiKeyMasked && (
+                <span className="text-xs text-muted">
+                  Clé enregistrée : <code className="font-mono">{currentSettings.apiKeyMasked}</code>
+                </span>
+              )}
+            </div>
+            <div className="relative">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={
+                  currentSettings?.configured && currentSettings.provider === selectedProvider
+                    ? 'Laisser vide pour conserver la clé actuelle'
+                    : 'sk-...'
+                }
+                className="input-field w-full pr-20 text-sm font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-medium text-muted hover:text-ink-900 px-2 py-1 rounded"
+              >
+                {showApiKey ? 'Masquer' : 'Afficher'}
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-muted">
+              Votre clé est chiffrée avec AES-256-GCM avant stockage et n'est jamais exposée publiquement.
+            </p>
+          </div>
+        )}
+
+        {activeProvider.requiresUrl && (
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-900">
+              URL du serveur
+            </label>
+            <input
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={selectedProvider === 'ollama' ? 'http://localhost:11434' : 'https://api.groq.com/openai/v1/chat/completions'}
+              className="input-field w-full text-sm font-mono"
+            />
+            <p className="mt-1 text-[11px] text-muted">
+              {selectedProvider === 'ollama'
+                ? "Adresse de votre instance Ollama locale ou distante."
+                : "Point de terminaison compatible OpenAI (ex. Groq, Together AI, vLLM, LM Studio)."}
+            </p>
+          </div>
+        )}
+
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-ink-900">
+            Modèle
+          </label>
+          <div className="flex gap-2">
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="input-field flex-1 text-sm"
+            >
+              {activeProvider.models?.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+              <option value="custom">Autre modèle personnalisé...</option>
+            </select>
+          </div>
+          {model === 'custom' && (
+            <div className="mt-2">
+              <input
+                type="text"
+                value={customModel}
+                onChange={(e) => setCustomModel(e.target.value)}
+                placeholder="ex. llama-3.3-70b-versatile, claude-3-5-haiku-latest..."
+                className="input-field w-full text-sm font-mono"
+              />
+            </div>
+          )}
+        </div>
+
+        {testResult && (
+          <div
+            className={`rounded-lg p-3 text-xs flex items-start gap-2 ${
+              testResult.success
+                ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                : 'bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+            }`}
+          >
+            {testResult.success ? <Check size={16} className="shrink-0 mt-0.5" /> : <Alert size={16} className="shrink-0 mt-0.5" />}
+            <span>{testResult.message}</span>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-hairline">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={testing || saving || (activeProvider.requiresApiKey && !apiKey && !currentSettings?.apiKeyMasked)}
+              className="btn btn-secondary text-xs"
+            >
+              {testing ? <Spinner size={14} className="mr-1.5" /> : null}
+              Tester la connexion
+            </button>
+            <button
+              type="submit"
+              disabled={saving || testing}
+              className="btn btn-primary text-xs"
+            >
+              {saving ? <Spinner size={14} className="mr-1.5" /> : null}
+              Enregistrer
+            </button>
+          </div>
+
+          {currentSettings?.configured && (
+            <button
+              type="button"
+              onClick={handleReset}
+              className="text-xs text-rose-600 hover:text-rose-700 hover:underline"
+            >
+              Rétablir l'IA de l'instance
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function Settings() {
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -561,6 +945,7 @@ function Settings() {
         )
       )}
 
+      <AISettingsCard />
       <GmailAccount />
       <MailboxAccount />
       <ProtectedSenders />

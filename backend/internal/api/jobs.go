@@ -81,12 +81,16 @@ func (h *Handler) updateJob(ctx context.Context, id primitive.ObjectID, set bson
 // EnqueueAnalyze creates an async analysis job and returns its id immediately,
 // so the UI never blocks while hundreds of emails are processed.
 func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
-	if h.aiClient == nil {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	userEmail := r.Header.Get("X-User-Email")
+	if !h.resolveAnalyzer(r.Context(), userEmail).Available() {
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		return
+	}
 	if userEmail == "" {
 		writeError(w, http.StatusUnauthorized, "User email required")
 		return

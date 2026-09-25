@@ -90,7 +90,7 @@ type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
 	encryptor    *crypto.Encryptor
-	aiClient     *ai.MistralClient
+	aiRegistry   *ai.Registry
 	billing      BillingConfig
 	auth         *auth.Manager
 	jobQueue     chan string
@@ -114,12 +114,12 @@ func (h *Handler) signInLimiter() *rateLimiter {
 	return h.signIn
 }
 
-func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig, authManager *auth.Manager) *Handler {
+func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiRegistry *ai.Registry, billingCfg BillingConfig, authManager *auth.Manager) *Handler {
 	h := &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
-		aiClient:     aiClient,
+		aiRegistry:   aiRegistry,
 		billing:      billingCfg,
 		auth:         authManager,
 		jobQueue:     make(chan string, 256),

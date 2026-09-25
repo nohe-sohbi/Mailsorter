@@ -69,6 +69,9 @@ func (c *MistralClient) SetMaxRetries(n int) {
 	c.maxRetries = n
 }
 
+// ProviderName implements Analyzer.
+func (c *MistralClient) ProviderName() string { return "mistral" }
+
 // Mistral API request/response types
 type chatRequest struct {
 	Model       string        `json:"model"`
@@ -90,201 +93,43 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
-// EmailAnalysis represents the AI's analysis of an email
-type EmailAnalysis struct {
-	Action     string  `json:"action"`     // "archive", "delete", "label", "keep"
-	LabelName  string  `json:"label_name"` // Suggested label (if action = "label")
-	Confidence float64 `json:"confidence"` // 0.0 to 1.0
-	Reasoning  string  `json:"reasoning"`  // Brief explanation
-}
-
-// AnalyzeEmail analyzes a single email and returns a suggested action
+// AnalyzeEmail analyzes a single email and returns a suggested action.
+// Implements Analyzer.
 func (c *MistralClient) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
-	labelsContext := ""
-	if len(existingLabels) > 0 {
-		labelsContext = fmt.Sprintf("\nLabels existants de l'utilisateur: %s", strings.Join(existingLabels, ", "))
-	}
-
-	prompt := fmt.Sprintf(`Tu es un assistant de tri d'emails. Analyse cet email et suggère une action.
-
-Email:
-- De: %s
-- Sujet: %s
-- Extrait: %s
-%s
-
-Actions possibles:
-- "archive": Pour les emails informatifs déjà lus ou non importants (newsletters lues, confirmations, notifications)
-- "delete": Pour les emails indésirables, spam, ou promotions non souhaitées
-- "label": Pour les emails à catégoriser
-- "keep": Pour les emails importants qui nécessitent une action ou attention
-
-Réponds UNIQUEMENT en JSON valide avec ce format exact:
-{
-  "action": "archive|delete|label|keep",
-  "label_name": "Nom du label si action=label, sinon chaîne vide",
-  "confidence": 0.0 à 1.0,
-  "reasoning": "Explication courte en français (max 100 caractères)"
-}
-
-IMPORTANT pour les labels - sois PRECIS et SPECIFIQUE:
-- Utilise un label existant si pertinent
-- Propose des labels PRECIS selon le TYPE d'email:
-  * Livraisons/Colis: "Livraison" ou "Suivi Colis"
-  * Factures/Paiements: "Factures"
-  * Confirmations d'achat: "Achats"
-  * Newsletters: "Newsletters"
-  * Réseaux sociaux: "Social" (Facebook, Twitter, LinkedIn...)
-  * Voyages: "Voyages" (billets, réservations)
-  * Banque: "Banque"
-  * Travail: "Travail"
-  * Administration: "Administratif"
-- NE PAS utiliser de labels trop génériques comme "E-commerce"
-- Préfère des labels orientés ACTION/TYPE plutôt que SOURCE`,
-		email.From, email.Subject, truncate(emailSnippet(email), 200), labelsContext)
+	prompt := buildAnalyzeEmailPrompt(email, existingLabels)
 
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("mistral API error: %w", err)
 	}
 
-	var analysis EmailAnalysis
-	if err := json.Unmarshal([]byte(response), &analysis); err != nil {
-		// Try to extract JSON from response if it contains extra text
-		jsonStart := strings.Index(response, "{")
-		jsonEnd := strings.LastIndex(response, "}")
-		if jsonStart >= 0 && jsonEnd > jsonStart {
-			cleanJSON := response[jsonStart : jsonEnd+1]
-			if err := json.Unmarshal([]byte(cleanJSON), &analysis); err != nil {
-				return nil, fmt.Errorf("failed to parse AI response: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("failed to parse AI response: %w", err)
-		}
-	}
-
-	// Validate and normalize
-	analysis.Action = strings.ToLower(analysis.Action)
-	if analysis.Action != "archive" && analysis.Action != "delete" && analysis.Action != "label" && analysis.Action != "keep" {
-		analysis.Action = "keep"
-	}
-	if analysis.Confidence < 0 {
-		analysis.Confidence = 0
-	}
-	if analysis.Confidence > 1 {
-		analysis.Confidence = 1
-	}
-
-	return &analysis, nil
+	return parseEmailAnalysis(response)
 }
 
-// SenderAnalysis represents the AI's analysis of a sender's emails
-type SenderAnalysis struct {
-	SuggestedAction string  `json:"suggested_action"`
-	SuggestedLabel  string  `json:"suggested_label"`
-	Confidence      float64 `json:"confidence"`
-	Reasoning       string  `json:"reasoning"`
-	SenderType      string  `json:"sender_type"` // "commercial", "personal", "work", "newsletter", "transactional"
-}
-
-// AnalyzeSender analyzes multiple emails from the same sender
+// AnalyzeSender analyzes multiple emails from the same sender.
+// Implements Analyzer.
 func (c *MistralClient) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
-	// Build email summaries
-	var emailSummaries []string
-	for i, email := range emails {
-		if i >= 5 { // Limit to 5 emails for context
-			break
-		}
-		emailSummaries = append(emailSummaries, fmt.Sprintf("- Sujet: %s", email.Subject))
-	}
-
-	labelsContext := ""
-	if len(existingLabels) > 0 {
-		labelsContext = fmt.Sprintf("\nLabels existants: %s", strings.Join(existingLabels, ", "))
-	}
-
-	prompt := fmt.Sprintf(`Tu es un assistant de tri d'emails. Analyse cet expéditeur et ses emails pour suggérer une action par défaut.
-
-Expéditeur: %s
-Nombre d'emails: %d
-
-Exemples de sujets:
-%s
-%s
-
-Actions possibles:
-- "archive": Archiver automatiquement (notifications, confirmations)
-- "delete": Supprimer (spam, promotions non voulues)
-- "label": Catégoriser avec un label
-- "keep": Garder en inbox (emails importants)
-
-Réponds UNIQUEMENT en JSON valide:
-{
-  "suggested_action": "archive|delete|label|keep",
-  "suggested_label": "Nom du label si action=label",
-  "confidence": 0.0 à 1.0,
-  "reasoning": "Explication courte en français",
-  "sender_type": "commercial|personal|work|newsletter|transactional"
-}`,
-		senderEmail, len(emails), strings.Join(emailSummaries, "\n"), labelsContext)
+	prompt := buildSenderPrompt(senderEmail, emails, existingLabels)
 
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("mistral API error: %w", err)
 	}
 
-	var analysis SenderAnalysis
-	if err := json.Unmarshal([]byte(response), &analysis); err != nil {
-		// Try to extract JSON
-		jsonStart := strings.Index(response, "{")
-		jsonEnd := strings.LastIndex(response, "}")
-		if jsonStart >= 0 && jsonEnd > jsonStart {
-			cleanJSON := response[jsonStart : jsonEnd+1]
-			if err := json.Unmarshal([]byte(cleanJSON), &analysis); err != nil {
-				return nil, fmt.Errorf("failed to parse AI response: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("failed to parse AI response: %w", err)
-		}
-	}
-
-	return &analysis, nil
+	return parseSenderAnalysis(response)
 }
 
 // AnalyzeBatch analyzes several emails in a single API call and returns one
 // analysis per email, in order. This collapses N requests into ⌈N/batch⌉,
 // slashing both cost and latency. Returns an error if the model's response
 // can't be aligned with the input, so the caller can fall back per-email.
+// Implements Analyzer.
 func (c *MistralClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
 	if len(emails) == 0 {
 		return nil, nil
 	}
 
-	var list strings.Builder
-	for i, e := range emails {
-		fmt.Fprintf(&list, "%d. De: %s | Sujet: %s | Extrait: %s\n",
-			i+1, e.From, e.Subject, truncate(emailSnippet(e), 160))
-	}
-
-	labelsContext := ""
-	if len(existingLabels) > 0 {
-		labelsContext = "\nLabels existants de l'utilisateur: " + strings.Join(existingLabels, ", ")
-	}
-
-	prompt := fmt.Sprintf(`Tu es un assistant de tri d'emails. Analyse les %d emails ci-dessous et propose une action pour CHACUN.
-
-Emails:
-%s%s
-
-Actions possibles:
-- "archive": informatif déjà lu / non important (newsletters lues, confirmations, notifications)
-- "delete": indésirable, spam, promotions non souhaitées
-- "label": à catégoriser (labels PRÉCIS par TYPE: Livraison, Factures, Achats, Newsletters, Social, Voyages, Banque, Travail, Administratif)
-- "keep": important, nécessite une action ou attention
-
-Réponds UNIQUEMENT avec un TABLEAU JSON de %d objets, dans le MÊME ORDRE que les emails, format exact:
-[{"action":"archive|delete|label|keep","label_name":"label si action=label sinon vide","confidence":0.0,"reasoning":"explication courte en français"}]`,
-		len(emails), list.String(), labelsContext, len(emails))
+	prompt := buildBatchPrompt(emails, existingLabels)
 
 	maxTokens := 120*len(emails) + 200
 	if maxTokens > 4000 {
@@ -296,36 +141,7 @@ Réponds UNIQUEMENT avec un TABLEAU JSON de %d objets, dans le MÊME ORDRE que l
 		return nil, fmt.Errorf("mistral API error: %w", err)
 	}
 
-	start := strings.Index(response, "[")
-	end := strings.LastIndex(response, "]")
-	if start < 0 || end <= start {
-		return nil, fmt.Errorf("no JSON array in batch response")
-	}
-
-	var results []EmailAnalysis
-	if err := json.Unmarshal([]byte(response[start:end+1]), &results); err != nil {
-		return nil, fmt.Errorf("failed to parse batch response: %w", err)
-	}
-	if len(results) < len(emails) {
-		return nil, fmt.Errorf("batch returned %d analyses for %d emails", len(results), len(emails))
-	}
-
-	for i := range results {
-		results[i].Action = strings.ToLower(strings.TrimSpace(results[i].Action))
-		switch results[i].Action {
-		case "archive", "delete", "label", "keep":
-		default:
-			results[i].Action = "keep"
-		}
-		if results[i].Confidence < 0 {
-			results[i].Confidence = 0
-		}
-		if results[i].Confidence > 1 {
-			results[i].Confidence = 1
-		}
-	}
-
-	return results[:len(emails)], nil
+	return parseBatchAnalysis(response, len(emails))
 }
 
 // chat sends a message to Mistral and returns the response (default token budget).
@@ -467,21 +283,5 @@ func parseRetryAfter(v string) time.Duration {
 	return 0
 }
 
-func emailSnippet(e models.Email) string {
-	s := strings.TrimSpace(e.Snippet)
-	if s == "" {
-		s = strings.TrimSpace(e.Body)
-	}
-	if s == "" {
-		return "(Contenu non disponible)"
-	}
-	return s
-}
-
-// Helper function to truncate strings
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
+// Compile-time assertion: MistralClient satisfies Analyzer.
+var _ Analyzer = (*MistralClient)(nil)

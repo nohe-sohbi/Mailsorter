@@ -19,12 +19,17 @@ import (
 
 // AnalyzeEmails synchronously analyzes selected emails and creates AI suggestions.
 func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
-	if h.aiClient == nil {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	userEmail := r.Header.Get("X-User-Email")
+	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
+	if !aiClient.Available() {
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		return
+	}
 	if userEmail == "" {
 		writeError(w, http.StatusUnauthorized, "User email required")
 		return
@@ -89,12 +94,17 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 
 // AnalyzeSender analyzes all emails from a specific sender
 func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
-	if h.aiClient == nil {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		writeError(w, http.StatusUnauthorized, "User email required")
 		return
 	}
 
-	userEmail := r.Header.Get("X-User-Email")
+	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
+	if !aiClient.Available() {
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		return
+	}
 	if userEmail == "" {
 		writeError(w, http.StatusUnauthorized, "User email required")
 		return
@@ -134,7 +144,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
 
 	// Analyze sender
-	analysis, err := h.aiClient.AnalyzeSender(req.SenderEmail, emails, existingLabels)
+	analysis, err := aiClient.AnalyzeSender(req.SenderEmail, emails, existingLabels)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to analyze sender: "+err.Error())
 		return
