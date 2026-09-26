@@ -1,0 +1,53 @@
+/* Layout shared by every section of the Grand Hotel landing. Section rules live
+ * next to their component. Every class starts with hl-: a stylesheet loaded
+ * by the landing stays loaded after navigating away, and a generic name would
+ * then restyle the dashboard. */
+
+.hl-page { min-height: 100vh; }
+.hl-wrap { max-width: 1240px; margin: 0 auto; padding: 0 40px; }
+.hl-section { padding: 80px 0 90px; }
+.hl-section--alt { background: var(--h-bg-alt); }
+.theme-hotel [data-floor] { scroll-margin-top: 80px; }
+
+.hl-fh { text-align: center; }
+.hl-fh__k {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--h-accent);
+}
+.hl-fh__k b {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #E3A93B;
+  border: 1.5px solid var(--h-line);
+  color: #2B1B1E;
+  font-family: var(--h-font-display);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+.hl-fh__title {
+  margin-top: 14px;
+  font-family: var(--h-font-display);
+  font-variation-settings: 'opsz' 28;
+  font-weight: 400;
+  font-size: clamp(34px, 4.2vw, 54px);
+  line-height: 1.04;
+  letter-spacing: -0.01em;
+}
+.hl-fh__title em { color: var(--h-accent); font-weight: 500; }
+.hl-fh__lede { max-width: 54ch; margin: 14px auto 0; font-size: 16.5px; line-height: 1.55; color: var(--h-muted); }
+
+.hl-count { color: var(--h-accent); font-weight: 500; font-variant-numeric: lining-nums tabular-nums; }
+
+@media (max-width: 640px) {
+  .hl-wrap { padding: 0 16px; }
+  .hl-section { padding: 56px 0 64px; }
+}

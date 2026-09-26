@@ -1,0 +1,451 @@
+/* Grand Hotel theme: tokens, primitives, illustration text and motion.
+ *
+ * Everything hangs off .theme-hotel, never :root, so the theme can be
+ * unplugged (UI_THEME=classic) without leaving a rule behind: the classic
+ * landing and today's dashboard never carry the class. Night values sit under
+ * .dark .theme-hotel, driven by the light / dark / system switch that puts
+ * .dark on <html> (ui/theme.js).
+ *
+ * Plain CSS on purpose, not Tailwind: a theme that can be switched off cannot
+ * live in index.css, and @layer only works in the file holding the @tailwind
+ * directives. Tailwind still does layout (see the `hotel` colours in
+ * tailwind.config.js). Class prefixes: ht- for these primitives, hl- for the
+ * landing, hf- for the illustration text inside the SVG drawings (ui/hotel).
+ * Never a generic name: a stylesheet loaded by the landing stays loaded after
+ * navigation and would restyle the dashboard.
+ *
+ * The validated rendering of every class is docs/design/moodboard.html.
+ */
+
+.theme-hotel {
+  --h-bg: #F6E3D9;
+  --h-bg-alt: #FBF1E4;
+  --h-surface: #FFFAF2;
+  --h-sunk: #F7D6DC;
+  --h-pink: #EFB7C3;
+  --h-pile-1: #F8ECDC;
+  --h-pile-2: #F1E1CC;
+  --h-text: #2B1B1E;
+  --h-muted: #6E4B52;
+  --h-line: #2B1B1E;
+  --h-hair: rgba(43, 27, 30, 0.16);
+  --h-plum: #7A2E3B;
+  --h-on-plum: #FBF1E4;
+  --h-accent: #7A2E3B;
+  --h-mustard: #E3A93B;
+  --h-mustard-soft: #FBE8C4;
+  --h-on-mustard: #2B1B1E;
+  --h-teal: #2F6F73;
+  --h-teal-soft: #D5E7E4;
+  --h-teal-text: #2F6F73;
+  --h-offset: #7A2E3B;
+  --h-stripe: rgba(122, 46, 59, 0.045);
+  --h-glow: rgba(255, 214, 120, 0.9);
+  --h-font-display: 'Bodoni Moda', Didot, 'Times New Roman', serif;
+  --h-font-ui: 'Jost', Futura, ui-sans-serif, system-ui, sans-serif;
+  --h-ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  font-family: var(--h-font-ui);
+  color: var(--h-text);
+  background: repeating-linear-gradient(90deg, var(--h-stripe) 0 24px, transparent 24px 48px), var(--h-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.dark .theme-hotel {
+  --h-bg: #1C1220;
+  --h-bg-alt: #221620;
+  --h-surface: #2A1A24;
+  --h-sunk: #33202C;
+  --h-pink: #5A2A3A;
+  --h-pile-1: #241620;
+  --h-pile-2: #1F131B;
+  --h-text: #F3E6DA;
+  --h-muted: #BFA6A8;
+  --h-line: #0B0609;
+  --h-hair: rgba(243, 230, 218, 0.12);
+  --h-plum: #A8455A;
+  --h-on-plum: #FFF4E8;
+  --h-accent: #EE9CB0;
+  --h-mustard: #F4CF6B;
+  --h-mustard-soft: #3A2A18;
+  --h-on-mustard: #2B1B1E;
+  --h-teal: #4F9A96;
+  --h-teal-soft: #1E3533;
+  --h-teal-text: #7CC4BF;
+  --h-offset: #000000;
+  --h-stripe: rgba(244, 207, 107, 0.03);
+}
+
+/* ---------- Type ---------- */
+
+/* Bodoni Moda at its default optical size draws hairlines so thin that a 4 and
+ * a hyphen vanish at display sizes. 28 keeps the contrast and the legibility.
+ * Only at 28px and above: smaller Bodoni text (.ht-prop b, the corridor and
+ * vault titles, the rate card terms) uses font-optical-sizing: auto, whose
+ * lower opsz keeps the hairlines thick enough at that size. */
+.ht-disp {
+  font-family: var(--h-font-display);
+  font-variation-settings: 'opsz' 28;
+  font-weight: 400;
+}
+
+/* ---------- Buttons and links ---------- */
+
+.ht-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  height: 44px;
+  padding: 0 20px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-surface);
+  color: var(--h-text);
+  font-family: var(--h-font-ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.12s, box-shadow 0.12s, background-color 0.2s;
+}
+.ht-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.ht-btn-primary { background: var(--h-plum); color: var(--h-on-plum); box-shadow: 0 3px 0 var(--h-line); }
+.ht-btn-primary:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 4px 0 var(--h-line); }
+.ht-btn-primary:not(:disabled):active { transform: translateY(2px); box-shadow: 0 1px 0 var(--h-line); }
+.ht-btn-secondary:not(:disabled):hover { background: var(--h-sunk); }
+.ht-btn-gold { background: var(--h-mustard); color: var(--h-on-mustard); box-shadow: 0 3px 0 var(--h-line); }
+.ht-btn-gold:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 4px 0 var(--h-line); }
+.ht-btn-sm { height: 32px; padding: 0 12px; font-size: 10.5px; }
+
+.ht-link {
+  padding: 0;
+  background: none;
+  border-bottom: 1.5px solid currentColor;
+  font-family: var(--h-font-display);
+  font-style: italic;
+  font-size: 16px;
+  color: var(--h-accent);
+  cursor: pointer;
+}
+
+.theme-hotel :focus-visible { outline: 3px solid var(--h-mustard); outline-offset: 2px; }
+
+/* ---------- Fields ---------- */
+
+.ht-input {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-surface);
+  color: var(--h-text);
+  font-size: 15px;
+  outline: none;
+}
+.ht-input::placeholder { color: var(--h-muted); opacity: 0.7; }
+
+/* The registration-card field: a dotted line to write on. */
+.ht-field {
+  display: block;
+  width: 100%;
+  height: 34px;
+  margin-bottom: 12px;
+  border: 0;
+  border-bottom: 1.5px dotted var(--h-line);
+  background: transparent;
+  color: var(--h-text);
+  font-family: var(--h-font-display);
+  font-style: italic;
+  font-size: 16px;
+  outline: none;
+}
+.ht-field::placeholder { color: var(--h-muted); opacity: 0.75; }
+.ht-field:focus { border-bottom-style: solid; border-bottom-color: var(--h-plum); }
+
+.ht-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--h-accent);
+}
+
+/* ---------- Surfaces ---------- */
+
+.ht-card { background: var(--h-surface); border: 1.5px solid var(--h-line); box-shadow: 7px 7px 0 var(--h-offset); }
+
+/* The slab between two floors. */
+.ht-slab {
+  height: 14px;
+  background: #7A2E3B;
+  border-top: 2px solid var(--h-line);
+  border-bottom: 2px solid var(--h-line);
+  box-shadow: inset 0 3px 0 #E3A93B;
+}
+
+/* ---------- Tags, badges, toast ---------- */
+
+.ht-tag {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 24px 0 10px;
+  border: 1.5px solid var(--h-line);
+  border-radius: 3px 14px 14px 3px;
+  background: var(--h-pink);
+  color: var(--h-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ht-tag::after {
+  content: '';
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--h-bg);
+  border: 1.5px solid var(--h-line);
+}
+.ht-tag.is-gold { background: var(--h-mustard); color: var(--h-on-mustard); }
+.ht-tag.is-teal { background: var(--h-teal); color: #fff; }
+.ht-tag.is-plain { background: var(--h-surface); }
+
+.ht-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 12px;
+  background: var(--h-mustard);
+  border: 1.5px solid var(--h-line);
+  color: var(--h-on-mustard);
+  font-size: 12px;
+  font-weight: 600;
+  transition: transform 0.2s;
+}
+
+/* Ink on paper by day, paper on ink by night: a dark toast on a dark page
+ * would only be visible by its shadow. */
+.ht-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  padding: 11px 16px 11px 18px;
+  background: #2B1B1E;
+  color: #FBF1E4;
+  font-size: 14.5px;
+  box-shadow: 0 10px 24px -10px rgba(0, 0, 0, 0.5);
+}
+.ht-toast button {
+  color: #F4CF6B;
+  border-bottom: 1.5px solid #F4CF6B;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.dark .theme-hotel .ht-toast { background: #F3E6DA; color: #2B1B1E; }
+.dark .theme-hotel .ht-toast button { color: #7A2E3B; border-bottom-color: #7A2E3B; }
+
+/* ---------- Elevator panel (the menu) ---------- */
+
+.ht-panel {
+  display: inline-flex;
+  gap: 16px;
+  padding: 7px 18px 5px;
+  background: var(--h-plum);
+  border: 2px solid var(--h-line);
+  border-radius: 40px;
+}
+.ht-panel a { display: flex; flex-direction: column; align-items: center; gap: 3px; text-decoration: none; }
+.ht-panel i {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #E3A93B;
+  border: 1.5px solid #2B1B1E;
+  color: #2B1B1E;
+  font-style: normal;
+  font-family: var(--h-font-display);
+  font-weight: 700;
+  font-size: 13px;
+  transition: background-color 0.3s, box-shadow 0.3s;
+}
+.ht-panel a.is-on i { background: #FBF1E4; box-shadow: 0 0 0 3px rgba(251, 241, 228, 0.3), 0 0 14px 3px var(--h-glow); }
+.ht-panel span { font-size: 8.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: #FBF1E4; }
+
+/* ---------- Switch, checkbox ---------- */
+
+.ht-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 50px;
+  height: 28px;
+  border: 1.5px solid var(--h-line);
+  border-radius: 14px;
+  background: var(--h-sunk);
+  transition: background-color 0.2s;
+}
+.ht-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--h-surface);
+  border: 1.5px solid var(--h-line);
+  transition: transform 0.2s var(--h-ease);
+}
+.ht-switch.is-on { background: var(--h-mustard); }
+.ht-switch.is-on::after { transform: translateX(21px); }
+
+.ht-check {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-surface);
+}
+.ht-check.is-on { background: var(--h-plum); }
+.ht-check.is-on::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid var(--h-on-plum);
+  border-bottom: 2px solid var(--h-on-plum);
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+
+/* ---------- Numbered plaque, proposal ---------- */
+
+.ht-plq { display: grid; grid-template-columns: 42px 1fr; gap: 14px; align-items: center; }
+.ht-plq b {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #E3A93B;
+  border: 1.5px solid var(--h-line);
+  color: #7A2E3B;
+  font-family: var(--h-font-display);
+  font-style: italic;
+  font-size: 17px;
+}
+.ht-plq p { font-size: 15px; line-height: 1.45; color: var(--h-muted); }
+.ht-plq strong { color: var(--h-text); font-weight: 600; }
+
+.ht-prop {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--h-mustard-soft);
+  border: 1.5px solid var(--h-line);
+}
+.ht-prop svg { flex-shrink: 0; color: var(--h-accent); }
+.ht-prop small {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--h-muted);
+}
+.ht-prop b {
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-weight: 500;
+  font-size: 23px;
+  color: var(--h-accent);
+}
+.ht-prop.is-safe { background: var(--h-teal-soft); }
+.ht-prop.is-safe svg, .ht-prop.is-safe b { color: var(--h-teal-text); }
+
+/* ---------- Key on its hook ---------- */
+
+.ht-key { display: flex; flex-direction: column; align-items: center; }
+.ht-key__hook { width: 12px; height: 12px; border-radius: 50%; background: #E3A93B; border: 1.5px solid #2B1B1E; }
+.ht-key__str { width: 1.5px; height: 12px; background: #FBF1E4; opacity: 0.8; }
+.ht-key__tag {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  height: auto;
+  min-width: 128px;
+  padding: 8px 26px 8px 12px;
+  font-size: 13px;
+  transform: rotate(var(--tilt, 0deg));
+  transform-origin: 50% -30px;
+  transition: transform 0.3s;
+}
+.ht-key:hover .ht-key__tag { transform: rotate(calc(var(--tilt, 0deg) * -2)); }
+.ht-key__tag small {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #7A2E3B;
+  opacity: 0.85;
+}
+
+/* ---------- Illustration text (SVG) ---------- */
+
+.hf-sign { font: 600 12px var(--h-font-ui); letter-spacing: 7px; fill: #FBF1E4; text-anchor: middle; }
+.hf-sign--lit { fill: #F4CF6B; }
+.hf-num, .hf-dn { font: 700 9px var(--h-font-ui); fill: #2B1B1E; text-anchor: middle; }
+.hf-lab { font: 600 7.4px var(--h-font-ui); letter-spacing: 1.2px; fill: #7A2E3B; text-anchor: middle; }
+.hf-lab--wide { letter-spacing: 2px; }
+/* The two sizes below are set by the plate the word is printed on, not by
+ * taste: COMPLET takes 25 units on a 28-unit tag and DÉRANGER 34 on a
+ * 38-unit hanger. At 6px / 0.8 and 6.4px / 0.6 they ran 3.5 and 1.9 units
+ * past each edge: the C of COMPLET vanished on the envelope behind it, the
+ * D of DÉRANGER on the plum door, plum on plum. */
+.hf-tiny { font: 700 5.2px var(--h-font-ui); letter-spacing: 0; fill: #FBF1E4; text-anchor: middle; }
+.hf-tiny--lg { font-size: 7px; letter-spacing: 0.8px; }
+.hf-sg { font: 700 6.6px var(--h-font-ui); letter-spacing: 0.5px; text-anchor: middle; }
+.hf-hg { font: 700 6px var(--h-font-ui); letter-spacing: 0; fill: #7A2E3B; text-anchor: middle; }
+.hf-hg--ink { fill: #2B1B1E; }
+.hf-z { font: italic 600 13px var(--h-font-display); fill: #7A2E3B; }
+.hf-z--sm { font-size: 10px; }
+.hf-vault { font: 700 10px var(--h-font-ui); letter-spacing: 2.4px; fill: #2B1B1E; text-anchor: middle; }
+
+/* ---------- Motion ---------- */
+
+@keyframes ht-lift {
+  0%, 18% { transform: translateY(0); }
+  42%, 62% { transform: translateY(104px); }
+  86%, 100% { transform: translateY(0); }
+}
+@keyframes ht-blink {
+  0%, 40% { opacity: 0; }
+  44%, 60% { opacity: 1; }
+  64%, 100% { opacity: 0; }
+}
+.ht-facade.is-animated .hf-cab { animation: ht-lift 6.4s ease-in-out infinite; }
+.ht-facade.is-animated .hf-lamp { animation: ht-blink 6.4s steps(1) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ht-facade .hf-cab, .ht-facade .hf-lamp { animation: none; }
+  .theme-hotel *, .theme-hotel *::before, .theme-hotel *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

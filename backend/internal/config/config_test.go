@@ -27,7 +27,7 @@ func TestValidateEncryptionKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Everything but the key is valid: this case is about the key, and
 			// Validate refuses a config that could not boot for any reason.
-			c := &Config{EncryptionKey: tt.key, Edition: provider.EditionSelfHosted}
+			c := &Config{EncryptionKey: tt.key, Edition: provider.EditionSelfHosted, UITheme: UIThemeHotel}
 			err := c.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
@@ -57,7 +57,7 @@ func TestGetEnvListParsing(t *testing.T) {
 // up much later, as a connection the user cannot make and nobody can explain.
 func TestValidateRejectsAnUnknownEdition(t *testing.T) {
 	base := func() *Config {
-		return &Config{EncryptionKey: strings.Repeat("k", minEncryptionKeyLen)}
+		return &Config{EncryptionKey: strings.Repeat("k", minEncryptionKeyLen), UITheme: UIThemeHotel}
 	}
 
 	for _, good := range []provider.Edition{provider.EditionSelfHosted, provider.EditionHosted} {
@@ -95,5 +95,56 @@ func TestLoadNormalizesTheEdition(t *testing.T) {
 		if got := Load().Edition; got != want {
 			t.Errorf("Load() with EDITION=%q = %q, want %q", raw, got, want)
 		}
+	}
+}
+
+// The theme decides which landing every visitor gets, so a typo must stop the
+// boot rather than silently serve the other one.
+func TestValidateRejectsAnUnknownUITheme(t *testing.T) {
+	base := func() *Config {
+		return &Config{EncryptionKey: strings.Repeat("k", minEncryptionKeyLen), Edition: provider.EditionSelfHosted}
+	}
+
+	for _, good := range []UITheme{UIThemeHotel, UIThemeClassic} {
+		c := base()
+		c.UITheme = good
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() with UI_THEME=%q = %v, want nil", good, err)
+		}
+	}
+
+	for _, bad := range []UITheme{"", "Hotel", "grand-hotel", "clasic"} {
+		c := base()
+		c.UITheme = bad
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("Validate() with UI_THEME=%q = nil, want an error", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "UI_THEME") {
+			t.Errorf("Validate() with UI_THEME=%q said %q, want it to name UI_THEME", bad, err)
+		}
+	}
+}
+
+func TestLoadUITheme(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want UITheme
+	}{
+		{"unset defaults to hotel", "", UIThemeHotel},
+		{"hotel", "hotel", UIThemeHotel},
+		{"classic", "classic", UIThemeClassic},
+		{"case and spaces are normalized", "  Classic ", UIThemeClassic},
+		{"an unknown value is kept for Validate to refuse", "retro", UITheme("retro")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("UI_THEME", tc.env)
+			if got := Load().UITheme; got != tc.want {
+				t.Errorf("Load().UITheme with UI_THEME=%q = %q, want %q", tc.env, got, tc.want)
+			}
+		})
 	}
 }

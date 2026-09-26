@@ -14,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/billing"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/config"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
@@ -77,6 +78,10 @@ var Version = "dev"
 // It gates which mailbox providers this instance can offer: see
 // internal/provider, and the catalog served by GET /api/providers.
 var Edition = provider.EditionSelfHosted
+
+// UITheme is the landing the SPA renders on /, set from configuration at
+// startup (UI_THEME) and reported by GET /api/config/status.
+var UITheme = config.UIThemeHotel
 
 // AllowedOrigins is the CORS allow-list applied by SetupRoutes. It defaults to
 // the local-dev + public origins and is overridden from configuration
@@ -700,6 +705,7 @@ func (h *Handler) GetConfigStatus(w http.ResponseWriter, r *http.Request) {
 		MailboxSignIn: mailboxSignInAvailable(),
 		BillingOn:     h.billingEnabled(),
 		Edition:       string(Edition),
+		UITheme:       string(UITheme),
 	}
 
 	writeJSON(w, http.StatusOK, status)

@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import Login from './pages/Login';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import Inbox from './pages/Inbox';
 import Setup from './pages/Setup';
 import Settings from './pages/Settings';
@@ -24,6 +23,7 @@ import { CONTACT_EMAIL } from './components/PublicFooter';
 import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
 import { isAuthed } from './lib/session';
+import { effectiveUiTheme } from './lib/uiTheme';
 
 function BootScreen({ children }) {
   return (
@@ -55,6 +55,104 @@ function Unavailable() {
         <Mail size={16} /> Prévenir l'exploitant
       </a>
     </BootScreen>
+  );
+}
+
+// A deploy (every push to main) renames every chunk. A tab opened before it
+// still runs the old main bundle, asks for a chunk hash that no longer exists,
+// and a rejected lazy import unmounts the whole tree. Reloading fetches the new
+// index.html and its new hashes. Once only: the flag, set before the reload and
+// cleared by the next chunk that loads, stops a chunk that is really missing
+// from reloading forever, and without storage there is no flag, so no reload.
+const CHUNK_RELOAD_FLAG = 'mailsorter_chunk_reload';
+
+function lazyWithReload(load) {
+  return lazy(() =>
+    load().then(
+      (module) => {
+        try {
+          sessionStorage.removeItem(CHUNK_RELOAD_FLAG);
+        } catch {
+          // Storage blocked: there is no flag to clear.
+        }
+        return module;
+      },
+      (err) => {
+        let reload = false;
+        try {
+          if (sessionStorage.getItem(CHUNK_RELOAD_FLAG) !== '1') {
+            sessionStorage.setItem(CHUNK_RELOAD_FLAG, '1');
+            reload = true;
+          }
+        } catch {
+          // Storage blocked: a second failure would look like a first, so no reload.
+        }
+        if (!reload) throw err;
+        window.location.reload();
+        // Never settles: the fallback stays up until the reload replaces the
+        // page, instead of the error screen flashing in between.
+        return new Promise(() => {});
+      }
+    )
+  );
+}
+
+// Both landings are separate chunks: a visitor downloads only the one this
+// instance serves, fonts included.
+const ClassicLanding = lazyWithReload(() => import('./pages/Login'));
+const HotelLanding = lazyWithReload(() => import('./pages/HotelLanding'));
+
+// The only class component in the app: React catches a render error only in a
+// class. It holds the landing chunk that still fails after the one reload, so
+// the visitor gets a way out instead of a blank page. React already logs the
+// error it caught; this only decides what to render.
+class LandingErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <BootScreen>
+        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-danger-50 text-danger-600">
+          <Alert size={28} />
+        </span>
+        <div className="max-w-sm space-y-2">
+          <h1 className="text-xl font-bold text-ink-900">La page n'a pas pu se charger.</h1>
+        </div>
+        <button onClick={() => window.location.reload()} className="btn-primary">
+          Recharger
+        </button>
+      </BootScreen>
+    );
+  }
+}
+
+// The landing on /, chosen at runtime from UI_THEME (see lib/uiTheme.js), so
+// the Grand Hotel theme can be unplugged without a rebuild.
+function Landing() {
+  const { uiTheme } = useInstance();
+  const { search } = useLocation();
+  const theme = useMemo(() => effectiveUiTheme(uiTheme, search), [uiTheme, search]);
+  const Page = theme === 'hotel' ? HotelLanding : ClassicLanding;
+  return (
+    <LandingErrorBoundary>
+      <Suspense
+        fallback={
+          <BootScreen>
+            <Spinner size={18} className="text-brand-600" />
+          </BootScreen>
+        }
+      >
+        <Page />
+      </Suspense>
+    </LandingErrorBoundary>
   );
 }
 
@@ -211,7 +309,7 @@ function App() {
                     path="/setup"
                     element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
                   />
-                  <Route path="/" element={isUsable ? <Login /> : unconfigured()} />
+                  <Route path="/" element={isUsable ? <Landing /> : unconfigured()} />
                   <Route path="/inbox" element={guard(<Inbox />, true)} />
                   <Route path="/rules" element={guard(<Rules />, true)} />
                   <Route path="/snoozed" element={guard(<Snoozed />, true)} />

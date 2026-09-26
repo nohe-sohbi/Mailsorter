@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { authService, configService, waitlistService, apiError } from '../services/api';
+import { configService, waitlistService, apiError } from '../services/api';
 import { useInstance } from '../contexts/InstanceContext';
 import { track } from '../lib/analytics';
 import { hasJoinedWaitlist, rememberWaitlistJoin, waitlistEmail as getWaitlistEmail, forgetWaitlistJoin } from '../lib/waitlist';
 import { isAuthed } from '../lib/session';
+import { useAuthForm } from '../lib/useAuthForm';
 import PublicFooter, { SOURCE_URL } from '../components/PublicFooter';
 import {
   Logo, Google, Sparkles, Archive, Tag, Users, Shield, Bolt, Check, BellOff,
@@ -120,53 +121,8 @@ const FAQ = [
 ];
 
 function AuthBox({ isConfigured, onSignedIn }) {
-  const [mode, setMode] = useState('register'); // 'register' | 'login'
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [googleBusy, setGoogleBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (busy || googleBusy) return;
-    setBusy(true);
-    setError('');
-
-    try {
-      if (mode === 'register') {
-        const { data } = await authService.register(email.trim(), password);
-        localStorage.setItem('userEmail', data.userEmail);
-        localStorage.setItem('accessToken', data.accessToken);
-        localStorage.removeItem('hasMailbox');
-        track('register_done');
-        onSignedIn('/connect');
-      } else {
-        const { data } = await authService.login(email.trim(), password);
-        localStorage.setItem('userEmail', data.userEmail);
-        localStorage.setItem('accessToken', data.accessToken);
-        localStorage.removeItem('hasMailbox');
-        track('login_done');
-        onSignedIn('/inbox');
-      }
-    } catch (err) {
-      setError(apiError(err, 'Une erreur est survenue. Vérifiez vos identifiants.'));
-      setBusy(false);
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    setGoogleBusy(true);
-    setError('');
-    try {
-      const response = await authService.getAuthUrl();
-      track('login_start', { provider: 'google' });
-      window.location.href = response.data.authUrl;
-    } catch (err) {
-      setError('Impossible de démarrer la connexion Google. Réessayez.');
-      setGoogleBusy(false);
-    }
-  };
+  const { mode, setMode, email, setEmail, password, setPassword, busy, googleBusy, error, submit, startGoogle } =
+    useAuthForm(onSignedIn);
 
   return (
     <div id="auth-box" className="mt-8 w-full max-w-md rounded-2xl border border-hairline bg-surface p-6 shadow-card animate-fade-up">
@@ -174,7 +130,8 @@ function AuthBox({ isConfigured, onSignedIn }) {
       <div className="flex rounded-xl bg-ink-100/70 p-1">
         <button
           type="button"
-          onClick={() => { setMode('register'); setError(''); }}
+          onClick={() => setMode('register')}
+          data-auth-switch="register"
           className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
             mode === 'register' ? 'bg-surface text-ink-900 shadow-sm' : 'text-ink-600 hover:text-ink-900'
           }`}
@@ -183,7 +140,8 @@ function AuthBox({ isConfigured, onSignedIn }) {
         </button>
         <button
           type="button"
-          onClick={() => { setMode('login'); setError(''); }}
+          onClick={() => setMode('login')}
+          data-auth-switch="login"
           className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
             mode === 'login' ? 'bg-surface text-ink-900 shadow-sm' : 'text-ink-600 hover:text-ink-900'
           }`}
@@ -203,7 +161,7 @@ function AuthBox({ isConfigured, onSignedIn }) {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="mt-4 space-y-3 text-left">
+      <form onSubmit={submit} className="mt-4 space-y-3 text-left">
         <div>
           <label htmlFor="auth-email" className="block text-xs font-bold text-ink-700">
             Adresse email
@@ -261,7 +219,7 @@ function AuthBox({ isConfigured, onSignedIn }) {
 
             <button
               type="button"
-              onClick={handleGoogleLogin}
+              onClick={startGoogle}
               disabled={busy || googleBusy}
               className="btn-secondary w-full py-2.5 text-sm"
             >

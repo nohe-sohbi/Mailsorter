@@ -30,6 +30,20 @@ var insecureEncryptionKeys = map[string]bool{
 // SHA-256-derived to 32 bytes, but a short input means low entropy.
 const minEncryptionKeyLen = 32
 
+// UITheme is which look the SPA wears. The server renders nothing with it: it
+// reads it only so that a typo stops the boot instead of silently serving the
+// other landing, and so the SPA can learn it from GET /api/config/status at
+// boot. Switching needs a backend restart, never a frontend rebuild.
+type UITheme string
+
+const (
+	// UIThemeHotel is the "Grand Hotel" landing and design system.
+	UIThemeHotel UITheme = "hotel"
+	// UIThemeClassic is the landing that predates it, kept so the opinionated
+	// theme can be unplugged without touching the code.
+	UIThemeClassic UITheme = "classic"
+)
+
 type Config struct {
 	MongoDBURI          string
 	Port                string
@@ -60,6 +74,8 @@ type Config struct {
 	// the operator's own Cloud project and Proton through a local Bridge, and
 	// the hosted one can do neither. See internal/provider.
 	Edition provider.Edition
+	// UITheme picks the landing the SPA renders on /. See UITheme.
+	UITheme UITheme
 }
 
 func Load() *Config {
@@ -94,6 +110,8 @@ func Load() *Config {
 		// is hosted would hide them.
 		Edition: provider.Edition(strings.ToLower(strings.TrimSpace(
 			getEnv("EDITION", string(provider.EditionSelfHosted))))),
+		UITheme: UITheme(strings.ToLower(strings.TrimSpace(
+			getEnv("UI_THEME", string(UIThemeHotel))))),
 	}
 }
 
@@ -118,6 +136,14 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("EDITION is %q; use %q or %q",
 			c.Edition, provider.EditionSelfHosted, provider.EditionHosted)
+	}
+	// Like EDITION, an unrecognised theme must not fall back to a default: the
+	// operator asked for something, and serving the other landing would look
+	// like the switch simply does not work.
+	switch c.UITheme {
+	case UIThemeHotel, UIThemeClassic:
+	default:
+		return fmt.Errorf("UI_THEME is %q; use %q or %q", c.UITheme, UIThemeHotel, UIThemeClassic)
 	}
 	return nil
 }

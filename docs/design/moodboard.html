@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mailsorter, système visuel</title>
+<link rel="stylesheet" href="../../frontend/src/styles/hotel.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..900;1,6..96,400..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Jost:wght@300..700&display=swap" rel="stylesheet">
+<style>
+  /* Moodboard layout only. Tokens and ht- primitives come from
+     frontend/src/styles/hotel.css, the file the app ships, so this page cannot
+     drift from the code. */
+  /* ===== Page ===== */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { font-family: var(--h-font-ui); color: var(--h-text); background: repeating-linear-gradient(90deg, var(--h-stripe) 0 24px, transparent 24px 48px), var(--h-bg); -webkit-font-smoothing: antialiased; transition: background-color .3s, color .3s; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; background: none; border: 0; }
+  svg { display: block; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 40px; }
+  .disp { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; }
+
+  .mb-top { position: sticky; top: 0; z-index: 30; background: var(--h-bg); border-bottom: 2px solid var(--h-line); }
+  .mb-top .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; gap: 20px; }
+  .mb-top .brand { display: flex; align-items: center; gap: 10px; }
+  .mb-top .brand b { font-family: var(--h-font-display); font-style: italic; font-weight: 500; font-size: 22px; }
+  .mb-top .brand span { font-size: 11px; font-weight: 600; letter-spacing: .24em; text-transform: uppercase; color: var(--h-muted); margin-left: 6px; }
+  .mb-top nav { display: flex; gap: 18px; font-size: 12.5px; font-weight: 500; color: var(--h-muted); }
+  .mb-top nav a { color: inherit; text-decoration: none; } .mb-top nav a:hover { color: var(--h-text); }
+  .seg { display: inline-flex; border: 1.5px solid var(--h-line); background: var(--h-surface); }
+  .seg button { padding: 7px 14px; font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+  .seg button.on { background: var(--h-plum); color: var(--h-on-plum); }
+
+  .sec { padding: 72px 0; border-bottom: 2px solid var(--h-line); }
+  .sec:nth-of-type(even) { background: var(--h-bg-alt); }
+  .sh { display: flex; align-items: baseline; gap: 16px; margin-bottom: 30px; }
+  .sh b { flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--h-mustard); border: 1.5px solid var(--h-line); color: var(--h-on-mustard); font-family: var(--h-font-display); font-size: 15px; transform: translateY(-6px); }
+  .sh h2 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 44px; line-height: 1.05; }
+  .sh h2 em { color: var(--h-accent); }
+  .sh p { font-size: 15px; color: var(--h-muted); max-width: 46ch; margin-left: auto; line-height: 1.5; }
+  .cap { font-size: 10.5px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; color: var(--h-muted); margin-bottom: 10px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--h-muted); }
+
+  /* hero of the moodboard */
+  .intro { padding: 70px 0 60px; border-bottom: 2px solid var(--h-line); }
+  .intro h1 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: clamp(48px, 6vw, 84px); line-height: 1; }
+  .intro h1 em { color: var(--h-accent); }
+  .rules { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 40px; }
+  .rule { background: var(--h-surface); border: 1.5px solid var(--h-line); padding: 18px 18px 20px; box-shadow: 6px 6px 0 var(--h-offset); }
+  .rule i { font-style: normal; display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--h-mustard); border: 1.5px solid var(--h-line); color: var(--h-on-mustard); font-family: var(--h-font-display); font-style: italic; font-size: 14px; }
+  .rule h3 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 21px; line-height: 1.15; margin-top: 12px; }
+  .rule p { font-size: 13.5px; line-height: 1.5; color: var(--h-muted); margin-top: 6px; }
+
+  /* colors */
+  .sw-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .sw { background: var(--h-surface); border: 1.5px solid var(--h-line); }
+  .sw .chip { height: 86px; border-bottom: 1.5px solid var(--h-line); display: grid; grid-template-columns: 1fr 1fr; }
+  .sw .chip span { display: flex; align-items: flex-end; padding: 6px 8px; font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+  .sw .meta { padding: 10px 12px 12px; }
+  .sw .meta b { display: block; font-size: 14px; font-weight: 600; }
+  .sw .meta p { font-size: 12.5px; color: var(--h-muted); margin-top: 3px; line-height: 1.4; }
+
+  /* type */
+  .type-row { display: grid; grid-template-columns: 180px 1fr; gap: 24px; align-items: baseline; padding: 18px 0; border-top: 1px solid var(--h-hair); }
+  .type-row:first-child { border-top: 0; }
+
+  /* shapes */
+  .shapes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; }
+  .shape { background: var(--h-surface); border: 1.5px solid var(--h-line); height: 110px; display: grid; place-items: center; font-size: 12px; color: var(--h-muted); text-align: center; padding: 10px; }
+
+  .comp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .comp { background: var(--h-bg-alt); border: 1.5px dashed var(--h-hair); padding: 20px; }
+  .sec:nth-of-type(even) .comp { background: var(--h-bg); }
+  .comp .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .comp .row + .row { margin-top: 12px; }
+  .comp.wide { grid-column: span 2; }
+  .comp.full { grid-column: 1 / -1; }
+
+  /* illustrations */
+  .ill-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .ill { background: var(--h-surface); border: 1.5px solid var(--h-line); }
+  .ill .pic { height: 200px; display: grid; place-items: center; padding: 14px; border-bottom: 1.5px solid var(--h-line); background: repeating-linear-gradient(90deg, rgba(122,46,59,.05) 0 16px, transparent 16px 32px), #F6E3D9; }
+  .ill .pic.night { background: #1C1220; }
+  .ill .pic svg { max-height: 100%; width: auto; }
+  .ill .meta { padding: 10px 12px; }
+  .ill .meta b { font-size: 13.5px; font-weight: 600; display: block; }
+  .ill.big { grid-column: span 2; } .ill.big .pic { height: 300px; }
+
+  /* motion */
+  .mo-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .mo { background: var(--h-surface); border: 1.5px solid var(--h-line); }
+  .mo .stage { height: 170px; display: grid; place-items: center; border-bottom: 1.5px solid var(--h-line); position: relative; overflow: hidden; background: var(--h-bg); }
+  .mo .meta { padding: 10px 12px 12px; font-size: 12.5px; color: var(--h-muted); line-height: 1.45; }
+  .mo .meta b { color: var(--h-text); font-size: 13.5px; display: block; }
+  .lift-shaft { width: 44px; height: 130px; background: #2F6F73; border: 1.5px solid #2B1B1E; position: relative; }
+  .lift-cab { position: absolute; left: 5px; right: 5px; top: 6px; height: 50px; background: #E3A93B; border: 1.5px solid #2B1B1E; animation: lift 3.2s ease-in-out infinite; }
+  @keyframes lift { 0%, 20% { transform: translateY(0); } 45%, 65% { transform: translateY(64px); } 90%, 100% { transform: translateY(0); } }
+  .bumpdemo .ht-badge { animation: bump 1.6s ease-in-out infinite; }
+  @keyframes bump { 0%, 60%, 100% { transform: scale(1); } 70% { transform: scale(1.35); } }
+  .fly-card { width: 110px; height: 70px; background: var(--h-surface); border: 1.5px solid var(--h-line); box-shadow: 4px 4px 0 var(--h-offset); animation: fly 2.6s var(--h-ease) infinite; }
+  @keyframes fly { 0%, 25% { transform: none; opacity: 1; } 60% { transform: translate(60px, 55px) scale(.1) rotate(8deg); opacity: 0; } 61%, 80% { transform: none; opacity: 0; } 100% { opacity: 1; } }
+  .stack-demo { position: relative; width: 130px; height: 90px; }
+  .stack-demo span { position: absolute; inset: 0; background: var(--h-surface); border: 1.5px solid var(--h-line); transform-origin: 50% 0; }
+  .stack-demo span:nth-child(1) { transform: translateY(-16px) scale(.9); opacity: .7; }
+  .stack-demo span:nth-child(2) { transform: translateY(-8px) scale(.95); }
+  .stack-demo span:nth-child(3) { box-shadow: 5px 5px 0 var(--h-offset); }
+  @media (prefers-reduced-motion: reduce) { .lift-cab, .bumpdemo .ht-badge, .fly-card { animation: none; } }
+
+  /* ===== Dashboard sample ===== */
+  .app { border: 2px solid var(--h-line); background: var(--h-bg); box-shadow: 10px 10px 0 var(--h-offset); overflow: hidden; }
+  .app-bar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; height: 68px; padding: 0 22px; border-bottom: 2px solid var(--h-line); background: repeating-linear-gradient(90deg, var(--h-stripe) 0 24px, transparent 24px 48px), var(--h-bg); }
+  .app-bar .brand { display: flex; align-items: center; gap: 8px; font-family: var(--h-font-display); font-style: italic; font-weight: 500; font-size: 20px; }
+  .app-bar .me { justify-self: end; display: flex; align-items: center; gap: 12px; font-size: 12.5px; color: var(--h-muted); }
+  .app-bar .me .av { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--h-pink); border: 1.5px solid var(--h-line); color: var(--h-text); font-weight: 600; font-size: 12px; }
+  .quota { display: flex; flex-direction: column; gap: 4px; }
+  .quota i { display: block; width: 110px; height: 7px; border: 1.2px solid var(--h-line); background: var(--h-surface); position: relative; }
+  .quota i::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 19%; background: var(--h-mustard); }
+  .app-body { display: grid; grid-template-columns: 1.45fr 1fr; min-height: 560px; }
+  .inbox { border-right: 2px solid var(--h-line); background: var(--h-bg-alt); }
+  .ib-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; padding: 22px 22px 14px; }
+  .ib-head h3 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 30px; line-height: 1; }
+  .ib-head h3 small { display: block; font-family: var(--h-font-ui); font-size: 12px; font-weight: 500; color: var(--h-muted); margin-top: 6px; letter-spacing: .02em; }
+  .ib-tools { display: flex; gap: 8px; align-items: center; padding: 0 22px 14px; flex-wrap: wrap; }
+  .ib-tools .ht-input { height: 36px; font-size: 14px; max-width: 220px; }
+  .row-m { display: grid; grid-template-columns: 18px 34px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 22px; border-top: 1px solid var(--h-hair); background: var(--h-bg-alt); }
+  .row-m.sel { background: var(--h-sunk); box-shadow: inset 3px 0 0 var(--h-plum); }
+  .row-m .av { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--h-pink); border: 1.5px solid var(--h-line); font-weight: 600; font-size: 12px; }
+  .row-m .tx { min-width: 0; }
+  .row-m .tx b { font-size: 14px; font-weight: 600; }
+  .row-m .tx .t { float: right; font-size: 12px; color: var(--h-muted); font-variant-numeric: tabular-nums; }
+  .row-m .tx p { font-size: 13.5px; color: var(--h-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .row-m .tx p span { color: var(--h-text); }
+  .row-m .ac { display: flex; align-items: center; gap: 6px; }
+  .pchip { font-family: var(--h-font-display); font-style: italic; font-size: 14px; color: var(--h-accent); background: var(--h-mustard-soft); border: 1.5px solid var(--h-line); padding: 3px 9px; white-space: nowrap; }
+  .pchip.safe { color: var(--h-teal-text); background: var(--h-teal-soft); }
+  .ibtn { width: 30px; height: 30px; display: grid; place-items: center; border: 1.5px solid var(--h-line); background: var(--h-surface); }
+  .ibtn.ok { background: var(--h-plum); color: var(--h-on-plum); }
+  .ibtn svg { width: 15px; height: 15px; }
+  .unread b::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--h-plum); margin-right: 7px; transform: translateY(-1px); }
+  .side { padding: 22px; display: flex; flex-direction: column; gap: 18px; background: var(--h-bg); }
+  .side .cap { margin-bottom: 0; }
+  .mcard { padding: 20px 22px 22px; }
+  .mcard header { display: flex; align-items: center; gap: 10px; }
+  .mcard header .av { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--h-pink); border: 1.5px solid var(--h-line); font-weight: 600; font-size: 12px; }
+  .mcard header div { flex: 1; } .mcard header b { display: block; font-size: 15px; font-weight: 600; } .mcard header span { font-size: 12px; color: var(--h-muted); }
+  .mcard h4 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 24px; line-height: 1.15; margin-top: 14px; }
+  .mcard .snip { font-size: 14.5px; color: var(--h-muted); line-height: 1.5; margin-top: 6px; }
+  .mcard .ht-prop { margin-top: 16px; }
+  .mcard .acts { display: flex; gap: 8px; margin-top: 12px; }
+  .mcard .acts .ht-btn-primary { flex: 1; }
+
+  .states { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 22px; margin-top: 26px; }
+  .empty { text-align: center; padding: 26px 20px 24px; }
+  .empty h4 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 26px; margin-top: 12px; }
+  .empty p { font-size: 14px; color: var(--h-muted); margin-top: 6px; }
+  .hist { padding: 16px 20px; }
+  .hist h4, .sets h4 { font-family: var(--h-font-display); font-style: italic; font-weight: 400; font-size: 21px; border-bottom: 3px double var(--h-line); padding-bottom: 8px; }
+  .hist li { list-style: none; display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px dotted var(--h-hair); font-size: 13.5px; }
+  .hist li:last-child { border-bottom: 0; }
+  .hist time { font-size: 12px; color: var(--h-muted); font-variant-numeric: tabular-nums; }
+  .hist li span { flex: 1; } .hist li em { font-family: var(--h-font-display); color: var(--h-accent); }
+  .sets { padding: 16px 20px; }
+  .set { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px dotted var(--h-hair); }
+  .set:last-child { border-bottom: 0; }
+  .set b { font-size: 14px; font-weight: 600; display: block; } .set span { font-size: 12.5px; color: var(--h-muted); }
+
+  /* tone */
+  .tone { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .tone .col { background: var(--h-surface); border: 1.5px solid var(--h-line); padding: 20px 22px; }
+  .tone .col h3 { font-family: var(--h-font-display); font-weight: 400; font-size: 24px; display: flex; align-items: center; gap: 10px; }
+  .tone .col h3 i { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; border: 1.5px solid var(--h-line); font-style: normal; font-size: 13px; }
+  .tone .yes h3 i { background: var(--h-teal); color: #fff; } .tone .no h3 i { background: var(--h-plum); color: var(--h-on-plum); }
+  .tone ul { list-style: none; margin-top: 12px; }
+  .tone li { padding: 11px 0; border-top: 1px dotted var(--h-hair); }
+  .tone li q { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-size: 18px; quotes: none; }
+  .tone .no li q { text-decoration: line-through; text-decoration-color: var(--h-plum); text-decoration-thickness: 1.5px; opacity: .8; }
+  .tone li span { display: block; font-size: 13px; color: var(--h-muted); margin-top: 3px; }
+  .tone-rules { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 22px; }
+  .tone-rules div { border-top: 3px double var(--h-line); padding-top: 10px; font-size: 13.5px; line-height: 1.5; color: var(--h-muted); }
+  .tone-rules b { display: block; color: var(--h-text); font-size: 14px; margin-bottom: 3px; }
+
+  @media (max-width: 1000px) {
+    .rules, .sw-grid, .shapes, .ill-grid, .mo-grid, .tone-rules { grid-template-columns: 1fr 1fr; }
+    .comp-grid, .states, .tone, .app-body { grid-template-columns: 1fr; }
+    .comp.wide { grid-column: auto; } .sh { flex-wrap: wrap; } .sh p { margin-left: 0; }
+    .mb-top nav { display: none; }
+  }
+</style>
+</head>
+<body class="theme-hotel">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <pattern id="H-wp" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#FBEADF"/><circle cx="4" cy="4" r="1" fill="#EBB0BD"/></pattern>
+    <symbol id="H-env" viewBox="0 0 20 14"><rect x=".7" y=".7" width="18.6" height="12.6" fill="#FFFAF2" stroke="#2B1B1E" stroke-width="1.2"/><path d="M1 1.2l9 6.6 9-6.6" fill="none" stroke="#2B1B1E" stroke-width="1.2"/></symbol>
+    <symbol id="door" viewBox="0 0 240 230">
+      <rect x="62" y="22" width="116" height="208" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="2"/>
+      <rect x="68" y="28" width="104" height="202" fill="none" stroke="#2B1B1E" stroke-width="1"/>
+      <rect x="74" y="34" width="92" height="196" fill="currentColor" stroke="#2B1B1E" stroke-width="1.6"/>
+      <rect x="84" y="46" width="72" height="72" fill="none" stroke="#2B1B1E" stroke-opacity=".45" stroke-width="1.5"/>
+      <rect x="84" y="128" width="72" height="90" fill="none" stroke="#2B1B1E" stroke-opacity=".45" stroke-width="1.5"/>
+      <rect x="148" y="118" width="8" height="18" rx="2" fill="#E3A93B" stroke="#2B1B1E"/>
+      <circle cx="152" cy="126" r="3.5" fill="#E3A93B" stroke="#2B1B1E"/>
+    </symbol>
+    <symbol id="emblem" viewBox="0 0 34 34"><polygon points="3,14 17,4 31,14" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.6" stroke-linejoin="round"/><rect x="5" y="14" width="24" height="16" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.6"/><path d="M5.5 14.5 L17 23 L28.5 14.5" fill="none" stroke="#2B1B1E" stroke-width="1.6"/><circle cx="17" cy="11" r="2" fill="#E3A93B" stroke="#2B1B1E"/></symbol>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+</svg>
+
+<header class="mb-top">
+  <div class="wrap">
+    <div class="brand"><svg width="30" height="30"><use href="#emblem"/></svg><b>Mailsorter</b><span>Système visuel</span></div>
+    <nav><a href="#couleurs">Couleurs</a><a href="#typo">Typographie</a><a href="#composants">Composants</a><a href="#illustrations">Illustrations</a><a href="#mouvement">Mouvement</a><a href="#dashboard">Dashboard</a><a href="#ton">Ton</a></nav>
+    <div class="seg" role="group" aria-label="Thème"><button class="on" data-theme="light">Jour</button><button data-theme="dark">Nuit</button></div>
+  </div>
+</header>
+
+<!-- ======================= INTRO ======================= -->
+<section class="intro">
+  <div class="wrap">
+    <p class="cap">Référence pour la landing et le dashboard</p>
+    <h1>Un hôtel en coupe,<br><em>une boîte bien tenue.</em></h1>
+    <div class="rules">
+      <div class="rule"><i>I</i><h3>L'hôtel se voit, il ne parle pas.</h3><p>Le décor vit dans les illustrations, les couleurs et les formes. Les textes parlent de la boîte mail, jamais de chambres ni de concierge.</p></div>
+      <div class="rule"><i>II</i><h3>Une couleur, un sens.</h3><p>Bordeaux : l'action. Moutarde : ce qui mérite l'attention. Canard : ce qui est protégé. Rose et crème : les surfaces.</p></div>
+      <div class="rule"><i>III</i><h3>De l'encre, pas du flou.</h3><p>Bordures de 1,5 px, ombres décalées pleines, doubles filets. Aucune ombre floue sur l'interface, aucun dégradé.</p></div>
+      <div class="rule"><i>IV</i><h3>Bodoni pour dire, Jost pour faire.</h3><p>Le Bodoni porte les titres et les propositions. Le Jost porte tout ce qu'on lit vite : listes, boutons, réglages.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= COLORS ======================= -->
+<section class="sec" id="couleurs">
+  <div class="wrap">
+    <div class="sh"><b>1</b><h2>Couleurs</h2><p>Chaque token a une valeur de jour et une de nuit. Les composants ne connaissent que le token, jamais la valeur.</p></div>
+    <div class="sw-grid">
+      <div class="sw"><div class="chip"><span style="background:#F6E3D9;color:#2B1B1E">Jour</span><span style="background:#1C1220;color:#F3E6DA">Nuit</span></div><div class="meta"><b>Fond</b><code>--h-bg</code><p>Le papier peint de la page, avec ses rayures.</p></div></div>
+      <div class="sw"><div class="chip"><span style="background:#FFFAF2;color:#2B1B1E">Jour</span><span style="background:#2A1A24;color:#F3E6DA">Nuit</span></div><div class="meta"><b>Surface</b><code>--h-surface</code><p>Cartes, champs, panneaux.</p></div></div>
+      <div class="sw"><div class="chip"><span style="background:#FBF1E4;color:#2B1B1E">Jour</span><span style="background:#221620;color:#F3E6DA">Nuit</span></div><div class="meta"><b>Fond alterné</b><code>--h-bg-alt</code><p>Une section sur deux, les listes.</p></div></div>
+      <div class="sw"><div class="chip"><span style="background:#2B1B1E;color:#FBF1E4">Jour</span><span style="background:#0B0609;color:#F3E6DA">Nuit</span></div><div class="meta"><b>Encre</b><code>--h-line</code><p>Tous les traits : bordures, filets, contours d'illustration.</p></div></div>
+      <div class="sw"><div class="chip"><span style="background:#7A2E3B;color:#FBF1E4">Jour</span><span style="background:#A8455A;color:#FFF4E8">Nuit</span></div><div class="meta"><b>Bordeaux</b><code>--h-plum</code><p>L'action principale. Un seul bouton bordeaux par zone.</p></div></div>
+      <div class="sw"><div class="chip"><span style="background:#E3A93B;color:#2B1B1E">Jour</span><span style="background:#F4CF6B;color:#2B1B1E">Nuit</span></div><div class="meta"><b>Moutarde</b><code>--h-mustard</code><p>Badges, compteurs, étage actif, focus clavier.</p></div></div>
+      <div class="sw"><div class="chip"><span style="background:#2F6F73;color:#fff">Jour</span><span style="background:#4F9A96;color:#fff">Nuit</span></div><div class="meta"><b>Canard</b><code>--h-teal</code><p>Protégé, sûr, réussi. Jamais pour une action.</p></div></div>
+      <div class="sw"><div class="chip"><span style="background:#EFB7C3;color:#2B1B1E">Jour</span><span style="background:#5A2A3A;color:#F3E6DA">Nuit</span></div><div class="meta"><b>Rose poudré</b><code>--h-pink</code><p>Avatars, étiquettes, façade.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= TYPE ======================= -->
+<section class="sec" id="typo">
+  <div class="wrap">
+    <div class="sh"><b>2</b><h2>Typographie</h2><p>Bodoni Moda réglé en <code>opsz 28</code> partout : au-delà, les filets deviennent si fins que le 4 et les traits d'union disparaissent.</p></div>
+    <div>
+      <div class="type-row"><div><p class="cap">Titre XL</p><code>Bodoni 400, 104 px</code></div><div class="disp" style="font-size:88px;line-height:1"><span style="color:var(--h-accent);font-weight:500">4 212</span> non lus ?</div></div>
+      <div class="type-row"><div><p class="cap">Titre de section</p><code>Bodoni 400, 48 px</code></div><div class="disp" style="font-size:46px;line-height:1.05">Un mail, une question, <em style="color:var(--h-accent)">un clic.</em></div></div>
+      <div class="type-row"><div><p class="cap">Titre de carte</p><code>Bodoni 400, 28 px</code></div><div class="disp" style="font-size:28px">Votre facture de septembre est disponible</div></div>
+      <div class="type-row"><div><p class="cap">Proposition</p><code>Bodoni italique 500, 22 px</code></div><div class="disp" style="font-size:22px;font-style:italic;font-weight:500;color:var(--h-accent)">Ranger dans Factures</div></div>
+      <div class="type-row"><div><p class="cap">Étiquette</p><code>Jost 600, 11 px, +0,22 em</code></div><div style="font-size:11px;font-weight:600;letter-spacing:.22em;text-transform:uppercase">Mailsorter propose</div></div>
+      <div class="type-row"><div><p class="cap">Texte</p><code>Jost 400, 16 px / 1,55</code></div><p style="font-size:16px;line-height:1.55;max-width:60ch">Pour chaque e-mail, Mailsorter vous dit ce qu'il en ferait. Vous validez ou vous passez. Et si vous changez d'avis, Annuler est juste là.</p></div>
+      <div class="type-row"><div><p class="cap">Donnée</p><code>Jost 500, 13 px, chiffres tabulaires</code></div><p style="font-size:13px;color:var(--h-muted);font-variant-numeric:tabular-nums">Aujourd'hui, 08:15 &nbsp; 38 / 200 tris ce mois-ci</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= SHAPES ======================= -->
+<section class="sec" id="formes">
+  <div class="wrap">
+    <div class="sh"><b>3</b><h2>Formes et reliefs</h2><p>Angles droits par défaut. Les seules rondeurs : les boutons d'ascenseur, les badges et le bout des étiquettes.</p></div>
+    <div class="shapes">
+      <div class="shape" style="box-shadow:7px 7px 0 var(--h-offset)">Ombre décalée pleine<br><code>7px 7px 0 --h-offset</code></div>
+      <div class="shape" style="box-shadow:0 4px 0 var(--h-line)">Relief de bouton<br><code>0 3px 0 --h-line</code></div>
+      <div class="shape" style="border-top:4px double var(--h-line)">Double filet d'en-tête<br><code>3px double</code></div>
+      <div class="shape" style="padding:0;display:block;height:auto"><div class="ht-slab"></div><p style="padding:26px 10px">Dalle entre deux étages<br><code>.ht-slab</code></p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= COMPONENTS ======================= -->
+<section class="sec" id="composants">
+  <div class="wrap">
+    <div class="sh"><b>4</b><h2>Composants</h2><p>Les briques de <code>src/ui/hotel/</code>. Même rendu sur la landing et dans l'app.</p></div>
+    <div class="comp-grid">
+      <div class="comp">
+        <p class="cap">Boutons</p>
+        <div class="row"><button class="ht-btn ht-btn-primary">Valider</button><button class="ht-btn ht-btn-secondary">Garder tel quel</button></div>
+        <div class="row"><button class="ht-btn ht-btn-gold">Faire le tri</button><button class="ht-btn ht-btn-primary ht-btn-sm">Tout valider (12)</button></div>
+        <div class="row"><a class="ht-link" href="#composants">Se connecter</a></div>
+      </div>
+      <div class="comp">
+        <p class="cap">Champs</p>
+        <label class="ht-label">Adresse e-mail</label><input class="ht-field" placeholder="vous@exemple.fr">
+        <div style="height:14px"></div>
+        <input class="ht-input" placeholder="Rechercher un expéditeur, un objet">
+      </div>
+      <div class="comp">
+        <p class="cap">Étiquettes et badges</p>
+        <div class="row"><span class="ht-tag is-gold">Gmail</span><span class="ht-tag">Outlook.com</span><span class="ht-tag is-teal">Protégé</span></div>
+        <div class="row"><span class="ht-tag is-plain">Factures</span><span class="ht-badge">12</span><span class="ht-badge">3</span></div>
+      </div>
+      <div class="comp wide">
+        <p class="cap">Proposition</p>
+        <div class="ht-prop"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:var(--h-accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.6L20 9.5l-4.4 3.8 1.4 5.9L12 16.2 7 19.2l1.4-5.9L4 9.5l5.8-.9z"/></svg><div><small>Mailsorter propose</small><b>Ranger dans Factures</b></div></div>
+        <div style="height:10px"></div>
+        <div class="ht-prop is-safe"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:var(--h-teal-text)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><div><small>Expéditrice protégée</small><b>Mailsorter n'y touche pas.</b></div></div>
+      </div>
+      <div class="comp">
+        <p class="cap">Notification avec annulation</p>
+        <div class="ht-toast">Rangé dans Factures. <button>Annuler</button></div>
+        <div style="height:12px"></div>
+        <div class="ht-toast">Annulé. Comme si de rien n'était.</div>
+      </div>
+      <div class="comp">
+        <p class="cap">Menu ascenseur</p>
+        <nav class="ht-panel"><a class="is-on" href="#composants"><i>1</i><span>Boîte</span></a><a href="#composants"><i>2</i><span>Règles</span></a><a href="#composants"><i>3</i><span>Plus tard</span></a><a href="#composants"><i>4</i><span>Historique</span></a></nav>
+      </div>
+      <div class="comp">
+        <p class="cap">Interrupteurs et cases</p>
+        <div class="row"><button class="ht-switch is-on" aria-label="Activé"></button><button class="ht-switch" aria-label="Désactivé"></button><span class="ht-check is-on"></span><span class="ht-check"></span></div>
+      </div>
+      <div class="comp">
+        <p class="cap">Plaques numérotées</p>
+        <div class="ht-plq"><b>I</b><p><strong>Il lit</strong> l'expéditeur, l'objet et le début du message.</p></div>
+        <div style="height:10px"></div>
+        <div class="ht-plq"><b>II</b><p><strong>Il propose</strong>. Vous dites oui ou non.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= ILLUSTRATIONS ======================= -->
+<section class="sec" id="illustrations">
+  <div class="wrap">
+    <div class="sh"><b>5</b><h2>Illustrations</h2><p>Dessinées en SVG, contours à l'encre, aplats sans dégradé. Chacune devient un composant React réutilisable.</p></div>
+    <div class="ill-grid">
+      <div class="ill big"><div class="pic">
+        <svg viewBox="60 30 480 480" aria-hidden="true">
+          <polygon points="66,124 300,38 534,124" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="2"/>
+          <polygon points="112,116 300,54 488,116" fill="#F7D6DC" stroke="#2B1B1E" stroke-width="1.2"/>
+          <circle cx="300" cy="92" r="18" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="2"/>
+          <g stroke="#2B1B1E" stroke-width="1.4" stroke-linecap="round"><line x1="300" y1="92" x2="300" y2="80"/><line x1="300" y1="92" x2="309" y2="96"/></g>
+          <rect x="58" y="122" width="484" height="12" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="2"/>
+          <rect x="80" y="134" width="440" height="366" fill="#EFB7C3" stroke="#2B1B1E" stroke-width="2"/>
+          <rect x="128" y="143" width="344" height="26" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.5"/>
+          <text x="300" y="160.5" text-anchor="middle" style="font:600 12px 'Jost',sans-serif;letter-spacing:7px;fill:#FBF1E4">MAILSORTER</text>
+          <g stroke="#2B1B1E" stroke-width="1.5" fill="url(#H-wp)">
+            <rect x="96" y="180" width="80" height="92"/><rect x="184" y="180" width="80" height="92"/><rect x="336" y="180" width="80" height="92"/><rect x="424" y="180" width="80" height="92"/>
+            <rect x="96" y="284" width="80" height="92"/><rect x="184" y="284" width="80" height="92"/><rect x="336" y="284" width="80" height="92"/><rect x="424" y="284" width="80" height="92"/>
+          </g>
+          <g fill="#E3A93B" stroke="#2B1B1E"><rect x="119" y="186" width="34" height="13" rx="2"/><rect x="207" y="186" width="34" height="13" rx="2"/><rect x="359" y="186" width="34" height="13" rx="2"/><rect x="447" y="186" width="34" height="13" rx="2"/><rect x="119" y="290" width="34" height="13" rx="2"/><rect x="207" y="290" width="34" height="13" rx="2"/><rect x="359" y="290" width="34" height="13" rx="2"/><rect x="447" y="290" width="34" height="13" rx="2"/></g>
+          <use href="#H-env" x="116" y="240" width="22" height="15"/><use href="#H-env" x="136" y="236" width="22" height="15"/><use href="#H-env" x="210" y="240" width="22" height="15"/><use href="#H-env" x="366" y="236" width="22" height="15"/><use href="#H-env" x="124" y="340" width="22" height="15"/><use href="#H-env" x="454" y="340" width="22" height="15"/>
+          <rect x="276" y="176" width="48" height="204" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="282" y="212" width="36" height="54" fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="96" y="388" width="408" height="100" fill="#F7D6DC" stroke="#2B1B1E" stroke-width="1.5"/>
+          <path d="M272 486 V446 A28 28 0 0 1 328 446 V486 Z" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="118" y="452" width="116" height="34" fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="36" y="500" width="528" height="10" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.5"/>
+        </svg></div><div class="meta"><b>La façade, de jour</b><code>&lt;HotelFacade /&gt;</code> hero de la landing, chambres = catégories</div></div>
+      <div class="ill big"><div class="pic night">
+        <svg viewBox="60 20 480 390" aria-hidden="true">
+          <circle cx="510" cy="60" r="22" fill="#F4E3B5"/>
+          <polygon points="70,112 300,30 530,112" fill="#3A1D28" stroke="#0E080C" stroke-width="2"/>
+          <circle cx="300" cy="80" r="16" fill="#F4CF6B" filter="url(#glow)"/>
+          <rect x="62" y="110" width="476" height="12" fill="#2A1520" stroke="#0E080C" stroke-width="2"/>
+          <rect x="80" y="122" width="440" height="266" fill="#4A2433" stroke="#0E080C" stroke-width="2"/>
+          <text x="300" y="150" text-anchor="middle" filter="url(#glow)" style="font:600 12px 'Jost',sans-serif;letter-spacing:7px;fill:#F4CF6B">MAILSORTER</text>
+          <g stroke="#0E080C" stroke-width="1.5">
+            <rect x="104" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="160" y="176" width="36" height="46" fill="#2A1520"/><rect x="216" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/>
+            <rect x="348" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="404" y="176" width="36" height="46" fill="#2A1520"/><rect x="460" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/>
+            <rect x="104" y="244" width="36" height="46" fill="#2A1520"/><rect x="160" y="244" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="216" y="244" width="36" height="46" fill="#2A1520"/>
+            <rect x="348" y="244" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="404" y="244" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="460" y="244" width="36" height="46" fill="#2A1520"/>
+            <rect x="276" y="170" width="48" height="126" fill="#2F6F73"/>
+          </g>
+          <path d="M272 388 V350 A28 28 0 0 1 328 350 V388 Z" fill="#F4CF6B" stroke="#0E080C" stroke-width="1.5" filter="url(#glow)"/>
+          <rect x="36" y="388" width="528" height="12" fill="#7A2E3B" stroke="#0E080C" stroke-width="1.5"/>
+        </svg></div><div class="meta"><b>La façade, de nuit</b><code>&lt;HotelFacade night /&gt;</code> mode sombre, états vides du soir</div></div>
+      <div class="ill"><div class="pic"><svg viewBox="0 0 240 230" height="170"><use href="#door" width="240" height="230" style="color:#2F6F73"/><rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><rect x="206" y="98" width="5" height="132" fill="#7A2E3B" stroke="#2B1B1E"/><polygon points="180,104 226,104 236,112 226,120 180,120" fill="#E3A93B" stroke="#2B1B1E"/><polygon points="188,128 232,128 232,144 188,144 178,136" fill="#FBF1E4" stroke="#2B1B1E"/><polygon points="180,152 226,152 236,160 226,168 180,168" fill="#7A2E3B" stroke="#2B1B1E"/></svg></div><div class="meta"><b>Porte + panneau</b><code>&lt;Door prop="signpost" /&gt;</code> règles</div></div>
+      <div class="ill"><div class="pic"><svg viewBox="0 0 240 230" height="170"><use href="#door" width="240" height="230" style="color:#7A2E3B"/><rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><g transform="rotate(-7 152 126)"><rect x="134" y="118" width="38" height="76" rx="4" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.4"/><circle cx="152" cy="130" r="6.5" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.2"/><text x="153" y="153" text-anchor="middle" style="font:700 6.4px 'Jost',sans-serif;fill:#7A2E3B">NE PAS</text><text x="153" y="162" text-anchor="middle" style="font:700 6.4px 'Jost',sans-serif;fill:#7A2E3B">DÉRANGER</text></g></svg></div><div class="meta"><b>Porte + affichette</b><code>&lt;Door prop="dnd" /&gt;</code> désabonnement, état vide</div></div>
+      <div class="ill"><div class="pic"><svg viewBox="0 0 360 360" height="170"><rect x="14" y="14" width="332" height="332" rx="22" fill="#2F6F73" stroke="#2B1B1E" stroke-width="3"/><circle cx="180" cy="180" r="124" fill="#3E8580" stroke="#2B1B1E" stroke-width="3"/><circle cx="180" cy="180" r="110" fill="none" stroke="#E3A93B" stroke-width="4"/><circle cx="180" cy="180" r="62" fill="none" stroke="#E3A93B" stroke-width="6"/><g stroke="#E3A93B" stroke-width="6" stroke-linecap="round"><line x1="180" y1="180" x2="180" y2="112"/><line x1="180" y1="180" x2="239" y2="214"/><line x1="180" y1="180" x2="121" y2="214"/></g><circle cx="180" cy="180" r="32" fill="#E3A93B" stroke="#2B1B1E" stroke-width="2"/><circle cx="180" cy="180" r="10" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.5"/></svg></div><div class="meta"><b>Le coffre</b><code>&lt;Vault /&gt;</code> confidentialité, sécurité du compte</div></div>
+      <div class="ill"><div class="pic" style="background:#6A2733"><div style="display:flex;flex-direction:column;align-items:center"><span style="width:12px;height:12px;border-radius:50%;background:#E3A93B;border:1.5px solid #2B1B1E"></span><span style="width:1.5px;height:12px;background:#FBF1E4"></span><span class="ht-tag is-gold" style="transform:rotate(-4deg)">Gmail</span></div></div><div class="meta"><b>La clé</b><code>&lt;KeyTag /&gt;</code> fournisseurs, boîte connectée</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= MOTION ======================= -->
+<section class="sec" id="mouvement">
+  <div class="wrap">
+    <div class="sh"><b>6</b><h2>Mouvement</h2><p>Le mouvement raconte ce que fait le produit. Tout s'arrête si le système demande moins d'animations.</p></div>
+    <div class="mo-grid">
+      <div class="mo"><div class="stage"><div class="lift-shaft"><div class="lift-cab"></div></div></div><div class="meta"><b>Ascenseur</b>Hero et menu. Boucle de 6,4 s, pauses aux étages.</div></div>
+      <div class="mo"><div class="stage"><div class="stack-demo"><span></span><span></span><span></span></div></div><div class="meta"><b>Pile</b>Le suivant est déjà là, en retrait. 0,5 s, ease-out.</div></div>
+      <div class="mo"><div class="stage"><div class="fly-card"></div></div><div class="meta"><b>Envol</b>La carte validée file vers sa porte. Annuler la fait ressortir.</div></div>
+      <div class="mo"><div class="stage bumpdemo"><span class="ht-badge" style="font-size:16px;min-width:40px;height:40px;border-radius:20px">12</span></div><div class="meta"><b>Compteur</b>Le badge grossit quand il change. 0,2 s.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= DASHBOARD ======================= -->
+<section class="sec" id="dashboard">
+  <div class="wrap">
+    <div class="sh"><b>7</b><h2>Dans le <em>dashboard</em></h2><p>Même encre, mêmes briques, moins de décor : l'illustration reste pour les états vides et les moments forts.</p></div>
+    <div class="app">
+      <div class="app-bar">
+        <div class="brand"><svg width="28" height="28"><use href="#emblem"/></svg>Mailsorter</div>
+        <nav class="ht-panel"><a class="is-on" href="#dashboard"><i>1</i><span>Boîte</span></a><a href="#dashboard"><i>2</i><span>Règles</span></a><a href="#dashboard"><i>3</i><span>Plus tard</span></a><a href="#dashboard"><i>4</i><span>Historique</span></a><a href="#dashboard"><i>5</i><span>Réglages</span></a></nav>
+        <div class="me"><div class="quota"><span>38 / 200 tris</span><i></i></div><span class="av">NS</span></div>
+      </div>
+      <div class="app-body">
+        <div class="inbox">
+          <div class="ib-head"><h3>Boîte de réception<small>47 non lus, 12 propositions</small></h3><button class="ht-btn ht-btn-primary ht-btn-sm">Tout valider (12)</button></div>
+          <div class="ib-tools"><input class="ht-input" placeholder="Rechercher"><span class="ht-tag is-plain">Tous</span><span class="ht-tag is-gold">Proposés 12</span><span class="ht-tag">Newsletters</span><span class="ht-tag">Factures</span></div>
+          <div class="row-m sel unread"><span class="ht-check is-on"></span><span class="av">LM</span><div class="tx"><b>Le Monde</b><span class="t">07:02</span><p><span>La lettre du matin</span> Les cinq informations à retenir ce jeudi</p></div><div class="ac"><span class="pchip">Archiver ?</span><button class="ibtn ok" aria-label="Valider"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12l5 5 9-10"/></svg></button><button class="ibtn" aria-label="Passer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>
+          <div class="row-m unread"><span class="ht-check"></span><span class="av" style="background:var(--h-mustard);color:#2B1B1E">FM</span><div class="tx"><b>Free Mobile</b><span class="t">08:15</span><p><span>Votre facture de septembre</span> Montant : 19,99 €. Prélèvement le 5 octobre.</p></div><div class="ac"><span class="pchip">Factures ?</span><button class="ibtn ok" aria-label="Valider"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12l5 5 9-10"/></svg></button><button class="ibtn" aria-label="Passer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>
+          <div class="row-m"><span class="ht-check"></span><span class="av" style="background:var(--h-teal);color:#fff">M</span><div class="tx"><b>Maman</b><span class="t">11:48</span><p><span>Pour dimanche, on dit midi ?</span> Et tu ramènes le dessert.</p></div><div class="ac"><span class="pchip safe">Protégée</span></div></div>
+          <div class="row-m unread"><span class="ht-check"></span><span class="av">Z</span><div class="tx"><b>Zalando</b><span class="t">09:30</span><p><span>-40 % ce week-end seulement</span> Comme le week-end dernier.</p></div><div class="ac"><span class="pchip">Se désabonner ?</span><button class="ibtn ok" aria-label="Valider"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12l5 5 9-10"/></svg></button><button class="ibtn" aria-label="Passer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>
+          <div class="row-m"><span class="ht-check"></span><span class="av" style="background:var(--h-sunk)">SN</span><div class="tx"><b>SNCF Connect</b><span class="t">hier</span><p><span>Votre billet Paris - Lyon</span> Voiture 14, place 62.</p></div><div class="ac"><span class="ht-tag is-plain" style="height:24px;font-size:11px">Revient jeudi, 8 h</span></div></div>
+        </div>
+        <div class="side">
+          <p class="cap">Tri pas à pas : 12 dans la pile</p>
+          <article class="ht-card mcard">
+            <header><span class="av">LM</span><div><b>Le Monde</b><span>Aujourd'hui, 07:02</span></div></header>
+            <h4>La lettre du matin</h4>
+            <p class="snip">Les cinq informations à retenir ce jeudi, et un éditorial que vous ne lirez pas non plus.</p>
+            <div class="ht-prop"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:var(--h-accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.6L20 9.5l-4.4 3.8 1.4 5.9L12 16.2 7 19.2l1.4-5.9L4 9.5l5.8-.9z"/></svg><div><small>Mailsorter propose</small><b>Archiver</b></div></div>
+            <div class="acts"><button class="ht-btn ht-btn-primary">Valider</button><button class="ht-btn ht-btn-secondary">Garder</button></div>
+          </article>
+          <div class="ht-toast" style="align-self:center">Désabonné de Zalando. <button>Annuler</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="states">
+      <div class="ht-card empty">
+        <svg viewBox="58 18 124 214" height="120" style="margin:0 auto"><use href="#door" width="240" height="230" style="color:#2F6F73"/><g transform="rotate(-7 152 126)"><rect x="134" y="118" width="38" height="76" rx="4" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.4"/><circle cx="152" cy="130" r="6.5" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.2"/><text x="153" y="153" text-anchor="middle" style="font:700 6.4px 'Jost',sans-serif;fill:#7A2E3B">NE PAS</text><text x="153" y="162" text-anchor="middle" style="font:700 6.4px 'Jost',sans-serif;fill:#7A2E3B">DÉRANGER</text></g></svg>
+        <h4>Inbox zéro. Respect.</h4>
+        <p>Rien à trier. Le prochain passage est dans 24 minutes.</p>
+      </div>
+      <div class="ht-card hist">
+        <h4>Historique</h4>
+        <ul>
+          <li><time>09:43</time><span>Zalando <em>désabonné</em></span><a class="ht-link" style="font-size:14px" href="#dashboard">Annuler</a></li>
+          <li><time>09:42</time><span>Le Monde <em>archivé</em></span><a class="ht-link" style="font-size:14px" href="#dashboard">Annuler</a></li>
+          <li><time>08:16</time><span>Free Mobile <em>rangé dans Factures</em></span><a class="ht-link" style="font-size:14px" href="#dashboard">Annuler</a></li>
+        </ul>
+      </div>
+      <div class="ht-card sets">
+        <h4>Réglages</h4>
+        <div class="set"><div><b>Appliquer mes règles tout seul</b><span>Sans attendre votre validation</span></div><button class="ht-switch is-on" aria-label="Activé"></button></div>
+        <div class="set"><div><b>Tri toutes les 30 minutes</b><span>Même quand l'app est fermée</span></div><button class="ht-switch is-on" aria-label="Activé"></button></div>
+        <div class="set"><div><b>Récap du matin</b><span>Chaque jour à 7 h</span></div><button class="ht-switch" aria-label="Désactivé"></button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= TONE ======================= -->
+<section class="sec" id="ton">
+  <div class="wrap">
+    <div class="sh"><b>8</b><h2>Le ton</h2><p>Franc, avec de l'humour. L'humour vient de la galère de la boîte mail, jamais du décor.</p></div>
+    <div class="tone">
+      <div class="col yes"><h3><i>+</i>Oui</h3><ul>
+        <li><q>4 212 non lus ? On s'en occupe. Vous validez.</q><span>Titre : une douleur réelle, puis la promesse.</span></li>
+        <li><q>Inbox zéro. Respect.</q><span>État vide : court, complice.</span></li>
+        <li><q>Annulé. Comme si de rien n'était.</q><span>Confirmation : rassurante, avec un sourire.</span></li>
+        <li><q>Même avec l'adresse Orange que vous avez depuis 2004.</q><span>Sous-titre : un détail que tout le monde reconnaît.</span></li>
+      </ul></div>
+      <div class="col no"><h3><i>&minus;</i>Non</h3><ul>
+        <li><q>Chaque message a sa chambre.</q><span>Le décor qui parle : cringe.</span></li>
+        <li><q>Le concierge suggère la consigne.</q><span>Jeu de rôle : on ne sait plus ce que fait le bouton.</span></li>
+        <li><q>Accorder / Refuser</q><span>Les verbes du produit restent simples : Valider, Garder, Annuler.</span></li>
+        <li><q>Essayez, ce sont de faux mails.</q><span>Un mot négatif là où il ne sert à rien. Dire "Démo interactive".</span></li>
+      </ul></div>
+    </div>
+    <div class="tone-rules">
+      <div><b>Boutons : le verbe, rien d'autre.</b>Valider, Garder tel quel, Annuler, Se connecter. Jamais de blague sur un bouton.</div>
+      <div><b>L'humour se range.</b>Dans les titres, les états vides et les confirmations. Une touche par écran suffit.</div>
+      <div><b>On vouvoie.</b>Partout, landing comme dashboard.</div>
+      <div><b>Ponctuation ASCII.</b>Pas de tiret long, pas de points de suspension en un caractère, pas de guillemets courbes.</div>
+    </div>
+  </div>
+</section>
+
+<script>
+(function () {
+  var btns = document.querySelectorAll('.seg button');
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.documentElement.classList.toggle('dark', b.dataset.theme === 'dark');
+      btns.forEach(function (x) { x.classList.toggle('on', x === b); });
+    });
+  });
+})();
+</script>
+</body>
+</html>

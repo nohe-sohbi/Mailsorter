@@ -38,6 +38,10 @@ services:
       # Decides which mailbox providers this instance offers. Without this line
       # the container always fell back to the default, whatever the .env said.
       EDITION: ${EDITION:-self-hosted}
+      # Which landing the SPA renders on /: "hotel" (the Grand Hotel theme) or
+      # "classic". Read at runtime, so switching needs a backend restart, not a
+      # frontend rebuild.
+      UI_THEME: ${UI_THEME:-hotel}
       BUILD_VERSION: ${BUILD_VERSION:-dev}
       DIGEST_HOUR_UTC: ${DIGEST_HOUR_UTC:-7}
       MISTRAL_MAX_RETRIES: ${MISTRAL_MAX_RETRIES:-2}

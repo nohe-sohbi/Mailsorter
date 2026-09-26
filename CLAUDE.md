@@ -92,12 +92,18 @@ frontend/
                          address and an app password)
   src/contexts/          EmailContext: the shared inbox cache.
                          InstanceContext: what this deployment is (edition, billing, configured)
+  src/styles/hotel.css   the Grand Hotel theme (UI_THEME=hotel): tokens under
+                         .theme-hotel, day and night, ht- primitives, motion
+  src/ui/hotel/          the theme's drawings and bricks: HotelFacade, Door, Vault,
+                         KeyTag, ElevatorPanel, Plaque, Emblem, useHotelFonts
+  src/components/landing/ the Grand Hotel landing's sections (hl- classes) and
+                         features.js, what the landing may promise (GMAIL_ONLY)
   src/services/api.js    every HTTP call in the app, grouped by service object
   src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
-docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, assets/
+docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, design/moodboard.html, assets/
 mongo-init/init-db.js    collections + indexes seeded on a fresh Mongo container
 ```
 
@@ -110,7 +116,7 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 205 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 325 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
@@ -275,7 +281,7 @@ telling them to create a Google Cloud project that edition can never use.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | `pages/Login.js` | Marketing landing + whichever doors this instance has: Google when `isConfigured`, the mailbox form when `mailboxSignIn`. Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what Google will be asked for, what leaves for the model, the FAQ, the reachable providers read from `GET /api/providers`, and an email capture for a visitor not ready to hand over a mailbox |
+| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
 | `/inbox` | `pages/Inbox.js` | The cockpit: triage, suggestions, bulk apply, keyboard shortcuts (1068 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
@@ -325,7 +331,7 @@ not answer gets the boot-error screen instead, which is a different branch.
   `contexts/InstanceContext.js` holds the deployment: one `GET /api/config/status`
   at boot, read by App, the header, Pricing and Setup through `useInstance()`
   (`loading`, `error`, `reload`, `isConfigured`, `billingOn`, `edition`,
-  `selfHosted`). Never probe the instance from a component: App and Pricing each
+  `selfHosted`, `uiTheme`). Never probe the instance from a component: App and Pricing each
   called it separately and could disagree about the same instance for a few
   hundred milliseconds. Everything else is local `useState`.
 - **The edition is a frontend concern too.** A `self-hosted` instance bills nobody,
@@ -363,6 +369,20 @@ not answer gets the boot-error screen instead, which is a different branch.
 - **Tailwind class names must be statically present in the source.** Never build a class
   by string concatenation; the Inbox action tokens are spelled out as full literal classes
   for exactly this reason.
+- **The Grand Hotel theme is a second, switchable design system** (`UI_THEME`, see
+  Configuration). Its tokens live in `src/styles/hotel.css` under `.theme-hotel`
+  (night under `.dark .theme-hotel`), never on `:root`, so `classic` leaves no trace.
+  It is plain CSS on purpose, the one exception to "Tailwind only": a theme that can
+  be switched off cannot live in `index.css`. Classes are `ht-` (primitives),
+  `hl-` (landing) and `hf-` (illustration text inside the SVG drawings), never a
+  generic name, because a CSS chunk stays loaded after navigation and would
+  restyle the dashboard. Illustrations are hand-drawn SVG
+  components in `src/ui/hotel/` with fixed colours. Bodoni Moda is pinned at
+  `font-variation-settings: 'opsz' 28` at 28px and above, or its hairlines
+  swallow a 4 and a hyphen; smaller Bodoni text uses `font-optical-sizing: auto`,
+  which keeps the hairlines thick enough at that size.
+  The reference rendering is `docs/design/moodboard.html`, which loads the real
+  `hotel.css`: open it before touching the theme.
 
 ## Key Conventions
 
@@ -457,6 +477,7 @@ as a side effect of another change.
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` | optional | empty key keeps the waitlist CTA instead of checkout |
 | `ALLOWED_ORIGINS` | optional | comma separated. Empty falls back to localhost:3000, localhost, mailsorter.sohbi.dev. No rebuild needed |
 | `EDITION` | yes (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers: the Gmail API and Proton exist only in `self-hosted` |
+| `UI_THEME` | optional (defaults to `hotel`) | `hotel` or `classic`: which landing `/` renders, read at runtime from `GET /api/config/status`, so switching is a backend restart, not a rebuild. Boot **refuses** anything else. `?ui=hotel\|classic` previews the other one for one tab |
 | `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest default 07:00 UTC |
 | `REACT_APP_API_URL`, `REACT_APP_UMAMI_WEBSITE_ID` | build args | **inlined into the static bundle at image build time.** Leave `REACT_APP_API_URL` unset so it defaults to `/` and the SPA calls the API same-origin through the nginx proxy |
 
@@ -652,10 +673,16 @@ Do not duplicate these into this file. Point at them.
   unported path answers 501 ("pas encore disponible sur une boite IMAP") through
   `writeAuthError` instead of acting on the wrong message. Ported so far: `syncInbox`,
   `EmailAction`, `GetEmails`, `GetEmail` and `GetMailboxStats`, which is the set that
-  makes a connected mailbox usable at all. Everything else (rules, AI, snooze,
-  unsubscribe, attachments, labels, undo, batch, digest) refuses: 12 call sites left.
+  makes a connected mailbox usable at all. The AI analysis has moved to sessions
+  since. Everything else (rules, snooze, unsubscribe, attachments, labels, undo,
+  batch, digest) refuses: 12 call sites left.
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
+  `GMAIL_ONLY` (`frontend/src/components/landing/features.js`) lists what the
+  landing would otherwise promise and an IMAP mailbox cannot get, labels
+  (`label`) included: the Grand Hotel landing reads it to decide what it may
+  promise, and keeps promising nothing it cannot deliver. So porting a promised
+  feature to IMAP also means deleting its line there.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

@@ -1642,13 +1642,13 @@ Get all Gmail labels for a user.
 #### GET /api/config/status
 
 Public boot probe. The SPA calls it before any login to decide whether the
-instance has any way in at all, whether Pro can be bought yet, and which edition
-is running. It is the only public route under `/api/config/`, and it returns
-nothing beyond these four fields.
+instance has any way in at all, whether Pro can be bought yet, which edition
+is running, and which landing to render. It is the only public route under
+`/api/config/`, and it returns nothing beyond these five fields.
 
 **Response:** `200 OK`
 ```json
-{ "isConfigured": true, "mailboxSignIn": true, "billingOn": false, "edition": "self-hosted" }
+{ "isConfigured": true, "mailboxSignIn": true, "billingOn": false, "edition": "self-hosted", "uiTheme": "hotel" }
 ```
 
 `mailboxSignIn` says whether `POST /api/auth/mailbox` can do anything here: it
@@ -1667,6 +1667,12 @@ they can be neither read nor written over the API, and both former
 `edition` is `self-hosted` or `hosted`, from the `EDITION` environment variable.
 It decides which mailbox providers exist (see `GET /api/providers`), hence
 `mailboxSignIn`, and whether there is anything to bill at all.
+
+`uiTheme` is `hotel` or `classic`, from the `UI_THEME` environment variable
+(default `hotel`). The SPA renders the Grand Hotel landing or the classic one on
+`/`, chosen at runtime: switching needs a backend restart, never a rebuild. A
+visitor can preview the other one for their tab with `?ui=hotel` or
+`?ui=classic` (`?ui=default` clears it).
 
 ---
 

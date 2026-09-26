@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { configService } from '../services/api';
+import { serverUiTheme } from '../lib/uiTheme';
 
 // What this deployment is, fetched once at boot and shared.
 //
@@ -58,6 +59,9 @@ export function InstanceProvider({ children }) {
     billingOn: !!instance?.billingOn,
     edition: instance?.edition || 'self-hosted',
     selfHosted: (instance?.edition || 'self-hosted') === 'self-hosted',
+    // Which landing / renders, from UI_THEME. See lib/uiTheme.js, which also
+    // applies the per-tab ?ui= preview on top of it.
+    uiTheme: serverUiTheme(instance?.uiTheme),
   };
 
   return <InstanceContext.Provider value={value}>{children}</InstanceContext.Provider>;

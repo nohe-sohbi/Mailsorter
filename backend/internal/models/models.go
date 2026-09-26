@@ -149,6 +149,10 @@ type InstanceStatus struct {
 	// there is anything to bill at all. It is the one place the frontend learns
 	// the edition: nothing in React hardcodes it.
 	Edition string `json:"edition"`
+	// UITheme is "hotel" or "classic", from UI_THEME. It picks which landing the
+	// SPA renders on /, at runtime, so the opinionated theme can be unplugged by
+	// changing one variable and restarting the backend, without a rebuild.
+	UITheme string `json:"uiTheme"`
 }
 
 // ============================================

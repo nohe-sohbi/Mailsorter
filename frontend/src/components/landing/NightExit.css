@@ -1,0 +1,23 @@
+.hl-exit { position: relative; overflow: hidden; padding-top: 90px; background: #1C1220; color: #FBF1E4; }
+.hl-exit::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.8;
+  background-image:
+    radial-gradient(1.4px 1.4px at 10% 20%, #F4E3B5 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 30% 12%, #F4E3B5 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 70% 18%, #F4E3B5 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 86% 30%, #F4E3B5 50%, transparent 51%),
+    radial-gradient(1.3px 1.3px at 52% 8%, #F4E3B5 50%, transparent 51%),
+    radial-gradient(1.1px 1.1px at 18% 42%, #F4E3B5 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 92% 10%, #F4E3B5 50%, transparent 51%);
+}
+.hl-exit .hl-wrap { position: relative; }
+.hl-exit .hl-fh__k { color: #F4CF6B; }
+.hl-exit .hl-fh__title { color: #FBF1E4; font-size: clamp(38px, 5vw, 68px); }
+.hl-exit .hl-count { color: #F4CF6B; }
+.hl-exit__cta { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 22px; margin-top: 26px; }
+.hl-exit__cta .ht-btn-gold { height: 50px; padding: 0 30px; background: #E3A93B; color: #2B1B1E; box-shadow: 0 3px 0 #000; }
+.hl-exit__link { color: #FBF1E4; border-bottom: 1.5px solid #F4CF6B; font-family: var(--h-font-display); font-style: italic; font-size: 17px; }
+.hl-exit__facade { display: block; width: 100%; max-width: 640px; height: auto; margin: 40px auto 0; }

@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mailsorter, landing v3</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..900;1,6..96,400..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Jost:wght@300..700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F6E3D9; --pink: #EFB7C3; --pink2: #F7D6DC; --plum: #7A2E3B; --plum2: #5E2230; --ink: #2B1B1E; --ink2: #6E4B52;
+    --must: #E3A93B; --must2: #F4CF6B; --teal: #2F6F73; --cream: #FBF1E4;
+    --stripes: repeating-linear-gradient(90deg, rgba(122,46,59,.045) 0 24px, transparent 24px 48px);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { font-family: 'Jost', sans-serif; color: var(--ink); background: var(--bg); -webkit-font-smoothing: antialiased; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
+  svg { display: block; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 0 40px; }
+
+  /* ---------- header ---------- */
+  .top { position: sticky; top: 0; z-index: 20; background: var(--stripes), var(--bg); border-bottom: 2px solid var(--ink); }
+  .top .wrap { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; height: 76px; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; }
+  .brand small { display: block; font-size: 9.5px; font-weight: 600; letter-spacing: .34em; text-transform: uppercase; color: var(--plum); }
+  .brand b { font-family: 'Bodoni Moda', serif; font-style: italic; font-weight: 500; font-size: 26px; line-height: 1; }
+  .panel { display: flex; gap: 18px; background: var(--plum); border: 2px solid var(--ink); border-radius: 44px; padding: 8px 22px 6px; }
+  .panel a { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .panel i { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-family: 'Bodoni Moda', serif; font-weight: 700; font-size: 13px; background: var(--must); border: 1.5px solid var(--ink); transition: background .3s, box-shadow .3s; }
+  .panel a.on i { background: var(--cream); box-shadow: 0 0 0 3px rgba(251,241,228,.3), 0 0 14px 3px rgba(255,214,120,.9); }
+  .panel span { font-size: 8.5px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--cream); }
+  .login { justify-self: end; font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 16px; border-bottom: 1.5px solid var(--ink); }
+
+  /* ---------- elevator rail ---------- */
+  .rail { position: fixed; left: 18px; top: 110px; bottom: 40px; width: 16px; z-index: 15; }
+  .rail::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--ink); opacity: .35; }
+  .rail .cab { position: absolute; left: 0; width: 16px; height: 22px; background: var(--must); border: 1.5px solid var(--ink); border-radius: 2px; transition: top .15s linear; }
+  .rail .cab::after { content: ''; position: absolute; left: 3px; right: 3px; top: 4px; bottom: 4px; background: repeating-linear-gradient(90deg, var(--ink) 0 1px, transparent 1px 3px); opacity: .5; }
+  @media (max-width: 1340px) { .rail { display: none; } }
+
+  /* ---------- floor headings ---------- */
+  .fh { text-align: center; }
+  .fh .k { display: inline-flex; align-items: center; gap: 12px; font-size: 11px; font-weight: 600; letter-spacing: .3em; text-transform: uppercase; color: var(--plum); }
+  .fh .k b { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--must); border: 1.5px solid var(--ink); color: var(--ink); font-family: 'Bodoni Moda', serif; font-size: 14px; letter-spacing: 0; }
+  .fh h2 { font-variation-settings: 'opsz' 28; font-family: 'Bodoni Moda', serif; font-weight: 400; font-size: clamp(34px, 4.2vw, 54px); line-height: 1.04; letter-spacing: -.01em; margin-top: 14px; }
+  .fh h2 em { color: var(--plum); font-weight: 500; }
+  .fh p { font-size: 16.5px; line-height: 1.55; color: var(--ink2); max-width: 54ch; margin: 14px auto 0; }
+  .slab { height: 14px; background: var(--plum); border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink); box-shadow: inset 0 3px 0 var(--must); }
+
+  /* ---------- hall ---------- */
+  .hall { background: var(--stripes), var(--bg); padding: 40px 0 0; }
+  .hall .kick { text-align: center; }
+  .hall .kick span { display: inline-flex; align-items: center; gap: 14px; font-size: 11.5px; font-weight: 600; letter-spacing: .34em; text-transform: uppercase; color: var(--plum); }
+  .hall .kick span::before, .hall .kick span::after { content: ''; width: 8px; height: 8px; background: var(--must); border: 1.5px solid var(--ink); transform: rotate(45deg); }
+  .h1 { text-align: center; font-family: 'Bodoni Moda', serif; margin-top: 14px; font-variation-settings: 'opsz' 28; }
+  .h1 .big { display: block; font-weight: 400; font-size: clamp(56px, 7.4vw, 104px); line-height: .98; letter-spacing: -.02em; }
+  .h1 .big .n { color: var(--plum); font-weight: 500; font-variant-numeric: lining-nums tabular-nums; }
+  .h1 .sub { display: block; font-style: italic; font-weight: 400; font-size: clamp(26px, 3vw, 40px); line-height: 1.15; margin-top: 8px; }
+  .h1 .sub em { color: var(--plum); }
+  .tri { display: grid; grid-template-columns: 1fr minmax(0, 600px) 1fr; gap: 34px; align-items: center; margin-top: 18px; }
+  .plq { display: grid; grid-template-columns: 42px 1fr; gap: 14px; align-items: center; margin-bottom: 16px; }
+  .plq b { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: var(--must); border: 1.5px solid var(--ink); font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 17px; color: var(--plum); }
+  .plq p { font-size: 15px; line-height: 1.45; color: var(--ink2); }
+  .plq p strong { color: var(--ink); font-weight: 600; }
+  .fiche { background: var(--cream); border: 1.5px solid var(--ink); padding: 18px 20px 20px; box-shadow: 7px 7px 0 var(--plum); transform: rotate(1.2deg); }
+  .fiche .t { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 3px double var(--ink); padding-bottom: 8px; margin-bottom: 14px; }
+  .fiche .t span:first-child { font-size: 11px; font-weight: 600; letter-spacing: .24em; text-transform: uppercase; }
+  .fiche .t .free { font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 14px; color: var(--plum); }
+  .fiche .alt { margin-top: 12px; text-align: center; font-size: 14px; }
+  .fiche .alt button { font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 15px; color: var(--plum); border-bottom: 1px solid var(--plum); }
+  .fiche .t button { font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 14px; color: var(--plum); border-bottom: 1px solid var(--plum); }
+  .fiche label { display: block; font-size: 9.5px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: var(--plum); }
+  .fiche input { width: 100%; height: 32px; border: 0; border-bottom: 1.5px dotted var(--ink); background: transparent; margin-bottom: 12px; font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 15px; color: var(--ink); outline: none; }
+  .fiche input::placeholder { color: #B09096; }
+  .fiche input:focus { border-bottom-style: solid; border-bottom-color: var(--plum); }
+  .go { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; background: var(--plum); color: var(--cream); border: 1.5px solid var(--ink); padding: 13px; font-size: 12.5px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase; transition: transform .12s, box-shadow .12s; box-shadow: 0 3px 0 var(--ink); }
+  .go:hover { transform: translateY(-1px); box-shadow: 0 4px 0 var(--ink); }
+  .go:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+  .ggl { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; margin-top: 8px; border: 1.5px solid var(--ink); padding: 10px; font-size: 13.5px; font-weight: 500; background: #fff; }
+  .fine { margin-top: 12px; font-size: 12px; color: var(--ink2); text-align: center; }
+  .hotel .cab { animation: lift 6.4s ease-in-out infinite; }
+  @keyframes lift { 0%, 18% { transform: translateY(0); } 42%, 62% { transform: translateY(104px); } 86%, 100% { transform: translateY(0); } }
+  .hotel .lamp { animation: blink 6.4s steps(1) infinite; }
+  @keyframes blink { 0%, 40% { opacity: 0; } 44%, 60% { opacity: 1; } 64%, 100% { opacity: 0; } }
+  .H .num { font: 700 9px 'Jost', sans-serif; fill: #2B1B1E; text-anchor: middle; }
+  .H .lab { font: 600 7.4px 'Jost', sans-serif; letter-spacing: 1.2px; fill: #7A2E3B; text-anchor: middle; }
+  .H .tiny { font: 700 6px 'Jost', sans-serif; letter-spacing: .8px; fill: #FBF1E4; text-anchor: middle; }
+  .H .sign { font: 600 12px 'Jost', sans-serif; letter-spacing: 4.6px; fill: #FBF1E4; text-anchor: middle; }
+
+  /* ---------- floor 1: register ---------- */
+  .f1 { background: var(--cream); padding: 80px 0 90px; }
+  .book { position: relative; max-width: 980px; margin: 44px auto 0; background: var(--plum); border: 2px solid var(--ink); border-radius: 10px; padding: 16px; box-shadow: 0 30px 50px -30px rgba(43,27,30,.6); }
+  .book::before { content: ''; position: absolute; top: -2px; left: calc(50% - 9px); width: 18px; height: 70px; background: var(--must); border: 1.5px solid var(--ink); border-top: 0; clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 82%, 0 100%); z-index: 2; }
+  .pages { display: grid; grid-template-columns: 1fr 1fr; background: #FFF8EC; border: 1.5px solid var(--ink); border-radius: 3px; min-height: 360px; }
+  .pg { padding: 22px 26px 26px; }
+  .pg.l { background: linear-gradient(to left, rgba(43,27,30,.12), transparent 40px); border-right: 1px solid rgba(43,27,30,.25); }
+  .pg.r { background: linear-gradient(to right, rgba(43,27,30,.14), transparent 44px); }
+  .pg h3 { display: flex; justify-content: space-between; align-items: baseline; font-family: 'Bodoni Moda', serif; font-style: italic; font-weight: 400; font-size: 22px; border-bottom: 3px double var(--ink); padding-bottom: 8px; margin-bottom: 6px; }
+  .pg h3 small { font-family: 'Jost', sans-serif; font-style: normal; font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--ink2); }
+  .dr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 12px 0; border-bottom: 1px solid rgba(43,27,30,.14); transition: opacity .35s, transform .35s; }
+  .dr.gone { opacity: 0; transform: translateX(30px); }
+  .dr .m { min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dr .m b { font-weight: 600; margin-right: 7px; }
+  .dr .m span { color: var(--ink2); }
+  .dr .q { grid-column: 1; font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 15px; color: var(--plum); }
+  .dr .q.safe { color: var(--teal); }
+  .dr .btns { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; align-items: center; }
+  .yes { background: var(--plum); color: var(--cream); border: 1.5px solid var(--ink); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; padding: 7px 12px; }
+  .no { border: 1.5px solid var(--ink); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; padding: 7px 10px; }
+  .hist { list-style: none; }
+  .hist li { display: flex; align-items: baseline; gap: 10px; padding: 11px 0; border-bottom: 1px dotted rgba(43,27,30,.35); font-size: 14px; animation: in .4s ease; }
+  .hist li time { font-size: 12px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+  .hist li span { flex: 1; }
+  .hist li em { font-family: 'Bodoni Moda', serif; color: var(--plum); }
+  .hist li button { font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 14px; border-bottom: 1px solid var(--plum); color: var(--plum); }
+  .hist .empty { font-family: 'Bodoni Moda', serif; font-style: italic; color: var(--ink2); border: 0; padding-top: 16px; animation: none; }
+  @keyframes in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+  /* ---------- floor 1 bis: corridor ---------- */
+  .f1b { background: var(--cream); padding: 0 0 90px; }
+  .corr { margin-top: 44px; border: 2px solid var(--ink); }
+  .corr .walls { display: grid; grid-template-columns: repeat(3, 1fr); background-color: var(--pink2); background-image: radial-gradient(circle, #E9A3B3 1.1px, transparent 1.3px); background-size: 12px 12px; position: relative; }
+  .corr .walls::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 64px; background: var(--pink); border-top: 2px solid var(--ink); z-index: 0; }
+  .corr .walls > div { position: relative; z-index: 1; padding: 22px 10px 0; }
+  .corr .walls > div + div { border-left: 1px dashed rgba(43,27,30,.25); }
+  .corr .floor { height: 14px; background: repeating-linear-gradient(90deg, var(--plum) 0 16px, var(--cream) 16px 32px); border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink); }
+  .corr .txt { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--cream); }
+  .corr .txt > div { padding: 18px 26px 26px; }
+  .corr .txt > div + div { border-left: 1px solid rgba(43,27,30,.2); }
+  .corr .txt h4 { font-family: 'Bodoni Moda', serif; font-weight: 400; font-size: 21px; line-height: 1.15; }
+  .corr .txt p { font-size: 14.5px; line-height: 1.5; color: var(--ink2); margin-top: 6px; }
+  .corr .txt .gm { display: inline-block; margin-top: 10px; font-size: 9.5px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; background: var(--must); border: 1px solid var(--ink); padding: 2px 7px; }
+  .corr + .corr { margin-top: -2px; }
+  .D .dn { font: 700 9px 'Jost', sans-serif; fill: #2B1B1E; text-anchor: middle; }
+  .D .sg { font: 700 6.6px 'Jost', sans-serif; letter-spacing: .5px; text-anchor: middle; }
+  .D .hg { font: 700 6.4px 'Jost', sans-serif; letter-spacing: .6px; fill: #7A2E3B; text-anchor: middle; }
+
+  /* ---------- floor 2: vault ---------- */
+  .f2 { background: var(--stripes), var(--bg); padding: 80px 0 90px; }
+  .vault { display: grid; grid-template-columns: 380px 1fr; gap: 56px; align-items: center; margin-top: 48px; }
+  .vplq { background: var(--cream); border: 1.5px solid var(--ink); padding: 18px 22px 20px 64px; position: relative; margin-bottom: 16px; box-shadow: 5px 5px 0 rgba(122,46,59,.18); }
+  .vplq::before { content: attr(data-i); position: absolute; left: 16px; top: 18px; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--must); border: 1.5px solid var(--ink); font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 14px; color: var(--plum); }
+  .vplq h4 { font-family: 'Bodoni Moda', serif; font-weight: 400; font-size: 22px; }
+  .vplq p { font-size: 15px; line-height: 1.5; color: var(--ink2); margin-top: 4px; }
+  .vlink { display: inline-block; margin-top: 6px; font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 16px; border-bottom: 1.5px solid var(--plum); }
+
+  /* ---------- floor 2 bis: key board ---------- */
+  .f2b { background: var(--cream); padding: 80px 0 90px; }
+  .board { margin: 44px auto 0; max-width: 1000px; background: #6A2733; border: 12px solid #4A1A24; border-radius: 6px; box-shadow: inset 0 0 0 2px #2B1B1E, 0 0 0 2px #2B1B1E, 0 30px 50px -30px rgba(43,27,30,.7); padding: 26px 26px 30px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 26px 10px; }
+  .key { display: flex; flex-direction: column; align-items: center; }
+  .key .hook { width: 12px; height: 12px; border-radius: 50%; background: var(--must); border: 1.5px solid var(--ink); }
+  .key .str { width: 1.5px; height: 12px; background: var(--cream); opacity: .8; }
+  .key .tag { position: relative; min-width: 128px; padding: 8px 26px 8px 12px; background: var(--pink); border: 1.5px solid var(--ink); border-radius: 3px 18px 18px 3px; font-size: 13px; font-weight: 600; text-align: left; transform: rotate(var(--r, 0deg)); transform-origin: 50% -30px; transition: transform .3s; }
+  .key:hover .tag { transform: rotate(calc(var(--r, 0deg) * -2)); }
+  .key .tag::after { content: ''; position: absolute; right: 8px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: #6A2733; border: 1.5px solid var(--ink); }
+  .key .tag.gold { background: var(--must); }
+  .key .tag small { display: block; font-size: 9px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--plum); opacity: .85; }
+  .legend { display: flex; justify-content: center; gap: 28px; flex-wrap: wrap; margin-top: 22px; font-size: 14px; color: var(--ink2); }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .legend i { width: 26px; height: 14px; border: 1.5px solid var(--ink); border-radius: 2px 8px 8px 2px; }
+
+  /* ---------- floor 3: rates ---------- */
+  .f3 { background: var(--stripes), var(--bg); padding: 80px 0 90px; }
+  .rate { max-width: 600px; margin: 44px auto 0; background: var(--cream); border: 14px solid var(--must); box-shadow: inset 0 0 0 2px var(--ink), 0 0 0 2px var(--ink), 10px 10px 0 var(--plum); padding: 30px 38px 32px; }
+  .rate h3 { text-align: center; font-family: 'Bodoni Moda', serif; font-style: italic; font-weight: 400; font-size: 32px; }
+  .rate .orn { display: flex; justify-content: center; gap: 8px; margin: 8px 0 18px; }
+  .rate .orn i { width: 7px; height: 7px; background: var(--must); border: 1.2px solid var(--ink); transform: rotate(45deg); }
+  .line { display: flex; align-items: baseline; font-size: 17px; padding: 8px 0; }
+  .line b { font-family: 'Bodoni Moda', serif; font-weight: 500; font-size: 20px; }
+  .line .dots { flex: 1; border-bottom: 2px dotted var(--ink); margin: 0 10px; transform: translateY(-5px); opacity: .6; }
+  .line em { font-family: 'Bodoni Moda', serif; color: var(--plum); }
+  .wl { margin-top: 22px; padding-top: 18px; border-top: 3px double var(--ink); }
+  .wl p { font-size: 14.5px; color: var(--ink2); text-align: center; }
+  .wl form { display: flex; gap: 8px; margin-top: 12px; }
+  .wl input { flex: 1; height: 44px; border: 1.5px solid var(--ink); background: #fff; padding: 0 12px; font-family: 'Jost', sans-serif; font-size: 15px; outline: none; }
+  .wl input:focus { box-shadow: 0 0 0 3px rgba(122,46,59,.25); }
+  .wl .go { width: auto; padding: 0 18px; }
+
+  /* ---------- floor 4: letter board ---------- */
+  .f4 { background: var(--cream); padding: 80px 0 90px; }
+  .qa { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: start; margin-top: 44px; }
+  .lb { background-color: #1E1A1C; background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.04) 0 2px, transparent 2px 13px); border: 16px solid #8A5A3C; border-radius: 6px; box-shadow: inset 0 0 0 2px #000, 0 0 0 2px var(--ink), 0 30px 50px -30px rgba(43,27,30,.7); padding: 22px 26px; }
+  .lb .hd { font-size: 13px; font-weight: 600; letter-spacing: .5em; color: var(--must); text-align: center; margin-bottom: 12px; }
+  .lb button { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 10px 0; font-size: 15px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: #F5EFE4; border-bottom: 1px solid rgba(255,255,255,.06); }
+  .lb button::before { content: ''; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.35); flex-shrink: 0; }
+  .lb button.on { color: var(--must2); }
+  .lb button.on::before { background: var(--must2); border-color: var(--must2); box-shadow: 0 0 8px var(--must2); }
+  .ans { background: var(--bg); border: 1.5px solid var(--ink); padding: 26px 28px; box-shadow: 7px 7px 0 var(--plum); position: sticky; top: 110px; }
+  .ans h4 { font-variation-settings: 'opsz' 20; font-family: 'Bodoni Moda', serif; font-weight: 400; font-size: 28px; line-height: 1.12; }
+  .ans p { font-size: 16px; line-height: 1.6; color: var(--ink2); margin-top: 12px; }
+
+  /* ---------- exit (night) ---------- */
+  .exit { background: #1C1220; color: var(--cream); padding: 90px 0 0; position: relative; overflow: hidden; }
+  .exit::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(1.4px 1.4px at 10% 20%, #F4E3B5 50%, transparent 51%), radial-gradient(1.2px 1.2px at 30% 12%, #F4E3B5 50%, transparent 51%), radial-gradient(1.6px 1.6px at 70% 18%, #F4E3B5 50%, transparent 51%), radial-gradient(1.2px 1.2px at 86% 30%, #F4E3B5 50%, transparent 51%), radial-gradient(1.3px 1.3px at 52% 8%, #F4E3B5 50%, transparent 51%), radial-gradient(1.1px 1.1px at 18% 42%, #F4E3B5 50%, transparent 51%), radial-gradient(1.2px 1.2px at 92% 10%, #F4E3B5 50%, transparent 51%); opacity: .8; }
+  .exit .fh .k { color: var(--must2); }
+  .exit .fh h2 { color: var(--cream); font-size: clamp(40px, 5vw, 68px); }
+  .exit .fh h2 .n { color: var(--must2); font-weight: 500; }
+  .exit .cta { display: flex; justify-content: center; align-items: center; gap: 22px; margin-top: 26px; position: relative; }
+  .exit .go { width: auto; padding: 15px 30px; background: var(--must); color: var(--ink); box-shadow: 0 3px 0 #000; }
+  .exit .cta a:not(.go) { font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 17px; border-bottom: 1.5px solid var(--must); }
+  .night { position: relative; max-width: 640px; margin: 40px auto 0; }
+  .walk { background: var(--plum); border-top: 2px solid #000; }
+  .walk .wrap { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; min-height: 64px; font-size: 13.5px; color: var(--cream); }
+  .walk nav { display: flex; gap: 24px; flex-wrap: wrap; }
+  .walk nav a { opacity: .9; } .walk nav a:hover { opacity: 1; text-decoration: underline; }
+  .theme { display: inline-flex; border: 1.5px solid var(--cream); border-radius: 20px; overflow: hidden; font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+  .theme span { padding: 5px 12px; } .theme span.on { background: var(--cream); color: var(--plum); }
+
+
+  /* ---------- demo: one mail at a time ---------- */
+  .stage { max-width: 760px; margin: 40px auto 0; }
+  .try { text-align: center; font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 17px; color: var(--plum); margin-bottom: 18px; }
+  .try::before, .try::after { content: ''; display: inline-block; width: 7px; height: 7px; margin: 0 12px 3px; background: var(--must); border: 1.2px solid var(--ink); transform: rotate(45deg); }
+  .deck { position: relative; display: grid; max-width: 600px; margin: 0 auto; padding-top: 34px; }
+  .unused-pile { position: absolute; left: 0; right: 0; height: 60px; background: var(--cream); border: 1.5px solid var(--ink); }
+  .pile.p2 { top: 0; transform: scale(.9); opacity: .7; }
+  .pile.p1 { top: 9px; transform: scale(.95); }
+  .mail { grid-area: 1 / 1; align-self: start; position: relative; background: #FFFAF2; border: 1.5px solid var(--ink); padding: 24px 28px 26px; transform-origin: 50% 0; transition: transform .5s cubic-bezier(.4,0,.2,1), opacity .5s, background-color .5s, box-shadow .5s, visibility 0s; }
+  .mail[data-depth="0"] { z-index: 5; box-shadow: 8px 8px 0 var(--plum); }
+  .mail[data-depth="1"] { z-index: 4; transform: translateY(-17px) scale(.95); background-color: #F8ECDC; pointer-events: none; }
+  .mail[data-depth="2"] { z-index: 3; transform: translateY(-32px) scale(.9); background-color: #F1E1CC; pointer-events: none; }
+  .mail[data-depth="far"] { z-index: 1; transform: translateY(-32px) scale(.9); opacity: 0; pointer-events: none; }
+  .mail[data-depth="1"] > *, .mail[data-depth="2"] > * { opacity: .55; transition: opacity .5s; }
+  .mail.gone { visibility: hidden; opacity: 0; pointer-events: none; z-index: 6; transition: transform .5s cubic-bezier(.5,0,.3,1), opacity .5s, visibility 0s linear .5s; }
+  .mail header { display: flex; align-items: center; gap: 12px; }
+  .mail .av { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: var(--pink); border: 1.5px solid var(--ink); font-weight: 600; font-size: 14px; }
+  .mail .who { flex: 1; min-width: 0; }
+  .mail .who b { display: block; font-size: 17px; font-weight: 600; }
+  .mail .who span { font-size: 13px; color: var(--ink2); }
+  .mail .left { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--ink2); }
+  .mail h3 { font-family: 'Bodoni Moda', serif; font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 29px; line-height: 1.15; margin-top: 18px; }
+  .mail .snip { font-size: 16px; line-height: 1.55; color: var(--ink2); margin-top: 8px; }
+  .prop { display: flex; align-items: center; gap: 14px; margin-top: 22px; padding: 14px 16px; background: #FBE8C4; border: 1.5px solid var(--ink); }
+  .prop svg { flex-shrink: 0; }
+  .prop small { display: block; font-size: 10.5px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: var(--ink2); }
+  .prop b { font-family: 'Bodoni Moda', serif; font-variation-settings: 'opsz' 28; font-style: italic; font-weight: 500; font-size: 23px; color: var(--plum); }
+  .prop.safe { background: #D5E7E4; }
+  .prop.safe b { color: var(--teal); }
+  .acts { display: flex; gap: 10px; margin-top: 16px; }
+  .acts .go { width: auto; flex: 1; padding: 15px; font-size: 13px; }
+  .acts .skip { flex: 0 0 auto; border: 1.5px solid var(--ink); padding: 0 20px; font-size: 13px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; background: #fff; }
+  .acts .skip:hover { background: var(--cream); }
+  .mail.done { text-align: center; padding: 34px 28px; }
+  .mail.done h3 { font-size: 27px; }
+  .mail.done h3 { margin-top: 0; }
+  .mail.done .acts { justify-content: center; }
+  .mail.done .acts .go { flex: 0 0 auto; padding: 15px 30px; }
+  .again { display: inline-block; margin-top: 14px; font-family: 'Bodoni Moda', serif; font-style: italic; font-size: 15px; color: var(--plum); border-bottom: 1px solid var(--plum); }
+  .toast { position: absolute; left: 50%; bottom: -26px; transform: translate(-50%, 10px); display: flex; align-items: center; gap: 16px; background: var(--ink); color: var(--cream); padding: 11px 16px 11px 18px; font-size: 14.5px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; z-index: 3; box-shadow: 0 10px 24px -10px rgba(0,0,0,.5); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  .toast button { color: var(--must2); font-weight: 600; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; border-bottom: 1.5px solid var(--must2); }
+  .mdoors { display: flex; justify-content: center; gap: 44px; margin-top: 64px; padding-bottom: 6px; border-bottom: 10px solid var(--plum); box-shadow: 0 2px 0 var(--ink); }
+  .md { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .md svg { width: 62px; height: auto; }
+  .md b { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+  .md .badge { position: absolute; top: -10px; left: calc(50% + 18px); min-width: 26px; height: 26px; border-radius: 13px; display: grid; place-items: center; padding: 0 6px; background: var(--must); border: 1.5px solid var(--ink); font-weight: 600; font-size: 13px; z-index: 1; transition: transform .2s; }
+  .md.bump .badge { transform: scale(1.35); }
+  .md.bump svg { filter: drop-shadow(0 0 10px rgba(244,207,107,.95)); }
+  @media (max-width: 640px) { .mdoors { gap: 18px; } .md svg { width: 46px; } .md b { font-size: 9px; } .acts { flex-direction: column; } .acts .skip { padding: 13px; } }
+
+  @media (max-width: 1000px) {
+    .top .wrap { grid-template-columns: auto 1fr; } .panel { display: none; }
+    .tri, .vault, .qa, .pages { grid-template-columns: 1fr; }
+    .tri .hotel { order: -1; }
+    .corr .walls, .corr .txt { grid-template-columns: 1fr 1fr; }
+    .board { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 0 16px; }
+    .corr .walls, .corr .txt, .board { grid-template-columns: 1fr 1fr; }
+    .key .tag { min-width: 0; width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .hotel .cab, .hotel .lamp { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <pattern id="H-wp" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#FBEADF"/><circle cx="4" cy="4" r="1" fill="#EBB0BD"/></pattern>
+    <pattern id="H-aw" width="12" height="12" patternUnits="userSpaceOnUse"><rect width="6" height="12" fill="#7A2E3B"/><rect x="6" width="6" height="12" fill="#FBF1E4"/></pattern>
+    <pattern id="H-ck" width="16" height="16" patternUnits="userSpaceOnUse"><rect width="16" height="16" fill="#FBF1E4"/><rect width="8" height="8" fill="#7A2E3B"/><rect x="8" y="8" width="8" height="8" fill="#7A2E3B"/></pattern>
+    <symbol id="H-env" viewBox="0 0 20 14"><rect x=".7" y=".7" width="18.6" height="12.6" fill="#FFFAF2" stroke="#2B1B1E" stroke-width="1.2"/><path d="M1 1.2l9 6.6 9-6.6" fill="none" stroke="#2B1B1E" stroke-width="1.2"/></symbol>
+    <symbol id="door" viewBox="0 0 240 230">
+      <rect x="62" y="22" width="116" height="208" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="2"/>
+      <rect x="68" y="28" width="104" height="202" fill="none" stroke="#2B1B1E" stroke-width="1"/>
+      <rect x="74" y="34" width="92" height="196" fill="currentColor" stroke="#2B1B1E" stroke-width="1.6"/>
+      <rect x="84" y="46" width="72" height="72" fill="none" stroke="#2B1B1E" stroke-opacity=".45" stroke-width="1.5"/>
+      <rect x="84" y="128" width="72" height="90" fill="none" stroke="#2B1B1E" stroke-opacity=".45" stroke-width="1.5"/>
+      <rect x="148" y="118" width="8" height="18" rx="2" fill="#E3A93B" stroke="#2B1B1E"/>
+      <circle cx="152" cy="126" r="3.5" fill="#E3A93B" stroke="#2B1B1E"/>
+    </symbol>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+</svg>
+
+<div class="rail" aria-hidden="true"><div class="cab" id="railcab"></div></div>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#hall"><svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><polygon points="3,14 17,4 31,14" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.6" stroke-linejoin="round"/><rect x="5" y="14" width="24" height="16" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.6"/><path d="M5.5 14.5 L17 23 L28.5 14.5" fill="none" stroke="#2B1B1E" stroke-width="1.6"/><circle cx="17" cy="11" r="2" fill="#E3A93B" stroke="#2B1B1E"/></svg><b>Mailsorter</b></a>
+    <nav class="panel" aria-label="Sections">
+      <a href="#f1" data-go="f1"><i>1</i><span>Fonctionnement</span></a>
+      <a href="#f2" data-go="f2"><i>2</i><span>Confidentialité</span></a>
+      <a href="#f3" data-go="f3"><i>3</i><span>Tarifs</span></a>
+      <a href="#f4" data-go="f4"><i>4</i><span>Questions</span></a>
+    </nav>
+    <a class="login" href="#hall">Se connecter</a>
+  </div>
+</header>
+
+<!-- ======================= HALL ======================= -->
+<section class="hall" id="hall" data-floor="0">
+  <div class="wrap">
+    <h1 class="h1">
+      <span class="big"><span class="n" data-count>4 212</span> non lus ?</span>
+      <span class="sub"><em>On s'en occupe.</em> Vous validez.</span>
+    </h1>
+
+    <div class="tri">
+      <div>
+        <div class="plq"><b>I</b><p><strong>Il lit</strong> l'expéditeur, l'objet et le début du message. Pas plus.</p></div>
+        <div class="plq"><b>II</b><p><strong>Il propose</strong> : archiver, classer, reporter. Vous dites oui ou non.</p></div>
+        <div class="plq"><b>III</b><p><strong>Tout s'annule</strong> en un clic. Même à 2 h du matin.</p></div>
+      </div>
+
+      <svg class="H hotel" viewBox="0 0 600 530" role="img" aria-label="Un hôtel en coupe : chaque chambre est une catégorie d'e-mails">
+        <g fill="#E3A93B" stroke="#2B1B1E" stroke-width="1">
+          <polygon points="36,70 40,62 44,70 40,78"/><polygon points="560,86 564,78 568,86 564,94"/>
+          <polygon points="22,200 25,194 28,200 25,206"/><polygon points="576,230 579,224 582,230 579,236"/>
+        </g>
+        <g stroke="#2B1B1E" stroke-width="1.5">
+          <line x1="88" y1="122" x2="88" y2="74"/><polygon points="88,74 110,81 88,88" fill="#E3A93B"/>
+          <line x1="512" y1="122" x2="512" y2="74"/><polygon points="512,74 490,81 512,88" fill="#E3A93B"/>
+        </g>
+        <polygon points="66,124 300,38 534,124" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="2"/>
+        <polygon points="112,116 300,54 488,116" fill="#F7D6DC" stroke="#2B1B1E" stroke-width="1.2"/>
+        <circle cx="300" cy="92" r="18" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="2"/>
+        <g stroke="#2B1B1E" stroke-width="1.4" stroke-linecap="round"><line x1="300" y1="92" x2="300" y2="80"/><line x1="300" y1="92" x2="309" y2="96"/><line x1="300" y1="76" x2="300" y2="78"/><line x1="316" y1="92" x2="314" y2="92"/><line x1="300" y1="108" x2="300" y2="106"/><line x1="284" y1="92" x2="286" y2="92"/></g>
+        <rect x="58" y="122" width="484" height="12" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="2"/>
+        <rect x="80" y="134" width="440" height="366" fill="#EFB7C3" stroke="#2B1B1E" stroke-width="2"/>
+        <rect x="128" y="143" width="344" height="26" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.5"/>
+        <text x="300" y="160.5" class="sign" style="letter-spacing:7px">MAILSORTER</text>
+
+        <g>
+          <rect x="96" y="180" width="80" height="92" fill="url(#H-wp)" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="96" y="264" width="80" height="8" fill="#B8586B"/>
+          <rect x="119" y="186" width="34" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="136" y="195.6" class="num">201</text>
+          <text x="136" y="212" class="lab">NEWSLETTERS</text>
+          <use href="#H-env" x="100" y="248" width="20" height="14"/><use href="#H-env" x="118" y="249" width="20" height="14" transform="rotate(4 128 256)"/>
+          <use href="#H-env" x="108" y="236" width="20" height="14" transform="rotate(-6 118 243)"/><use href="#H-env" x="126" y="236" width="20" height="14" transform="rotate(5 136 243)"/>
+          <use href="#H-env" x="116" y="223" width="20" height="14" transform="rotate(-3 126 230)"/>
+          <g transform="rotate(-9 160 244)"><rect x="146" y="238" width="28" height="11" fill="#7A2E3B" stroke="#2B1B1E"/><text x="160" y="245.8" class="tiny">COMPLET</text></g>
+          <line x1="160" y1="249" x2="160" y2="264" stroke="#2B1B1E" stroke-width="1.2"/>
+        </g>
+        <g>
+          <rect x="184" y="180" width="80" height="92" fill="url(#H-wp)" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="184" y="264" width="80" height="8" fill="#B8586B"/>
+          <rect x="207" y="186" width="34" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="224" y="195.6" class="num">202</text>
+          <text x="224" y="212" class="lab">PROMOS</text>
+          <use href="#H-env" x="192" y="244" width="20" height="14" transform="rotate(-16 202 251)"/><use href="#H-env" x="222" y="246" width="20" height="14" transform="rotate(12 232 253)"/>
+          <use href="#H-env" x="207" y="228" width="20" height="14" transform="rotate(6 217 235)"/>
+          <g fill="#E3A93B" stroke="#2B1B1E" stroke-width=".6"><rect x="194" y="222" width="4" height="4" transform="rotate(20 196 224)"/><rect x="248" y="230" width="4" height="4" transform="rotate(-25 250 232)"/><rect x="240" y="220" width="3" height="3"/></g>
+          <g fill="#2F6F73"><circle cx="200" cy="236" r="1.8"/><circle cx="252" cy="246" r="1.8"/><circle cx="236" cy="226" r="1.5"/></g>
+        </g>
+        <g>
+          <rect x="336" y="180" width="80" height="92" fill="url(#H-wp)" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="336" y="264" width="80" height="8" fill="#B8586B"/>
+          <rect x="359" y="186" width="34" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="376" y="195.6" class="num">203</text>
+          <text x="376" y="212" class="lab">TRAVAIL</text>
+          <rect x="348" y="246" width="54" height="6" fill="#7A2E3B" stroke="#2B1B1E"/>
+          <g stroke="#2B1B1E" stroke-width="1.4"><line x1="352" y1="252" x2="352" y2="264"/><line x1="398" y1="252" x2="398" y2="264"/><line x1="392" y1="246" x2="392" y2="228"/></g>
+          <polygon points="384,230 400,230 395,221 389,221" fill="#E3A93B" stroke="#2B1B1E"/>
+          <use href="#H-env" x="356" y="232" width="20" height="14"/>
+        </g>
+        <g>
+          <rect x="424" y="180" width="80" height="92" fill="url(#H-wp)" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="424" y="264" width="80" height="8" fill="#B8586B"/>
+          <rect x="447" y="186" width="34" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="464" y="195.6" class="num">204</text>
+          <text x="464" y="212" class="lab">VOYAGES</text>
+          <path d="M456 234 v-6 h16 v6" fill="none" stroke="#2B1B1E" stroke-width="1.6"/>
+          <rect x="444" y="234" width="40" height="28" rx="3" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.4"/>
+          <circle cx="454" cy="246" r="5" fill="#E3A93B" stroke="#2B1B1E" stroke-width=".8"/><circle cx="472" cy="252" r="4" fill="#EFB7C3" stroke="#2B1B1E" stroke-width=".8"/>
+          <rect x="466" y="238" width="12" height="7" fill="#FBF1E4" stroke="#2B1B1E" stroke-width=".8" transform="rotate(8 472 241)"/>
+        </g>
+
+        <g>
+          <rect x="96" y="284" width="80" height="92" fill="url(#H-wp)" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="96" y="368" width="80" height="8" fill="#B8586B"/>
+          <rect x="119" y="290" width="34" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="136" y="299.6" class="num">101</text>
+          <text x="136" y="316" class="lab">FACTURES</text>
+          <use href="#H-env" x="106" y="352" width="22" height="15"/><use href="#H-env" x="106" y="343" width="22" height="15"/><use href="#H-env" x="106" y="334" width="22" height="15"/>
+          <rect x="140" y="336" width="26" height="31" fill="#4A3A3E" stroke="#2B1B1E" stroke-width="1.4"/>
+          <circle cx="153" cy="351" r="6" fill="#E3A93B" stroke="#2B1B1E"/><line x1="153" y1="351" x2="156" y2="347" stroke="#2B1B1E" stroke-width="1.2"/>
+        </g>
+        <g>
+          <rect x="184" y="284" width="80" height="92" fill="url(#H-wp)" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="184" y="368" width="80" height="8" fill="#B8586B"/>
+          <rect x="207" y="290" width="34" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="224" y="299.6" class="num">102</text>
+          <text x="224" y="316" class="lab">COLIS</text>
+          <g stroke="#2B1B1E" stroke-width="1.3" fill="#C99A62"><rect x="194" y="342" width="26" height="26"/><rect x="222" y="348" width="22" height="20"/><rect x="204" y="324" width="22" height="18"/></g>
+          <g stroke="#2B1B1E" stroke-width=".9" opacity=".7"><line x1="207" y1="342" x2="207" y2="368"/><line x1="233" y1="348" x2="233" y2="368"/><line x1="215" y1="324" x2="215" y2="342"/></g>
+        </g>
+        <g>
+          <rect x="336" y="284" width="80" height="92" fill="url(#H-wp)" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="336" y="368" width="80" height="8" fill="#B8586B"/>
+          <rect x="359" y="290" width="34" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="376" y="299.6" class="num">103</text>
+          <text x="376" y="316" class="lab">PERSO</text>
+          <use href="#H-env" x="352" y="348" width="22" height="15"/>
+          <path d="M363 336 c-3 -4.5 -9 -1 -5.5 3.5 l5.5 5.5 l5.5 -5.5 c3.5 -4.5 -2.5 -8 -5.5 -3.5z" fill="#B8586B" stroke="#2B1B1E" stroke-width=".9"/>
+          <path d="M392 368 l2 -14 h12 l2 14z" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.2"/>
+          <path d="M400 354 q-2 -10 -8 -14 M400 354 q2 -12 8 -16" fill="none" stroke="#2B1B1E" stroke-width="1.1"/>
+          <circle cx="392" cy="339" r="4" fill="#E3A93B" stroke="#2B1B1E" stroke-width=".9"/><circle cx="408" cy="337" r="4" fill="#EFB7C3" stroke="#2B1B1E" stroke-width=".9"/>
+        </g>
+        <g>
+          <rect x="424" y="284" width="80" height="92" fill="#F7D6DC" stroke="#2B1B1E" stroke-width="1.5"/>
+          <rect x="424" y="368" width="80" height="8" fill="#7A2E3B"/>
+          <rect x="444" y="290" width="40" height="13" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="464" y="299.6" class="num">SUITE</text>
+          <text x="464" y="316" class="lab">VIP</text>
+          <polygon points="464,322 466.5,328 473,328 468,332 470,338 464,334.5 458,338 460,332 455,328 461.5,328" fill="#E3A93B" stroke="#2B1B1E" stroke-width=".8"/>
+          <use href="#H-env" x="453" y="340" width="22" height="15"/>
+          <g stroke="#2B1B1E" stroke-width="1.2" fill="#E3A93B"><rect x="436" y="346" width="5" height="22"/><rect x="487" y="346" width="5" height="22"/></g>
+          <path d="M440 350 Q464 366 488 350" fill="none" stroke="#7A2E3B" stroke-width="3.2" stroke-linecap="round"/>
+        </g>
+        <!-- lamp glow when the cabin reaches floor 1 -->
+        <rect class="lamp" x="96" y="284" width="80" height="92" fill="#FFE39A" opacity="0" style="mix-blend-mode:multiply"/>
+
+        <rect x="276" y="176" width="48" height="204" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.5"/>
+        <g stroke="#2B1B1E" stroke-width="1.2" opacity=".8"><line x1="292" y1="176" x2="292" y2="380"/><line x1="308" y1="176" x2="308" y2="380"/></g>
+        <g class="cab">
+          <rect x="282" y="212" width="36" height="54" fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.5"/>
+          <use href="#H-env" x="290" y="242" width="20" height="14"/>
+          <g stroke="#2B1B1E" stroke-width=".8" opacity=".75"><line x1="288" y1="216" x2="288" y2="262"/><line x1="294" y1="216" x2="294" y2="262"/><line x1="300" y1="216" x2="300" y2="262"/><line x1="306" y1="216" x2="306" y2="262"/><line x1="312" y1="216" x2="312" y2="262"/></g>
+        </g>
+
+        <rect x="96" y="388" width="408" height="100" fill="#F7D6DC" stroke="#2B1B1E" stroke-width="1.5"/>
+        <rect x="96" y="486" width="408" height="14" fill="url(#H-ck)" stroke="#2B1B1E" stroke-width="1.2"/>
+        <path d="M272 486 V446 A28 28 0 0 1 328 446 V486 Z" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.5"/>
+        <g stroke="#9CC9C3" stroke-width="1.4"><line x1="300" y1="420" x2="300" y2="486"/><line x1="284" y1="440" x2="316" y2="480"/></g>
+        <rect x="262" y="398" width="76" height="12" fill="url(#H-aw)" stroke="#2B1B1E" stroke-width="1.2"/>
+        <g fill="#7A2E3B" stroke="#2B1B1E" stroke-width=".8"><circle cx="266.5" cy="411" r="4.5"/><circle cx="275.5" cy="411" r="4.5"/><circle cx="284.5" cy="411" r="4.5"/><circle cx="293.5" cy="411" r="4.5"/><circle cx="302.5" cy="411" r="4.5"/><circle cx="311.5" cy="411" r="4.5"/><circle cx="320.5" cy="411" r="4.5"/><circle cx="329.5" cy="411" r="4.5"/><circle cx="333.5" cy="411" r="4.5"/></g>
+        <g stroke="#2B1B1E" stroke-width="1.2"><path d="M244 486 l3 -16 h14 l3 16z" fill="#E3A93B"/><circle cx="254" cy="460" r="11" fill="#4F8E88"/><path d="M336 486 l3 -16 h14 l3 16z" fill="#E3A93B"/><circle cx="346" cy="460" r="11" fill="#4F8E88"/></g>
+        <polygon points="160,452 190,452 187,428 163,428" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.2"/>
+        <polygon points="170,428 180,428 175,436" fill="#FBF1E4" stroke="#2B1B1E" stroke-width=".8"/>
+        <g fill="#E3A93B"><circle cx="175" cy="441" r="1.6"/><circle cx="175" cy="447" r="1.6"/></g>
+        <circle cx="175" cy="419" r="8.5" fill="#F2C7A6" stroke="#2B1B1E" stroke-width="1.2"/>
+        <rect x="168" y="403.5" width="14" height="8" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1"/><rect x="168" y="409" width="14" height="2" fill="#E3A93B"/>
+        <g fill="#2B1B1E"><circle cx="172" cy="418" r="1"/><circle cx="178" cy="418" r="1"/></g>
+        <path d="M171 423 q4 3 8 0" fill="none" stroke="#2B1B1E" stroke-width="1"/>
+        <rect x="118" y="452" width="116" height="34" fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.5"/>
+        <rect x="124" y="458" width="104" height="22" fill="none" stroke="#2B1B1E" stroke-width=".9"/>
+        <text x="176" y="472" class="lab" style="letter-spacing:2px">RÉCEPTION</text>
+        <path d="M206 452 a9 8 0 0 1 18 0 z" fill="#F4CF6B" stroke="#2B1B1E" stroke-width="1.2"/><circle cx="215" cy="443" r="2" fill="#2B1B1E"/>
+        <rect x="386" y="398" width="72" height="15" fill="#7A2E3B" stroke="#2B1B1E"/><text x="422" y="408.5" class="tiny" style="font-size:7px">ARRIVÉES</text>
+        <path d="M394 476 V438 Q422 420 450 438 V476" fill="none" stroke="#E3A93B" stroke-width="3.5"/>
+        <path d="M394 476 V438 Q422 420 450 438 V476" fill="none" stroke="#2B1B1E" stroke-width=".8"/>
+        <rect x="388" y="474" width="68" height="5" fill="#E3A93B" stroke="#2B1B1E"/>
+        <circle cx="396" cy="483" r="4" fill="#2B1B1E"/><circle cx="448" cy="483" r="4" fill="#2B1B1E"/>
+        <rect x="400" y="454" width="22" height="20" fill="#C99A62" stroke="#2B1B1E" stroke-width="1.2"/>
+        <rect x="424" y="452" width="20" height="22" rx="2" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.2"/>
+        <use href="#H-env" x="404" y="440" width="20" height="14" transform="rotate(-8 414 447)"/><use href="#H-env" x="424" y="438" width="20" height="14" transform="rotate(6 434 445)"/>
+        <rect x="36" y="500" width="528" height="10" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.5"/>
+      </svg>
+
+      <form class="fiche" onsubmit="return false">
+        <div class="t"><span id="formTitle">Créer un compte</span><span class="free">gratuit</span></div>
+        <label for="em">Adresse e-mail</label><input id="em" type="email" placeholder="vous@exemple.fr" autocomplete="email">
+        <label for="pw">Mot de passe</label><input id="pw" type="password" placeholder="8 caractères minimum" autocomplete="new-password">
+        <button class="go" type="submit" id="goBtn">Faire le tri</button>
+        <button class="ggl" type="button">
+          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+          Continuer avec Google
+        </button>
+        <p class="alt"><span id="altq">Déjà un compte ?</span> <button type="button" id="swap">Se connecter</button></p>
+        <p class="fine">Gratuit jusqu'à 200 tris par mois. Sans carte bancaire.</p>
+      </form>
+    </div>
+  </div>
+  <div class="slab" style="margin-top:0"></div>
+</section>
+
+<!-- ======================= FLOOR 1: one mail at a time ======================= -->
+<section class="f1" id="f1" data-floor="1">
+  <div class="wrap">
+    <div class="fh">
+      <span class="k"><b>1</b>Fonctionnement</span>
+      <h2>Un mail, une question, <em>un clic.</em></h2>
+      <p>Pour chaque e-mail, Mailsorter vous dit ce qu'il en ferait. Vous validez ou vous passez. Et si vous changez d'avis, Annuler est juste là.</p>
+    </div>
+    <div class="stage">
+      <p class="try">Démo interactive</p>
+      <div class="deck" id="deck">
+        <div class="toast" id="toast" role="status"><span id="tmsg"></span><button id="undo" type="button">Annuler</button></div>
+      </div>
+      <div class="mdoors">
+        <div class="md" data-to="archives"><span class="badge">0</span><svg viewBox="58 18 124 214" aria-hidden="true"><use href="#door" width="240" height="230" style="color:#2F6F73"/></svg><b>Archives</b></div>
+        <div class="md" data-to="factures"><span class="badge">0</span><svg viewBox="58 18 124 214" aria-hidden="true"><use href="#door" width="240" height="230" style="color:#7A2E3B"/></svg><b>Factures</b></div>
+        <div class="md" data-to="desabo"><span class="badge">0</span><svg viewBox="58 18 124 214" aria-hidden="true"><use href="#door" width="240" height="230" style="color:#E48FA5"/></svg><b>Désabonnements</b></div>
+        <div class="md" data-to="later"><span class="badge">0</span><svg viewBox="58 18 124 214" aria-hidden="true"><use href="#door" width="240" height="230" style="color:#C98B22"/></svg><b>Plus tard</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= FLOOR 1 bis: corridor ======================= -->
+<section class="f1b" data-floor="1">
+  <div class="wrap">
+    <div class="fh">
+      <h2>Et pendant que vous faites <em>autre chose.</em></h2>
+    </div>
+
+    <div class="corr">
+      <div class="walls">
+        <div><svg class="D" viewBox="0 0 240 230" aria-hidden="true">
+          <use href="#door" width="240" height="230" style="color:#2F6F73"/>
+          <rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="120" y="67" class="dn">301</text>
+          <rect x="206" y="98" width="5" height="132" fill="#7A2E3B" stroke="#2B1B1E"/>
+          <polygon points="180,104 226,104 236,112 226,120 180,120" fill="#E3A93B" stroke="#2B1B1E"/><text x="206" y="114.6" class="sg" fill="#2B1B1E">FACTURES</text>
+          <polygon points="188,128 232,128 232,144 188,144 178,136" fill="#FBF1E4" stroke="#2B1B1E"/><text x="207" y="138.6" class="sg" fill="#2B1B1E">PROMOS</text>
+          <polygon points="180,152 226,152 236,160 226,168 180,168" fill="#7A2E3B" stroke="#2B1B1E"/><text x="206" y="162.6" class="sg" fill="#FBF1E4">COLIS</text>
+        </svg></div>
+        <div><svg class="D" viewBox="0 0 240 230" aria-hidden="true">
+          <use href="#door" width="240" height="230" style="color:#7A2E3B"/>
+          <rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="120" y="67" class="dn">302</text>
+          <ellipse cx="34" cy="178" rx="24" ry="5" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.3"/>
+          <line x1="34" y1="182" x2="34" y2="224" stroke="#2B1B1E" stroke-width="2.4"/>
+          <ellipse cx="34" cy="226" rx="14" ry="3" fill="#7A2E3B" stroke="#2B1B1E"/>
+          <circle cx="23" cy="146" r="5.5" fill="#E3A93B" stroke="#2B1B1E"/><circle cx="45" cy="146" r="5.5" fill="#E3A93B" stroke="#2B1B1E"/>
+          <circle cx="34" cy="159" r="15" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="2"/>
+          <g stroke="#2B1B1E" stroke-width="1.6" stroke-linecap="round"><line x1="34" y1="159" x2="34" y2="149"/><line x1="34" y1="159" x2="41" y2="162"/><line x1="26" y1="173" x2="23" y2="177"/><line x1="42" y1="173" x2="45" y2="177"/></g>
+          <text x="44" y="134" style="font:italic 600 13px 'Bodoni Moda',serif;fill:#7A2E3B">z</text><text x="51" y="123" style="font:italic 600 10px 'Bodoni Moda',serif;fill:#7A2E3B">z</text>
+        </svg></div>
+        <div><svg class="D" viewBox="0 0 240 230" aria-hidden="true">
+          <use href="#door" width="240" height="230" style="color:#E48FA5"/>
+          <rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="120" y="67" class="dn">VIP</text>
+          <polygon points="120,82 124,92 135,92 126,98 129,108 120,102 111,108 114,98 105,92 116,92" fill="#E3A93B" stroke="#2B1B1E"/>
+          <g stroke="#2B1B1E" stroke-width="1.3" fill="#E3A93B"><rect x="36" y="182" width="7" height="48"/><rect x="197" y="182" width="7" height="48"/><circle cx="39.5" cy="179" r="5.5"/><circle cx="200.5" cy="179" r="5.5"/></g>
+          <path d="M43 190 Q120 224 197 190" fill="none" stroke="#7A2E3B" stroke-width="6" stroke-linecap="round"/>
+          <path d="M43 190 Q120 224 197 190" fill="none" stroke="#2B1B1E" stroke-width="1" opacity=".5"/>
+        </svg></div>
+      </div>
+      <div class="floor"></div>
+      <div class="txt">
+        <div><h4>Les évidences n'ont pas besoin d'IA.</h4><p>Vos règles passent avant le modèle. Plus rapide, et ça ne touche pas à votre quota.</p><span class="gm">Gmail</span></div>
+        <div><h4>Pas maintenant.</h4><p>Un e-mail disparaît et revient ce soir, demain ou ce week-end. Comme si vous l'aviez reçu à ce moment-là.</p><span class="gm">Gmail</span></div>
+        <div><h4>Votre mère ne sera jamais archivée.</h4><p>Les expéditeurs protégés échappent à tout tri automatique. Même quand ils écrivent en majuscules.</p><span class="gm">Gmail</span></div>
+      </div>
+    </div>
+
+    <div class="corr">
+      <div class="walls">
+        <div><svg class="D" viewBox="0 0 240 230" aria-hidden="true">
+          <use href="#door" width="240" height="230" style="color:#7A2E3B"/>
+          <rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="120" y="67" class="dn">304</text>
+          <g transform="rotate(-7 152 126)">
+            <rect x="134" y="118" width="38" height="76" rx="4" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.4"/>
+            <circle cx="152" cy="130" r="6.5" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.2"/>
+            <text x="153" y="153" class="hg">NE PAS</text><text x="153" y="162" class="hg">DÉRANGER</text>
+            <line x1="142" y1="170" x2="164" y2="170" stroke="#E3A93B" stroke-width="2"/>
+          </g>
+          <circle cx="152" cy="126" r="3.5" fill="#E3A93B" stroke="#2B1B1E"/>
+        </svg></div>
+        <div><svg class="D" viewBox="0 0 240 230" aria-hidden="true">
+          <use href="#door" width="240" height="230" style="color:#2F6F73"/>
+          <rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="120" y="67" class="dn">305</text>
+          <g transform="rotate(-5 120 219)">
+            <rect x="88" y="208" width="64" height="20" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.3"/>
+            <text x="120" y="217.5" class="hg" style="fill:#2B1B1E">LE RÉCAP</text>
+            <line x1="94" y1="222" x2="146" y2="222" stroke="#2B1B1E" stroke-width=".7" opacity=".5"/><line x1="94" y1="225" x2="136" y2="225" stroke="#2B1B1E" stroke-width=".7" opacity=".5"/>
+          </g>
+          <ellipse cx="200" cy="226" rx="17" ry="3.5" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.2"/>
+          <path d="M190 206 h20 v10 a10 9 0 0 1 -20 0z" fill="#FBF1E4" stroke="#2B1B1E" stroke-width="1.3"/>
+          <path d="M210 209 a5 5 0 0 1 0 9" fill="none" stroke="#2B1B1E" stroke-width="1.3"/>
+          <path d="M196 200 q-3 -5 0 -9 M203 200 q-3 -5 0 -9" fill="none" stroke="#2B1B1E" stroke-width="1" opacity=".55"/>
+        </svg></div>
+        <div><svg class="D" viewBox="0 0 240 230" aria-hidden="true">
+          <use href="#door" width="240" height="230" style="color:#7A2E3B"/>
+          <rect x="104" y="56" width="32" height="15" rx="2" fill="#E3A93B" stroke="#2B1B1E"/><text x="120" y="67" class="dn">306</text>
+          <circle cx="32" cy="72" r="22" fill="#FBF1E4" stroke="#E3A93B" stroke-width="4"/>
+          <circle cx="32" cy="72" r="22" fill="none" stroke="#2B1B1E" stroke-width="1.2"/>
+          <path d="M32 72 L32 52 A20 20 0 0 1 32 92 Z" fill="#EFB7C3" opacity=".8"/>
+          <g stroke="#2B1B1E" stroke-width="1.8" stroke-linecap="round"><line x1="32" y1="72" x2="32" y2="56"/><line x1="32" y1="72" x2="32" y2="88"/></g>
+          <circle cx="32" cy="72" r="2.2" fill="#2B1B1E"/>
+          <rect x="8" y="102" width="48" height="16" fill="#7A2E3B" stroke="#2B1B1E"/>
+          <text x="32" y="113" class="sg" fill="#FBF1E4">30 MIN</text>
+        </svg></div>
+      </div>
+      <div class="floor"></div>
+      <div class="txt">
+        <div><h4>Désabonnez-vous en un clic.</h4><p>Sans chercher le lien minuscule en gris clair tout en bas du mail.</p><span class="gm">Gmail</span></div>
+        <div><h4>Un récap par jour. Pas un de plus.</h4><p>Chaque matin : ce qui a été trié la veille, et ce qui attend votre avis.</p><span class="gm">Gmail</span></div>
+        <div><h4>Il repasse toutes les 30 minutes.</h4><p>Les nouveaux e-mails sont relevés sans que vous ayez à ouvrir l'app. Ni à y penser.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+<div class="slab"></div>
+
+<!-- ======================= FLOOR 2: vault ======================= -->
+<section class="f2" id="f2" data-floor="2">
+  <div class="wrap">
+    <div class="fh">
+      <span class="k"><b>2</b>Confidentialité</span>
+      <h2>Ce qu'on lit. Ce qu'on garde.<br><em>Ce qu'on ne fait jamais.</em></h2>
+    </div>
+    <div class="vault">
+      <svg viewBox="0 0 360 360" role="img" aria-label="Un coffre-fort">
+        <rect x="14" y="14" width="332" height="332" rx="22" fill="#2F6F73" stroke="#2B1B1E" stroke-width="3"/>
+        <rect x="28" y="28" width="304" height="304" rx="14" fill="none" stroke="#1F4F4F" stroke-width="2"/>
+        <g fill="#E3A93B" stroke="#2B1B1E"><circle cx="42" cy="42" r="4"/><circle cx="318" cy="42" r="4"/><circle cx="42" cy="318" r="4"/><circle cx="318" cy="318" r="4"/><circle cx="180" cy="38" r="4"/><circle cx="180" cy="322" r="4"/></g>
+        <g fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.5"><rect x="20" y="96" width="18" height="44" rx="3"/><rect x="20" y="220" width="18" height="44" rx="3"/></g>
+        <circle cx="180" cy="180" r="124" fill="#3E8580" stroke="#2B1B1E" stroke-width="3"/>
+        <circle cx="180" cy="180" r="110" fill="none" stroke="#E3A93B" stroke-width="4"/>
+        <circle cx="180" cy="180" r="98" fill="#2F6F73" stroke="#2B1B1E" stroke-width="1.5"/>
+        <g fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.2"><circle cx="180" cy="63" r="6"/><circle cx="263" cy="97" r="6"/><circle cx="297" cy="180" r="6"/><circle cx="263" cy="263" r="6"/><circle cx="180" cy="297" r="6"/><circle cx="97" cy="263" r="6"/><circle cx="63" cy="180" r="6"/><circle cx="97" cy="97" r="6"/></g>
+        <circle cx="180" cy="180" r="62" fill="none" stroke="#E3A93B" stroke-width="6"/>
+        <circle cx="180" cy="180" r="62" fill="none" stroke="#2B1B1E" stroke-width="1"/>
+        <g stroke="#E3A93B" stroke-width="6" stroke-linecap="round"><line x1="180" y1="180" x2="180" y2="112"/><line x1="180" y1="180" x2="239" y2="214"/><line x1="180" y1="180" x2="121" y2="214"/></g>
+        <g fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.3"><circle cx="180" cy="108" r="9"/><circle cx="243" cy="216" r="9"/><circle cx="117" cy="216" r="9"/></g>
+        <circle cx="180" cy="180" r="32" fill="#E3A93B" stroke="#2B1B1E" stroke-width="2"/>
+        <g stroke="#2B1B1E" stroke-width="1.2"><line x1="180" y1="150" x2="180" y2="156"/><line x1="210" y1="180" x2="204" y2="180"/><line x1="180" y1="210" x2="180" y2="204"/><line x1="150" y1="180" x2="156" y2="180"/><line x1="201" y1="159" x2="197" y2="163"/><line x1="201" y1="201" x2="197" y2="197"/><line x1="159" y1="201" x2="163" y2="197"/><line x1="159" y1="159" x2="163" y2="163"/></g>
+        <circle cx="180" cy="180" r="10" fill="#7A2E3B" stroke="#2B1B1E" stroke-width="1.5"/>
+        <polygon points="180,140 175,132 185,132" fill="#7A2E3B" stroke="#2B1B1E"/>
+        <rect x="132" y="312" width="96" height="20" rx="2" fill="#E3A93B" stroke="#2B1B1E" stroke-width="1.3"/>
+        <text x="180" y="326" text-anchor="middle" style="font:700 10px 'Jost',sans-serif;letter-spacing:2.4px;fill:#2B1B1E">AES-256</text>
+      </svg>
+      <div>
+        <div class="vplq" data-i="I"><h4>On lit</h4><p>L'expéditeur, l'objet et au plus 200 caractères du message. Jamais le message entier, jamais les pièces jointes.</p></div>
+        <div class="vplq" data-i="II"><h4>On garde</h4><p>Vos accès, chiffrés. L'historique de vos actions, pour pouvoir les annuler. Vous pouvez tout exporter, ou tout supprimer, quand vous voulez.</p></div>
+        <div class="vplq" data-i="III"><h4>On ne fait jamais</h4><p>Revendre quoi que ce soit. Supprimer un e-mail sans vous demander. Et le code est public : vous pouvez vérifier.</p></div>
+        <a class="vlink" href="#">Lire la politique de confidentialité</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= FLOOR 2 bis: key board ======================= -->
+<section class="f2b" data-floor="2">
+  <div class="wrap">
+    <div class="fh">
+      <h2>Ça marche avec <em>votre boîte.</em></h2>
+      <p>Même avec l'adresse Orange que vous avez depuis 2004.</p>
+    </div>
+    <div class="board">
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag gold" style="--r:-3deg"><small>via Google</small>Gmail</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag gold" style="--r:2deg"><small>via Google</small>Google Workspace</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:-1deg"><small>IMAP</small>Outlook.com</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:3deg"><small>IMAP</small>Microsoft 365</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:-2deg"><small>IMAP</small>Orange</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:2deg"><small>IMAP</small>Free</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:-3deg"><small>IMAP</small>SFR</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:1deg"><small>IMAP</small>La Poste</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:-2deg"><small>IMAP</small>iCloud Mail</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:3deg"><small>IMAP</small>Yahoo Mail</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:-1deg"><small>IMAP</small>Fastmail</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:2deg"><small>IMAP</small>Infomaniak</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:-3deg"><small>IMAP</small>Zoho Mail</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:1deg"><small>IMAP</small>OVH</span></div>
+      <div class="key"><span class="hook"></span><span class="str"></span><span class="tag" style="--r:-2deg"><small>IMAP</small>Autre boîte IMAP</span></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--must)"></i>Toutes les fonctions</span>
+      <span><i style="background:var(--pink)"></i>Lecture et actions directes pour l'instant. Le tri par IA arrive.</span>
+    </div>
+  </div>
+</section>
+<div class="slab"></div>
+
+<!-- ======================= FLOOR 3: rates ======================= -->
+<section class="f3" id="f3" data-floor="3">
+  <div class="wrap">
+    <div class="fh">
+      <span class="k"><b>3</b>Tarifs</span>
+      <h2>Gratuit jusqu'à <em>200 tris par mois.</em></h2>
+    </div>
+    <div class="rate">
+      <h3>Tarifs</h3>
+      <div class="orn"><i></i><i></i><i></i></div>
+      <div class="line"><b>Gratuit</b><span class="dots"></span><span>200 tris par mois</span></div>
+      <div class="line"><b>Toutes les fonctions</b><span class="dots"></span><span>incluses</span></div>
+      <div class="line"><b>Carte bancaire</b><span class="dots"></span><span>jamais demandée</span></div>
+      <div class="line"><b>Pro</b><span class="dots"></span><em>illimité, bientôt</em></div>
+      <div class="wl">
+        <p>Laissez votre e-mail, on vous écrit une fois : le jour où Pro ouvre.</p>
+        <form onsubmit="return false"><input type="email" placeholder="vous@exemple.fr" aria-label="Votre e-mail"><button class="go" type="submit">Prévenez-moi</button></form>
+      </div>
+    </div>
+  </div>
+</section>
+<div class="slab"></div>
+
+<!-- ======================= FLOOR 4: letter board ======================= -->
+<section class="f4" id="f4" data-floor="4">
+  <div class="wrap">
+    <div class="fh">
+      <span class="k"><b>4</b>Questions</span>
+      <h2>Les questions qu'on nous pose <em>vraiment.</em></h2>
+    </div>
+    <div class="qa">
+      <div class="lb">
+        <p class="hd">QUESTIONS</p>
+        <button class="on" data-q="0">Vous lisez mes mails ?</button>
+        <button data-q="1">Et si l'IA se trompe ?</button>
+        <button data-q="2">Ça marche avec Outlook ?</button>
+        <button data-q="3">Je peux tout supprimer ?</button>
+        <button data-q="4">Pourquoi c'est gratuit ?</button>
+      </div>
+      <div class="ans"><h4 id="aq">Vous lisez mes mails ?</h4><p id="aa"></p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= EXIT (night) ======================= -->
+<section class="exit" data-floor="0">
+  <div class="wrap">
+    <div class="fh">
+      <span class="k">Il est tard</span>
+      <h2>Toujours <span class="n" data-count>4 212</span> non lus ?</h2>
+    </div>
+    <div class="cta"><a class="go" href="#hall">Faire le tri</a><a href="#hall">Se connecter</a></div>
+    <svg class="night" viewBox="0 0 600 400" aria-hidden="true">
+      <circle cx="530" cy="60" r="26" fill="#F4E3B5"/><circle cx="520" cy="54" r="5" fill="#E6D19C"/><circle cx="538" cy="70" r="3.5" fill="#E6D19C"/>
+      <polygon points="70,112 300,30 530,112" fill="#3A1D28" stroke="#0E080C" stroke-width="2"/>
+      <circle cx="300" cy="80" r="16" fill="#F4CF6B" filter="url(#glow)"/>
+      <g stroke="#3A1D28" stroke-width="1.6" stroke-linecap="round"><line x1="300" y1="80" x2="300" y2="70"/><line x1="300" y1="80" x2="307" y2="84"/></g>
+      <rect x="62" y="110" width="476" height="12" fill="#2A1520" stroke="#0E080C" stroke-width="2"/>
+      <rect x="80" y="122" width="440" height="266" fill="#4A2433" stroke="#0E080C" stroke-width="2"/>
+      <rect x="128" y="132" width="344" height="26" fill="#2A1520" stroke="#0E080C"/>
+      <text x="300" y="150" text-anchor="middle" filter="url(#glow)" style="font:600 12px 'Jost',sans-serif;letter-spacing:7px;fill:#F4CF6B">MAILSORTER</text>
+      <g stroke="#0E080C" stroke-width="1.5">
+        <rect x="104" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="160" y="176" width="36" height="46" fill="#2A1520"/><rect x="216" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/>
+        <rect x="348" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="404" y="176" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="460" y="176" width="36" height="46" fill="#2A1520"/>
+        <rect x="104" y="244" width="36" height="46" fill="#2A1520"/><rect x="160" y="244" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="216" y="244" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/>
+        <rect x="348" y="244" width="36" height="46" fill="#2A1520"/><rect x="404" y="244" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/><rect x="460" y="244" width="36" height="46" fill="#F4CF6B" filter="url(#glow)"/>
+        <rect x="276" y="170" width="48" height="126" fill="#2F6F73"/>
+      </g>
+      <g stroke="#3A1D28" stroke-width="1.2" opacity=".6"><line x1="122" y1="176" x2="122" y2="222"/><line x1="234" y1="176" x2="234" y2="222"/><line x1="366" y1="176" x2="366" y2="222"/><line x1="422" y1="176" x2="422" y2="222"/><line x1="178" y1="244" x2="178" y2="290"/><line x1="234" y1="244" x2="234" y2="290"/><line x1="422" y1="244" x2="422" y2="290"/><line x1="478" y1="244" x2="478" y2="290"/></g>
+      <rect x="284" y="210" width="32" height="40" fill="#F4CF6B" stroke="#0E080C" filter="url(#glow)"/>
+      <path d="M272 388 V350 A28 28 0 0 1 328 350 V388 Z" fill="#F4CF6B" stroke="#0E080C" stroke-width="1.5" filter="url(#glow)"/>
+      <rect x="262" y="304" width="76" height="12" fill="#7A2E3B" stroke="#0E080C"/>
+      <g fill="#1F3A38" stroke="#0E080C" stroke-width="1.2"><circle cx="246" cy="364" r="12"/><circle cx="354" cy="364" r="12"/></g>
+      <rect x="36" y="388" width="528" height="12" fill="#7A2E3B" stroke="#0E080C" stroke-width="1.5"/>
+    </svg>
+  </div>
+  <div class="walk">
+    <div class="wrap">
+      <nav><a href="#">Confidentialité</a><a href="#">Conditions</a><a href="#">Contact</a><a href="#">Code source</a></nav>
+      <span class="theme"><span>Jour</span><span class="on">Nuit</span><span>Auto</span></span>
+    </div>
+  </div>
+</section>
+
+<script>
+(function () {
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Unread counter: ticks down each time the elevator reaches the floor.
+  var n = 4212;
+  function fmt(v) { return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ' '); }
+  function paint() { document.querySelectorAll('[data-count]').forEach(function (el) { el.textContent = fmt(n); }); }
+  if (!reduce) setInterval(function () { n = Math.max(0, n - (1 + Math.floor(Math.random() * 3))); paint(); }, 3200);
+
+  // Sign-up / sign-in toggle.
+  var mode = 'register';
+  document.getElementById('swap').addEventListener('click', function () {
+    mode = mode === 'register' ? 'login' : 'register';
+    document.getElementById('formTitle').textContent = mode === 'register' ? 'Créer un compte' : 'Se connecter';
+    this.textContent = mode === 'register' ? 'Se connecter' : 'Créer un compte';
+    document.getElementById('altq').textContent = mode === 'register' ? 'Déjà un compte ?' : 'Pas encore de compte ?';
+    document.getElementById('goBtn').textContent = mode === 'register' ? 'Faire le tri' : 'Entrer';
+    document.getElementById('pw').placeholder = mode === 'register' ? '8 caractères minimum' : 'Votre mot de passe';
+  });
+
+  // Demo: a real pile. The next mail is already there, the front one flies to its door, Annuler brings it back out.
+  var MAILS = [
+    { from: 'Le Monde', av: 'LM', time: '07:02', subj: 'La lettre du matin', snip: "Les cinq informations à retenir ce jeudi, et un éditorial que vous ne lirez pas non plus.", act: 'Archiver', to: 'archives', done: 'Archivé.' },
+    { from: 'Free Mobile', av: 'FM', time: '08:15', subj: 'Votre facture de septembre est disponible', snip: 'Montant : 19,99 €. Prélèvement le 5 octobre.', act: 'Ranger dans Factures', to: 'factures', done: 'Rangé dans Factures.' },
+    { from: 'Zalando', av: 'Z', time: '09:30', subj: '-40 % ce week-end seulement', snip: "Comme le week-end dernier. Et celui d'avant.", act: 'Se désabonner', to: 'desabo', done: 'Désabonné.' },
+    { from: 'SNCF Connect', av: 'SN', time: '10:11', subj: 'Votre billet Paris - Lyon du 2 octobre', snip: 'Voiture 14, place 62. Départ 08:04, gare de Lyon.', act: 'Reporter à jeudi, 8 h', to: 'later', done: 'Reporté à jeudi, 8 h.' },
+    { from: 'Maman', av: 'M', time: '11:48', subj: 'Pour dimanche, on dit midi ?', snip: 'Et tu ramènes le dessert. Pas comme la dernière fois.', safe: true }
+  ];
+  var STAR = '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#7A2E3B" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.6L20 9.5l-4.4 3.8 1.4 5.9L12 16.2 7 19.2l1.4-5.9L4 9.5l5.8-.9z"/></svg>';
+  var SHIELD = '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2F6F73" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg>';
+  var deck = document.getElementById('deck'), toast = document.getElementById('toast'), tmsg = document.getElementById('tmsg');
+  var cards = [], log = [], tt = 0;
+
+  MAILS.forEach(function (m, k) {
+    var el = document.createElement('article');
+    el.className = 'mail';
+    el.innerHTML = '<header><span class="av">' + m.av + '</span><div class="who"><b>' + m.from + '</b><span>Aujourd\'hui, ' + m.time + '</span></div><span class="left">' + (MAILS.length - k) + ' dans la pile</span></header>' +
+      '<h3>' + m.subj + '</h3><p class="snip">' + m.snip + '</p>' +
+      (m.safe
+        ? '<div class="prop safe">' + SHIELD + '<div><small>Expéditrice protégée</small><b>Mailsorter n\'y touche pas.</b></div></div><div class="acts"><button class="go" data-a="next">Suivant</button></div>'
+        : '<div class="prop">' + STAR + '<div><small>Mailsorter propose</small><b>' + m.act + '</b></div></div><div class="acts"><button class="go" data-a="ok">Valider</button><button class="skip" data-a="skip">Garder tel quel</button></div>');
+    deck.insertBefore(el, toast); cards.push(el);
+  });
+  var end = document.createElement('article');
+  end.className = 'mail done';
+  end.innerHTML = '<h3>Pile vide. Plus que <span data-count>4 212</span> chez vous.</h3><p class="snip">Ceux-là, on ne peut pas les trier sans vous.</p><div class="acts"><a class="go" href="#hall">Faire le tri</a></div><button class="again" type="button" data-a="again">Recommencer la démo</button>';
+  deck.insertBefore(end, toast); cards.push(end);
+  paint();
+
+  function layout() {
+    var d = 0;
+    cards.forEach(function (c) {
+      if (c.classList.contains('gone')) { c.dataset.depth = 'gone'; c.inert = true; return; }
+      c.dataset.depth = d === 0 ? '0' : d === 1 ? '1' : d === 2 ? '2' : 'far';
+      c.inert = d !== 0; d++;
+    });
+  }
+  function front() { return cards.filter(function (c) { return !c.classList.contains('gone'); })[0]; }
+  function door(to) { return document.querySelector('.md[data-to="' + to + '"]'); }
+  function bump(to, delta) {
+    var el = door(to), b = el.querySelector('.badge');
+    b.textContent = Math.max(0, +b.textContent + delta);
+    el.classList.add('bump'); setTimeout(function () { el.classList.remove('bump'); }, 450);
+  }
+  function say(msg, undoable) {
+    tmsg.textContent = msg; toast.querySelector('button').style.display = undoable ? '' : 'none';
+    toast.classList.add('show'); clearTimeout(tt); tt = setTimeout(function () { toast.classList.remove('show'); }, 5000);
+  }
+  function leave(card, transform) {
+    card.style.transform = transform; card.style.opacity = '0';
+    card.classList.add('gone'); layout();
+  }
+
+  deck.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-a]'); if (!b) return;
+    var card = front(), k = cards.indexOf(card), m = MAILS[k], a = b.dataset.a;
+    if (a === 'again') {
+      log = []; toast.classList.remove('show');
+      document.querySelectorAll('.md .badge').forEach(function (x) { x.textContent = '0'; });
+      cards.forEach(function (c) { c.classList.remove('gone'); c.style.transform = ''; c.style.opacity = ''; });
+      layout(); return;
+    }
+    if (a === 'next') { log.push({ card: card, to: null }); leave(card, 'translateY(40px) scale(.96)'); return; }
+    if (a === 'ok') {
+      var r1 = card.getBoundingClientRect(), r2 = door(m.to).getBoundingClientRect();
+      var dx = (r2.left + r2.width / 2) - (r1.left + r1.width / 2), dy = (r2.top + r2.height / 3) - r1.top;
+      leave(card, 'translate(' + dx + 'px,' + dy + 'px) scale(.08) rotate(8deg)');
+      log.push({ card: card, to: m.to });
+      setTimeout(function () { bump(m.to, 1); say(m.done, true); }, 480);
+    } else {
+      leave(card, 'translateX(-160px) rotate(-8deg)');
+      log.push({ card: card, to: null });
+      setTimeout(function () { say('Gardé dans la boîte de réception.', true); }, 250);
+    }
+  });
+  document.getElementById('undo').addEventListener('click', function () {
+    var last = log.pop(); if (!last) return;
+    if (last.to) bump(last.to, -1);
+    last.card.classList.remove('gone'); last.card.style.transform = ''; last.card.style.opacity = '';
+    layout(); say('Annulé. Comme si de rien n\'était.', false);
+  });
+  layout();
+
+  // Letter board.
+  var QA = [
+    ['Vous lisez mes mails ?', "Nous, non. Le modèle voit l'expéditeur, l'objet et au plus 200 caractères, le temps de proposer un tri. Il ne voit jamais le message entier ni les pièces jointes."],
+    ["Et si l'IA se trompe ?", "Vous dites non. Et si vous aviez déjà dit oui, vous annulez depuis l'historique. Rien n'est supprimé sans votre accord."],
+    ['Ça marche avec Outlook ?', "Oui pour lire vos e-mails et agir dessus. Le tri par IA, les règles et le report sont pour l'instant réservés à Gmail. Ça arrive."],
+    ['Je peux tout supprimer ?', "Oui. Vous exportez tout, puis vous supprimez votre compte depuis la page Compte. Vos accès et votre historique partent avec."],
+    ["Pourquoi c'est gratuit ?", "Jusqu'à 200 tris par mois, ça nous coûte peu. Les règles et les tris déjà connus ne comptent même pas. Au-delà, il y aura Pro."]
+  ];
+  var aq = document.getElementById('aq'), aa = document.getElementById('aa');
+  function show(i) { aq.textContent = QA[i][0]; aa.textContent = QA[i][1]; }
+  show(0);
+  document.querySelector('.lb').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('.lb button').forEach(function (x) { x.classList.toggle('on', x === b); });
+    show(+b.dataset.q);
+  });
+
+  // Elevator: the panel lights the current floor, the rail cabin follows the scroll.
+  var links = document.querySelectorAll('.panel a');
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      var f = en.target.dataset.floor;
+      links.forEach(function (a) { a.classList.toggle('on', a.dataset.go === 'f' + f); });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  document.querySelectorAll('[data-floor]').forEach(function (s) { io.observe(s); });
+  var cab = document.getElementById('railcab'), rail = cab.parentElement;
+  function moveCab() {
+    var max = document.documentElement.scrollHeight - innerHeight;
+    var p = max > 0 ? scrollY / max : 0;
+    cab.style.top = (p * (rail.clientHeight - 22)) + 'px';
+  }
+  addEventListener('scroll', moveCab, { passive: true }); moveCab();
+})();
+</script>
+</body>
+</html>
