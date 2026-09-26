@@ -60,13 +60,17 @@ const ROOMS = [
 
 export default function FeatureCorridor({ isConfigured }) {
   const rooms = ROOMS.filter((r) => canPromise(r.feature, isConfigured));
+  // A partial last row reads as a broken layout, so the desktop column count
+  // follows the room count instead of a fixed 3: 6 rooms give 3x2, 4 give 2x2,
+  // 2 give 2x1.
+  const cols = rooms.length % 3 === 0 ? 3 : rooms.length % 2 === 0 ? 2 : Math.min(3, rooms.length);
   return (
     <section className="hl-section hl-section--alt hl-corridor" data-floor="fonctionnement" aria-labelledby="hl-corridor-title">
       <div className="hl-wrap">
         <FloorHeading id="hl-corridor-title">
           Et pendant que vous faites <em>autre chose.</em>
         </FloorHeading>
-        <div className="hl-corr">
+        <div className="hl-corr" data-cols={cols}>
           {rooms.map((r) => (
             <article key={r.feature} className="hl-room">
               <div className="hl-room__wall">
