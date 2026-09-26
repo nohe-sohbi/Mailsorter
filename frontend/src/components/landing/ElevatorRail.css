@@ -1,0 +1,21 @@
+.hl-rail { position: fixed; left: 18px; top: 110px; bottom: 40px; z-index: 15; width: 16px; }
+.hl-rail::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--h-line); opacity: 0.35; }
+.hl-rail__cab {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 16px;
+  height: 22px;
+  background: #E3A93B;
+  border: 1.5px solid #2B1B1E;
+  border-radius: 2px;
+  transition: transform 0.15s linear;
+}
+.hl-rail__cab::after {
+  content: '';
+  position: absolute;
+  inset: 4px 3px;
+  background: repeating-linear-gradient(90deg, #2B1B1E 0 1px, transparent 1px 3px);
+  opacity: 0.5;
+}
+@media (max-width: 1340px) { .hl-rail { display: none; } }
