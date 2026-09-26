@@ -124,6 +124,11 @@ func (d *Database) MailAccounts() *mongo.Collection {
 	return d.DB.Collection("mail_accounts")
 }
 
+// AISettings stores per-user custom AI provider configuration (BYOK).
+func (d *Database) AISettings() *mongo.Collection {
+	return d.DB.Collection("ai_settings")
+}
+
 // EnsureIndexes creates the indexes that keep hot queries fast at scale.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
@@ -155,6 +160,7 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		// rather than leaving two rows, one of which would be picked at random
 		// every time the account is read.
 		{d.MailAccounts(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}}, Options: options.Index().SetUnique(true)}},
+		{d.AISettings(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}}, Options: options.Index().SetUnique(true)}},
 	}
 
 	var firstErr error

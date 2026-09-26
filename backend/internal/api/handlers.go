@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -95,7 +96,7 @@ type Handler struct {
 	db           *database.Database
 	gmailService *gmail.Service
 	encryptor    *crypto.Encryptor
-	aiClient     *ai.MistralClient
+	aiRegistry   *ai.Registry
 	billing      BillingConfig
 	auth         *auth.Manager
 	jobQueue     chan string
@@ -119,12 +120,12 @@ func (h *Handler) signInLimiter() *rateLimiter {
 	return h.signIn
 }
 
-func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiClient *ai.MistralClient, billingCfg BillingConfig, authManager *auth.Manager) *Handler {
+func NewHandler(db *database.Database, gmailService *gmail.Service, encryptor *crypto.Encryptor, aiRegistry *ai.Registry, billingCfg BillingConfig, authManager *auth.Manager) *Handler {
 	h := &Handler{
 		db:           db,
 		gmailService: gmailService,
 		encryptor:    encryptor,
-		aiClient:     aiClient,
+		aiRegistry:   aiRegistry,
 		billing:      billingCfg,
 		auth:         authManager,
 		jobQueue:     make(chan string, 256),
@@ -228,14 +229,16 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.gmailService.ExchangeCode(code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to exchange code: "+err.Error())
+		log.Printf("auth callback: failed to exchange code: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to exchange code")
 		return
 	}
 
 	gmailClient := h.gmailService.GetClient(token)
 	gmailUserEmail, err := h.gmailService.GetUserProfile(gmailClient)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to get user profile: "+err.Error())
+		log.Printf("auth callback: failed to get user profile: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to get user profile")
 		return
 	}
 
@@ -287,7 +290,8 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	opts := options.Update().SetUpsert(true)
 	_, err = h.db.Users().UpdateOne(ctx, filter, update, opts)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to save user: "+err.Error())
+		log.Printf("auth callback: failed to save user: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to save user")
 		return
 	}
 

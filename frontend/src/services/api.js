@@ -163,6 +163,11 @@ export const aiService = {
     apiClient.post('/api/ai/apply-bulk', { senderEmail, action, labelName }),
   getSuggestions: (status = 'pending') => apiClient.get(`/api/ai/suggestions?status=${status}`),
   rejectSuggestion: (id) => apiClient.post(`/api/ai/suggestions/${id}/reject`),
+  getProviders: () => apiClient.get('/api/ai/providers'),
+  getSettings: () => apiClient.get('/api/ai/settings'),
+  updateSettings: (data) => apiClient.put('/api/ai/settings', data),
+  deleteSettings: () => apiClient.delete('/api/ai/settings'),
+  testSettings: (data) => apiClient.post('/api/ai/settings/test', data),
 };
 
 export const senderService = {

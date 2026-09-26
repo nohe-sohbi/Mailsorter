@@ -48,6 +48,9 @@ const (
 	// exact bug the last audit found in this catalog), and its one secret field
 	// is redacted on the way out by SecretFields.
 	DatasetMailAccounts Dataset = "mailAccounts"
+	// DatasetAISettings is the per-user AI provider override (BYOK), sealed key
+	// included. It missed this catalog, so a deleted account kept its key on disk.
+	DatasetAISettings Dataset = "aiSettings"
 )
 
 // Datasets returns the canonical, stable list of user-owned data categories. The
@@ -67,6 +70,7 @@ func Datasets() []Dataset {
 		DatasetJobs,
 		DatasetSavedSearches,
 		DatasetMailAccounts,
+		DatasetAISettings,
 		// Last, because they are the bulkiest: the settings a user recognizes
 		// should come first in an export they open themselves.
 		DatasetLabels,
@@ -79,16 +83,21 @@ func Datasets() []Dataset {
 //
 // Export and erasure share one catalog on purpose, which means adding a
 // collection makes its rows exportable by default. That default is right for
-// every dataset here but one: a mailbox connection carries a sealed app
-// password. Sealed is not the same as safe to hand out, because a downloaded
-// export outlives the encryption key's threat model: it ends up in a mail
-// attachment, a backup, a support ticket.
+// every dataset here but the two that carry a credential: a mailbox connection
+// carries a sealed app password, and the AI provider override a sealed API key.
+// Sealed is not the same as safe to hand out, because a downloaded export outlives
+// the encryption key's threat model: it ends up in a mail attachment, a backup, a
+// support ticket.
 //
 // It lives beside the catalog rather than in the API layer so that adding a
 // dataset and declaring its secrets are the same act, in the same file.
 func SecretFields(ds Dataset) []string {
-	if ds == DatasetMailAccounts {
+	switch ds {
+	case DatasetMailAccounts:
 		return []string{"secret"}
+	case DatasetAISettings:
+		// The bson tag, not the Go field name: the export dumps raw bson.
+		return []string{"apiKey"}
 	}
 	return nil
 }

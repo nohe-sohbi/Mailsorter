@@ -52,8 +52,8 @@ func TestMailAccountNeverSerializesTheSecret(t *testing.T) {
 }
 
 // Export and erasure share one catalog, so adding a collection makes its rows
-// exportable by default. That default is wrong for exactly one dataset, and
-// this is the assertion that keeps it wrong on purpose.
+// exportable by default. That default is wrong for the datasets that hold a
+// credential, and this is the assertion that keeps it wrong on purpose.
 func TestMailAccountsAreErasableButTheirSecretIsNotExportable(t *testing.T) {
 	found := false
 	for _, ds := range account.Datasets() {
@@ -78,7 +78,7 @@ func TestMailAccountsAreErasableButTheirSecretIsNotExportable(t *testing.T) {
 	// Every other dataset stays fully exportable: a blanket redaction would
 	// quietly empty the export the RGPD promise is about.
 	for _, ds := range account.Datasets() {
-		if ds == account.DatasetMailAccounts {
+		if ds == account.DatasetMailAccounts || ds == account.DatasetAISettings {
 			continue
 		}
 		if fields := account.SecretFields(ds); len(fields) != 0 {

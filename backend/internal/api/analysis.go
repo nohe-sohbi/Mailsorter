@@ -185,7 +185,8 @@ func (h *Handler) runAnalysis(
 		}
 		chunk := pending[i:end]
 
-		if h.aiClient == nil {
+		aiClient := h.resolveAnalyzer(ctx, userEmail)
+		if !aiClient.Available() {
 			log.Printf("runAnalysis: AI client is nil")
 			lastErr = fmt.Errorf("service IA non disponible")
 			break
@@ -193,7 +194,7 @@ func (h *Handler) runAnalysis(
 
 		// When analyzing a single email, call AnalyzeEmail directly for maximum reliability.
 		if len(chunk) == 1 {
-			single, err := h.aiClient.AnalyzeEmail(chunk[0], existingLabels)
+			single, err := aiClient.AnalyzeEmail(chunk[0], existingLabels)
 			if err != nil {
 				log.Printf("runAnalysis: AnalyzeEmail error for %s: %v", chunk[0].MessageID, err)
 				lastErr = err
@@ -214,7 +215,7 @@ func (h *Handler) runAnalysis(
 		}
 
 		var analyses []ai.EmailAnalysis
-		if res, err := h.aiClient.AnalyzeBatch(chunk, existingLabels); err == nil {
+		if res, err := aiClient.AnalyzeBatch(chunk, existingLabels); err == nil {
 			analyses = res
 		} else {
 			log.Printf("runAnalysis: AnalyzeBatch failed (%v), falling back to AnalyzeEmail", err)
@@ -226,7 +227,7 @@ func (h *Handler) runAnalysis(
 			case analyses != nil && j < len(analyses):
 				a = analyses[j]
 			default:
-				single, err := h.aiClient.AnalyzeEmail(email, existingLabels)
+				single, err := aiClient.AnalyzeEmail(email, existingLabels)
 				if err != nil {
 					log.Printf("runAnalysis: fallback AnalyzeEmail error for %s: %v", email.MessageID, err)
 					lastErr = err
