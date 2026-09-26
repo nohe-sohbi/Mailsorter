@@ -116,7 +116,7 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 313 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 325 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
