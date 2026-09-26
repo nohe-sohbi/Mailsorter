@@ -62,6 +62,7 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 		"suggestions": suggestions,
 		"autoApplied": progress.AutoApplied,
 		"cachedHits":  progress.CachedHits,
+		"skipped":     progress.Skipped,
 	})
 }
 

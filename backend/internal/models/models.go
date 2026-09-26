@@ -427,6 +427,7 @@ type AnalysisJob struct {
 	AutoApplied        int       `json:"autoApplied" bson:"autoApplied"`
 	SuggestionsCreated int       `json:"suggestionsCreated" bson:"suggestionsCreated"`
 	CachedHits         int       `json:"cachedHits" bson:"cachedHits"`
+	Skipped            int       `json:"skipped" bson:"skipped"`
 	Error              string    `json:"error,omitempty" bson:"error,omitempty"`
 	EmailIDs           []string  `json:"-" bson:"emailIds"`
 	CreatedAt          time.Time `json:"createdAt" bson:"createdAt"`

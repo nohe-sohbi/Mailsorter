@@ -139,6 +139,7 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "messageId", Value: 1}}}},
 		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "from", Value: 1}}}},
 		{d.AISuggestions(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "status", Value: 1}}}},
+		{d.AISuggestions(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "emailId", Value: 1}, {Key: "status", Value: 1}}}},
 		{d.SenderPreferences(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}}},
 		{d.AnalysisCache(), mongo.IndexModel{Keys: bson.D{{Key: "key", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.AnalysisJobs(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "createdAt", Value: -1}}}},

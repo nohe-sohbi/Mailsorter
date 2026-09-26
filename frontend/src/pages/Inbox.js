@@ -457,9 +457,12 @@ function Inbox() {
   };
 
   const handleAnalyze = async () => {
-    const ids = selectedEmails.length > 0 ? selectedEmails : emails.map((e) => e.messageId);
+    const raw = selectedEmails.length > 0 ? selectedEmails : emails.map((e) => e.messageId);
+    // Skip emails that already have a pending suggestion locally.
+    const alreadySuggested = new Set(suggestions.map((s) => s.emailId));
+    const ids = raw.filter((id) => !alreadySuggested.has(id));
     if (ids.length === 0) {
-      toast.error('Aucun email à analyser');
+      toast.info('Tous ces emails ont déjà été analysés');
       return;
     }
     const async = ids.length > ASYNC_THRESHOLD;
@@ -468,16 +471,17 @@ function Inbox() {
     else runSyncAnalyze(ids);
   };
 
-  const announceResult = ({ suggestionsCreated = 0, autoApplied = 0, cachedHits = 0 }) => {
+  const announceResult = ({ suggestionsCreated = 0, autoApplied = 0, cachedHits = 0, skipped = 0 }) => {
     if (autoApplied > 0) {
       bumpGamify(autoApplied);
       toast.success(`${autoApplied} email${autoApplied > 1 ? 's' : ''} auto-trié${autoApplied > 1 ? 's' : ''} (auto-pilote)`);
     }
     const extra = cachedHits > 0 ? ` · ${cachedHits} depuis le cache` : '';
+    const skippedMsg = skipped > 0 ? ` · ${skipped} déjà traité${skipped > 1 ? 's' : ''}` : '';
     toast.success(
       suggestionsCreated
-        ? `${suggestionsCreated} suggestion${suggestionsCreated > 1 ? 's' : ''} générée${suggestionsCreated > 1 ? 's' : ''}${extra}`
-        : 'Analyse terminée'
+        ? `${suggestionsCreated} suggestion${suggestionsCreated > 1 ? 's' : ''} générée${suggestionsCreated > 1 ? 's' : ''}${extra}${skippedMsg}`
+        : `Analyse terminée${skippedMsg}`
     );
   };
 
@@ -490,6 +494,7 @@ function Inbox() {
         suggestionsCreated: data?.suggestions?.length || 0,
         autoApplied: data?.autoApplied || 0,
         cachedHits: data?.cachedHits || 0,
+        skipped: data?.skipped || 0,
       });
       setSelectedEmails([]);
     } catch (err) {

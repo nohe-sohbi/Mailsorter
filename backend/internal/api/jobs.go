@@ -50,6 +50,7 @@ func (h *Handler) processAnalysisJob(jobID string) {
 			"autoApplied":        p.AutoApplied,
 			"suggestionsCreated": p.SuggestionsCreated,
 			"cachedHits":         p.CachedHits,
+			"skipped":            p.Skipped,
 			"updatedAt":          time.Now(),
 		})
 	}
@@ -62,6 +63,7 @@ func (h *Handler) processAnalysisJob(jobID string) {
 		"autoApplied":        p.AutoApplied,
 		"suggestionsCreated": p.SuggestionsCreated,
 		"cachedHits":         p.CachedHits,
+		"skipped":            p.Skipped,
 		"updatedAt":          time.Now(),
 	}
 	if runErr != nil {

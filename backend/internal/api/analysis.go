@@ -29,6 +29,7 @@ type analysisProgress struct {
 	SuggestionsCreated int
 	CachedHits         int
 	Analyzed           int // emails that actually hit the AI (counts toward quota)
+	Skipped            int // emails already decided (applied/rejected), not re-analyzed
 }
 
 // runAnalysis is the shared engine behind both the synchronous endpoint and the
@@ -47,6 +48,25 @@ func (h *Handler) runAnalysis(
 
 	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
 	protectedList := h.protectedValues(ctx, userEmail)
+
+	// Pass 0: batch-load email IDs that already have an applied or rejected
+	// suggestion so Pass 1 can skip them without calling the AI again.
+	decided := map[string]bool{}
+	if cur, dErr := h.db.AISuggestions().Find(ctx, bson.M{
+		"userId":  userEmail,
+		"emailId": bson.M{"$in": emailIDs},
+		"status":  bson.M{"$in": bson.A{"applied", "rejected"}},
+	}); dErr == nil {
+		defer cur.Close(ctx)
+		for cur.Next(ctx) {
+			var doc struct {
+				EmailID string `bson:"emailId"`
+			}
+			if cur.Decode(&doc) == nil {
+				decided[doc.EmailID] = true
+			}
+		}
+	}
 
 	session, serr := h.openSession(ctx, userEmail)
 	if serr == nil {
@@ -139,9 +159,16 @@ func (h *Handler) runAnalysis(
 		}
 	}
 
-	// Pass 1: resolve auto-pilot + cache hits, collect the rest for batching.
+	// Pass 1: skip already-decided, resolve auto-pilot + cache hits, collect the rest for batching.
 	pending := make([]models.Email, 0, len(emails))
 	for _, email := range emails {
+		if decided[email.MessageID] {
+			p.Skipped++
+			p.Processed++
+			report()
+			continue
+		}
+
 		if session != nil && session.gmail != nil {
 			var pref models.SenderPreference
 			err := h.db.SenderPreferences().FindOne(ctx, bson.M{
@@ -252,7 +279,7 @@ func (h *Handler) runAnalysis(
 
 	h.incrUsage(ctx, userEmail, p.Analyzed)
 
-	if len(suggestions) == 0 && p.AutoApplied == 0 {
+	if len(suggestions) == 0 && p.AutoApplied == 0 && p.Skipped == 0 {
 		if lastErr != nil {
 			return p, suggestions, lastErr
 		}
