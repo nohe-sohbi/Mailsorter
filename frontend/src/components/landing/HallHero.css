@@ -1,0 +1,14 @@
+.hl-hall { padding-top: 40px; }
+.hl-h1 { text-align: center; font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; }
+.hl-h1__big { display: block; font-weight: 400; font-size: clamp(52px, 7.4vw, 104px); line-height: 0.98; letter-spacing: -0.02em; }
+.hl-h1__sub { display: block; margin-top: 8px; font-style: italic; font-weight: 400; font-size: clamp(24px, 3vw, 40px); line-height: 1.15; }
+.hl-h1__sub em { color: var(--h-accent); }
+.hl-tri { display: grid; grid-template-columns: 1fr minmax(0, 600px) 1fr; gap: 34px; align-items: center; margin-top: 18px; }
+.hl-tri__lines .ht-plq + .ht-plq { margin-top: 16px; }
+.hl-tri__hotel { display: block; width: 100%; height: auto; align-self: end; }
+@media (max-width: 1000px) {
+  .hl-tri { grid-template-columns: 1fr; gap: 28px; }
+  .hl-tri__hotel { order: 1; max-width: 560px; margin: 0 auto; }
+  .hl-fiche { order: 2; }
+  .hl-tri__lines { order: 3; max-width: 440px; margin: 0 auto 32px; }
+}

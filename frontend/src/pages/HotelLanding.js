@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInstance } from '../contexts/InstanceContext';
+import { useTheme } from '../ui/theme';
 import { isAuthed } from '../lib/session';
 import { useAuthForm } from '../lib/useAuthForm';
 import { useHotelFonts } from '../ui/hotel/useHotelFonts';
@@ -9,6 +10,9 @@ import ElevatorRail from '../components/landing/ElevatorRail';
 import HotelFooter from '../components/landing/HotelFooter';
 import { useActiveFloor } from '../components/landing/useActiveFloor';
 import { scrollToId } from '../components/landing/scroll';
+import { useUnreadCounter } from '../components/landing/useUnreadCounter';
+import HallHero from '../components/landing/HallHero';
+import NightExit from '../components/landing/NightExit';
 import '../styles/hotel.css';
 import '../components/landing/landing.css';
 
@@ -17,7 +21,9 @@ import '../components/landing/landing.css';
 // exit all open the same form, in the right mode.
 export default function HotelLanding() {
   const navigate = useNavigate();
-  const { selfHosted } = useInstance();
+  const { isConfigured, selfHosted } = useInstance();
+  const { isDark } = useTheme();
+  const count = useUnreadCounter();
   useHotelFonts();
   const auth = useAuthForm((to) => navigate(to));
   const floors = useMemo(() => floorsFor(selfHosted), [selfHosted]);
@@ -46,7 +52,10 @@ export default function HotelLanding() {
     <div className="theme-hotel hl-page" data-landing="hotel">
       <HotelHeader floors={floors} active={active} onSignIn={() => openAuth('login')} />
       <ElevatorRail />
-      <div className="hl-floors" />
+      <div className="hl-floors">
+        <HallHero count={count} auth={auth} isConfigured={isConfigured} night={isDark} />
+        <NightExit count={count} onStart={() => openAuth('register')} onSignIn={() => openAuth('login')} />
+      </div>
       <HotelFooter />
     </div>
   );
