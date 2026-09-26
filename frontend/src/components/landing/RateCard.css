@@ -1,0 +1,27 @@
+.hl-rate {
+  max-width: 600px;
+  margin: 44px auto 0;
+  padding: 30px 38px 32px;
+  background: var(--h-surface);
+  border: 14px solid #E3A93B;
+  box-shadow: inset 0 0 0 2px var(--h-line), 0 0 0 2px var(--h-line), 10px 10px 0 var(--h-offset);
+}
+.hl-rate h3 { text-align: center; font-family: var(--h-font-display); font-style: italic; font-weight: 400; font-size: 32px; }
+.hl-rate__orn { display: flex; justify-content: center; gap: 8px; margin: 8px 0 18px; }
+.hl-rate__orn i { width: 7px; height: 7px; background: #E3A93B; border: 1.2px solid var(--h-line); transform: rotate(45deg); }
+.hl-rate__line { display: flex; align-items: baseline; padding: 8px 0; font-size: 17px; }
+.hl-rate__line dt { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 500; font-size: 20px; }
+.hl-rate__line dd em { font-family: var(--h-font-display); color: var(--h-accent); }
+.hl-rate__dots { flex: 1; margin: 0 10px; border-bottom: 2px dotted var(--h-line); opacity: 0.6; transform: translateY(-5px); }
+.hl-rate__wl { margin-top: 22px; padding-top: 18px; border-top: 3px double var(--h-line); text-align: center; }
+.hl-rate__wl p { font-size: 14.5px; color: var(--h-muted); }
+.hl-rate__wl .ht-link { margin-top: 10px; }
+.hl-rate__row { display: flex; gap: 8px; margin-top: 12px; }
+.hl-rate__row .ht-btn { flex-shrink: 0; }
+.hl-rate__error { margin-top: 10px; font-size: 13.5px; color: var(--h-accent); }
+@media (max-width: 640px) {
+  .hl-rate { padding: 24px 18px 26px; border-width: 10px; }
+  .hl-rate__row { flex-direction: column; }
+  .hl-rate__line { font-size: 15px; }
+  .hl-rate__line dt { font-size: 17px; }
+}

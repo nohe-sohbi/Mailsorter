@@ -16,6 +16,8 @@ import FeatureCorridor from '../components/landing/FeatureCorridor';
 import TriageDemo from '../components/landing/TriageDemo';
 import PrivacyVault from '../components/landing/PrivacyVault';
 import ProviderBoard from '../components/landing/ProviderBoard';
+import RateCard from '../components/landing/RateCard';
+import FaqBoard from '../components/landing/FaqBoard';
 import NightExit from '../components/landing/NightExit';
 import '../styles/hotel.css';
 import '../components/landing/landing.css';
@@ -25,7 +27,7 @@ import '../components/landing/landing.css';
 // exit all open the same form, in the right mode.
 export default function HotelLanding() {
   const navigate = useNavigate();
-  const { isConfigured, selfHosted } = useInstance();
+  const { isConfigured, selfHosted, billingOn } = useInstance();
   const { isDark } = useTheme();
   const count = useUnreadCounter();
   useHotelFonts();
@@ -63,6 +65,8 @@ export default function HotelLanding() {
         <FeatureCorridor isConfigured={isConfigured} />
         <PrivacyVault floorNo={floorNo.confidentialite} isConfigured={isConfigured} />
         <ProviderBoard isConfigured={isConfigured} />
+        {!selfHosted && <RateCard floorNo={floorNo.tarifs} billingOn={billingOn} />}
+        <FaqBoard floorNo={floorNo.questions} isConfigured={isConfigured} selfHosted={selfHosted} />
         <NightExit count={count} onStart={() => openAuth('register')} onSignIn={() => openAuth('login')} />
       </div>
       <HotelFooter />
