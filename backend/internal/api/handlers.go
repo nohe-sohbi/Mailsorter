@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -223,14 +224,16 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.gmailService.ExchangeCode(code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to exchange code: "+err.Error())
+		log.Printf("auth callback: failed to exchange code: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to exchange code")
 		return
 	}
 
 	gmailClient := h.gmailService.GetClient(token)
 	gmailUserEmail, err := h.gmailService.GetUserProfile(gmailClient)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to get user profile: "+err.Error())
+		log.Printf("auth callback: failed to get user profile: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to get user profile")
 		return
 	}
 
@@ -282,7 +285,8 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	opts := options.Update().SetUpsert(true)
 	_, err = h.db.Users().UpdateOne(ctx, filter, update, opts)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to save user: "+err.Error())
+		log.Printf("auth callback: failed to save user: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to save user")
 		return
 	}
 
