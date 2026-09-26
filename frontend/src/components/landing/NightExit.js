@@ -1,5 +1,6 @@
 import React from 'react';
 import HotelFacade from '../../ui/hotel/HotelFacade';
+import FloorHeading from './FloorHeading';
 import { formatCount } from './useUnreadCounter';
 import './NightExit.css';
 
@@ -9,12 +10,9 @@ export default function NightExit({ count, onStart, onSignIn }) {
   return (
     <section className="hl-exit" data-floor="" aria-labelledby="hl-exit-title">
       <div className="hl-wrap">
-        <div className="hl-fh">
-          <span className="hl-fh__k">Il est tard</span>
-          <h2 id="hl-exit-title" className="hl-fh__title">
-            Toujours <span className="hl-count">{formatCount(count)}</span> non lus ?
-          </h2>
-        </div>
+        <FloorHeading kicker="Il est tard" id="hl-exit-title">
+          Toujours <span className="hl-count">{formatCount(count)}</span> non lus ?
+        </FloorHeading>
         <div className="hl-exit__cta">
           <button type="button" className="ht-btn ht-btn-gold" onClick={onStart}>
             Faire le tri
