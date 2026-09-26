@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInstance } from '../contexts/InstanceContext';
+import { configService } from '../services/api';
 import { useTheme } from '../ui/theme';
 import { isAuthed } from '../lib/session';
 import { useAuthForm } from '../lib/useAuthForm';
@@ -36,6 +37,26 @@ export default function HotelLanding() {
   const floorNo = useMemo(() => Object.fromEntries(floors.map((f) => [f.id, f.n])), [floors]);
   const active = useActiveFloor();
 
+  // The mailbox catalog, fetched once here because two floors read it: the key
+  // board draws it, and the FAQ answers "Outlook ?" from it. null while it
+  // loads; `failed` tells the board to say so rather than stay empty.
+  const [providers, setProviders] = useState(null);
+  const [providersFailed, setProvidersFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    configService
+      .getProviders()
+      .then(({ data }) => {
+        if (!cancelled) setProviders(data.providers || []);
+      })
+      .catch(() => {
+        if (!cancelled) setProvidersFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Same rule as the classic landing: someone already signed in has nothing
   // to do here.
   useEffect(() => {
@@ -64,9 +85,9 @@ export default function HotelLanding() {
         <TriageDemo count={count} isConfigured={isConfigured} floorNo={floorNo.fonctionnement} onStart={() => openAuth('register')} />
         <FeatureCorridor isConfigured={isConfigured} />
         <PrivacyVault floorNo={floorNo.confidentialite} isConfigured={isConfigured} />
-        <ProviderBoard isConfigured={isConfigured} />
+        <ProviderBoard isConfigured={isConfigured} providers={providers} failed={providersFailed} />
         {!selfHosted && <RateCard floorNo={floorNo.tarifs} billingOn={billingOn} />}
-        <FaqBoard floorNo={floorNo.questions} isConfigured={isConfigured} selfHosted={selfHosted} />
+        <FaqBoard floorNo={floorNo.questions} isConfigured={isConfigured} selfHosted={selfHosted} billingOn={billingOn} providers={providers} />
         <NightExit count={count} onStart={() => openAuth('register')} onSignIn={() => openAuth('login')} />
       </div>
       <HotelFooter />

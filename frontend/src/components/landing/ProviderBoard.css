@@ -13,12 +13,16 @@
 }
 .hl-board .ht-key__tag { background: #EFB7C3; color: #2B1B1E; }
 .hl-board .ht-key__tag.is-gold { background: #E3A93B; }
+/* Cream, not pink: a key that opens nothing yet must not read as one more IMAP key. */
+.hl-board .ht-key__tag.is-soon { background: #FBF1E4; color: #2B1B1E; }
+.hl-board .ht-key__tag.is-soon small { color: #6E4B52; }
 .hl-board .ht-key__tag::after { background: #6A2733; }
 .hl-board__note { grid-column: 1 / -1; align-self: center; text-align: center; color: #FBF1E4; font-family: var(--h-font-display); font-style: italic; font-size: 17px; }
 .hl-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 28px; margin-top: 22px; font-size: 14px; color: var(--h-muted); }
 .hl-legend span { display: inline-flex; align-items: center; gap: 8px; }
 .hl-legend i { width: 26px; height: 14px; border: 1.5px solid var(--h-line); border-radius: 2px 8px 8px 2px; background: #EFB7C3; }
 .hl-legend i.is-gold { background: #E3A93B; }
+.hl-legend i.is-soon { background: #FBF1E4; }
 @media (max-width: 1000px) { .hl-board { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 640px) {
   .hl-board { grid-template-columns: 1fr 1fr; padding: 18px 12px 22px; border-width: 8px; }

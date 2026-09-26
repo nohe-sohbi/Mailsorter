@@ -1,18 +1,22 @@
 import React, { useState } from 'react';
 import FloorHeading from './FloorHeading';
-import { canPromise, outlookAnswer } from './features';
+import { OUTLOOK_NOT_YET, canConnect, canPromise, outlookAnswer } from './features';
 import './FaqBoard.css';
 
 // The felt letter board of a hotel lobby: the questions on the board, the
 // answer beside it. Every answer holds on this instance (features.js): no undo
-// promised without Google, no Pro on a self-hosted instance.
-export default function FaqBoard({ floorNo, isConfigured, selfHosted }) {
+// promised without Google, no Pro on a self-hosted instance and Pro in the
+// present tense only once it can be bought (`billingOn`), no "Oui" for
+// Outlook unless the catalog (`providers`, null while it loads or when it
+// failed to) holds an Outlook route this server can connect.
+export default function FaqBoard({ floorNo, isConfigured, selfHosted, billingOn, providers }) {
   const undo = canPromise('undo', isConfigured);
   const rules = canPromise('rules', isConfigured);
+  const outlook = (providers || []).find((p) => p.key === 'outlook');
   const qa = [
     [
       'Vous lisez mes mails ?',
-      "Nous, non. Le modèle voit l'expéditeur, l'objet et au plus 200 caractères, le temps de proposer un tri. Il ne voit jamais le message entier ni les pièces jointes.",
+      "Nous, non. Le serveur en garde une copie dans la base de l'instance pour vous les afficher, et l'IA n'en voit que l'expéditeur, l'objet et au plus 200 caractères, le temps de proposer un tri. Jamais le message entier ni les pièces jointes.",
     ],
     [
       "Et si l'IA se trompe ?",
@@ -20,7 +24,7 @@ export default function FaqBoard({ floorNo, isConfigured, selfHosted }) {
         ? "Vous dites non. Et si vous aviez déjà dit oui, vous annulez depuis l'historique. Rien n'est supprimé sans votre accord."
         : "Vous dites non. Rien ne bouge sans votre accord, et rien n'est supprimé sans lui.",
     ],
-    ['Ça marche avec Outlook ?', outlookAnswer()],
+    ['Ça marche avec Outlook ?', outlook && canConnect(outlook, isConfigured) ? outlookAnswer() : OUTLOOK_NOT_YET],
     [
       'Je peux tout supprimer ?',
       'Oui. Vous exportez tout, puis vous supprimez votre compte depuis la page Compte. Vos accès et votre historique partent avec.',
@@ -29,7 +33,7 @@ export default function FaqBoard({ floorNo, isConfigured, selfHosted }) {
       "Pourquoi c'est gratuit ?",
       selfHosted
         ? "Parce que c'est votre instance : vous l'hébergez, personne ne vous facture."
-        : `Jusqu'à 200 tris par mois, ça nous coûte peu. ${rules ? 'Les règles et les tris' : 'Les tris'} déjà connus ne comptent même pas. Au-delà, il y aura Pro.`,
+        : `Jusqu'à 200 tris par mois, ça nous coûte peu. ${rules ? 'Les règles et les tris' : 'Les tris'} déjà connus ne comptent même pas. ${billingOn ? 'Au-delà, il y a Pro.' : 'Au-delà, il y aura Pro.'}`,
     ],
   ];
   const [open, setOpen] = useState(0);

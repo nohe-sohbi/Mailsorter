@@ -24,7 +24,7 @@
   font-style: italic;
   font-size: 14px;
 }
-.hl-vplq h3 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 22px; }
+.hl-vplq h3 { font-family: var(--h-font-display); font-optical-sizing: auto; font-weight: 400; font-size: 22px; }
 .hl-vplq p { margin-top: 4px; font-size: 15px; line-height: 1.5; color: var(--h-muted); }
 @media (max-width: 1000px) {
   .hl-vault { grid-template-columns: 1fr; gap: 32px; }

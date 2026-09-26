@@ -10,7 +10,7 @@
 .hl-rate__orn { display: flex; justify-content: center; gap: 8px; margin: 8px 0 18px; }
 .hl-rate__orn i { width: 7px; height: 7px; background: #E3A93B; border: 1.2px solid var(--h-line); transform: rotate(45deg); }
 .hl-rate__line { display: flex; align-items: baseline; padding: 8px 0; font-size: 17px; }
-.hl-rate__line dt { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 500; font-size: 20px; }
+.hl-rate__line dt { font-family: var(--h-font-display); font-optical-sizing: auto; font-weight: 500; font-size: 20px; }
 .hl-rate__line dd em { font-family: var(--h-font-display); color: var(--h-accent); }
 .hl-rate__dots { flex: 1; margin: 0 10px; border-bottom: 2px dotted var(--h-line); opacity: 0.6; transform: translateY(-5px); }
 .hl-rate__wl { margin-top: 22px; padding-top: 18px; border-top: 3px double var(--h-line); text-align: center; }

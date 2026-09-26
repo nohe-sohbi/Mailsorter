@@ -1630,7 +1630,7 @@ Get all Gmail labels for a user.
 #### GET /api/config/status
 
 Public boot probe. The SPA calls it before any login to decide whether the
-instance has any way in at all, whether Pro can be bought yet, and which edition
+instance has any way in at all, whether Pro can be bought yet, which edition
 is running, and which landing to render. It is the only public route under
 `/api/config/`, and it returns nothing beyond these five fields.
 

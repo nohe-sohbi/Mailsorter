@@ -106,10 +106,11 @@ Principes : une couleur, un sens ; bordures de 1,5 px et ombres décalées plein
 ombre floue sur l'interface, aucun dégradé ; angles droits sauf boutons d'ascenseur, badges
 et bout des étiquettes.
 
-Typographie : Bodoni Moda pour les titres et les propositions, toujours avec
-`font-variation-settings: 'opsz' 28` (au-delà, le "4" et les traits d'union deviennent
-illisibles), chiffres en graisse 500. Jost pour l'interface. Polices chargées uniquement
-par le thème hôtel.
+Typographie : Bodoni Moda pour les titres et les propositions, avec
+`font-variation-settings: 'opsz' 28` à 28 px et au-delà (un opsz plus élevé y rend le "4"
+et les traits d'union illisibles), et `font-optical-sizing: auto` en dessous de 28 px, qui
+garde des déliés assez épais à cette taille. Chiffres en graisse 500. Jost pour l'interface.
+Polices chargées uniquement par le thème hôtel.
 
 Exception assumée à la règle "Tailwind only" : le thème est une feuille de style confinée,
 parce qu'un thème débranchable ne peut pas vivre dans `index.css`. Tailwind reste utilisé
@@ -190,11 +191,13 @@ réponse "Ça marche avec Outlook ?". Porter une fonction en IMAP, c'est retirer
 
 | Marche aussi en IMAP | Réservé à Gmail |
 |---|---|
-| lecture, tri par IA, expéditeurs protégés, actions une par une, tri toutes les 30 minutes | annulation, règles, report, désabonnement, récap, actions groupées, pièces jointes |
+| lecture, tri par IA, expéditeurs protégés, actions une par une, tri toutes les 30 minutes | classement (libellés), annulation, règles, report, désabonnement, récap, actions groupées, pièces jointes |
 
 Sur une instance sans Google (`isConfigured` faux), rien de ce qui dépend de Gmail n'est promis :
 
 - les cartes du couloir marquées Gmail sont retirées ;
+- la deuxième plaque du hall devient "Il propose d'archiver ce qui traîne. Vous dites oui ou non." ;
+- la démo perd les mails et les portes Factures, Désabonnements et Plus tard ;
 - la troisième plaque du hall devient "Rien ne bouge sans votre accord. Même à 2 h du matin." ;
 - la phrase "Et si vous changez d'avis, Annuler est juste là." disparaît du sous-titre de la démo,
   et la notification de la démo confirme sans proposer "Annuler".
@@ -206,10 +209,12 @@ Sur une instance avec Google, tout s'affiche, et le tableau à clés dit ce qui 
 "Ce qu'on lit. Ce qu'on garde. Ce qu'on ne fait jamais." Un coffre-fort illustré (plaque
 "AES-256") et trois plaques :
 
-- On lit : "L'expéditeur, l'objet et au plus 200 caractères du message. Jamais le message
-  entier, jamais les pièces jointes."
-- On garde : "Vos accès, chiffrés. L'historique de vos actions, pour pouvoir les annuler. Vous
-  pouvez tout exporter, ou tout supprimer, quand vous voulez."
+- On lit : "L'IA ne voit que l'expéditeur, l'objet et au plus 200 caractères du message.
+  Jamais le message entier, jamais les pièces jointes."
+- On garde : "Vos accès, chiffrés. Une copie de vos e-mails, pour vous les afficher sans
+  rappeler votre fournisseur. L'historique de vos actions, pour pouvoir les annuler. Vous
+  pouvez tout exporter, ou tout supprimer, quand vous voulez." (", pour pouvoir les
+  annuler" seulement là où l'annulation peut être promise)
 - On ne fait jamais : "Revendre quoi que ce soit. Supprimer un e-mail sans votre accord. Et le
   code est public : vous pouvez vérifier."
 
@@ -220,9 +225,11 @@ Puis le lien "Lire la politique de confidentialité" vers `/confidentialite`.
 "Ça marche avec votre boîte." / "Même avec l'adresse Orange que vous avez depuis 2004."
 Tableau à clés alimenté par `GET /api/providers` : une étiquette par fournisseur. Dorée
 ("via Google", toutes les fonctions) quand le fournisseur a une route `transport: "gmail-api"`
-et que l'instance est configurée pour Google ; rose ("IMAP") sinon. Légende : "Toutes les
-fonctions" / "Lecture et tri par IA. L'annulation, les règles et le report arrivent."
-(texte dérivé de `GMAIL_ONLY`).
+et que l'instance est configurée pour Google ; rose ("IMAP") sinon ; crème ("bientôt") quand
+aucune de ses routes ne passe par un transport que le serveur sait brancher (Outlook.com et
+Microsoft 365, sur Microsoft Graph). Légende : "Toutes les fonctions" / "Lecture et tri par IA.
+Le classement, l'annulation, les règles, le report, le désabonnement et le récap arrivent."
+(texte dérivé de `GMAIL_ONLY`) / "Pas encore branché" (seulement s'il y a une clé crème).
 Aucun nom de fournisseur écrit en dur.
 
 ### 3. Tarifs (absent en `self-hosted`)
@@ -237,9 +244,16 @@ aujourd'hui). Si le paiement est branché : un lien vers `/pricing` à la place.
 
 "Les questions qu'on nous pose vraiment." Tableau à lettres cliquable, réponse affichée à côté :
 "Vous lisez mes mails ?", "Et si l'IA se trompe ?", "Ça marche avec Outlook ?",
-"Je peux tout supprimer ?", "Pourquoi c'est gratuit ?". Réponses de la maquette, sauf Outlook :
-"Oui pour lire vos e-mails, les faire trier par l'IA et agir dessus. L'annulation, les règles,
-le report et le récap sont pour l'instant réservés à Gmail. Ça arrive." (dérivée de `GMAIL_ONLY`).
+"Je peux tout supprimer ?", "Pourquoi c'est gratuit ?". Réponses de la maquette, sauf deux.
+"Vous lisez mes mails ?" : "Nous, non. Le serveur en garde une copie dans la base de
+l'instance pour vous les afficher, et l'IA n'en voit que l'expéditeur, l'objet et au plus 200
+caractères, le temps de proposer un tri. Jamais le message entier ni les pièces jointes."
+Outlook : si le catalogue contient Outlook sur un transport que le serveur sait brancher,
+"Oui pour lire vos e-mails, les faire trier par l'IA et agir dessus. Le classement,
+l'annulation, les règles, le report, le désabonnement et le récap sont pour l'instant réservés
+à Gmail. Ça arrive." (dérivée de `GMAIL_ONLY`) ; sinon (Outlook passe par Microsoft Graph,
+que rien n'implémente encore, ou le catalogue n'est pas chargé) : "Pas encore. Outlook et
+Microsoft 365 passent par l'API de Microsoft, que Mailsorter n'utilise pas encore. Ça arrive."
 
 ### Sortie
 
@@ -328,6 +342,8 @@ utilisé par les deux landings. `Login.js` garde exactement son rendu.
 3. **Polices** : tranché, une balise `<link>` injectée une seule fois au montage du thème
    (`ui/hotel/useHotelFonts.js`). Un `@import` dans `hotel.css` dépendrait de l'ordre des
    feuilles dans le bloc CSS découpé par CRA, qu'on ne contrôle pas.
+
+Textes corrigés après la relecture finale : On lit, On garde, la réponse sur la lecture des mails, la réponse Outlook, la deuxième plaque du hall.
 
 ## 11. Documentation à mettre à jour
 

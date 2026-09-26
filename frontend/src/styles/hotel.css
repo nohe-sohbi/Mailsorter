@@ -10,8 +10,9 @@
  * live in index.css, and @layer only works in the file holding the @tailwind
  * directives. Tailwind still does layout (see the `hotel` colours in
  * tailwind.config.js). Class prefixes: ht- for these primitives, hl- for the
- * landing. Never a generic name: a stylesheet loaded by the landing stays
- * loaded after navigation and would restyle the dashboard.
+ * landing, hf- for the illustration text inside the SVG drawings (ui/hotel).
+ * Never a generic name: a stylesheet loaded by the landing stays loaded after
+ * navigation and would restyle the dashboard.
  *
  * The validated rendering of every class is docs/design/moodboard.html.
  */
@@ -78,7 +79,10 @@
 /* ---------- Type ---------- */
 
 /* Bodoni Moda at its default optical size draws hairlines so thin that a 4 and
- * a hyphen vanish at display sizes. 28 keeps the contrast and the legibility. */
+ * a hyphen vanish at display sizes. 28 keeps the contrast and the legibility.
+ * Only at 28px and above: smaller Bodoni text (.ht-prop b, the corridor and
+ * vault titles, the rate card terms) uses font-optical-sizing: auto, whose
+ * lower opsz keeps the hairlines thick enough at that size. */
 .ht-disp {
   font-family: var(--h-font-display);
   font-variation-settings: 'opsz' 28;
@@ -364,7 +368,7 @@
 }
 .ht-prop b {
   font-family: var(--h-font-display);
-  font-variation-settings: 'opsz' 28;
+  font-optical-sizing: auto;
   font-style: italic;
   font-weight: 500;
   font-size: 23px;

@@ -13,7 +13,7 @@ import './TriageDemo.css';
 // mail whose action this instance cannot perform is left out (features.js).
 const MAILS = [
   { from: 'Le Monde', av: 'LM', time: '07:02', subj: 'La lettre du matin', snip: 'Les cinq informations à retenir ce jeudi, et un éditorial que vous ne lirez pas non plus.', act: 'Archiver', to: 'archives', done: 'Archivé.' },
-  { from: 'Free Mobile', av: 'FM', time: '08:15', subj: 'Votre facture de septembre est disponible', snip: 'Montant : 19,99 €. Prélèvement le 5 octobre.', act: 'Ranger dans Factures', to: 'factures', done: 'Rangé dans Factures.' },
+  { from: 'Free Mobile', av: 'FM', time: '08:15', subj: 'Votre facture de septembre est disponible', snip: 'Montant : 19,99 €. Prélèvement le 5 octobre.', act: 'Ranger dans Factures', to: 'factures', done: 'Rangé dans Factures.', feature: 'label' },
   { from: 'Zalando', av: 'Z', time: '09:30', subj: '-40 % ce week-end seulement', snip: "Comme le week-end dernier. Et celui d'avant.", act: 'Se désabonner', to: 'desabo', done: 'Désabonné.', feature: 'unsubscribe' },
   { from: 'SNCF Connect', av: 'SN', time: '10:11', subj: 'Votre billet Paris - Lyon du 2 octobre', snip: 'Voiture 14, place 62. Départ 08:04, gare de Lyon.', act: 'Reporter à jeudi, 8 h', to: 'later', done: 'Reporté à jeudi, 8 h.', feature: 'snooze' },
   { from: 'Maman', av: 'M', time: '11:48', subj: 'Pour dimanche, on dit midi ?', snip: 'Et tu ramènes le dessert. Pas comme la dernière fois.', safe: true },
@@ -21,7 +21,7 @@ const MAILS = [
 
 const DOORS = [
   { to: 'archives', label: 'Archives', color: '#2F6F73' },
-  { to: 'factures', label: 'Factures', color: '#7A2E3B' },
+  { to: 'factures', label: 'Factures', color: '#7A2E3B', feature: 'label' },
   { to: 'desabo', label: 'Désabonnements', color: '#E48FA5', feature: 'unsubscribe' },
   { to: 'later', label: 'Plus tard', color: '#C98B22', feature: 'snooze' },
 ];
@@ -132,7 +132,12 @@ export default function TriageDemo({ count, isConfigured, floorNo, onStart }) {
     track('landing_demo', { action: 'undo' });
   };
 
+  // A "Valider" less than 480 ms old still has its door bump and its toast
+  // queued: left running, they would land on the fresh pile.
   const restart = () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+    setBumped(null);
     setLog([]);
     setOut({});
     setCounts(EMPTY);

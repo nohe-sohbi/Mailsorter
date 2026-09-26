@@ -116,7 +116,7 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 205 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 313 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
@@ -280,7 +280,7 @@ telling them to create a Google Cloud project that edition can never use.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + whichever doors this instance has: Google when `isConfigured`, the mailbox form when `mailboxSignIn`. Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what Google will be asked for, what leaves for the model, the FAQ, the reachable providers read from `GET /api/providers`, and an email capture for a visitor not ready to hand over a mailbox |
+| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
 | `/inbox` | `pages/Inbox.js` | The cockpit: triage, suggestions, bulk apply, keyboard shortcuts (1068 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
@@ -372,11 +372,14 @@ not answer gets the boot-error screen instead, which is a different branch.
   Configuration). Its tokens live in `src/styles/hotel.css` under `.theme-hotel`
   (night under `.dark .theme-hotel`), never on `:root`, so `classic` leaves no trace.
   It is plain CSS on purpose, the one exception to "Tailwind only": a theme that can
-  be switched off cannot live in `index.css`. Classes are `ht-` (primitives) and
-  `hl-` (landing), never a generic name, because a CSS chunk stays loaded after
-  navigation and would restyle the dashboard. Illustrations are hand-drawn SVG
-  components in `src/ui/hotel/` with fixed colours. Bodoni Moda is always set at
-  `font-variation-settings: 'opsz' 28`, or its hairlines swallow a 4 and a hyphen.
+  be switched off cannot live in `index.css`. Classes are `ht-` (primitives),
+  `hl-` (landing) and `hf-` (illustration text inside the SVG drawings), never a
+  generic name, because a CSS chunk stays loaded after navigation and would
+  restyle the dashboard. Illustrations are hand-drawn SVG
+  components in `src/ui/hotel/` with fixed colours. Bodoni Moda is pinned at
+  `font-variation-settings: 'opsz' 28` at 28px and above, or its hairlines
+  swallow a 4 and a hyphen; smaller Bodoni text uses `font-optical-sizing: auto`,
+  which keeps the hairlines thick enough at that size.
   The reference rendering is `docs/design/moodboard.html`, which loads the real
   `hotel.css`: open it before touching the theme.
 
@@ -666,9 +669,11 @@ Do not duplicate these into this file. Point at them.
   batch, digest) refuses: 12 call sites left.
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
-  Porting one also means deleting its line in `GMAIL_ONLY`
-  (`frontend/src/components/landing/features.js`): the Grand Hotel landing reads it
-  to decide what it may promise, and keeps promising nothing it cannot deliver.
+  `GMAIL_ONLY` (`frontend/src/components/landing/features.js`) lists what the
+  landing would otherwise promise and an IMAP mailbox cannot get, labels
+  (`label`) included: the Grand Hotel landing reads it to decide what it may
+  promise, and keeps promising nothing it cannot deliver. So porting a promised
+  feature to IMAP also means deleting its line there.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

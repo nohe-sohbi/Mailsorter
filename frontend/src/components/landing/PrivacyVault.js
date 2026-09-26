@@ -7,8 +7,10 @@ import './PrivacyVault.css';
 
 // Three facts, each checked against the code: the model only sees the sender,
 // the subject and at most 200 characters (internal/ai/mistral.go); credentials
-// are sealed at rest (api/tokens.go); a rule the user wrote can trash, hence
-// "sans votre accord" rather than "sans vous demander".
+// are sealed at rest (api/tokens.go) and the sync keeps a copy of the mailbox,
+// bodies included on the Gmail path (models.Email.Body), which the privacy
+// policy states too; a rule the user wrote can trash, hence "sans votre
+// accord" rather than "sans vous demander".
 export default function PrivacyVault({ floorNo, isConfigured }) {
   const undo = canPromise('undo', isConfigured);
   return (
@@ -25,14 +27,14 @@ export default function PrivacyVault({ floorNo, isConfigured }) {
             <div className="hl-vplq">
               <b aria-hidden="true">I</b>
               <h3>On lit</h3>
-              <p>L'expéditeur, l'objet et au plus 200 caractères du message. Jamais le message entier, jamais les pièces jointes.</p>
+              <p>L'IA ne voit que l'expéditeur, l'objet et au plus 200 caractères du message. Jamais le message entier, jamais les pièces jointes.</p>
             </div>
             <div className="hl-vplq">
               <b aria-hidden="true">II</b>
               <h3>On garde</h3>
               <p>
-                Vos accès, chiffrés. L'historique de vos actions{undo ? ', pour pouvoir les annuler' : ''}. Vous pouvez tout exporter, ou tout
-                supprimer, quand vous voulez.
+                Vos accès, chiffrés. Une copie de vos e-mails, pour vous les afficher sans rappeler votre fournisseur. L'historique de vos
+                actions{undo ? ', pour pouvoir les annuler' : ''}. Vous pouvez tout exporter, ou tout supprimer, quand vous voulez.
               </p>
             </div>
             <div className="hl-vplq">

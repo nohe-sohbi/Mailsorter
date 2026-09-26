@@ -20,5 +20,5 @@ export function useUnreadCounter(start = UNREAD_START) {
 
 // "4 212", with a no-break space so the figure never wraps in two.
 export function formatCount(v) {
-  return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00A0');
 }
