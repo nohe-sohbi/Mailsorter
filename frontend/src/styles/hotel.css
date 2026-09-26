@@ -408,10 +408,15 @@
 .hf-num, .hf-dn { font: 700 9px var(--h-font-ui); fill: #2B1B1E; text-anchor: middle; }
 .hf-lab { font: 600 7.4px var(--h-font-ui); letter-spacing: 1.2px; fill: #7A2E3B; text-anchor: middle; }
 .hf-lab--wide { letter-spacing: 2px; }
-.hf-tiny { font: 700 6px var(--h-font-ui); letter-spacing: 0.8px; fill: #FBF1E4; text-anchor: middle; }
-.hf-tiny--lg { font-size: 7px; }
+/* The two sizes below are set by the plate the word is printed on, not by
+ * taste: COMPLET takes 25 units on a 28-unit tag and DÉRANGER 34 on a
+ * 38-unit hanger. At 6px / 0.8 and 6.4px / 0.6 they ran 3.5 and 1.9 units
+ * past each edge: the C of COMPLET vanished on the envelope behind it, the
+ * D of DÉRANGER on the plum door, plum on plum. */
+.hf-tiny { font: 700 5.2px var(--h-font-ui); letter-spacing: 0; fill: #FBF1E4; text-anchor: middle; }
+.hf-tiny--lg { font-size: 7px; letter-spacing: 0.8px; }
 .hf-sg { font: 700 6.6px var(--h-font-ui); letter-spacing: 0.5px; text-anchor: middle; }
-.hf-hg { font: 700 6.4px var(--h-font-ui); letter-spacing: 0.6px; fill: #7A2E3B; text-anchor: middle; }
+.hf-hg { font: 700 6px var(--h-font-ui); letter-spacing: 0; fill: #7A2E3B; text-anchor: middle; }
 .hf-hg--ink { fill: #2B1B1E; }
 .hf-z { font: italic 600 13px var(--h-font-display); fill: #7A2E3B; }
 .hf-z--sm { font-size: 10px; }

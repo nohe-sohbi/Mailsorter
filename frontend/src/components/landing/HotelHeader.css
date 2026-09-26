@@ -11,7 +11,9 @@
 .hl-top__login {
   justify-self: end;
   color: var(--h-text);
-  border-bottom: 1.5px solid var(--h-line);
+  /* currentColor, like .ht-link: --h-line turns near-black at night and the
+     underline, the only sign this is a link, vanished on the dark header. */
+  border-bottom: 1.5px solid currentColor;
   font-family: var(--h-font-display);
   font-style: italic;
   font-size: 16px;

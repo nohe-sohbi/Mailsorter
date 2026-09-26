@@ -92,12 +92,18 @@ frontend/
                          address and an app password)
   src/contexts/          EmailContext: the shared inbox cache.
                          InstanceContext: what this deployment is (edition, billing, configured)
+  src/styles/hotel.css   the Grand Hotel theme (UI_THEME=hotel): tokens under
+                         .theme-hotel, day and night, ht- primitives, motion
+  src/ui/hotel/          the theme's drawings and bricks: HotelFacade, Door, Vault,
+                         KeyTag, ElevatorPanel, Plaque, Emblem, useHotelFonts
+  src/components/landing/ the Grand Hotel landing's sections (hl- classes) and
+                         features.js, what the landing may promise (GMAIL_ONLY)
   src/services/api.js    every HTTP call in the app, grouped by service object
   src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
-docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, assets/
+docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, design/moodboard.html, assets/
 mongo-init/init-db.js    collections + indexes seeded on a fresh Mongo container
 ```
 
@@ -274,7 +280,7 @@ telling them to create a Google Cloud project that edition can never use.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | `pages/Login.js` | Marketing landing + whichever doors this instance has: Google when `isConfigured`, the mailbox form when `mailboxSignIn`. Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what Google will be asked for, what leaves for the model, the FAQ, the reachable providers read from `GET /api/providers`, and an email capture for a visitor not ready to hand over a mailbox |
+| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + whichever doors this instance has: Google when `isConfigured`, the mailbox form when `mailboxSignIn`. Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what Google will be asked for, what leaves for the model, the FAQ, the reachable providers read from `GET /api/providers`, and an email capture for a visitor not ready to hand over a mailbox |
 | `/inbox` | `pages/Inbox.js` | The cockpit: triage, suggestions, bulk apply, keyboard shortcuts (1068 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
@@ -324,7 +330,7 @@ not answer gets the boot-error screen instead, which is a different branch.
   `contexts/InstanceContext.js` holds the deployment: one `GET /api/config/status`
   at boot, read by App, the header, Pricing and Setup through `useInstance()`
   (`loading`, `error`, `reload`, `isConfigured`, `billingOn`, `edition`,
-  `selfHosted`). Never probe the instance from a component: App and Pricing each
+  `selfHosted`, `uiTheme`). Never probe the instance from a component: App and Pricing each
   called it separately and could disagree about the same instance for a few
   hundred milliseconds. Everything else is local `useState`.
 - **The edition is a frontend concern too.** A `self-hosted` instance bills nobody,
@@ -362,6 +368,17 @@ not answer gets the boot-error screen instead, which is a different branch.
 - **Tailwind class names must be statically present in the source.** Never build a class
   by string concatenation; the Inbox action tokens are spelled out as full literal classes
   for exactly this reason.
+- **The Grand Hotel theme is a second, switchable design system** (`UI_THEME`, see
+  Configuration). Its tokens live in `src/styles/hotel.css` under `.theme-hotel`
+  (night under `.dark .theme-hotel`), never on `:root`, so `classic` leaves no trace.
+  It is plain CSS on purpose, the one exception to "Tailwind only": a theme that can
+  be switched off cannot live in `index.css`. Classes are `ht-` (primitives) and
+  `hl-` (landing), never a generic name, because a CSS chunk stays loaded after
+  navigation and would restyle the dashboard. Illustrations are hand-drawn SVG
+  components in `src/ui/hotel/` with fixed colours. Bodoni Moda is always set at
+  `font-variation-settings: 'opsz' 28`, or its hairlines swallow a 4 and a hyphen.
+  The reference rendering is `docs/design/moodboard.html`, which loads the real
+  `hotel.css`: open it before touching the theme.
 
 ## Key Conventions
 
@@ -644,10 +661,14 @@ Do not duplicate these into this file. Point at them.
   unported path answers 501 ("pas encore disponible sur une boite IMAP") through
   `writeAuthError` instead of acting on the wrong message. Ported so far: `syncInbox`,
   `EmailAction`, `GetEmails`, `GetEmail` and `GetMailboxStats`, which is the set that
-  makes a connected mailbox usable at all. Everything else (rules, AI, snooze,
-  unsubscribe, attachments, labels, undo, batch, digest) refuses: 12 call sites left.
+  makes a connected mailbox usable at all. The AI analysis has moved to sessions
+  since. Everything else (rules, snooze, unsubscribe, attachments, labels, undo,
+  batch, digest) refuses: 12 call sites left.
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
+  Porting one also means deleting its line in `GMAIL_ONLY`
+  (`frontend/src/components/landing/features.js`): the Grand Hotel landing reads it
+  to decide what it may promise, and keeps promising nothing it cannot deliver.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

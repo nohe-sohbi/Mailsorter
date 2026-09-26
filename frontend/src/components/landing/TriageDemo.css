@@ -91,8 +91,11 @@
 @media (max-width: 640px) {
   .hl-mail { padding: 20px 18px 22px; }
   .hl-mail__subj { font-size: 24px; }
+  /* In a column the main axis is the height: flex: 1 means a 0 basis that
+     beats height: 50px, and both buttons collapsed to a 20px strip. */
   .hl-mail__acts { flex-direction: column; }
-  .hl-mail__acts .ht-btn-secondary { flex: 1; }
+  .hl-mail__acts .ht-btn-primary,
+  .hl-mail__acts .ht-btn-secondary { flex: 0 0 auto; }
   .hl-toast { white-space: normal; width: max-content; max-width: 92%; }
   .hl-mdoors { gap: 16px; }
   .hl-md__door { width: 44px; }

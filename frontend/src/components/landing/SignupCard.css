@@ -16,10 +16,17 @@
 }
 .hl-fiche__top h2 { font-size: 11px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; }
 .hl-fiche__top span { font-family: var(--h-font-display); font-style: italic; font-size: 14px; color: var(--h-accent); }
-.hl-fiche__go { width: 100%; height: 48px; margin-top: 4px; }
-.hl-fiche__google {
+/* Scoped under .hl-fiche on purpose: these two override .ht-btn, and
+ * hotel.css lands AFTER this file in the chunk (HotelLanding imports it last),
+ * so at equal specificity .ht-btn won and the Google button came out
+ * uppercase, tracked, and on two lines in the narrow desktop column. Its
+ * 10px side padding is the mockup's: at .ht-btn's 20px the sentence still
+ * wraps in a 246px column. */
+.hl-fiche .hl-fiche__go { width: 100%; height: 48px; margin-top: 4px; }
+.hl-fiche .hl-fiche__google {
   width: 100%;
   margin-top: 8px;
+  padding: 0 10px;
   background: #fff;
   color: #2B1B1E;
   font-size: 14px;
@@ -44,6 +51,8 @@
   font-size: 15px;
 }
 .hl-fiche__fine { margin-top: 10px; text-align: center; font-size: 12px; color: var(--h-muted); }
-@media (max-width: 1000px) {
+/* Same breakpoint as the hall's grid (HallHero.css): below it the card is
+   stacked, so it stands straight at a readable width. */
+@media (max-width: 1240px) {
   .hl-fiche { width: 100%; max-width: 440px; margin: 0 auto; transform: none; }
 }
