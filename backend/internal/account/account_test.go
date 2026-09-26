@@ -1,6 +1,8 @@
 package account
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +41,80 @@ func TestDatasetsCoverTheMailboxMirror(t *testing.T) {
 			t.Errorf("Datasets() is missing %q: it would be neither exported nor erased", want)
 		}
 	}
+}
+
+// The BYOK override is a credential: skipping it on deletion leaves a key on disk.
+func TestDatasetsCoverTheAIProviderOverride(t *testing.T) {
+	present := map[Dataset]bool{}
+	for _, d := range Datasets() {
+		present[d] = true
+	}
+
+	if !present[DatasetAISettings] {
+		t.Error("Datasets() is missing aiSettings: a deleted account would keep its BYOK provider key on file")
+	}
+
+	if got := SecretFields(DatasetAISettings); len(got) != 1 || got[0] != "apiKey" {
+		t.Errorf("SecretFields(aiSettings) = %v, want [apiKey]", got)
+	}
+}
+
+func TestOnlyCredentialDatasetsDeclareSecretFields(t *testing.T) {
+	for _, ds := range Datasets() {
+		entry, expected := secretBearingModels[ds]
+		got := SecretFields(ds)
+		if !expected {
+			if len(got) != 0 {
+				t.Errorf("SecretFields(%s) = %v, want none: a blanket redaction would empty the export", ds, got)
+			}
+			continue
+		}
+		if len(got) != 1 || got[0] != entry.field {
+			t.Errorf("SecretFields(%s) = %v, want [%s]", ds, got, entry.field)
+		}
+	}
+}
+
+// Nothing type-checks SecretFields: a renamed bson tag silently stops the redaction.
+func TestSecretFieldsNameRealBsonFields(t *testing.T) {
+	// A dataset declaring a secret with no entry here would be checked for nothing.
+	declared := 0
+	for _, ds := range Datasets() {
+		if len(SecretFields(ds)) > 0 {
+			declared++
+		}
+	}
+	if declared != len(secretBearingModels) {
+		t.Fatalf("%d datasets declare a secret but %d are described in secretBearingModels", declared, len(secretBearingModels))
+	}
+
+	for ds, entry := range secretBearingModels {
+		for _, field := range SecretFields(ds) {
+			if !hasBsonField(entry.typ, field) {
+				t.Errorf("SecretFields(%s) names %q, which %s has no bson field for: the export would not redact it",
+					ds, field, entry.typ.Name())
+			}
+		}
+	}
+}
+
+var secretBearingModels = map[Dataset]struct {
+	typ   reflect.Type
+	field string
+}{
+	DatasetMailAccounts: {reflect.TypeOf(models.MailAccount{}), "secret"},
+	DatasetAISettings:   {reflect.TypeOf(models.AIProviderSettings{}), "apiKey"},
+}
+
+// hasBsonField reports whether the struct type has a field with this bson tag.
+func hasBsonField(t reflect.Type, name string) bool {
+	for i := 0; i < t.NumField(); i++ {
+		// The tag is a comma-separated option list: `bson:"apiKey,omitempty"`.
+		if strings.Split(t.Field(i).Tag.Get("bson"), ",")[0] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRedactUserDropsSecrets(t *testing.T) {

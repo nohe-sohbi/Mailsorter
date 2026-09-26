@@ -243,7 +243,8 @@ original collections on a fresh volume, so `EnsureIndexes` is the real source of
 `users`, `emails`, `labels`, `gmail_config` (legacy, read-only fallback),
 `ai_suggestions`, `sender_preferences`, `smart_labels`, `analysis_jobs`,
 `analysis_cache`, `usage`, `unsubscribes`, `sorting_rules`, `protected_senders`,
-`snoozes`, `action_log`, `saved_searches`, `waitlist`, `mail_accounts`.
+`snoozes`, `action_log`, `saved_searches`, `waitlist`, `mail_accounts`,
+`ai_settings`.
 
 Everything is scoped by `userId` (which is the user's email address) except
 `analysis_cache`, keyed by `sha256(lower(from) + "|" + lower(subject))` and shared
@@ -531,6 +532,14 @@ Do not duplicate these into this file. Point at them.
   the exact bug the last audit found), and `account.SecretFields` says which of its
   columns must be stripped from the export. Export and erasure share the catalog, so
   a new collection is exportable BY DEFAULT: if it holds a credential, say so there.
+  `ai_settings` shipped the BYOK feature and missed both, so a deleted account kept
+  its provider key on disk. `TestCatalogCoversEveryUserScopedCollection` closes that:
+  it reads the accessors in `internal/database/database.go` and fails on any
+  `userId`-scoped collection the catalog does not reach, with an exemption list for
+  the four that are not user-scoped (`users`, `gmail_config`, `analysis_cache`,
+  `waitlist`). A bson tag rename disables redaction silently, so
+  `TestSecretFieldsNameRealBsonFields` checks each declared name against the struct.
+  Run both after adding a collection.
 - **Never write a Gmail token to Mongo directly.** `api/tokens.go` owns both directions:
   `sealToken` on the way in, `openToken` on the way out. A value without the `enc:v1:`
   prefix is a legacy plaintext token, re-sealed in place the first time it is read, so the

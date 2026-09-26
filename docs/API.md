@@ -979,8 +979,18 @@ Returns a single JSON document with everything Mailsorter stores about the
 caller: a **redacted** account profile (never the OAuth tokens or Stripe IDs)
 plus every user-owned dataset (rules, protected senders, snoozes, suggestions,
 sender preferences, smart labels, unsubscribes, usage, action log, analysis
-jobs, saved searches). Served as a downloadable attachment. The user's Gmail mailbox is not
-included: those emails live in Gmail and never leave the user's control.
+jobs, saved searches, the mailbox connection, the AI provider override). Served
+as a downloadable attachment. The user's Gmail mailbox is not included: those
+emails live in Gmail and never leave the user's control.
+
+Two datasets hold a credential and are the exception: `mailAccounts` has its
+`secret` (the sealed IMAP app password) and `aiSettings` its `apiKey` (the sealed
+BYOK provider key) **removed**, both named in `account.SecretFields`. An export
+leaves the server, so sealed is not the same as safe to hand out.
+
+The catalog is exhaustive: every `userId`-scoped collection must appear in
+`account.Datasets()`, and `TestCatalogCoversEveryUserScopedCollection` fails on any
+that does not.
 
 ```json
 {
@@ -998,8 +1008,10 @@ included: those emails live in Gmail and never leave the user's control.
 #### DELETE /api/account
 
 Permanently erases the caller's account record and **all** user-owned datasets
-(the same catalog the export covers). Irreversible; the UI gates it behind a
-typed confirmation. Gmail is never touched. Returns per-dataset deletion counts.
+(the same catalog the export covers, credentials included: the sealed app password
+and the sealed BYOK provider key are deleted, not redacted). Irreversible; the UI
+gates it behind a typed confirmation. Gmail is never touched. Returns per-dataset
+deletion counts.
 
 ```json
 { "status": "deleted", "deleted": { "rules": 4, "protectedSenders": 2, "actionLog": 137, "account": 1 } }
