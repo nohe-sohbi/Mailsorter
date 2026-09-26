@@ -12,6 +12,7 @@ import { useActiveFloor } from '../components/landing/useActiveFloor';
 import { scrollToId } from '../components/landing/scroll';
 import { useUnreadCounter } from '../components/landing/useUnreadCounter';
 import HallHero from '../components/landing/HallHero';
+import FeatureCorridor from '../components/landing/FeatureCorridor';
 import NightExit from '../components/landing/NightExit';
 import '../styles/hotel.css';
 import '../components/landing/landing.css';
@@ -54,6 +55,7 @@ export default function HotelLanding() {
       <ElevatorRail />
       <div className="hl-floors">
         <HallHero count={count} auth={auth} isConfigured={isConfigured} night={isDark} />
+        <FeatureCorridor isConfigured={isConfigured} />
         <NightExit count={count} onStart={() => openAuth('register')} onSignIn={() => openAuth('login')} />
       </div>
       <HotelFooter />
