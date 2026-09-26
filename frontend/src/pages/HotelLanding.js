@@ -14,6 +14,8 @@ import { useUnreadCounter } from '../components/landing/useUnreadCounter';
 import HallHero from '../components/landing/HallHero';
 import FeatureCorridor from '../components/landing/FeatureCorridor';
 import TriageDemo from '../components/landing/TriageDemo';
+import PrivacyVault from '../components/landing/PrivacyVault';
+import ProviderBoard from '../components/landing/ProviderBoard';
 import NightExit from '../components/landing/NightExit';
 import '../styles/hotel.css';
 import '../components/landing/landing.css';
@@ -59,6 +61,8 @@ export default function HotelLanding() {
         <HallHero count={count} auth={auth} isConfigured={isConfigured} night={isDark} />
         <TriageDemo count={count} isConfigured={isConfigured} floorNo={floorNo.fonctionnement} onStart={() => openAuth('register')} />
         <FeatureCorridor isConfigured={isConfigured} />
+        <PrivacyVault floorNo={floorNo.confidentialite} isConfigured={isConfigured} />
+        <ProviderBoard isConfigured={isConfigured} />
         <NightExit count={count} onStart={() => openAuth('register')} onSignIn={() => openAuth('login')} />
       </div>
       <HotelFooter />

@@ -1,0 +1,32 @@
+.hl-vault { display: grid; grid-template-columns: 380px 1fr; gap: 56px; align-items: center; margin-top: 48px; }
+.hl-vault__art { display: block; width: 100%; height: auto; }
+.hl-vplq {
+  position: relative;
+  margin-bottom: 16px;
+  padding: 18px 22px 20px 64px;
+  background: var(--h-surface);
+  border: 1.5px solid var(--h-line);
+  box-shadow: 5px 5px 0 var(--h-hair);
+}
+.hl-vplq b {
+  position: absolute;
+  left: 16px;
+  top: 18px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #E3A93B;
+  border: 1.5px solid var(--h-line);
+  color: #7A2E3B;
+  font-family: var(--h-font-display);
+  font-style: italic;
+  font-size: 14px;
+}
+.hl-vplq h3 { font-family: var(--h-font-display); font-variation-settings: 'opsz' 28; font-weight: 400; font-size: 22px; }
+.hl-vplq p { margin-top: 4px; font-size: 15px; line-height: 1.5; color: var(--h-muted); }
+@media (max-width: 1000px) {
+  .hl-vault { grid-template-columns: 1fr; gap: 32px; }
+  .hl-vault__art { max-width: 280px; margin: 0 auto; }
+}

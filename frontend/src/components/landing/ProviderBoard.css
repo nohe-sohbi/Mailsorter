@@ -1,0 +1,26 @@
+.hl-board {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 26px 10px;
+  max-width: 1000px;
+  min-height: 120px;
+  margin: 44px auto 0;
+  padding: 26px 26px 30px;
+  background: #6A2733;
+  border: 12px solid #4A1A24;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 2px #2B1B1E, 0 0 0 2px #2B1B1E, 0 30px 50px -30px rgba(43, 27, 30, 0.7);
+}
+.hl-board .ht-key__tag { background: #EFB7C3; color: #2B1B1E; }
+.hl-board .ht-key__tag.is-gold { background: #E3A93B; }
+.hl-board .ht-key__tag::after { background: #6A2733; }
+.hl-board__note { grid-column: 1 / -1; align-self: center; text-align: center; color: #FBF1E4; font-family: var(--h-font-display); font-style: italic; font-size: 17px; }
+.hl-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px 28px; margin-top: 22px; font-size: 14px; color: var(--h-muted); }
+.hl-legend span { display: inline-flex; align-items: center; gap: 8px; }
+.hl-legend i { width: 26px; height: 14px; border: 1.5px solid var(--h-line); border-radius: 2px 8px 8px 2px; background: #EFB7C3; }
+.hl-legend i.is-gold { background: #E3A93B; }
+@media (max-width: 1000px) { .hl-board { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px) {
+  .hl-board { grid-template-columns: 1fr 1fr; padding: 18px 12px 22px; border-width: 8px; }
+  .hl-board .ht-key__tag { width: 100%; min-width: 0; }
+}
