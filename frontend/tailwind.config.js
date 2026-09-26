@@ -54,10 +54,30 @@ module.exports = {
         caution: scale('caution', [50, 100, 500, 600, 700]),
         danger: scale('danger', [50, 100, 500, 600, 700], ['strong', 'deep']),
         info: scale('info', [50, 100, 500, 600, 700]),
+
+        // Grand Hotel theme (src/styles/hotel.css). Plain CSS variables holding
+        // hex values and set only under .theme-hotel, so opacity modifiers such
+        // as /50 do not apply to them.
+        hotel: {
+          bg: 'var(--h-bg)',
+          'bg-alt': 'var(--h-bg-alt)',
+          surface: 'var(--h-surface)',
+          sunk: 'var(--h-sunk)',
+          pink: 'var(--h-pink)',
+          text: 'var(--h-text)',
+          muted: 'var(--h-muted)',
+          line: 'var(--h-line)',
+          plum: 'var(--h-plum)',
+          accent: 'var(--h-accent)',
+          mustard: 'var(--h-mustard)',
+          teal: 'var(--h-teal)',
+        },
       },
       fontFamily: {
         sans: ['"Hanken Grotesk"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         display: ['"General Sans"', '"Hanken Grotesk"', 'ui-sans-serif', 'sans-serif'],
+        'hotel-display': ['var(--h-font-display)'],
+        'hotel-ui': ['var(--h-font-ui)'],
       },
       boxShadow: {
         // Échelle d'ombres sobre et froide, aucune lueur colorée. En thème
