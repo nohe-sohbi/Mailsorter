@@ -151,8 +151,9 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/providers", h.GetProviders).Methods("GET")
 
 	// Middleware chain (applied to every matched route, innermost last):
-	// recover → request-id → metrics → logging → rate-limit → auth → handler.
+	// securityHeaders → recover → request-id → metrics → logging → rate-limit → auth → handler.
 	rl := newRateLimiter(20, 40) // ~20 req/s sustained, burst 40, per client
+	r.Use(securityHeadersMiddleware)
 	r.Use(recoverMiddleware)
 	r.Use(requestIDMiddleware)
 	r.Use(h.metricsMiddleware)
