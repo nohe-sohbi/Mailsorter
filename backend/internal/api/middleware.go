@@ -258,3 +258,15 @@ func clientKey(r *http.Request) string {
 	}
 	return "ip:" + r.RemoteAddr
 }
+
+// securityHeadersMiddleware enforces standard security headers on all responses
+// to protect against clickjacking, MIME-type sniffing, cross-site scripting, and referrer leaks.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
+}

@@ -44,6 +44,29 @@ func TestIsPublicPath(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersMiddleware(t *testing.T) {
+	handler := securityHeadersMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	headers := map[string]string{
+		"X-Frame-Options":        "DENY",
+		"X-Content-Type-Options": "nosniff",
+		"X-XSS-Protection":       "1; mode=block",
+		"Referrer-Policy":        "strict-origin-when-cross-origin",
+	}
+
+	for header, want := range headers {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("header %s = %q, want %q", header, got, want)
+		}
+	}
+}
+
 func TestBearerToken(t *testing.T) {
 	cases := map[string]string{
 		"Bearer abc123": "abc123",
