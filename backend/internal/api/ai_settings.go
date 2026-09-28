@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -11,6 +12,18 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// isValidBaseURL reports whether rawURL is empty or a valid HTTP/HTTPS URL.
+func isValidBaseURL(rawURL string) bool {
+	if rawURL == "" {
+		return true
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	return true
+}
 
 // GetAIProviders returns the catalog of known AI providers with their
 // capabilities (required fields, suggested models). Public-ish: no secret is
@@ -96,6 +109,11 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !isValidBaseURL(req.BaseURL) {
+		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
+		return
+	}
+
 	// Encrypt the API key
 	encryptedKey := ""
 	if req.APIKey != "" {
@@ -148,6 +166,11 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		BaseURL  string `json:"baseUrl"`
 	}
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if !isValidBaseURL(req.BaseURL) {
+		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
 		return
 	}
 

@@ -62,3 +62,26 @@ func TestResolveAnalyzerFallbackToInstance(t *testing.T) {
 		t.Fatal("expected non-nil registry")
 	}
 }
+
+func TestIsValidBaseURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"", true},
+		{"https://api.openai.com/v1", true},
+		{"http://localhost:11434", true},
+		{"http://127.0.0.1:11434", true},
+		{"file:///etc/passwd", false},
+		{"ftp://example.com", false},
+		{"javascript:alert(1)", false},
+		{"not-a-url", false},
+		{"http://", false},
+	}
+
+	for _, tt := range tests {
+		if got := isValidBaseURL(tt.url); got != tt.want {
+			t.Errorf("isValidBaseURL(%q) = %v, want %v", tt.url, got, tt.want)
+		}
+	}
+}
