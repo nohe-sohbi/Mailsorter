@@ -50,6 +50,11 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Le mot de passe doit comporter au moins 8 caractères.")
 		return
 	}
+	// bcrypt silently truncates passwords after 72 bytes and heavy payloads cause CPU DoS.
+	if len(password) > 72 {
+		writeError(w, http.StatusBadRequest, "Le mot de passe ne doit pas dépasser 72 caractères.")
+		return
+	}
 
 	limiter := h.signInLimiter()
 	if !limiter.allow(clientKey(r)) || !limiter.allow("reg:"+email) {
@@ -109,6 +114,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	if email == "" || password == "" {
 		writeError(w, http.StatusBadRequest, "Adresse email et mot de passe requis.")
+		return
+	}
+	// Reject passwords exceeding bcrypt maximum byte limit to prevent CPU DoS.
+	if len(password) > 72 {
+		writeError(w, http.StatusUnauthorized, "Identifiants incorrects.")
 		return
 	}
 
