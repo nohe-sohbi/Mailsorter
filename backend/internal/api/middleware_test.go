@@ -54,10 +54,12 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	headers := map[string]string{
-		"X-Frame-Options":        "DENY",
-		"X-Content-Type-Options": "nosniff",
-		"X-XSS-Protection":       "1; mode=block",
-		"Referrer-Policy":        "strict-origin-when-cross-origin",
+		"X-Frame-Options":                  "DENY",
+		"X-Content-Type-Options":           "nosniff",
+		"X-XSS-Protection":                 "1; mode=block",
+		"Referrer-Policy":                  "strict-origin-when-cross-origin",
+		"X-Permitted-Cross-Domain-Policies": "none",
+		"Permissions-Policy":               "camera=(), microphone=(), geolocation=()",
 	}
 
 	for header, want := range headers {
