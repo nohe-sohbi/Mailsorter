@@ -45,6 +45,23 @@ func TestRegisterAndLoginValidation(t *testing.T) {
 		}
 	}
 
+	// Test long password (> 72 bytes)
+	{
+		longPassword := "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0extra"
+		body, _ := json.Marshal(models.RegisterRequest{
+			Email:    "test@example.com",
+			Password: longPassword,
+		})
+		req := httptest.NewRequest("POST", "/api/auth/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.Register(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("Register with password > 72 bytes returned %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	}
+
 	// Test login with empty fields
 	{
 		body, _ := json.Marshal(models.LoginRequest{
@@ -58,6 +75,23 @@ func TestRegisterAndLoginValidation(t *testing.T) {
 		h.Login(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("Login with empty fields returned %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	}
+
+	// Test login with long password (> 72 bytes)
+	{
+		longPassword := "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0extra"
+		body, _ := json.Marshal(models.LoginRequest{
+			Email:    "test@example.com",
+			Password: longPassword,
+		})
+		req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.Login(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("Login with password > 72 bytes returned %d, want %d", rec.Code, http.StatusBadRequest)
 		}
 	}
 }
