@@ -116,7 +116,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 			From:          from,
 			To:            to,
 			Subject:       subject,
-			Snippet:       msg.Snippet,
+			Snippet:       gmail.Snippet(msg),
 			Body:          plain,
 			LabelIDs:      labelIDs,
 			ReceivedDate:  date,
