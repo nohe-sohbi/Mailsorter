@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { emailService, labelService, apiError } from '../services/api';
-import { X, Archive, Trash, Mail, BellOff, Shield, Paperclip, Star, Download, ChevronLeft, ChevronRight, Check, Sparkles, Tag } from '../ui/icons';
+import { X, Archive, Trash, Mail, BellOff, Shield, Paperclip, Star, Download, ChevronLeft, ChevronRight, Check, Sparkles, Tag, Alert } from '../ui/icons';
 import Spinner from '../ui/Spinner';
-import { ErrorState, ConfidenceRing } from '../ui/primitives';
+import { ErrorState } from '../ui/primitives';
+import { isSure } from './inbox/planGroups';
 import { actionMeta } from '../ui/actions';
 import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
@@ -430,65 +431,72 @@ function EmailReader({
               <Sparkles size={18} className="animate-spin" />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-bold text-brand-900">Analyse IA en cours?</div>
+              <div className="text-sm font-bold text-brand-900">Analyse IA en cours...</div>
               <div className="text-xs text-brand-700/80">Recherche de la meilleure action pour cet email</div>
             </div>
           </div>
         )}
 
-        {/* AI Suggestion Card */}
+        {/* The same verdict the triage plan shows, in the same words: the verb
+            written out (on the button too), the reason in full, and a flag only
+            when the model is unsure. It used to carry a confidence ring, a
+            generic "Appliquer", a gradient the design system rules out (its
+            white middle band glared in the dark theme), and accents that had
+            been saved as literal "?" bytes. */}
         {!aiAnalyzing && aiSuggestion && (() => {
           const meta = actionMeta(aiSuggestion.action);
+          const verdict =
+            aiSuggestion.action === 'label' && aiSuggestion.labelName
+              ? `${meta.label} « ${aiSuggestion.labelName} »`
+              : meta.label;
           return (
-            <div className="mt-4 overflow-hidden rounded-xl border border-brand-200/90 bg-gradient-to-r from-brand-50/90 via-white to-brand-50/50 p-4 shadow-sm">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <ConfidenceRing value={aiSuggestion.confidence} color={meta.ring} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-brand-700">
-                        <Sparkles size={13} className="fill-brand-200" />
-                        Recommandation IA
+            <div className="mt-4 rounded-xl border border-brand-200/80 bg-brand-50/60 p-4">
+              <div className="flex items-start gap-3">
+                <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', meta.chip)} aria-hidden>
+                  <meta.Icon size={18} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-brand-700">
+                      <Sparkles size={13} aria-hidden /> Recommandation IA
+                    </span>
+                    {!isSure(aiSuggestion.confidence) && (
+                      <span className="chip bg-caution-50 py-0.5 text-caution-700">
+                        <Alert size={12} aria-hidden /> À vérifier
                       </span>
-                      <span className={cn('chip shrink-0 py-0.5 text-xs font-semibold', meta.chip)}>
-                        <meta.Icon size={12} />
-                        {aiSuggestion.action === 'label'
-                          ? `?tiqueter : ${aiSuggestion.labelName || 'Libell?'}`
-                          : meta.label}
-                      </span>
-                    </div>
-                    {aiSuggestion.reasoning && (
-                      <p className="mt-1 text-xs leading-relaxed text-ink-700">
-                        ? {aiSuggestion.reasoning} ?
-                      </p>
                     )}
                   </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2 self-end sm:self-center">
-                  {onApplySuggestion && (
-                    <button
-                      type="button"
-                      onClick={() => onApplySuggestion(aiSuggestion)}
-                      className="btn-primary btn-sm flex items-center gap-1.5 shadow-sm"
-                      title="Appliquer cette recommandation"
-                    >
-                      <Check size={14} />
-                      <span>Appliquer</span>
-                    </button>
+                  <p className="mt-1 font-semibold text-ink-900">{verdict}</p>
+                  {aiSuggestion.reasoning && (
+                    <p className="mt-0.5 text-sm leading-relaxed text-ink-700">{aiSuggestion.reasoning}</p>
                   )}
+                </div>
+              </div>
+              {(onApplySuggestion || onRejectSuggestion) && (
+                <div className="mt-3 flex items-center justify-end gap-1.5">
                   {onRejectSuggestion && (
                     <button
                       type="button"
                       onClick={() => onRejectSuggestion(aiSuggestion)}
-                      className="btn-ghost btn-sm text-xs text-muted hover:text-ink-800"
+                      className="btn-ghost h-9 rounded-lg px-3"
                       title="Ignorer cette recommandation"
                     >
-                      <X size={14} />
-                      <span className="hidden sm:inline">Ignorer</span>
+                      Ignorer
+                    </button>
+                  )}
+                  {onApplySuggestion && (
+                    <button
+                      type="button"
+                      onClick={() => onApplySuggestion(aiSuggestion)}
+                      className={cn('btn h-9 rounded-lg px-3', meta.quiet || 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
+                      aria-label={`${verdict} : appliquer la recommandation`}
+                    >
+                      <meta.Icon size={15} aria-hidden />
+                      {meta.label}
                     </button>
                   )}
                 </div>
-              </div>
+              )}
             </div>
           );
         })()}
