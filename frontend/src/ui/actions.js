@@ -8,6 +8,10 @@ import { Archive, Trash, Tag, Pin, Mail, Undo, Clock, BellOff, Star } from './ic
 // for `read`/`star` because its table simply had no entry for them. One table
 // with a real fallback removes both classes of bug.
 //
+// `quiet` is the tinted button for a verdict the user can apply in one tap (the
+// triage plan): coloured like the verb's chip, so a row reads at a glance, and
+// never solid, because the solid primary is kept for the one bulk action.
+//
 // Keys are the canonical backend vocabulary. Synonyms the API also emits
 // (`trash`, `markRead`) are folded onto their canonical key by `actionMeta`.
 export const ACTIONS = {
@@ -20,6 +24,7 @@ export const ACTIONS = {
     chip: 'bg-info-50 text-info-700',
     solid: 'bg-info-fill',
     ring: 'rgb(var(--info-500))',
+    quiet: 'bg-info-50 text-info-700 hover:bg-info-100',
     destructive: false,
   },
   delete: {
@@ -31,6 +36,7 @@ export const ACTIONS = {
     chip: 'bg-danger-50 text-danger-700',
     solid: 'bg-danger-fill',
     ring: 'rgb(var(--danger-500))',
+    quiet: 'bg-danger-50 text-danger-700 hover:bg-danger-100',
     destructive: true,
   },
   label: {
@@ -42,6 +48,7 @@ export const ACTIONS = {
     chip: 'bg-caution-50 text-caution-700',
     solid: 'bg-caution-fill',
     ring: 'rgb(var(--caution-500))',
+    quiet: 'bg-caution-50 text-caution-700 hover:bg-caution-100',
     destructive: false,
   },
   keep: {
@@ -53,6 +60,7 @@ export const ACTIONS = {
     chip: 'bg-positive-50 text-positive-700',
     solid: 'bg-positive-fill',
     ring: 'rgb(var(--positive-500))',
+    quiet: 'bg-positive-50 text-positive-700 hover:bg-positive-100',
     destructive: false,
   },
   read: {

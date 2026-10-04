@@ -8,14 +8,7 @@ import { actionMeta } from '../ui/actions';
 import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
-
-const AVATAR_TONES = ['bg-brand-fill', 'bg-info-fill', 'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill'];
-
-function toneFor(seed = '') {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  return AVATAR_TONES[h % AVATAR_TONES.length];
-}
+import { toneFor } from '../ui/avatar';
 
 function extractEmail(from) {
   const match = from?.match(/<(.+)>/);

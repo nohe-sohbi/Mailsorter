@@ -7,6 +7,7 @@ import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
 import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
+import TriagePlan, { useTriagePlan } from '../components/inbox/TriagePlan';
 import SnoozeButton from '../ui/SnoozeMenu';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
@@ -14,6 +15,7 @@ import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitive
 import { useScrollLock } from '../ui/scrollLock';
 import { actionMeta, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
+import { toneFor } from '../ui/avatar';
 import {
   Sparkles, Archive, Trash, Tag, Search, Refresh, Inbox as InboxIcon,
   Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard, BellOff, Star, Filter,
@@ -43,7 +45,7 @@ const SHORTCUTS = [
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
   ['S', 'Mettre en favori'],
-  ['A', 'Tout appliquer (suggestions)'],
+  ['A', 'Ranger les suggestions sûres'],
   ['I', "Demander un tri IA (dans l'email)"],
   ['R', 'Synchroniser'],
   ['/', 'Rechercher'],
@@ -62,13 +64,6 @@ const QUICK_FILTERS = [
   { id: 'attach', label: 'Pièces jointes', query: 'in:inbox has:attachment', Icon: Tag },
   { id: 'big', label: 'Volumineux', query: 'in:inbox larger:5M', Icon: Archive },
 ];
-
-const AVATAR_TONES = ['bg-brand-fill', 'bg-info-fill', 'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill'];
-const toneFor = (seed = '') => {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  return AVATAR_TONES[h % AVATAR_TONES.length];
-};
 
 // Mirrors internal/search.SuggestName: the save dialog opens on the query's
 // most specific term rather than an empty field, because naming a filter is the
@@ -140,27 +135,6 @@ function SaveSearchDialog({ query, onCancel, onSave }) {
   );
 }
 
-function ConfidenceRing({ value = 0, color = 'rgb(var(--brand-600))' }) {
-  const pct = Math.round((value || 0) * 100);
-  const r = 13;
-  const c = 2 * Math.PI * r;
-  return (
-    <div className="relative h-9 w-9 shrink-0" title={`Confiance ${pct}%`}>
-      <svg viewBox="0 0 32 32" className="h-9 w-9 -rotate-90" aria-hidden>
-        <circle cx="16" cy="16" r={r} fill="none" stroke="rgb(var(--ink-200))" strokeWidth="3" />
-        <circle
-          cx="16" cy="16" r={r} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"
-          strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}
-        />
-      </svg>
-      <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-ink-700">
-        {pct}
-      </span>
-      <span className="sr-only">Confiance {pct} %</span>
-    </div>
-  );
-}
-
 // The display name out of a From header.
 //
 // The quotes are the part that is easy to forget: RFC 5322 wraps a display name
@@ -187,8 +161,17 @@ function Inbox() {
   const {
     emails, senders, subscriptions, suggestions, stats, pagination, error, activeQuery,
     loading, loadingMore, errorRetryable, fetchData, loadMoreEmails, removeEmails, patchEmail,
-    addSuggestion, removeSuggestion, removeSuggestions, restoreSuggestions, markUnsubscribed,
+    addSuggestion, removeSuggestion, restoreSuggestions, markUnsubscribed,
   } = useEmails();
+  // The AI's proposals, grouped by sender. Held here rather than inside the
+  // panel because the "a" shortcut applies it and every hand-made action below
+  // settles the verdicts it made moot.
+  const plan = useTriagePlan({
+    onTriaged: (n) => bumpGamify(n),
+    // The plan can open mail the list does not hold, so leaving the list is not
+    // enough to close the reader on a message the plan just moved.
+    onMoved: (ids) => setSelectedEmail((prev) => (prev && ids.includes(prev.messageId) ? null : prev)),
+  });
 
   const [aiAnalyzingId, setAiAnalyzingId] = useState(null);
 
@@ -201,13 +184,11 @@ function Inbox() {
   const [triageLabeling, setTriageLabeling] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [applyingAll, setApplyingAll] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [localSenders, setLocalSenders] = useState([]);
   const [senderFilter, setSenderFilter] = useState('');
   const [analyzingSender, setAnalyzingSender] = useState(null);
-  const [highConfOnly, setHighConfOnly] = useState(false);
   const [unsubscribing, setUnsubscribing] = useState(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -283,28 +264,30 @@ function Inbox() {
   }, [activeQuery, view]);
 
   // Drop ids that have left the list (triaged elsewhere, filtered out), and
-  // close the reader when the email it shows is gone: archiving from the list
-  // used to leave the message open in the panel, still offering Archiver and
-  // Supprimer on something that was no longer there.
+  // close the reader when the email it shows leaves the list: archiving from the
+  // list used to leave the message open in the panel, still offering Archiver
+  // and Supprimer on something that was no longer there.
+  //
+  // "Leaves", not "is absent". The triage plan opens mail the loaded page does
+  // not hold (a filter is on, or the page stops at 100), and closing on absence
+  // shut that reader at the first unrelated change to the list.
+  const listedRef = useRef(new Set());
   useEffect(() => {
     const live = new Set(emails.map((e) => e.messageId));
+    const listed = listedRef.current;
+    listedRef.current = live;
     setSelectedEmails((prev) => {
       if (prev.length === 0) return prev;
       const next = prev.filter((id) => live.has(id));
       return next.length === prev.length ? prev : next;
     });
-    setSelectedEmail((prev) => (prev && !live.has(prev.messageId) ? null : prev));
+    setSelectedEmail((prev) => (prev && listed.has(prev.messageId) && !live.has(prev.messageId) ? null : prev));
   }, [emails]);
 
   const dismissWelcome = () => {
     localStorage.setItem('mailsorter_onboarded', '1');
     setShowWelcome(false);
   };
-
-  const visibleSuggestions = useMemo(
-    () => (highConfOnly ? suggestions.filter((s) => (s.confidence || 0) >= 0.8) : suggestions),
-    [suggestions, highConfOnly]
-  );
 
   const filteredSenders = useMemo(() => {
     const q = senderFilter.trim().toLowerCase();
@@ -623,53 +606,19 @@ function Inbox() {
     }
   };
 
-  const handleApplyAll = async () => {
-    const batch = visibleSuggestions;
-    if (batch.length === 0) return;
-    const destructive = batch.filter((s) => actionMeta(s.action).destructive);
-    // "Tout appliquer" is also bound to a single keystroke, so it must never be
-    // able to trash mail without asking.
-    if (destructive.length > 0) {
-      const ok = await confirm({
-        title: 'Appliquer toutes les suggestions ?',
-        message: `${batch.length} action${batch.length > 1 ? 's' : ''} seront appliquées, dont ${destructive.length} suppression${destructive.length > 1 ? 's' : ''}.`,
-        detail: 'Les suppressions partent à la corbeille Gmail et restent récupérables 30 jours.',
-        confirmLabel: 'Tout appliquer',
-        danger: true,
-      });
-      if (!ok) return;
-    }
-
-    const ids = batch.map((s) => s.id || s._id);
-    setApplyingAll(true);
-    try {
-      const res = await aiService.applyBatch(ids);
-      const appliedIds = res.data?.appliedIds || ids;
-      removeSuggestions(appliedIds);
-      const appliedSet = new Set(appliedIds);
-      removeEmails(batch.filter((s) => appliedSet.has(s.id || s._id) && s.action !== 'keep').map((s) => s.emailId));
-      track('apply_all', { applied: res.data?.applied ?? appliedIds.length });
-      bumpGamify(res.data?.applied ?? appliedIds.length);
-      const n = res.data?.applied ?? appliedIds.length;
-      toast.success(`${n} action${n > 1 ? 's' : ''} appliquée${n > 1 ? 's' : ''}`);
-      if (res.data?.failed) toast.error(`${res.data.failed} action(s) ont échoué`);
-    } catch (err) {
-      toast.error("Impossible d'appliquer les suggestions");
-    } finally {
-      setApplyingAll(false);
-    }
-  };
-
-  const handleRejectAll = () => {
-    const batch = visibleSuggestions;
-    const ids = batch.map((s) => s.id || s._id);
-    removeSuggestions(ids);
-    ids.forEach((id) => aiService.rejectSuggestion(id).catch(() => {}));
-    // No "Rétablir" here: rejection is persisted server-side and there is no
-    // un-reject endpoint, so the button would only put rows back on screen that
-    // the next refresh would remove again. Rejecting costs nothing anyway:
-    // nothing was done to the emails themselves.
-    toast.info(`${ids.length} suggestion${plural(ids.length)} ignorée${plural(ids.length)}`);
+  // Opens one email of a plan group in the reader. The list may not hold it (a
+  // filter is on, or it sits past the loaded page), so the suggestion's own
+  // identity stands in until the reader has fetched the message.
+  const openSuggestedEmail = (suggestion) => {
+    const listed = emails.find((e) => e.messageId === suggestion.emailId);
+    setSelectedEmail(
+      listed || {
+        messageId: suggestion.emailId,
+        subject: suggestion.subject,
+        from: suggestion.from,
+        snippet: suggestion.snippet,
+      }
+    );
   };
 
   // --- Bulk actions over the selection --------------------------------------
@@ -729,8 +678,10 @@ function Inbox() {
 
         // Archiving and trashing take the message out of the inbox view; a
         // label or a read flag does not.
-        if (action === 'archive' || action === 'delete') removeEmails(applied);
-        else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
+        if (action === 'archive' || action === 'delete') {
+          removeEmails(applied);
+          plan.settle(applied);
+        } else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
         else if (action === 'unread') applied.forEach((id) => patchEmail(id, { isRead: false }));
         else if (action === 'star') applied.forEach((id) => patchEmail(id, { isStarred: true }));
         else if (action === 'unstar') applied.forEach((id) => patchEmail(id, { isStarred: false }));
@@ -809,6 +760,7 @@ function Inbox() {
         track('bulk_snooze', { preset: choice.preset || 'custom', snoozed: snoozed.length });
         bumpGamify(snoozed.length);
         removeEmails(snoozed);
+        plan.settle(snoozed);
         setSelectedEmails([]);
 
         if (snoozed.length === 0) {
@@ -841,6 +793,7 @@ function Inbox() {
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
       await emailService.action(email.messageId, action);
+      plan.settle(email.messageId);
       bumpGamify(1);
       undoToast(email.messageId, action, action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
     } catch (err) {
@@ -885,6 +838,7 @@ function Inbox() {
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
       await emailService.snooze(email.messageId, choice);
+      plan.settle(email.messageId);
       // `custom` rather than the instant itself: an exact wake time is personal
       // data and product analytics only needs to know the affordance was used.
       track('snooze', { preset: choice.preset || 'custom' });
@@ -1206,7 +1160,7 @@ function Inbox() {
       if (e.key === '?') { setShowShortcuts((s) => !s); return; }
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
       if (e.key === 'r') { handleSync(); return; }
-      if (e.key === 'a' && visibleSuggestions.length) { handleApplyAll(); return; }
+      if (e.key === 'a' && plan.totals.sure > 0) { plan.applyAll(); return; }
       if (view !== 'emails' || emails.length === 0) return;
 
       const cur = emails[focusedIndex];
@@ -1253,7 +1207,7 @@ function Inbox() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails, focusedIndex, view, visibleSuggestions, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
+  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
 
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
   const goalHit = gamify.today >= gamify.goal;
@@ -1534,76 +1488,10 @@ function Inbox() {
         </div>
       )}
 
-      {/* Suggestions panel */}
-      {visibleSuggestions.length > 0 && view === 'emails' && (
-        <div className="card mb-4 overflow-hidden animate-fade-up">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-brand-50/60 px-5 py-3">
-            <div className="flex items-center gap-2">
-              <Sparkles size={18} className="text-brand-600" />
-              <span className="font-bold text-ink-900">Suggestions IA</span>
-              <span className="chip bg-brand-100 text-brand-700">{visibleSuggestions.length}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setHighConfOnly((v) => !v)}
-                aria-pressed={highConfOnly}
-                className={cn('chip transition-colors', highConfOnly ? 'bg-positive-100 text-positive-700' : 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
-                title="N'afficher que les suggestions à haute confiance"
-              >
-                <Shield size={13} /> Haute confiance
-              </button>
-              <button onClick={handleRejectAll} className="btn-ghost btn-sm">Tout ignorer</button>
-              <button onClick={handleApplyAll} disabled={applyingAll} className="btn-primary btn-sm" title="Tout appliquer (a)">
-                {applyingAll ? <Spinner size={14} /> : <Bolt size={14} />} Tout appliquer
-              </button>
-            </div>
-          </div>
-          <ul className="divide-y divide-[rgb(var(--hairline))]">
-            {visibleSuggestions.map((suggestion) => {
-              const meta = actionMeta(suggestion.action);
-              // Identity now comes with the suggestion itself; the local list is
-              // only a fallback for an older backend.
-              const local = emails.find((e) => e.messageId === suggestion.emailId);
-              const subject = suggestion.subject || local?.subject;
-              const from = suggestion.from || local?.from;
-              return (
-                <li key={suggestion.id || suggestion._id} className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-surface-sunken sm:px-5">
-                  <ConfidenceRing value={suggestion.confidence} color={meta.ring} />
-                  <span className={cn('chip shrink-0', meta.chip)}>
-                    <meta.Icon size={13} />
-                    <span className="hidden sm:inline">
-                      {suggestion.action === 'label' ? suggestion.labelName || 'Libellé' : meta.label}
-                    </span>
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold text-ink-900">{subject || '(Sans sujet)'}</div>
-                    <div className="truncate text-xs text-muted">
-                      <span>{senderLabel(from) || 'Expéditeur inconnu'}</span>
-                      {suggestion.reasoning ? ` · ${suggestion.reasoning}` : ''}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      onClick={() => handleApplySuggestion(suggestion)}
-                      className="rounded-lg p-2 text-positive-600 transition-colors hover:bg-positive-50"
-                      aria-label={`Appliquer : ${meta.label}, ${subject || 'sans sujet'}`}
-                    >
-                      <Check size={18} />
-                    </button>
-                    <button
-                      onClick={() => handleRejectSuggestion(suggestion)}
-                      className="rounded-lg p-2 text-muted transition-colors hover:bg-ink-100"
-                      aria-label={`Ignorer la suggestion pour ${subject || 'sans sujet'}`}
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+      {/* The AI's proposals, one decision per sender rather than one row per
+          email. It used to be a flat list of every verdict, which turned eight
+          notifications from one sender into eight identical rows. */}
+      {view === 'emails' && <TriagePlan plan={plan} onOpenEmail={openSuggestedEmail} />}
 
       {/* Main content */}
       <div
