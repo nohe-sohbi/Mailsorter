@@ -9,6 +9,7 @@ import (
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
 // The batch endpoints validate the request fully before they touch Mongo or
@@ -205,5 +206,22 @@ func TestBatchActionRejectsMalformedJSON(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Errorf("malformed JSON = %d, want 400", res.StatusCode)
+	}
+}
+
+// apply-batch reports this so the client offers "Annuler" only where batch-undo
+// can perform it. It cannot on IMAP yet, and an undo that answers 501 after the
+// user pressed it is worse than none.
+func TestBatchUndoReachesOnlyTheGmailAPI(t *testing.T) {
+	cases := map[provider.Transport]bool{
+		provider.TransportGmailAPI: true,
+		provider.TransportIMAP:     false,
+		provider.TransportGraph:    false,
+		"":                         false,
+	}
+	for transport, want := range cases {
+		if got := batchUndoReaches(transport); got != want {
+			t.Errorf("batchUndoReaches(%q) = %v, want %v", transport, got, want)
+		}
 	}
 }

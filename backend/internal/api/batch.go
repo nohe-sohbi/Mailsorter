@@ -9,6 +9,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -178,6 +179,16 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, res)
+}
+
+// batchUndoReaches reports whether BatchUndo can reverse a batch for a mailbox
+// on this transport. It reaches the mailbox through gmailClientFor, so the
+// answer is the Gmail API alone, and any path that applies a batch without
+// going through BatchAction reports it from here (apply-batch does). Kept next
+// to BatchUndo so that porting it to a session changes the answer in the same
+// diff: an "Annuler" that answers 501 is worse than no button.
+func batchUndoReaches(transport provider.Transport) bool {
+	return transport == provider.TransportGmailAPI
 }
 
 // BatchUndo reverses a batch that was just applied. It is deliberately separate
