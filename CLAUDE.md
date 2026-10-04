@@ -98,8 +98,12 @@ frontend/
                          KeyTag, ElevatorPanel, Plaque, Emblem, useHotelFonts
   src/components/landing/ the Grand Hotel landing's sections (hl- classes) and
                          features.js, what the landing may promise (GMAIL_ONLY)
+  src/components/inbox/  the AI's triage plan on /inbox: TriagePlan.js (the panel
+                         and useTriagePlan, which applies, ignores, undoes and
+                         settles) and planGroups.js (pure: one group per sender
+                         and verdict, the "sure" threshold, the held order)
   src/services/api.js    every HTTP call in the app, grouped by service object
-  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
+  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak, avatar)
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
@@ -116,7 +120,7 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 325 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 332 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
@@ -185,7 +189,7 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (71 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (79 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `publicPrefixes` |
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
@@ -282,7 +286,7 @@ telling them to create a Google Cloud project that edition can never use.
 | Route | Page | Purpose |
 |---|---|---|
 | `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
-| `/inbox` | `pages/Inbox.js` | The cockpit: triage, suggestions, bulk apply, keyboard shortcuts (1068 lines, the heaviest file) |
+| `/inbox` | `pages/Inbox.js` | The cockpit: triage, the AI's triage plan (`components/inbox/`), bulk apply, keyboard shortcuts (2172 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
 | `/history` | `pages/History.js` | Action ledger + undo |
@@ -334,6 +338,16 @@ not answer gets the boot-error screen instead, which is a different branch.
   `selfHosted`, `uiTheme`). Never probe the instance from a component: App and Pricing each
   called it separately and could disagree about the same instance for a few
   hundred milliseconds. Everything else is local `useState`.
+- **The AI's suggestions are a plan, one row per sender and verdict, not one per
+  email.** `components/inbox/planGroups.js` groups them and is pure;
+  `useTriagePlan` in `TriagePlan.js` does the I/O, and the Inbox holds it because
+  the `a` shortcut needs it. Three rules come with it. A `keep` verdict is not a
+  task: it has its own block and applying it moves nothing. The bulk "Ranger"
+  takes only groups whose every verdict reaches `SURE_CONFIDENCE` (0.8, also what
+  flags the reader's card "À vérifier"), and "Annuler" is offered only when
+  apply-batch answers `reversible`. And any action that takes mail out of the
+  inbox by hand must call `plan.settle(ids)`, or the plan goes on proposing to
+  archive a message that is already gone.
 - **The edition is a frontend concern too.** A `self-hosted` instance bills nobody,
   so the header drops its pricing entry and `/pricing` redirects instead of
   rendering a page with no offer. The SPA still hardcodes no provider: the connect
@@ -348,7 +362,9 @@ not answer gets the boot-error screen instead, which is a different branch.
   address and an app password, and two copies of that table would be two copies
   that drift.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
-  state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`).
+  state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`), and so
+  does whether the triage plan is folded (`mailsorter_plan_collapsed`), a per-browser
+  convenience that is allowed to reset.
 
 ### Design system
 
