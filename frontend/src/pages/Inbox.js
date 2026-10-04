@@ -1355,7 +1355,11 @@ function Inbox() {
 
       {/* View toggle + primary action */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="inline-flex rounded-xl border border-hairline bg-surface p-1 shadow-soft" role="tablist">
+        {/* Bounded by the page and scrollable on its own. At 409px wide it made
+            the whole page wider than a 390px phone, and the browser widened the
+            layout viewport to match: every fixed toast, "Annuler" included, was
+            laid out off the bottom of the screen. */}
+        <div className="inline-flex max-w-full overflow-x-auto rounded-xl border border-hairline bg-surface p-1 shadow-soft" role="tablist">
           {[
             { id: 'emails', label: 'Emails', Icon: InboxIcon },
             { id: 'senders', label: `Expéditeurs · ${localSenders.length}`, Icon: Users },
@@ -1367,11 +1371,11 @@ function Inbox() {
               aria-selected={view === id}
               onClick={() => setView(id)}
               className={cn(
-                'flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors',
+                'flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-sm font-semibold transition-colors sm:px-3',
                 view === id ? 'bg-brand-fill text-white shadow-soft' : 'text-muted hover:text-ink-900'
               )}
             >
-              <Icon size={16} /> {label}
+              <Icon size={16} className="hidden sm:block" /> {label}
             </button>
           ))}
         </div>
