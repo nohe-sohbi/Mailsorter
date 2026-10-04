@@ -1,4 +1,6 @@
 import React from 'react';
+import { useHotel } from './hotel/HotelTheme';
+import Emblem from './hotel/Emblem';
 
 // Lightweight, dependency-free icon set (stroke-based, inherits currentColor).
 const base = {
@@ -18,19 +20,26 @@ const make = (paths) => ({ size = 20, className = '', ...rest }) => (
   </svg>
 );
 
-export const Logo = ({ size = 28, className = '' }) => (
-  <svg viewBox="0 0 32 32" width={size} height={size} className={className} aria-hidden>
-    <defs>
-      <linearGradient id="ms-logo" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stopColor="#2563eb" />
-        <stop offset="1" stopColor="#1d4ed8" />
-      </linearGradient>
-    </defs>
-    <rect width="32" height="32" rx="8" fill="url(#ms-logo)" />
-    <rect x="7" y="9" width="18" height="14" rx="2.5" fill="none" stroke="white" strokeWidth="2.2" />
-    <path d="M7 11l9 6 9-6" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
+// The mark. Under the Grand Hotel theme it is the hotel's emblem (an envelope
+// under a pediment), so every screen that draws the logo, the public pages
+// included, follows the switch without knowing about it.
+export const Logo = ({ size = 28, className = '' }) => {
+  const hotel = useHotel();
+  if (hotel) return <Emblem size={size} />;
+  return (
+    <svg viewBox="0 0 32 32" width={size} height={size} className={className} aria-hidden>
+      <defs>
+        <linearGradient id="ms-logo" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#2563eb" />
+          <stop offset="1" stopColor="#1d4ed8" />
+        </linearGradient>
+      </defs>
+      <rect width="32" height="32" rx="8" fill="url(#ms-logo)" />
+      <rect x="7" y="9" width="18" height="14" rx="2.5" fill="none" stroke="white" strokeWidth="2.2" />
+      <path d="M7 11l9 6 9-6" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+};
 
 export const Sparkles = make(
   <>

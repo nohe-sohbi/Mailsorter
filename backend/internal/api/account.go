@@ -273,5 +273,6 @@ func (h *Handler) GetDigest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, digest.Render(summary, time.Now()))
+	// The preview is the email as it will be sent, theme included.
+	writeJSON(w, http.StatusOK, digest.RenderStyle(summary, time.Now(), digestStyle()))
 }

@@ -8,6 +8,46 @@ import { track } from '../lib/analytics';
 import { detectProvider, ProviderBriefing } from '../components/MailboxBriefing';
 import { Shield, Refresh, Trash, Check, Google, Sparkles, Inbox } from '../ui/icons';
 import Spinner from '../ui/Spinner';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import KeyTag from '../ui/hotel/KeyTag';
+import PageHead from '../components/hotel/PageHead';
+import { canConnect } from '../components/landing/features';
+
+const TILTS = [-3, 2, -1, 3, -2, 2, -3, 1];
+
+// A brass key, the badge of a screen that hands Mailsorter the key to a box.
+function KeyGlyph() {
+  return (
+    <span className="hd-floor" aria-hidden="true">
+      <svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="#2B1B1E" strokeWidth="1.6" strokeLinecap="round">
+        <circle cx="8" cy="13" r="4.5" fill="#FBF1E4" />
+        <path d="M12.5 13h10M19 13v4M22.5 13v3" />
+      </svg>
+    </span>
+  );
+}
+
+// The key board of the landing, small: the catalog the server returned, a key
+// per provider, muted when no transport the server knows reaches it yet.
+function HotelKeyBoard({ providers, isConfigured }) {
+  return (
+    <div className="hd-keys-card animate-fade-up">
+      <h3 className="hd-keys-card__t">Ça marche avec votre boîte.</h3>
+      <p>
+        Saisissez l'adresse : Mailsorter reconnaît le fournisseur et vous dit comment obtenir le mot de passe
+        d'application. Une minute, en général.
+      </p>
+      {providers.length > 0 && (
+        <div className="hd-keys">
+          {providers.map((p, i) => {
+            const soon = !canConnect(p, isConfigured);
+            return <KeyTag key={p.key} name={p.name} note={soon ? 'bientôt' : 'IMAP'} soon={soon} tilt={TILTS[i % TILTS.length]} />;
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
   const isGmail = mailbox.transport === 'gmail' || mailbox.provider === 'google';
@@ -62,6 +102,7 @@ function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
 
 function Connect() {
   const toast = useToast();
+  const hotel = useHotel();
   const confirm = useConfirm();
   const navigate = useNavigate();
   const { isConfigured } = useInstance();
@@ -175,17 +216,25 @@ function Connect() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6">
-      <div className="mb-8">
-        <span className="chip mb-3 bg-brand-50 text-brand-700">
-          <Sparkles size={14} /> Étape 2 sur 2
-        </span>
-        <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl">
-          Définir la boîte mail à ranger
-        </h1>
-        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-          Choisissez l'adresse email sur laquelle Mailsorter doit opérer le tri. Vos emails restent hébergés chez votre fournisseur, Mailsorter ne fait que les lire et les ranger selon vos règles.
-        </p>
-      </div>
+      {hotel ? (
+        <PageHead
+          badge={<KeyGlyph />}
+          title="La boîte à trier"
+          sub="Choisissez l'adresse que Mailsorter doit ranger. Vos e-mails restent chez votre fournisseur : il les lit, propose, et vous validez."
+        />
+      ) : (
+        <div className="mb-8">
+          <span className="chip mb-3 bg-brand-50 text-brand-700">
+            <Sparkles size={14} /> Étape 2 sur 2
+          </span>
+          <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl">
+            Définir la boîte mail à ranger
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
+            Choisissez l'adresse email sur laquelle Mailsorter doit opérer le tri. Vos emails restent hébergés chez votre fournisseur, Mailsorter ne fait que les lire et les ranger selon vos règles.
+          </p>
+        </div>
+      )}
 
       {mailbox ? (
         <ConnectedMailbox
@@ -312,6 +361,8 @@ function Connect() {
 
             {detected ? (
               <ProviderBriefing provider={detected} />
+            ) : hotel ? (
+              <HotelKeyBoard providers={providers} isConfigured={isConfigured} />
             ) : (
               <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-6">
                 <span className="chip mb-3 bg-brand-50 text-brand-700">Aide fournisseur</span>

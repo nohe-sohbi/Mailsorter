@@ -861,6 +861,11 @@ plain-text body + HTML body). This is the content payload also used by the daily
 digest scheduler (see Account Settings). Delivery uses the `gmail.send` scope; a
 background loop emails opted-in users once a day at their chosen UTC hour.
 
+The HTML body is drawn in the instance's look (`UI_THEME`): the plain recap
+under `classic`, the Grand Hotel one under `hotel` (email-safe tables and
+inline styles, web-safe font fallbacks). `subject` and `text` are the same in
+both. This route returns exactly what the scheduler sends, theme included.
+
 ```json
 {
   "subject": "Mailsorter : 3 emails triés aujourd'hui",
@@ -1669,8 +1674,10 @@ It decides which mailbox providers exist (see `GET /api/providers`), hence
 `mailboxSignIn`, and whether there is anything to bill at all.
 
 `uiTheme` is `hotel` or `classic`, from the `UI_THEME` environment variable
-(default `hotel`). The SPA renders the Grand Hotel landing or the classic one on
-`/`, chosen at runtime: switching needs a backend restart, never a rebuild. A
+(default `hotel`). The SPA wears the Grand Hotel theme or the classic one, on
+the landing and on every screen of the dashboard, chosen at runtime: switching
+needs a backend restart, never a rebuild. The same variable decides the look of
+the daily digest email (see `GET /api/stats/digest`). A
 visitor can preview the other one for their tab with `?ui=hotel` or
 `?ui=classic` (`?ui=default` clears it).
 

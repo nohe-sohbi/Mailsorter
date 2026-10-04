@@ -1,5 +1,7 @@
 import React from 'react';
 import { cn } from './cn';
+import { useHotel } from './hotel/HotelTheme';
+import Door from './hotel/Door';
 
 // The three patterns every screen was copy-pasting, with the divergences that
 // copy-pasting produces: six empty states in three different sizes, four
@@ -11,6 +13,7 @@ import { cn } from './cn';
 // technology read them as unlabelled buttons with no state at all.
 export function Toggle({ checked, onChange, label, description, disabled = false, id }) {
   const labelId = id ? `${id}-label` : undefined;
+  const hotel = useHotel();
   return (
     <div className="flex items-center gap-3">
       {(label || description) && (
@@ -32,17 +35,23 @@ export function Toggle({ checked, onChange, label, description, disabled = false
         aria-label={labelId ? undefined : label}
         disabled={disabled}
         onClick={() => onChange?.(!checked)}
-        className={cn(
-          'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-          checked ? 'bg-brand-fill' : 'bg-ink-400'
-        )}
+        className={
+          hotel
+            ? cn('ht-switch disabled:cursor-not-allowed disabled:opacity-50', checked && 'is-on')
+            : cn(
+                'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                checked ? 'bg-brand-fill' : 'bg-ink-400'
+              )
+        }
       >
-        <span
-          className={cn(
-            'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all',
-            checked ? 'left-[22px]' : 'left-0.5'
-          )}
-        />
+        {!hotel && (
+          <span
+            className={cn(
+              'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all',
+              checked ? 'left-[22px]' : 'left-0.5'
+            )}
+          />
+        )}
       </button>
     </div>
   );
@@ -51,9 +60,27 @@ export function Toggle({ checked, onChange, label, description, disabled = false
 // Progress carries its value to assistive tech, and the rail is dark enough to
 // be seen against the card it sits on: the old `bg-ink-100` rail came in at
 // 1,23:1, which is to say invisible to the people who needed it most.
+// The hotel draws it as the quota gauge: an ink-ruled rail, a flat fill.
+const HOTEL_METER = { brand: 'hd-meter', positive: 'hd-meter is-teal', caution: 'hd-meter is-plum' };
+
 export function Progress({ value = 0, max = 100, label, tone = 'brand', className }) {
+  const hotel = useHotel();
   const safeMax = max > 0 ? max : 100;
   const pct = Math.max(0, Math.min(100, Math.round((value / safeMax) * 100)));
+  if (hotel) {
+    return (
+      <div
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={label}
+        className={cn(HOTEL_METER[tone] || HOTEL_METER.brand, className)}
+      >
+        <i style={{ width: `${pct}%` }} />
+      </div>
+    );
+  }
   const tones = {
     brand: 'bg-brand-fill',
     positive: 'bg-positive-fill',
@@ -76,8 +103,54 @@ export function Progress({ value = 0, max = 100, label, tone = 'brand', classNam
   );
 }
 
+// The hotel's empty state: a drawing when the screen names one (`scene`, the
+// props of ui/hotel/Door: { prop, color, number }), the icon on a brass medal
+// otherwise, and the title in the display face. The classic theme ignores
+// `scene` and `hotelTitle` / `hotelDescription`, the theme's own wording.
+function HotelEmpty({ Icon, scene, title, description, action, compact }) {
+  return (
+    <div className={cn('hd-empty', compact && 'is-compact')}>
+      {scene ? (
+        <Door crop color={scene.color || '#2F6F73'} prop={scene.prop} number={scene.number} className="hd-empty__art" />
+      ) : (
+        Icon && (
+          <span className="hd-empty__medal" aria-hidden>
+            <Icon size={26} />
+          </span>
+        )
+      )}
+      <h3>{title}</h3>
+      {description && <p>{description}</p>}
+      {action && <div className="hd-empty__act">{action}</div>}
+    </div>
+  );
+}
+
 // EmptyState: one shape, one scale, everywhere.
-export function EmptyState({ Icon, title, description, action, tone = 'brand', compact = false }) {
+export function EmptyState({
+  Icon,
+  title,
+  description,
+  action,
+  tone = 'brand',
+  compact = false,
+  scene,
+  hotelTitle,
+  hotelDescription,
+}) {
+  const hotel = useHotel();
+  if (hotel) {
+    return (
+      <HotelEmpty
+        Icon={Icon}
+        scene={scene}
+        title={hotelTitle || title}
+        description={hotelDescription || description}
+        action={action}
+        compact={compact}
+      />
+    );
+  }
   const tones = {
     brand: 'bg-brand-50 text-brand-600',
     positive: 'bg-positive-50 text-positive-600',
@@ -113,6 +186,26 @@ export function EmptyState({ Icon, title, description, action, tone = 'brand', c
 // Rendering the celebratory "Inbox Zero atteint 🎉" on a Gmail outage told the
 // user the exact opposite of the truth.
 export function ErrorState({ title = 'Chargement impossible', message, onRetry, compact = false }) {
+  const hotel = useHotel();
+  if (hotel) {
+    return (
+      <div className={cn('hd-empty', compact && 'is-compact')} role="alert">
+        <span className="hd-empty__medal is-danger" aria-hidden>
+          <svg viewBox="0 0 24 24" width={26} height={26} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 9v4M12 17h.01" />
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+          </svg>
+        </span>
+        <h3>{title}</h3>
+        {message && <p className="break-words">{message}</p>}
+        {onRetry && (
+          <button onClick={onRetry} className="btn-secondary hd-empty__act">
+            Réessayer
+          </button>
+        )}
+      </div>
+    );
+  }
   return (
     <div
       className={cn(

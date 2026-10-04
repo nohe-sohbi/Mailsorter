@@ -30,16 +30,18 @@ var insecureEncryptionKeys = map[string]bool{
 // SHA-256-derived to 32 bytes, but a short input means low entropy.
 const minEncryptionKeyLen = 32
 
-// UITheme is which look the SPA wears. The server renders nothing with it: it
-// reads it only so that a typo stops the boot instead of silently serving the
-// other landing, and so the SPA can learn it from GET /api/config/status at
-// boot. Switching needs a backend restart, never a frontend rebuild.
+// UITheme is which look Mailsorter wears: the SPA (landing and dashboard),
+// which learns it from GET /api/config/status at boot, and the one thing the
+// server renders itself, the HTML of the daily digest email. It is validated
+// so that a typo stops the boot instead of silently serving the other look.
+// Switching needs a backend restart, never a frontend rebuild.
 type UITheme string
 
 const (
-	// UIThemeHotel is the "Grand Hotel" landing and design system.
+	// UIThemeHotel is the "Grand Hotel" design system: landing, dashboard and
+	// digest email.
 	UIThemeHotel UITheme = "hotel"
-	// UIThemeClassic is the landing that predates it, kept so the opinionated
+	// UIThemeClassic is the look that predates it, kept so the opinionated
 	// theme can be unplugged without touching the code.
 	UIThemeClassic UITheme = "classic"
 )

@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { cn } from './cn';
 import { Check, X, Alert, Sparkles } from './icons';
+import { useHotel } from './hotel/HotelTheme';
 
 const ToastContext = createContext(null);
 
@@ -12,6 +13,7 @@ const VARIANTS = {
 
 function ToastItem({ toast, onDismiss }) {
   const { icon: Icon, ring } = VARIANTS[toast.variant] || VARIANTS.info;
+  const hotel = useHotel();
   // Hover and focus are independent reasons to hold the timer. Collapsing them
   // into one flag meant moving the mouse away dismissed a toast a keyboard user
   // had tabbed into, losing the "Annuler" they were reaching for.
@@ -33,6 +35,39 @@ function ToastItem({ toast, onDismiss }) {
       remainingRef.current = Math.max(0, remainingRef.current - (Date.now() - startedRef.current));
     };
   }, [paused, toast.duration, toast.id, onDismiss]);
+
+  const hold = {
+    onMouseEnter: () => setHovered(true),
+    onMouseLeave: () => setHovered(false),
+    onFocusCapture: () => setFocused(true),
+    onBlurCapture: () => setFocused(false),
+  };
+
+  // The hotel's notification: ink on paper by day, paper on ink by night
+  // (hotel.css, .ht-toast), the action underlined in mustard.
+  if (hotel) {
+    return (
+      <div className={cn('ht-toast hd-toast', `is-${toast.variant}`)} {...hold}>
+        <span className="hd-toast__mark" aria-hidden>
+          <Icon size={13} />
+        </span>
+        <p>{toast.message}</p>
+        {toast.action && (
+          <button
+            onClick={() => {
+              toast.action.onClick();
+              onDismiss(toast.id);
+            }}
+          >
+            {toast.action.label}
+          </button>
+        )}
+        <button onClick={() => onDismiss(toast.id)} className="hd-toast__x" aria-label="Fermer la notification">
+          <X size={15} />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div

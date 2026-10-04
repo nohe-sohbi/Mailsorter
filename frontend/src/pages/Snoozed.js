@@ -6,6 +6,9 @@ import { EmptyState, ErrorState, LiveAnnouncer } from '../ui/primitives';
 import { Clock, Undo, Mail, Alert, Check } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 import { cn } from '../ui/cn';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import PageHead from '../components/hotel/PageHead';
+import { hotelTone, initials } from '../components/hotel/avatar';
 
 const AVATAR_GRADIENTS = [
   'bg-brand-fill', 'bg-info-fill',
@@ -33,6 +36,10 @@ const TABS = [
       Icon: Clock,
       tone: 'brand',
       title: 'Rien en attente',
+      scene: { prop: 'alarm', color: '#2F6F73' },
+      hotelTitle: 'Rien en attente.',
+      hotelDescription:
+        "Un e-mail reporté disparaît de la boîte et revient ce soir, demain ou ce week-end, comme si vous l'aviez reçu à ce moment-là.",
       description:
         "Depuis le lecteur d'email, utilisez « Reporter » pour mettre un email de côté jusqu'au moment qui vous arrange.",
     },
@@ -47,6 +54,7 @@ const TABS = [
       Icon: Check,
       tone: 'positive',
       title: 'Aucun report terminé',
+      scene: { prop: 'wallclock', color: '#2F6F73' },
       description:
         'Les emails revenus dans votre boîte, à l’heure prévue ou réactivés à la main, s’afficheront ici.',
     },
@@ -61,6 +69,7 @@ const TABS = [
       Icon: Check,
       tone: 'positive',
       title: 'Aucun échec',
+      scene: { prop: 'dnd', color: '#2F6F73' },
       description: 'Tous vos reports sont revenus dans votre boîte comme prévu.',
     },
   },
@@ -141,6 +150,7 @@ function countdown(dateStr, now) {
 
 function Snoozed() {
   const toast = useToast();
+  const hotel = useHotel();
   const confirm = useConfirm();
   const [tab, setTab] = useState('scheduled');
   const [snoozes, setSnoozes] = useState([]);
@@ -280,15 +290,23 @@ function Snoozed() {
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
       <LiveAnnouncer message={announcement} />
 
-      <div className="mb-6 flex items-center gap-3">
-        <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-          <Clock size={22} />
-        </span>
-        <div>
-          <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Reporté</h1>
-          <p className="text-sm text-muted">Les emails sortis de votre boîte, qui reviendront au bon moment.</p>
+      {hotel ? (
+        <PageHead
+          floor="/snoozed"
+          title="Plus tard"
+          sub="Les e-mails sortis de votre boîte, qui reviendront au bon moment."
+        />
+      ) : (
+        <div className="mb-6 flex items-center gap-3">
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+            <Clock size={22} />
+          </span>
+          <div>
+            <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Reporté</h1>
+            <p className="text-sm text-muted">Les emails sortis de votre boîte, qui reviendront au bon moment.</p>
+          </div>
         </div>
-      </div>
+      )}
 
       <div
         role="tablist"
@@ -353,6 +371,9 @@ function Snoozed() {
               tone={meta.empty.tone}
               title={meta.empty.title}
               description={meta.empty.description}
+              scene={meta.empty.scene}
+              hotelTitle={meta.empty.hotelTitle}
+              hotelDescription={meta.empty.hotelDescription}
             />
           </div>
         ) : (
@@ -366,10 +387,10 @@ function Snoozed() {
                     aria-hidden="true"
                     className={cn(
                       'flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white',
-                      gradientFor(s.from)
+                      hotel ? hotelTone(s.from) : gradientFor(s.from)
                     )}
                   >
-                    {senderName(s.from)[0]?.toUpperCase() || '?'}
+                    {hotel ? initials(senderName(s.from)) : senderName(s.from)[0]?.toUpperCase() || '?'}
                   </span>
 
                   <div className="min-w-0 flex-1">

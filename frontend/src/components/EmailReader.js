@@ -8,6 +8,9 @@ import { actionMeta } from '../ui/actions';
 import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import { hotelTone, initials } from './hotel/avatar';
+import { proposalText } from './hotel/InboxBits';
 
 const AVATAR_TONES = ['bg-brand-fill', 'bg-info-fill', 'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill'];
 
@@ -91,6 +94,7 @@ function EmailReader({
   onRejectSuggestion,
 }) {
   const toast = useToast();
+  const hotel = useHotel();
   const [full, setFull] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -402,7 +406,7 @@ function EmailReader({
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">
-        <h2 className="text-lg font-bold leading-snug text-ink-900 sm:text-xl">
+        <h2 className={hotel ? 'hd-reader-title' : 'text-lg font-bold leading-snug text-ink-900 sm:text-xl'}>
           {merged.subject || '(Sans sujet)'}
         </h2>
 
@@ -410,11 +414,11 @@ function EmailReader({
           <span
             className={cn(
               'flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-base font-bold text-white',
-              toneFor(merged.from)
+              hotel ? hotelTone(merged.from) : toneFor(merged.from)
             )}
             aria-hidden
           >
-            {name[0]?.toUpperCase() || '?'}
+            {hotel ? initials(name) : name[0]?.toUpperCase() || '?'}
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate font-semibold text-ink-900">{name}</div>
@@ -430,8 +434,48 @@ function EmailReader({
           )}
         </div>
 
+        {/* The hotel's proposal: what Mailsorter would do, set as a question,
+            and the two answers under it. */}
+        {hotel && aiAnalyzing && (
+          <div className="hd-reader-prop" role="status">
+            <div className="ht-prop">
+              <Spinner size={22} className="shrink-0 text-brand-600" />
+              <div>
+                <small>Mailsorter lit cet e-mail</small>
+                <b>Un instant.</b>
+              </div>
+            </div>
+          </div>
+        )}
+        {hotel && !aiAnalyzing && aiSuggestion && (
+          <div className="hd-reader-prop">
+            <div className={cn('ht-prop', aiSuggestion.action === 'keep' && 'is-safe')}>
+              <Sparkles size={26} />
+              <div className="min-w-0">
+                <small>
+                  Mailsorter propose, confiance {Math.round((aiSuggestion.confidence || 0) * 100)}{'\u00a0'}%
+                </small>
+                <b>{proposalText(aiSuggestion)}</b>
+                {aiSuggestion.reasoning && <p>{aiSuggestion.reasoning}</p>}
+              </div>
+            </div>
+            <div className="hd-reader-prop__acts">
+              {onApplySuggestion && (
+                <button type="button" onClick={() => onApplySuggestion(aiSuggestion)} className="btn-primary btn-sm">
+                  <Check size={14} /> Valider
+                </button>
+              )}
+              {onRejectSuggestion && (
+                <button type="button" onClick={() => onRejectSuggestion(aiSuggestion)} className="btn-secondary btn-sm">
+                  Passer
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* AI Analyzing banner */}
-        {aiAnalyzing && (
+        {!hotel && aiAnalyzing && (
           <div className="mt-4 flex items-center gap-3 rounded-xl border border-brand-200/80 bg-brand-50/60 px-4 py-3 text-brand-900 animate-pulse">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
               <Sparkles size={18} className="animate-spin" />
@@ -444,7 +488,7 @@ function EmailReader({
         )}
 
         {/* AI Suggestion Card */}
-        {!aiAnalyzing && aiSuggestion && (() => {
+        {!hotel && !aiAnalyzing && aiSuggestion && (() => {
           const meta = actionMeta(aiSuggestion.action);
           return (
             <div className="mt-4 overflow-hidden rounded-xl border border-brand-200/90 bg-gradient-to-r from-brand-50/90 via-white to-brand-50/50 p-4 shadow-sm">

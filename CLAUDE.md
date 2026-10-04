@@ -94,10 +94,16 @@ frontend/
                          InstanceContext: what this deployment is (edition, billing, configured)
   src/styles/hotel.css   the Grand Hotel theme (UI_THEME=hotel): tokens under
                          .theme-hotel, day and night, ht- primitives, motion
+  src/styles/hotel-app.css the theme's dashboard half: the classic tokens
+                         re-pointed at the hotel palette, the shape language,
+                         and the hd- classes. Loaded on demand, never by classic
   src/ui/hotel/          the theme's drawings and bricks: HotelFacade, Door, Vault,
-                         KeyTag, ElevatorPanel, Plaque, Emblem, useHotelFonts
+                         KeyTag, ElevatorPanel, Plaque, Emblem, useHotelFonts,
+                         and HotelTheme.js (the switch: HotelThemeProvider, useHotel)
   src/components/landing/ the Grand Hotel landing's sections (hl- classes) and
                          features.js, what the landing may promise (GMAIL_ONLY)
+  src/components/hotel/  the Grand Hotel dashboard (hd- classes): the lift-panel
+                         header, floors.js, PageHead, the inbox bits, the lift doors
   src/services/api.js    every HTTP call in the app, grouped by service object
   src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
   src/lib/analytics.js   Umami tracker injection + track()
@@ -116,7 +122,7 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 325 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 337 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
@@ -158,7 +164,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
-| `digest` | The 7-day recap rendered into subject + text + HTML | `Digest` |
+| `digest` | The 7-day recap rendered into subject + text + HTML, the HTML in the instance's look (classic or Grand Hotel, email-safe) | `Digest`, `Render`, `RenderStyle`, `Style*` |
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
@@ -212,7 +218,7 @@ The outbound clients and primitives:
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
 | `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport` |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
-| `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
+| `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail, and `digestStyle()`, the UI theme as a digest style |
 | `auto_sync.go` | 30 min per-user background inbox sync |
 
 ### Request pipeline
@@ -334,6 +340,9 @@ not answer gets the boot-error screen instead, which is a different branch.
   `selfHosted`, `uiTheme`). Never probe the instance from a component: App and Pricing each
   called it separately and could disagree about the same instance for a few
   hundred milliseconds. Everything else is local `useState`.
+  `useHotel()` (`ui/hotel/HotelTheme.js`) is not a third store: it is a boolean
+  derived once from `uiTheme` and the `?ui=` preview, true only once the hotel
+  stylesheet has loaded. Branch on it, never on `uiTheme` directly.
 - **The edition is a frontend concern too.** A `self-hosted` instance bills nobody,
   so the header drops its pricing entry and `/pricing` redirects instead of
   rendering a page with no offer. The SPA still hardcodes no provider: the connect
@@ -383,6 +392,31 @@ not answer gets the boot-error screen instead, which is a different branch.
   which keeps the hairlines thick enough at that size.
   The reference rendering is `docs/design/moodboard.html`, which loads the real
   `hotel.css`: open it before touching the theme.
+- **The dashboard wears the hotel too, in two layers, and classic stays
+  byte-for-byte what it was.** Layer one is CSS only (`styles/hotel-app.css`,
+  everything under `.ht-app`, set on `<body>` off the landing): it re-points the
+  classic tokens (`brand`, `ink`, `surface`, the status ramps) at the hotel
+  palette, day and night, and gives `.btn*`, `.card`, `.input`, `.chip` and
+  `.skeleton` the hotel's shape (square, 1.5px ink, solid offset shadow, no blur,
+  no gradient). That alone restyles every screen. Layer two is what the hotel
+  says rather than wears: JSX behind `useHotel()` (the lift-panel header, floor
+  plaques via `components/hotel/PageHead`, the counters board, luggage-tag
+  filters, proposals on the rows, the history as a register, drawings on empty
+  states via `EmptyState`'s `scene` / `hotelTitle` / `hotelDescription`). A hotel
+  variant is always a branch that leaves the classic markup untouched: the
+  classic theme was checked pixel-identical (68 screenshots, day and night,
+  1440 and 390) after this work, keep it that way. Copy in the hotel branches
+  follows the moodboard's tone (Valider / Passer / Annuler, the humour in titles
+  and empty states only), ASCII punctuation.
+- **`hotel-app.css` loads after Tailwind, so it beats the utilities.** An `hd-`
+  class that sets `display` overrides `hidden` / `lg:flex` on the same element,
+  which is how the header once showed its phone-only floor indicator on a
+  desktop. Set an `hd-` element's display in `hotel-app.css`, with its own media
+  query, never with a Tailwind display utility.
+- **Bodoni figures run at a low optical size in the dashboard.** `opsz 28` keeps a
+  4 and a hyphen readable for words set large (`.hd-title`), not for figures on a
+  1x screen: "47" drew as "/17". `.font-display`, the counters and every brass
+  button number are pinned at `opsz` 9 to 12.
 
 ## Key Conventions
 
@@ -477,7 +511,7 @@ as a side effect of another change.
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` | optional | empty key keeps the waitlist CTA instead of checkout |
 | `ALLOWED_ORIGINS` | optional | comma separated. Empty falls back to localhost:3000, localhost, mailsorter.sohbi.dev. No rebuild needed |
 | `EDITION` | yes (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers: the Gmail API and Proton exist only in `self-hosted` |
-| `UI_THEME` | optional (defaults to `hotel`) | `hotel` or `classic`: which landing `/` renders, read at runtime from `GET /api/config/status`, so switching is a backend restart, not a rebuild. Boot **refuses** anything else. `?ui=hotel\|classic` previews the other one for one tab |
+| `UI_THEME` | optional (defaults to `hotel`) | `hotel` or `classic`: the look of the landing, of every dashboard screen and of the daily digest email, read at runtime from `GET /api/config/status`, so switching is a backend restart, not a rebuild. Boot **refuses** anything else. `?ui=hotel\|classic` previews the other one for one tab (the digest, sent by the server, follows `UI_THEME` only) |
 | `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest default 07:00 UTC |
 | `REACT_APP_API_URL`, `REACT_APP_UMAMI_WEBSITE_ID` | build args | **inlined into the static bundle at image build time.** Leave `REACT_APP_API_URL` unset so it defaults to `/` and the SPA calls the API same-origin through the nginx proxy |
 
@@ -690,6 +724,13 @@ Do not duplicate these into this file. Point at them.
   app either. (`GET /api/stats/digest` and `GET /api/labels` used to be in this list;
   both are now wired, to the digest preview in Réglages and to the rules/reader label
   pickers.)
+- **Under the hotel, the digest preview in Réglages is an iframe, not `.email-body`.**
+  The hotel recap is laid out with tables, as email clients need, and
+  `.email-body` turns tables into scrolling blocks so a newsletter cannot widen
+  the reader. Rendered there, the preview stopped being "exactly what you will
+  receive". `DigestFrame` (`pages/Settings.js`) gives it its own document:
+  sanitised, `sandbox="allow-same-origin"` without `allow-scripts`, so nothing in
+  it runs and the parent can still read its height. Classic keeps `.email-body`.
 - **Size and color modifiers in `index.css` must come AFTER the color variants.**
   Every `.btn-*` variant does `@apply btn`, which copies `.btn`'s height and padding
   into itself. At equal specificity the last rule wins, so `.btn-sm` / `.btn-icon`

@@ -23,7 +23,50 @@ import { CONTACT_EMAIL } from './components/PublicFooter';
 import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
 import { isAuthed } from './lib/session';
-import { effectiveUiTheme } from './lib/uiTheme';
+import { effectiveUiTheme, bootUiTheme } from './lib/uiTheme';
+import { HotelThemeProvider, useHotel, loadHotelStyles } from './ui/hotel/HotelTheme';
+import { useHotelFonts } from './ui/hotel/useHotelFonts';
+import Emblem from './ui/hotel/Emblem';
+import Door from './ui/hotel/Door';
+import LiftDoors from './components/hotel/LiftDoors';
+
+// The theme the boot screen is drawn in, decided before the instance has
+// answered (see bootUiTheme). Read once: the URL and storage it reads from do
+// not change while the app boots.
+const BOOT_HOTEL = typeof window !== 'undefined' && bootUiTheme(window.location.search) === 'hotel';
+// Start the skin and its fonts now rather than after GET /api/config/status:
+// the two requests then run side by side. If the server ends up saying
+// classic, the chunk is simply never applied.
+if (BOOT_HOTEL) loadHotelStyles().catch(() => {});
+
+// The hotel splash is styled inline: it is on screen before the hotel
+// stylesheet has arrived, which is the whole point of it.
+function HotelBoot({ label }) {
+  const night = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+  return (
+    <div
+      className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center"
+      style={{ background: night ? '#1C1220' : '#F6E3D9', color: night ? '#F3E6DA' : '#2B1B1E' }}
+    >
+      <div className="animate-fade-up">
+        <Emblem size={64} />
+      </div>
+      <span
+        style={{
+          fontFamily: "'Bodoni Moda', Didot, 'Times New Roman', serif",
+          fontStyle: 'italic',
+          fontWeight: 500,
+          fontSize: 26,
+        }}
+      >
+        Mailsorter
+      </span>
+      <span className="flex items-center gap-2 text-sm" style={{ color: night ? '#BFA6A8' : '#6E4B52' }}>
+        <Spinner size={16} /> {label}
+      </span>
+    </div>
+  );
+}
 
 function BootScreen({ children }) {
   return (
@@ -221,8 +264,35 @@ function RequireMailbox({ children }) {
   return ready ? children : null;
 }
 
+// The page under the header. The hotel leaves it transparent so the striped
+// wallpaper on <body> shows through, and opens the lift doors on every change
+// of floor.
+function AppFrame({ children }) {
+  const hotel = useHotel();
+  if (!hotel) return <div className="min-h-screen bg-ink-50">{children}</div>;
+  return (
+    <div className="min-h-screen">
+      <LiftDoors />
+      {children}
+    </div>
+  );
+}
+
 function NotFound() {
   const navigate = useNavigate();
+  const hotel = useHotel();
+  if (hotel) {
+    return (
+      <div className="hd-empty mx-auto flex min-h-[60vh] max-w-lg justify-center">
+        <Door number="404" color="#7A2E3B" crop className="hd-empty__art" />
+        <h1 className="hd-title mt-5">Page introuvable</h1>
+        <p>Cette adresse ne correspond à aucun écran de Mailsorter.</p>
+        <button onClick={() => navigate('/inbox')} className="btn-primary hd-empty__act">
+          Retour à ma boîte
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="mx-auto flex min-h-[60vh] max-w-lg flex-col items-center justify-center px-6 text-center">
       <span className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-100 text-ink-600">
@@ -243,6 +313,9 @@ function App() {
   // The deployment is probed once, in InstanceProvider, and read here. Pricing
   // and the header read the same value instead of asking again.
   const { loading, error, isConfigured, isUsable, selfHosted, reload } = useInstance();
+  useHotelFonts(BOOT_HOTEL);
+
+  if (loading && BOOT_HOTEL) return <HotelBoot label="Démarrage de Mailsorter..." />;
 
   if (loading) {
     return (
@@ -286,61 +359,63 @@ function App() {
 
   return (
     <Router>
-      <ToastProvider>
-        <ConfirmProvider>
-          <EmailProvider>
-            <div className="min-h-screen bg-ink-50">
-              <a
-                href="#main"
-                className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[200] focus:rounded-lg focus:bg-brand-fill focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
-              >
-                Aller au contenu
-              </a>
-              <Header />
-              <main id="main">
-                <Routes>
-                  {/* /setup stays reachable by its address whatever the
-                      edition: it is the operator's screen, and an operator on a
-                      hosted instance still needs it. It is simply no longer
-                      where a visitor is sent, and on an instance that signs
-                      people in by mailbox it no longer swallows the landing
-                      page either. */}
-                  <Route
-                    path="/setup"
-                    element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
-                  />
-                  <Route path="/" element={isUsable ? <Landing /> : unconfigured()} />
-                  <Route path="/inbox" element={guard(<Inbox />, true)} />
-                  <Route path="/rules" element={guard(<Rules />, true)} />
-                  <Route path="/snoozed" element={guard(<Snoozed />, true)} />
-                  <Route path="/history" element={guard(<History />, true)} />
-                  <Route path="/settings" element={guard(<Settings />)} />
-                  {/* Brancher une boite par IMAP. Garde comme les autres: on
-                      branche une boite SUR un compte, donc il faut deja etre
-                      connecte a Mailsorter. */}
-                  <Route path="/connect" element={guard(<Connect />)} />
-                  <Route path="/account" element={guard(<Account />)} />
-                  {/* A self-hosted instance bills nobody, so there is no pricing
-                      page to land on: the route redirects rather than rendering
-                      an empty one. */}
-                  <Route path="/pricing" element={selfHosted ? <Navigate to="/" replace /> : <Pricing />} />
-                  <Route path="/auth/callback" element={<AuthCallback />} />
-                  {/* Public and unconditional. Google's OAuth verification
-                      expects the privacy policy to be reachable from the home
-                      page, so it cannot depend on the instance being wired. */}
-                  <Route path="/confidentialite" element={<Privacy />} />
-                  <Route path="/conditions" element={<Terms />} />
-                  {/* Redirects for legacy routes */}
-                  <Route path="/emails" element={<Navigate to="/inbox" replace />} />
-                  <Route path="/triage" element={<Navigate to="/inbox" replace />} />
-                  {/* Anything else used to render a blank page under the header. */}
-                  <Route path="*" element={<NotFound />} />
-                </Routes>
-              </main>
-            </div>
-          </EmailProvider>
-        </ConfirmProvider>
-      </ToastProvider>
+      <HotelThemeProvider fallback={<HotelBoot label="Démarrage de Mailsorter..." />}>
+        <ToastProvider>
+          <ConfirmProvider>
+            <EmailProvider>
+              <AppFrame>
+                <a
+                  href="#main"
+                  className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[200] focus:rounded-lg focus:bg-brand-fill focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
+                >
+                  Aller au contenu
+                </a>
+                <Header />
+                <main id="main">
+                  <Routes>
+                    {/* /setup stays reachable by its address whatever the
+                        edition: it is the operator's screen, and an operator on a
+                        hosted instance still needs it. It is simply no longer
+                        where a visitor is sent, and on an instance that signs
+                        people in by mailbox it no longer swallows the landing
+                        page either. */}
+                    <Route
+                      path="/setup"
+                      element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
+                    />
+                    <Route path="/" element={isUsable ? <Landing /> : unconfigured()} />
+                    <Route path="/inbox" element={guard(<Inbox />, true)} />
+                    <Route path="/rules" element={guard(<Rules />, true)} />
+                    <Route path="/snoozed" element={guard(<Snoozed />, true)} />
+                    <Route path="/history" element={guard(<History />, true)} />
+                    <Route path="/settings" element={guard(<Settings />)} />
+                    {/* Brancher une boite par IMAP. Garde comme les autres: on
+                        branche une boite SUR un compte, donc il faut deja etre
+                        connecte a Mailsorter. */}
+                    <Route path="/connect" element={guard(<Connect />)} />
+                    <Route path="/account" element={guard(<Account />)} />
+                    {/* A self-hosted instance bills nobody, so there is no pricing
+                        page to land on: the route redirects rather than rendering
+                        an empty one. */}
+                    <Route path="/pricing" element={selfHosted ? <Navigate to="/" replace /> : <Pricing />} />
+                    <Route path="/auth/callback" element={<AuthCallback />} />
+                    {/* Public and unconditional. Google's OAuth verification
+                        expects the privacy policy to be reachable from the home
+                        page, so it cannot depend on the instance being wired. */}
+                    <Route path="/confidentialite" element={<Privacy />} />
+                    <Route path="/conditions" element={<Terms />} />
+                    {/* Redirects for legacy routes */}
+                    <Route path="/emails" element={<Navigate to="/inbox" replace />} />
+                    <Route path="/triage" element={<Navigate to="/inbox" replace />} />
+                    {/* Anything else used to render a blank page under the header. */}
+                    <Route path="*" element={<NotFound />} />
+                  </Routes>
+                </main>
+              </AppFrame>
+            </EmailProvider>
+          </ConfirmProvider>
+        </ToastProvider>
+      </HotelThemeProvider>
     </Router>
   );
 }

@@ -41,3 +41,32 @@ export function effectiveUiTheme(serverValue, search) {
   }
   return resolveUiTheme(serverValue, search, remembered);
 }
+
+// The last theme the server settled on, remembered so the boot screen (drawn
+// before GET /api/config/status answers) wears the same look as the app that
+// follows it instead of flashing the classic splash first. A hint, never the
+// decision: the server's answer always wins once it arrives.
+const LAST_KEY = 'mailsorter_ui_last';
+
+export function rememberUiTheme(theme) {
+  try {
+    if (UI_THEMES.includes(theme)) localStorage.setItem(LAST_KEY, theme);
+  } catch {
+    // Storage blocked: the next boot screen is simply the classic one.
+  }
+}
+
+// The theme to draw the boot screen in: a preview asked for in the URL or
+// remembered for this tab, else the last theme the server chose.
+export function bootUiTheme(search) {
+  const asked = new URLSearchParams(search || '').get('ui');
+  if (UI_THEMES.includes(asked)) return asked;
+  try {
+    const preview = asked === 'default' ? null : sessionStorage.getItem(PREVIEW_KEY);
+    if (UI_THEMES.includes(preview)) return preview;
+    const last = localStorage.getItem(LAST_KEY);
+    return UI_THEMES.includes(last) ? last : 'classic';
+  } catch {
+    return 'classic';
+  }
+}

@@ -1,0 +1,1053 @@
+/* Grand Hotel theme, dashboard half.
+ *
+ * hotel.css holds the tokens (--h-*) and the ht- primitives the landing
+ * validated. This file puts the dashboard in the same building, in two moves:
+ *
+ * 1. It re-points the classic design system at the hotel palette. Every
+ *    screen is written against `brand`, `ink`, `surface`, `muted` and the four
+ *    status ramps (see index.css), all of them CSS variables, so redefining
+ *    them under .ht-app recolours 6000 lines of JSX without touching one.
+ *    Ramps keep their contract: ink-50 is the page, ink-900 the text, -fill
+ *    carries white text at AA, in both day and night.
+ * 2. It gives the shared component classes (.btn*, .card, .input, .chip,
+ *    .skeleton) the hotel's shape language: square corners, 1.5px ink lines,
+ *    solid offset shadows, no blur, no gradient. Round is kept for what the
+ *    theme allows to be round: avatars, badges, switches.
+ *
+ * What the hotel says rather than wears (the elevator menu, the floor
+ * plaques, the proposals, the doors on empty screens) is JSX behind
+ * useHotel(), styled by the hd- classes below. Prefixes: ht- primitives
+ * (hotel.css), hl- landing, hf- illustration text, hd- dashboard.
+ *
+ * Loaded on demand by ui/hotel/HotelTheme.js, and every rule hangs off
+ * .ht-app (set on <body> off the landing) or an hd- class, so the classic
+ * theme never downloads it and never matches it.
+ */
+
+/* ---------- 1. The classic tokens, re-pointed (day) ---------- */
+
+.ht-app {
+  --ink-50: 246 227 217;
+  --ink-100: 241 218 207;
+  --ink-200: 232 204 194;
+  --ink-300: 214 182 174;
+  --ink-400: 170 135 138;
+  --ink-500: 132 98 104;
+  --ink-600: 110 75 82;
+  --ink-700: 84 56 62;
+  --ink-800: 61 40 45;
+  --ink-900: 43 27 30;
+  --ink-950: 26 15 17;
+
+  --brand-50: 251 234 237;
+  --brand-100: 247 214 220;
+  --brand-200: 239 183 195;
+  --brand-300: 222 141 158;
+  --brand-400: 190 98 120;
+  --brand-500: 168 69 90;
+  --brand-600: 122 46 59;
+  --brand-700: 101 37 50;
+  --brand-800: 82 30 41;
+  --brand-900: 62 22 31;
+  --brand-950: 42 14 21;
+  --brand-fill: 122 46 59;
+  --brand-fill-strong: 101 37 50;
+  --brand-fill-deep: 82 30 41;
+
+  /* Canard: protected, safe, done. */
+  --positive-50: 228 240 238;
+  --positive-100: 213 231 228;
+  --positive-500: 63 138 136;
+  --positive-600: 47 111 115;
+  --positive-700: 33 84 87;
+  --positive-fill: 47 111 115;
+
+  /* Moutarde: what waits for an answer. Its text shades go to ochre, the
+     only way a yellow passes 4.5:1 on cream. */
+  --caution-50: 251 240 216;
+  --caution-100: 251 232 196;
+  --caution-500: 227 169 59;
+  --caution-600: 176 118 22;
+  --caution-700: 133 85 12;
+  --caution-fill: 133 85 12;
+
+  /* Brique: the one colour that means "this cannot be taken back". */
+  --danger-50: 252 234 230;
+  --danger-100: 248 214 207;
+  --danger-500: 201 72 52;
+  --danger-600: 168 52 36;
+  --danger-700: 133 39 27;
+  --danger-fill: 168 52 36;
+  --danger-fill-strong: 140 42 29;
+  --danger-fill-deep: 115 34 23;
+
+  /* Canard sombre: information, kept apart from "safe". */
+  --info-50: 229 238 240;
+  --info-100: 212 227 231;
+  --info-500: 88 134 150;
+  --info-600: 61 100 117;
+  --info-700: 45 76 90;
+  --info-fill: 61 100 117;
+
+  --surface: 255 250 242;
+  --surface-raised: 255 250 242;
+  --surface-sunken: 251 241 228;
+  --muted: 110 75 82;
+  --subtle: 170 135 138;
+  --hairline: 228 206 198;
+  --shadow: 43 27 30;
+  --overlay: 43 27 30;
+
+  color-scheme: light;
+}
+
+/* ---------- Night ---------- */
+
+.dark .ht-app {
+  --ink-50: 28 18 32;
+  --ink-100: 40 27 37;
+  --ink-200: 51 32 44;
+  --ink-300: 74 50 63;
+  --ink-400: 120 96 104;
+  --ink-500: 160 138 142;
+  --ink-600: 191 166 168;
+  --ink-700: 217 199 194;
+  --ink-800: 233 220 211;
+  --ink-900: 243 230 218;
+  --ink-950: 255 248 240;
+
+  --brand-50: 58 30 42;
+  --brand-100: 74 36 52;
+  --brand-200: 90 42 58;
+  --brand-300: 130 58 78;
+  --brand-400: 190 100 120;
+  --brand-500: 220 130 152;
+  --brand-600: 238 156 176;
+  --brand-700: 244 186 200;
+  --brand-800: 248 210 220;
+  --brand-900: 251 230 235;
+  --brand-950: 253 242 245;
+  --brand-fill: 168 69 90;
+  --brand-fill-strong: 145 58 77;
+  --brand-fill-deep: 122 46 59;
+
+  --positive-50: 30 53 51;
+  --positive-100: 36 66 63;
+  --positive-500: 79 154 150;
+  --positive-600: 124 196 191;
+  --positive-700: 168 220 215;
+  --positive-fill: 47 111 115;
+
+  --caution-50: 58 42 24;
+  --caution-100: 74 54 28;
+  --caution-500: 244 207 107;
+  --caution-600: 246 216 140;
+  --caution-700: 249 228 175;
+  --caution-fill: 133 85 12;
+
+  --danger-50: 66 24 22;
+  --danger-100: 88 30 27;
+  --danger-500: 240 120 100;
+  --danger-600: 246 160 145;
+  --danger-700: 250 200 190;
+  --danger-fill: 168 52 36;
+  --danger-fill-strong: 140 42 29;
+  --danger-fill-deep: 115 34 23;
+
+  --info-50: 28 42 50;
+  --info-100: 34 54 64;
+  --info-500: 110 160 180;
+  --info-600: 150 190 205;
+  --info-700: 190 215 225;
+  --info-fill: 61 100 117;
+
+  --surface: 42 26 36;
+  --surface-raised: 48 30 41;
+  --surface-sunken: 34 22 32;
+  --muted: 191 166 168;
+  --subtle: 130 106 114;
+  --hairline: 66 50 58;
+  --shadow: 0 0 0;
+  --overlay: 8 4 6;
+
+  color-scheme: dark;
+}
+
+/* The public pages (pricing, legal, setup, the OAuth return) paint their own
+   page colour over <body>. Under the hotel that colour would hide the striped
+   wallpaper, so it is cleared and the stripes show through, as on the app. */
+.ht-app .min-h-screen.bg-ink-50 { background-color: transparent; }
+
+/* The page behind the page: overscroll and the strip under a short screen. */
+html.ht-html { background: #F6E3D9; }
+html.dark.ht-html { background: #1C1220; }
+
+.ht-app ::selection { background: rgba(227, 169, 59, 0.38); }
+
+/* One focus mark everywhere, the theme's own: a mustard outline. The classic
+   ring is a box-shadow, so it is switched off rather than stacked. body. is
+   what outranks the focus-visible:ring-* utilities. */
+body.ht-app :focus-visible {
+  outline: 3px solid var(--h-mustard);
+  outline-offset: 2px;
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
+}
+
+/* ---------- 2. Shape language ---------- */
+
+/* Square by default. rounded-full survives on purpose: avatars, badges,
+   switches and dots are the round things the theme allows. */
+.ht-app :is(.rounded, .rounded-sm, .rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl, .rounded-3xl,
+  .rounded-t-md, .sm\:rounded-2xl, .focus\:rounded-lg,
+  .card, .btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-danger-quiet, .btn-sm,
+  .input, .select, .textarea, .skeleton, .email-body, .email-body-plain) {
+  border-radius: 0;
+}
+
+/* No blurred shadow anywhere on the interface: a solid offset, or nothing. */
+.ht-app :is(.shadow-soft, .shadow-sm, .shadow) {
+  --tw-shadow: 0 0 #0000;
+  --tw-shadow-colored: 0 0 #0000;
+}
+.ht-app :is(.shadow-card, .shadow-lift, .hover\:shadow-card:hover) {
+  --tw-shadow: 6px 6px 0 var(--h-offset);
+  --tw-shadow-colored: 6px 6px 0 var(--h-offset);
+}
+.ht-app :is(.backdrop-blur-sm, .backdrop-blur-xl) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* ---------- Type ---------- */
+
+/* The classic display face, swapped for Bodoni. In the dashboard it mostly
+   sets figures (counters, quotas, totals), so it is pinned at a low optical
+   size: at opsz 28 a 1x screen drew "47" as "/17" and "10.4k" as "10./k",
+   the 4's diagonal being a hairline. Words set large (.hd-title, the empty
+   states) keep opsz 28, the landing's rule. */
+.ht-app .font-display {
+  font-family: var(--h-font-display);
+  font-variation-settings: 'opsz' 12;
+  letter-spacing: 0;
+}
+.ht-app .font-display:is(.font-extrabold, .font-bold) { font-weight: 500; }
+
+/* Numbers on brass buttons: the smallest optical size, for the same 4. */
+.hd-floor, .hd-here i, .hd-drawer__grid i, .hd-bar .ht-panel i { font-variation-settings: 'opsz' 9; }
+
+/* A section title reads like an entry in a register. Not inside an email:
+   the sender's headings are the sender's. */
+.ht-app .card h2:not(.email-body *) {
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 1.32rem;
+  letter-spacing: 0;
+}
+
+.ht-app kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1.5px solid var(--h-line);
+  border-radius: 13px;
+  background: var(--h-mustard);
+  color: #2B1B1E;
+  font-family: var(--h-font-ui);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* ---------- Buttons ---------- */
+
+.ht-app :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-danger-quiet) {
+  font-family: var(--h-font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: transform 0.12s, box-shadow 0.12s, background-color 0.2s, color 0.2s;
+}
+.ht-app .btn-sm { font-size: 10.5px; }
+
+/* The primary action presses like a lift button: it sits on its own edge. */
+.ht-app :is(.btn-primary, .btn-danger) {
+  border: 1.5px solid var(--h-line);
+  --tw-shadow: 0 3px 0 var(--h-line);
+  --tw-shadow-colored: 0 3px 0 var(--h-line);
+}
+.ht-app :is(.btn-primary, .btn-danger):not(:disabled):hover {
+  transform: translateY(-1px);
+  --tw-shadow: 0 4px 0 var(--h-line);
+}
+.ht-app :is(.btn-primary, .btn-danger):not(:disabled):active {
+  transform: translateY(2px);
+  --tw-shadow: 0 1px 0 var(--h-line);
+}
+.ht-app .btn-secondary,
+.ht-app .btn-secondary:hover {
+  border: 1.5px solid var(--h-line);
+}
+.ht-app .btn-secondary:not(:disabled):hover { background-color: var(--h-sunk); }
+.ht-app .btn-danger-quiet { border: 1.5px solid var(--h-line); }
+
+/* ---------- Surfaces ---------- */
+
+.ht-app .card {
+  border: 1.5px solid var(--h-line);
+  --tw-shadow: 4px 4px 0 var(--h-offset);
+  --tw-shadow-colored: 4px 4px 0 var(--h-offset);
+}
+.ht-app [role='dialog'].card {
+  border-width: 2px;
+  --tw-shadow: 10px 10px 0 var(--h-offset);
+  --tw-shadow-colored: 10px 10px 0 var(--h-offset);
+}
+
+.ht-app :is(.input, .select, .textarea) {
+  border: 1.5px solid var(--h-line);
+  font-family: var(--h-font-ui);
+  --tw-shadow: 0 0 #0000;
+  --tw-shadow-colored: 0 0 #0000;
+}
+.ht-app :is(.input, .select, .textarea):focus { border-color: var(--h-plum); }
+
+/* A chip is a luggage tag: square where it is tied, round at the tip, and an
+   ink outline drawn inside so it never changes the height of a row. */
+.ht-app .chip {
+  border-radius: 3px 11px 11px 3px;
+  box-shadow: inset 0 0 0 1.5px var(--h-line);
+}
+
+/* No shimmer: the theme has no gradient. A sunk block that breathes. */
+.ht-app .skeleton {
+  background: var(--h-sunk);
+  animation: hd-breathe 1.4s ease-in-out infinite;
+}
+@keyframes hd-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* An email is a letter laid on the desk: its own light paper, in both themes,
+   because senders style their mail for a white page (see .email-body in
+   index.css). */
+.ht-app .email-body {
+  padding: 22px 24px;
+  border: 1.5px solid var(--h-line);
+  background-color: #FFFDF8;
+  box-shadow: 5px 5px 0 var(--h-pile-2);
+}
+.ht-app .email-body a { color: #7A2E3B; }
+
+/* ==========================================================================
+   hd-: what the hotel says, not just wears
+   ========================================================================== */
+
+/* ---------- The app bar ---------- */
+
+.hd-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  border-bottom: 2px solid var(--h-line);
+  background: repeating-linear-gradient(90deg, var(--h-stripe) 0 24px, transparent 24px 48px), var(--h-bg);
+}
+.hd-bar__in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 80rem;
+  height: 68px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+@media (min-width: 640px) { .hd-bar__in { padding: 0 24px; } }
+@media (min-width: 1024px) {
+  .hd-bar__in { display: grid; grid-template-columns: 1fr auto 1fr; }
+}
+
+.hd-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--h-text);
+  text-decoration: none;
+}
+.hd-brand b {
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-weight: 500;
+  font-size: 21px;
+}
+
+/* The menu is the lift's button panel: one floor per screen, the current one
+   lit. Display is set here rather than with Tailwind's hidden / lg:flex:
+   this chunk loads after the utilities and would win against them. */
+.hd-bar .hd-panel { display: none; padding: 7px 18px 5px; }
+@media (min-width: 1024px) { .hd-bar .hd-panel { display: inline-flex; } }
+.hd-panel a { min-width: 34px; color: inherit; }
+.hd-panel a:hover i { background: #F4CF6B; }
+.hd-panel a.is-on:hover i { background: #FBF1E4; }
+.hd-panel a:focus-visible { outline-offset: 4px; }
+
+.hd-me {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* The monthly allowance, as a gauge. */
+.hd-quota {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  margin-right: 6px;
+  color: var(--h-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+}
+@media (min-width: 1180px) { .hd-quota { display: flex; } }
+.hd-quota:hover { color: var(--h-text); }
+
+.hd-meter {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 9px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-surface);
+  overflow: hidden;
+}
+.hd-meter > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--h-mustard);
+  transition: width 0.5s var(--h-ease);
+}
+.hd-meter.is-teal > i { background: var(--h-teal); }
+.hd-meter.is-plum > i { background: var(--h-plum); }
+.hd-quota .hd-meter { width: 112px; height: 8px; }
+
+/* ---------- Avatars ---------- */
+
+.hd-av {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  border: 1.5px solid var(--h-line);
+  border-radius: 50%;
+  background: var(--h-pink);
+  color: var(--h-text);
+  font-family: var(--h-font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+/* Sized where they sit; elsewhere a classic avatar span keeps its h- / w-. */
+.hd-bar .hd-av, .hd-drawer .hd-av { width: 34px; height: 34px; }
+/* Classic avatar spans keep their size classes and their text-white: the
+   variant below outranks the latter, the colour comes from here. */
+.ht-app .hd-av { color: var(--h-text); }
+.ht-app .hd-av--gold { background: var(--h-mustard); color: #2B1B1E; }
+.ht-app .hd-av--teal { background: var(--h-teal); color: #fff; }
+.ht-app .hd-av--sunk { background: var(--h-sunk); }
+.ht-app .hd-av--plum { background: var(--h-plum); color: var(--h-on-plum); }
+a.hd-av:hover, .hd-av.is-on { box-shadow: 0 0 0 3px var(--h-mustard); }
+
+/* ---------- Mobile: the floor you are on, and the panel in the drawer ---------- */
+
+.hd-here {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--h-muted);
+}
+@media (min-width: 1024px) { .hd-bar .hd-here { display: none; } }
+.hd-me .hd-av { display: none; }
+@media (min-width: 640px) { .hd-me .hd-av { display: inline-grid; } }
+.hd-here i {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1.5px solid var(--h-line);
+  border-radius: 50%;
+  background: #FBF1E4;
+  color: #2B1B1E;
+  box-shadow: 0 0 10px 2px var(--h-glow);
+  font-family: var(--h-font-display);
+  font-style: normal;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.hd-drawer {
+  position: relative;
+  z-index: 40;
+  padding: 20px 16px 16px;
+  border-bottom: 2px solid var(--h-line);
+  background: var(--h-plum);
+}
+.hd-drawer__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  max-width: 360px;
+  margin: 0 auto;
+}
+.hd-drawer__grid a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  color: #FBF1E4;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.hd-drawer__grid i {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 2px solid #2B1B1E;
+  border-radius: 50%;
+  background: #E3A93B;
+  color: #2B1B1E;
+  font-family: var(--h-font-display);
+  font-style: normal;
+  font-weight: 700;
+  font-size: 17px;
+  transition: background-color 0.3s, box-shadow 0.3s;
+}
+.hd-drawer__grid a.is-on i { background: #FBF1E4; box-shadow: 0 0 0 3px rgba(251, 241, 228, 0.3), 0 0 14px 3px var(--h-glow); }
+.hd-drawer__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 360px;
+  margin: 18px auto 0;
+  padding-top: 14px;
+  border-top: 1.5px dashed rgba(251, 241, 228, 0.35);
+  color: #FBF1E4;
+}
+.hd-drawer__foot a { display: flex; min-width: 0; align-items: center; gap: 10px; color: inherit; text-decoration: none; font-size: 13px; }
+.hd-drawer__foot span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ht-app .hd-drawer .btn-ghost { color: #FBF1E4; }
+.ht-app .hd-drawer .btn-ghost:hover { background: rgba(251, 241, 228, 0.12); }
+.hd-scrim {
+  position: fixed;
+  inset: 68px 0 0;
+  z-index: 30;
+  border: 0;
+  background: rgba(43, 27, 30, 0.45);
+  cursor: default;
+}
+
+/* ---------- The doors: arriving on a floor ---------- */
+
+/* Two lift doors part when you change screen. Decoration only: pointer
+   events go through, assistive technology never sees them, and they are not
+   drawn at all when the system asks for less motion. */
+.hd-doors {
+  position: fixed;
+  inset: 68px 0 0;
+  z-index: 35;
+  display: flex;
+  pointer-events: none;
+  overflow: hidden;
+}
+.hd-doors > span {
+  flex: 1;
+  background:
+    linear-gradient(90deg, transparent 0 calc(100% - 24px), #E3A93B calc(100% - 24px) calc(100% - 21px), transparent calc(100% - 21px)),
+    var(--h-teal);
+  border-right: 2px solid #2B1B1E;
+  /* Fast off the mark, slow at the end: the screen behind is uncovered in
+     the first fifth of a second, the rest is the doors settling. */
+  animation: hd-door-l 0.5s cubic-bezier(0.3, 0.75, 0.2, 1) both;
+}
+.hd-doors > span + span {
+  border-right: 0;
+  border-left: 2px solid #2B1B1E;
+  background:
+    linear-gradient(90deg, transparent 0 21px, #E3A93B 21px 24px, transparent 24px),
+    var(--h-teal);
+  animation-name: hd-door-r;
+}
+@keyframes hd-door-l { to { transform: translateX(-101%); } }
+@keyframes hd-door-r { to { transform: translateX(101%); } }
+
+/* ---------- Page heads: the floor plaque ---------- */
+
+.hd-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 18px;
+  margin-bottom: 22px;
+  padding-bottom: 16px;
+  border-bottom: 3px double var(--h-line);
+}
+.hd-head__t { display: flex; min-width: 0; flex: 1 1 260px; align-items: center; gap: 16px; }
+.hd-floor {
+  display: grid;
+  font-weight: 700;
+  flex-shrink: 0;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border: 1.5px solid var(--h-line);
+  border-radius: 50%;
+  background: #E3A93B;
+  color: #2B1B1E;
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-size: 21px;
+  box-shadow: 3px 3px 0 var(--h-offset);
+}
+.hd-floor.is-av { background: var(--h-pink); color: var(--h-text); font-family: var(--h-font-ui); font-style: normal; font-size: 16px; font-weight: 600; }
+.hd-title {
+  margin: 0;
+  font-family: var(--h-font-display);
+  font-variation-settings: 'opsz' 28;
+  font-weight: 400;
+  font-size: clamp(30px, 5vw, 40px);
+  line-height: 1.02;
+  color: var(--h-text);
+  overflow-wrap: anywhere;
+}
+.hd-sub { margin: 6px 0 0; font-size: 14px; color: var(--h-muted); }
+.hd-sub b { color: var(--h-text); font-weight: 600; }
+.hd-head__x { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* A small-caps caption, the label over a field or a block. */
+.hd-cap {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--h-muted);
+}
+
+/* ---------- The counters board ---------- */
+
+.hd-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 18px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-surface);
+  box-shadow: 4px 4px 0 var(--h-offset);
+}
+@media (min-width: 640px) { .hd-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.hd-stats button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 16px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--h-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.hd-stats button + button { box-shadow: inset 1.5px 0 0 var(--h-line); }
+@media (max-width: 639px) {
+  .hd-stats button:nth-child(3) { box-shadow: inset 0 1.5px 0 var(--h-line); }
+  .hd-stats button:nth-child(4) { box-shadow: inset 1.5px 1.5px 0 var(--h-line); }
+}
+.hd-stats button:hover { background: var(--h-sunk); }
+.hd-stats button[aria-pressed='true'] { background: var(--h-mustard-soft); }
+.hd-stats button[aria-pressed='true']::after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 0;
+  height: 4px;
+  background: var(--h-plum);
+}
+/* Figures are data first: see .font-display above. */
+.hd-stats b {
+  font-family: var(--h-font-display);
+  font-variation-settings: 'opsz' 12;
+  font-weight: 500;
+  font-size: 30px;
+  line-height: 1;
+}
+
+/* ---------- Luggage tags as filters ---------- */
+
+.hd-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-bottom: 16px; }
+.hd-tags .ht-tag { height: 30px; cursor: pointer; font-family: var(--h-font-ui); transition: transform 0.2s, background-color 0.2s; }
+.hd-tags .ht-tag:hover { transform: rotate(-2deg); }
+.hd-tags .ht-tag[aria-pressed='true'] { background: var(--h-mustard); color: #2B1B1E; }
+.hd-tags .ht-tag.is-saved { background: var(--h-bg-alt); }
+.hd-tags .ht-tag.is-saved.is-on { background: var(--h-mustard); color: #2B1B1E; }
+.hd-tags .ht-tag > button { display: inline-flex; align-items: center; gap: 5px; height: 100%; color: inherit; font: inherit; }
+.hd-tags .ht-tag .hd-x {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  border-radius: 50%;
+  opacity: 0.6;
+}
+.hd-tags .ht-tag .hd-x:hover, .hd-tags .ht-tag .hd-x:focus-visible { opacity: 1; background: rgba(43, 27, 30, 0.1); }
+
+/* ---------- Proposals ---------- */
+
+/* A proposal is a question, set in the display face: "Archiver ?". */
+.hd-pchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px 3px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-mustard-soft);
+  color: var(--h-accent);
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.hd-pchip.is-safe { background: var(--h-teal-soft); color: var(--h-teal-text); }
+.hd-pchip.is-danger { background: rgb(var(--danger-50)); color: rgb(var(--danger-700)); }
+
+.hd-ibtn {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-surface);
+  color: var(--h-text);
+  cursor: pointer;
+  transition: transform 0.12s, background-color 0.2s, box-shadow 0.12s;
+}
+.hd-ibtn:hover { background: var(--h-sunk); }
+.hd-ibtn:disabled { opacity: 0.5; cursor: not-allowed; }
+.hd-ibtn.is-ok { background: var(--h-plum); color: var(--h-on-plum); box-shadow: 0 2px 0 var(--h-line); }
+.hd-ibtn.is-ok:hover { transform: translateY(-1px); box-shadow: 0 3px 0 var(--h-line); }
+.hd-ibtn.is-danger { color: rgb(var(--danger-600)); }
+.hd-ibtn.is-danger:hover { background: rgb(var(--danger-50)); }
+
+.hd-props {
+  margin-bottom: 18px;
+  border: 1.5px solid var(--h-line);
+  background: var(--h-surface);
+  box-shadow: 4px 4px 0 var(--h-offset);
+}
+.hd-props__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  padding: 12px 16px;
+  border-bottom: 1.5px solid var(--h-line);
+  background: var(--h-mustard-soft);
+}
+.hd-props__title { display: flex; align-items: center; gap: 10px; }
+.hd-props__title b {
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-weight: 500;
+  font-size: 21px;
+  color: var(--h-accent);
+}
+.hd-props__acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hd-props ul { margin: 0; padding: 0; list-style: none; }
+.hd-prop {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--h-hair);
+}
+.hd-prop:first-child { border-top: 0; }
+.hd-prop__t { min-width: 0; }
+.hd-prop__t b, .hd-prop__t span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hd-prop__t b { font-size: 14px; font-weight: 600; }
+.hd-prop__t span { font-size: 12.5px; color: var(--h-muted); }
+.hd-conf { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--h-muted); }
+.hd-prop__acts { display: flex; gap: 6px; }
+@media (max-width: 639px) {
+  .hd-prop { grid-template-columns: minmax(0, 1fr) auto; }
+  .hd-prop .hd-pchip { grid-column: 1 / -1; justify-self: start; }
+  .hd-conf { display: none; }
+}
+
+/* The reader: the subject in the display face, like a page head. */
+.ht-app .card h2.hd-reader-title,
+.hd-reader-title {
+  margin: 0;
+  font-family: var(--h-font-display);
+  font-variation-settings: 'opsz' 28;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1.12;
+  color: var(--h-text);
+}
+
+/* The proposal in the reader: hotel.css's .ht-prop, with its two answers. */
+.hd-reader-prop { margin-top: 18px; }
+.hd-reader-prop .ht-prop { align-items: flex-start; }
+.hd-reader-prop .ht-prop p { margin: 4px 0 0; font-size: 13.5px; line-height: 1.45; color: var(--h-muted); }
+.hd-reader-prop__acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.hd-reader-prop__acts .btn-primary { flex: 1 1 auto; }
+
+/* ---------- The inbox list ---------- */
+
+.hd-list { margin: 0; padding: 0; list-style: none; }
+.hd-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--h-hair);
+  background: var(--h-surface);
+  transition: background-color 0.15s;
+}
+@media (min-width: 640px) { .hd-row { padding: 12px 18px; } }
+.hd-list > .hd-row:first-child { border-top: 0; }
+.hd-row:hover { background: var(--h-bg-alt); }
+.hd-row.is-checked { background: var(--h-mustard-soft); }
+.hd-row.is-open { background: var(--h-sunk); box-shadow: inset 4px 0 0 var(--h-plum); }
+.hd-row.is-focused { box-shadow: inset 0 0 0 2px var(--h-mustard); }
+.hd-row.is-open.is-focused { box-shadow: inset 4px 0 0 var(--h-plum), inset 0 0 0 2px var(--h-mustard); }
+
+.hd-check {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.hd-row .hd-av { width: 36px; height: 36px; }
+.hd-row__open { min-width: 0; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.hd-row__top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.hd-row__who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; }
+.hd-row.is-unread .hd-row__who { font-weight: 600; }
+.hd-row.is-unread .hd-row__who::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--h-plum);
+  transform: translateY(-1px);
+}
+.hd-row__when { display: flex; flex-shrink: 0; align-items: center; gap: 6px; font-size: 12px; color: var(--h-muted); font-variant-numeric: tabular-nums; }
+.hd-row__what { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; color: var(--h-muted); }
+.hd-row__what b { color: var(--h-text); font-weight: 500; }
+.hd-row.is-unread .hd-row__what b { font-weight: 600; }
+.hd-row__acts { display: flex; align-items: center; gap: 6px; }
+.hd-row__quick { display: none; gap: 6px; opacity: 0; transition: opacity 0.15s; }
+@media (min-width: 640px) {
+  .hd-row__quick { display: flex; }
+  .hd-row:hover .hd-row__quick, .hd-row__quick:focus-within { opacity: 1; }
+}
+.hd-row__acts .hd-ibtn { width: 30px; height: 30px; }
+@media (max-width: 639px) {
+  .hd-row { grid-template-columns: 20px 36px minmax(0, 1fr); }
+  .hd-row__acts { grid-column: 3; justify-content: flex-start; }
+  .hd-row__acts:not(:has(.hd-pchip)) { display: none; }
+}
+
+/* ---------- Empty and error states ---------- */
+
+.hd-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 36px 24px 40px;
+  text-align: center;
+}
+.hd-empty.is-compact { padding: 24px 20px 28px; }
+.hd-empty__art { width: auto; height: 132px; }
+.hd-empty.is-compact .hd-empty__art { height: 104px; }
+.hd-empty__medal {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border: 1.5px solid var(--h-line);
+  border-radius: 50%;
+  background: var(--h-mustard);
+  color: #7A2E3B;
+  box-shadow: 3px 3px 0 var(--h-offset);
+}
+.hd-empty__medal.is-danger { background: rgb(var(--danger-50)); color: rgb(var(--danger-600)); }
+.hd-empty h3 {
+  margin: 16px 0 0;
+  font-family: var(--h-font-display);
+  font-variation-settings: 'opsz' 28;
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1.1;
+  color: var(--h-text);
+}
+.hd-empty p { max-width: 26rem; margin: 8px auto 0; text-wrap: balance; font-size: 14px; line-height: 1.5; color: var(--h-muted); }
+.hd-empty__act { margin-top: 18px; }
+
+/* ---------- Toasts ---------- */
+
+.hd-toast {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 26rem;
+  animation: hd-toast-in 0.28s var(--h-ease) both;
+}
+.hd-toast p { flex: 1; margin: 0; }
+.hd-toast .hd-toast__x {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  color: inherit;
+  letter-spacing: 0;
+  opacity: 0.6;
+}
+.hd-toast .hd-toast__x:hover { opacity: 1; }
+.hd-toast__mark {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #F4CF6B;
+  color: #2B1B1E;
+}
+.hd-toast.is-error .hd-toast__mark { background: #E07A66; }
+.hd-toast.is-success .hd-toast__mark { background: #7CC4BF; }
+@keyframes hd-toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Registers: history, settings rows ---------- */
+
+.hd-reg { margin: 0; padding: 0; list-style: none; }
+.hd-reg__day {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 22px 0 6px;
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-size: 19px;
+  color: var(--h-accent);
+}
+.hd-reg__day::after { content: ''; flex: 1; border-bottom: 1px dotted var(--h-line); opacity: 0.5; }
+.hd-reg li.hd-reg__row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 4px;
+  border-bottom: 1px dotted var(--h-hair);
+}
+.hd-reg time { font-size: 12.5px; color: var(--h-muted); font-variant-numeric: tabular-nums; }
+.hd-reg__what { min-width: 0; font-size: 14px; }
+.hd-reg__what em {
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-size: 16px;
+  color: var(--h-accent);
+}
+.hd-reg__what small { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--h-muted); }
+.hd-reg__row.is-undone .hd-reg__what { opacity: 0.55; }
+.hd-reg__row.is-undone .hd-reg__what em { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.hd-link {
+  padding: 0;
+  border: 0;
+  border-bottom: 1.5px solid currentColor;
+  background: none;
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-size: 15px;
+  color: var(--h-accent);
+  cursor: pointer;
+}
+.hd-link:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* The digest preview: the email in a document of its own (see Settings.js). */
+.hd-digest-frame { display: block; width: 100%; margin-top: 6px; border: 1.5px solid var(--h-line); background: #F6E3D9; }
+
+/* The week, as seven brass bars standing on the account card's floor. */
+.hd-weekbar { border: 1.5px solid var(--h-line); border-bottom: 0; background: var(--h-mustard); }
+
+/* The connect screen's key board: the landing's, on a card. */
+.hd-keys-card { padding: 24px; border: 1.5px solid var(--h-line); background: var(--h-bg-alt); box-shadow: 4px 4px 0 var(--h-offset); }
+.hd-keys-card__t {
+  margin: 0;
+  font-family: var(--h-font-display);
+  font-optical-sizing: auto;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 22px;
+}
+.hd-keys-card p { margin: 8px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--h-muted); }
+.hd-keys {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px 8px;
+  margin-top: 20px;
+  padding: 20px 14px 22px;
+  border: 8px solid #4A1A24;
+  background: #6A2733;
+  box-shadow: inset 0 0 0 2px #2B1B1E, 0 0 0 2px #2B1B1E;
+}
+.hd-keys .ht-key__tag { min-width: 0; width: 100%; background: #EFB7C3; color: #2B1B1E; }
+.hd-keys .ht-key__tag.is-soon { background: #FBF1E4; }
+.hd-keys .ht-key__tag.is-soon small { color: #6E4B52; }
+.hd-keys .ht-key__tag::after { background: #6A2733; }
+
+/* ---------- Motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .hd-doors { display: none; }
+  .ht-app .skeleton { animation: none; }
+}

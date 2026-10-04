@@ -8,6 +8,8 @@ import { track } from '../lib/analytics';
 import { Link } from 'react-router-dom';
 import { Settings as SettingsIcon, Shield, X, Mail, Refresh, Google, Search, ChevronRight, Sparkles, Check, Alert } from '../ui/icons';
 import Modal from '../ui/Modal';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import PageHead from '../components/hotel/PageHead';
 import Spinner from '../ui/Spinner';
 
 // The API answers with a JSON object on some routes and a bare string on others
@@ -128,6 +130,7 @@ function AutoSyncSettings({ settings, onSaved }) {
 // alone: the audience is French, i.e. one or two hours ahead depending on the
 // season, and "07:00" meant two different things to the user and to the server.
 function DigestSettings({ settings, onSaved }) {
+  const hotel = useHotel();
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -276,14 +279,42 @@ function DigestSettings({ settings, onSaved }) {
             {/* Le HTML vient de notre propre moteur de rendu (internal/digest),
                 mais il transporte des données de l'utilisateur : il passe donc
                 par dompurify comme tout HTML affiché dans l'app. */}
-            <div
-              className="email-body mt-1 rounded-xl border border-hairline p-4"
-              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(preview.html || '') }}
-            />
+            {hotel ? (
+              <DigestFrame html={DOMPurify.sanitize(preview.html || '')} />
+            ) : (
+              <div
+                className="email-body mt-1 rounded-xl border border-hairline p-4"
+                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(preview.html || '') }}
+              />
+            )}
           </div>
         </Modal>
       )}
     </div>
+  );
+}
+
+// The hotel recap is laid out with tables, the way email clients need it, and
+// .email-body turns tables into scrolling blocks (index.css) so a newsletter
+// cannot widen the reader. Rendered there, the preview would not be "exactly
+// what you will receive". So under the hotel it gets a document of its own:
+// an iframe that runs nothing (no allow-scripts) and only lets the parent
+// read its height. The HTML is sanitised all the same.
+function DigestFrame({ html }) {
+  const [height, setHeight] = useState(480);
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"></head><body style="margin:0">${html}</body></html>`;
+  return (
+    <iframe
+      title="Aperçu du récap"
+      className="hd-digest-frame"
+      sandbox="allow-same-origin"
+      srcDoc={doc}
+      style={{ height }}
+      onLoad={(e) => {
+        const body = e.currentTarget.contentDocument?.body;
+        if (body) setHeight(Math.min(900, body.scrollHeight + 4));
+      }}
+    />
   );
 }
 
@@ -882,6 +913,7 @@ function AISettingsCard() {
 }
 
 function Settings() {
+  const hotel = useHotel();
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -916,17 +948,25 @@ function Settings() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
-      <div className="mb-8 flex items-center gap-3">
-        <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-          <SettingsIcon size={22} />
-        </span>
-        <div>
-          <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
-          <p className="text-sm text-muted">
-            Synchronisation automatique, digest quotidien, compte Gmail et expéditeurs protégés.
-          </p>
+      {hotel ? (
+        <PageHead
+          floor="/settings"
+          title="Réglages"
+          sub="Le tri en arrière-plan, le récap du matin, votre boîte et les expéditeurs qu'on ne touche pas."
+        />
+      ) : (
+        <div className="mb-8 flex items-center gap-3">
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+            <SettingsIcon size={22} />
+          </span>
+          <div>
+            <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
+            <p className="text-sm text-muted">
+              Synchronisation automatique, digest quotidien, compte Gmail et expéditeurs protégés.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {loading ? (
         <div className="card mt-6 flex justify-center p-10">
