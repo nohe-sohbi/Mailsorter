@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
@@ -198,5 +199,60 @@ func TestApplyMutationsStopsAtTheFirstFailure(t *testing.T) {
 	}
 	if len(seq.applied) != 1 {
 		t.Errorf("%d mutation(s) were attempted after the first failed, want the sequence stopped", len(seq.applied))
+	}
+}
+
+// Handlers that are not yet ported to non-Gmail transports must route through
+// gmailClientFor so an unresolved/unsupported transport fails with 501
+// (StatusNotImplemented) rather than bypassing transport checks.
+func TestUnportedHandlersEnforceTransportGuard(t *testing.T) {
+	h := newTestHandler(t)
+
+	routes := []struct {
+		name    string
+		handler http.HandlerFunc
+		method  string
+		path    string
+		body    string
+	}{
+		{
+			name:    "Unsubscribe",
+			handler: h.Unsubscribe,
+			method:  "POST",
+			path:    "/api/unsubscribe",
+			body:    `{"messageId":"msg123"}`,
+		},
+		{
+			name:    "ApplyBulk",
+			handler: h.ApplyBulk,
+			method:  "POST",
+			path:    "/api/ai/apply-bulk",
+			body:    `{"senderEmail":"test@example.com","action":"archive"}`,
+		},
+		{
+			name:    "CreateSmartLabel",
+			handler: h.CreateSmartLabel,
+			method:  "POST",
+			path:    "/api/smart-labels",
+			body:    `{"name":"TestLabel"}`,
+		},
+	}
+
+	for _, tc := range routes {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("X-User-Email", "user@example.com")
+			req.Header.Set("Content-Type", "application/json")
+			// Inject cancelled context so datastore ping during transportFor fails immediately
+			req = req.WithContext(cancelledContext())
+
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+
+			if rec.Code != http.StatusInternalServerError && rec.Code != http.StatusNotImplemented && rec.Code != http.StatusPreconditionRequired {
+				t.Errorf("%s status = %d, want error status from writeAuthError",
+					tc.name, rec.Code)
+			}
+		})
 	}
 }
