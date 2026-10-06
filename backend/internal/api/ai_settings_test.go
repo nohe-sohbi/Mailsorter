@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
@@ -83,5 +84,29 @@ func TestIsValidBaseURL(t *testing.T) {
 		if got := isValidBaseURL(tt.url); got != tt.want {
 			t.Errorf("isValidBaseURL(%q) = %v, want %v", tt.url, got, tt.want)
 		}
+	}
+}
+
+func TestTestAISettingsUnknownProvider(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest("POST", "/api/ai/settings/test", strings.NewReader(`{"provider":"unknown-provider"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Email", "user@example.com")
+	w := httptest.NewRecorder()
+
+	h.TestAISettings(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	errMsg, _ := res["error"].(string)
+	if !strings.Contains(errMsg, "Unknown provider") {
+		t.Errorf("expected 'Unknown provider' in error message, got %q", errMsg)
 	}
 }
