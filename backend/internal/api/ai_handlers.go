@@ -355,14 +355,11 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	// Get user token
-	token, err := h.getUserToken(ctx, userEmail)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-
-	gmailClient := h.gmailService.GetClient(token)
 
 	// Fetch all emails from this sender
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
@@ -678,14 +675,11 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Get user token to create Gmail label
-	token, err := h.getUserToken(ctx, userEmail)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-
-	gmailClient := h.gmailService.GetClient(token)
 
 	// Create Gmail label
 	gmailLabelID, err := h.gmailService.CreateLabel(gmailClient, label.Name)
