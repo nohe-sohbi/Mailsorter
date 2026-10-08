@@ -70,8 +70,14 @@ func TestIsValidBaseURL(t *testing.T) {
 	}{
 		{"", true},
 		{"https://api.openai.com/v1", true},
-		{"http://localhost:11434", true},
-		{"http://127.0.0.1:11434", true},
+		{"https://openrouter.ai/api/v1", true},
+		{"http://api.openai.com/v1", false}, // HTTP not allowed by egress policy
+		{"http://localhost:11434", false},  // HTTP and loopback blocked
+		{"https://localhost:11434", false}, // Loopback blocked
+		{"https://127.0.0.1:11434", false}, // Loopback IP blocked
+		{"https://169.254.169.254/latest", false}, // Cloud metadata service blocked
+		{"https://10.0.0.1/v1", false},    // Private RFC 1918 IP blocked
+		{"https://192.168.1.1/v1", false}, // Private RFC 1918 IP blocked
 		{"file:///etc/passwd", false},
 		{"ftp://example.com", false},
 		{"javascript:alert(1)", false},

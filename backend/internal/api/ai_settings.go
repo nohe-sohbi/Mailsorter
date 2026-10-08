@@ -3,26 +3,24 @@ package api
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/egress"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// isValidBaseURL reports whether rawURL is empty or a valid HTTP/HTTPS URL.
+// isValidBaseURL reports whether rawURL is empty or a valid public HTTPS URL.
+// It uses egress.Parse to prevent SSRF targeting internal services or metadata endpoints.
 func isValidBaseURL(rawURL string) bool {
 	if rawURL == "" {
 		return true
 	}
-	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return false
-	}
-	return true
+	_, err := egress.Parse(rawURL)
+	return err == nil
 }
 
 // GetAIProviders returns the catalog of known AI providers with their
