@@ -167,6 +167,19 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate provider name
+	validProvider := false
+	for _, p := range ai.KnownProviders {
+		if p.Name == req.Provider {
+			validProvider = true
+			break
+		}
+	}
+	if !validProvider {
+		writeError(w, http.StatusBadRequest, "Unknown provider: "+req.Provider)
+		return
+	}
+
 	if !isValidBaseURL(req.BaseURL) {
 		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
 		return
