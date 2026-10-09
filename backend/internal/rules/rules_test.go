@@ -189,6 +189,9 @@ func TestValidate(t *testing.T) {
 		{Name: "n", Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, "fuzzy", "a")}},
 		{Name: "n", Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "")}},
 		{Name: "n", Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, OpRegex, "([a-z")}},
+		{Name: string(make([]rune, MaxRuleNameLength+1)), Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "a")}},
+		{Name: "n", Action: ActionLabel, LabelName: string(make([]rune, MaxLabelNameLength+1)), Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "a")}},
+		{Name: "n", Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, string(make([]rune, MaxConditionValueLength+1)))}},
 	}
 	for i, r := range bad {
 		if err := Validate(r); err == nil {
@@ -248,6 +251,16 @@ func TestValidateMultiAction(t *testing.T) {
 		t.Errorf("valid multi-action rule rejected: %v", err)
 	}
 
+	excessiveConditions := make([]models.RuleCondition, MaxConditionsPerRule+1)
+	for i := range excessiveConditions {
+		excessiveConditions[i] = cond(FieldFrom, OpContains, "a")
+	}
+
+	excessiveActions := make([]models.RuleAction, MaxActionsPerRule+1)
+	for i := range excessiveActions {
+		excessiveActions[i] = act(ActionArchive, "")
+	}
+
 	bad := []models.SortingRule{
 		// label action without a name
 		{Name: "n", Conditions: base, Actions: []models.RuleAction{act(ActionLabel, "")}},
@@ -255,6 +268,10 @@ func TestValidateMultiAction(t *testing.T) {
 		{Name: "n", Conditions: base, Actions: []models.RuleAction{act(ActionArchive, ""), act("explode", "")}},
 		// empty actions list and no legacy action
 		{Name: "n", Conditions: base},
+		// excessive conditions
+		{Name: "n", Conditions: excessiveConditions, Action: ActionArchive},
+		// excessive actions
+		{Name: "n", Conditions: base, Actions: excessiveActions},
 	}
 	for i, r := range bad {
 		if err := Validate(r); err == nil {
