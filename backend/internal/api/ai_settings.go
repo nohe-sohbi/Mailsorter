@@ -103,7 +103,7 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !validProvider {
-		writeError(w, http.StatusBadRequest, "Unknown provider: "+req.Provider)
+		writeError(w, http.StatusBadRequest, "Unknown provider")
 		return
 	}
 
@@ -176,7 +176,7 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !validProvider {
-		writeError(w, http.StatusBadRequest, "Unknown provider: "+req.Provider)
+		writeError(w, http.StatusBadRequest, "Unknown provider")
 		return
 	}
 
@@ -226,6 +226,9 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "no such host") {
 			writeError(w, http.StatusBadRequest, "Impossible de joindre le serveur — vérifiez l'URL")
 			return
+		}
+		if req.APIKey != "" {
+			errMsg = strings.ReplaceAll(errMsg, req.APIKey, "[REDACTED]")
 		}
 		writeError(w, http.StatusBadRequest, "Erreur du provider: "+errMsg)
 		return
