@@ -479,6 +479,11 @@ type ApplyBatchRequest struct {
 	SuggestionIDs []string `json:"suggestionIds"`
 }
 
+// RejectBatchRequest is the request body for POST /api/ai/reject-batch
+type RejectBatchRequest struct {
+	SuggestionIDs []string `json:"suggestionIds"`
+}
+
 // ApplyBulkRequest is the request body for POST /api/ai/apply-bulk
 type ApplyBulkRequest struct {
 	SenderEmail string `json:"senderEmail"`

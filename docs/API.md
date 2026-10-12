@@ -1218,8 +1218,13 @@ server-side).
 
 **Response:** `200 OK`
 ```json
-{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1 }
+{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1, "reversible": true }
 ```
+
+`reversible` says whether `POST /api/emails/batch-undo` can reverse what this
+batch moved, so the client offers "Annuler" only when it would work. It is true
+on the Gmail API and false over IMAP, where batch-undo is not ported yet. A
+`keep` suggestion moves nothing and has nothing to undo either way.
 
 ### Apply in bulk for a sender
 
@@ -1258,6 +1263,29 @@ omitted when the message is no longer in the stored mailbox.
 Reject a pending suggestion. Marks it `rejected`; nothing changes in Gmail.
 
 **Response:** `204 No Content`
+
+### Reject many suggestions
+
+#### POST /api/ai/reject-batch
+
+Reject several pending suggestions in one request: a whole sender group, or the
+whole panel. One request whatever the count, which is the point: one POST per
+suggestion ran past the rate limiter's burst of 40, and the rejections it
+refused came back on the next refresh. Nothing changes in the mailbox.
+
+**Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
+
+**Response:** `200 OK`
+```json
+{ "rejected": 3, "total": 3 }
+```
+
+Only `pending` suggestions move: an id that is already applied or rejected, or
+that belongs to another user, is counted in `total` and not in `rejected`.
+
+**Errors:** `400` for an empty list, more than 200 ids, or any id that is not a
+valid ObjectID (checked before anything is written, so a bad id rejects
+nothing). `500` when the datastore write fails.
 
 ---
 

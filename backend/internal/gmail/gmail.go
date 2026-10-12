@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"strings"
@@ -520,6 +521,21 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 	}
 	date = parseDateHeader(dateHeader, message.InternalDate)
 	return
+}
+
+// Snippet returns the message's preview as plain text.
+//
+// Gmail hands the snippet over escaped for HTML, so an apostrophe arrives as
+// "&#39;". Everything downstream treats it as text: the SPA rendered
+// "l&#39;avancement" verbatim in the list, a rule on the snippet field could
+// never match a phrase with an apostrophe in it (most French sentences), and
+// the model's prompt carried the entities as noise. The IMAP transport already
+// builds its snippet from the decoded body, so this also makes the two agree.
+func Snippet(message *gmail.Message) string {
+	if message == nil {
+		return ""
+	}
+	return html.UnescapeString(message.Snippet)
 }
 
 func GetEmailBody(message *gmail.Message) string {
