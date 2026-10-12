@@ -2,10 +2,14 @@
 
 package api
 
-// What happens when you act on a whole sender: "Tout supprimer" on the
-// Expediteurs screen, and unsubscribing with "et archiver ses mails".
+// What happens when you act on a whole sender: "Tout supprimer" and "Tout
+// archiver" on the Expediteurs screen, and unsubscribing with "et archiver ses
+// mails".
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestScenarios_WholeSender(t *testing.T) {
 	playScenarios(t, "Quand tu agis sur tout un expéditeur", []scenario{
@@ -37,19 +41,70 @@ func TestScenarios_WholeSender(t *testing.T) {
 				app.expectNotInTrash(ids...)
 			},
 		},
+		// The three sentences below write info@boutique.com with no display
+		// name, and with the same From on every one of its mails: they are
+		// about which ADDRESSES a sender-wide action reaches, and must not
+		// depend on how two display names of one address are grouped. That is
+		// the "Boutique" / "Boutique Soldes" sentence after them, a separate
+		// decision.
 		{
-			phrase: "Quand un expéditeur n'affiche pas de nom (juste info@boutique.com), \"Tout supprimer\" pour lui met aussi à la corbeille les mails de facturation-info@boutique.com et de info@boutique.community.",
-			status: rejected,
+			phrase: "\"Tout supprimer\" pour info@boutique.com ne met à la corbeille que les mails de info@boutique.com : ceux de facturation-info@boutique.com et de info@boutique.community restent dans ta boîte de réception.",
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(
 					incoming{From: "info@boutique.com", Subject: "Soldes"},
 					incoming{From: "Facturation <facturation-info@boutique.com>", Subject: "Votre facture"},
 					incoming{From: "info@boutique.community", Subject: "Forum"},
-					incoming{From: "Service client <contact@boutique.com>", Subject: "Votre commande"},
 				)
 				app.deleteAllFrom("info@boutique.com")
-				app.expectInTrash(ids[0], ids[1], ids[2])
-				app.expectInInbox(ids[3])
+				app.expectInTrash(ids[0])
+				app.expectInInbox(ids[1], ids[2])
+				app.expectNoHistory(ids[1])
+				app.expectNoHistory(ids[2])
+			},
+		},
+		{
+			phrase: "Quand l'écran Expéditeurs annonce 2 mails pour info@boutique.com, \"Tout supprimer\" en met 2 à la corbeille, pas un de plus, même si facturation-info@boutique.com t'a aussi écrit.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				ids := app.receiveAndSync(
+					incoming{From: "info@boutique.com", Subject: "Soldes"},
+					incoming{From: "info@boutique.com", Subject: "Nouveautés"},
+					incoming{From: "Facturation <facturation-info@boutique.com>", Subject: "Votre facture"},
+				)
+				announced := app.announcedCount("info@boutique.com")
+				if announced != 2 {
+					app.fatalf("l'écran Expéditeurs devrait annoncer 2 mails pour info@boutique.com, il en annonce %d", announced)
+				}
+				app.deleteAllFrom("info@boutique.com")
+				var trashed []string
+				for _, id := range ids {
+					if app.gmail.has(id, labelTrash) {
+						trashed = append(trashed, app.describe(id))
+					}
+				}
+				if len(trashed) != announced {
+					app.failf("l'écran Expéditeurs annonçait %d mails pour info@boutique.com, \"Tout supprimer\" en a mis %d à la corbeille : %s", announced, len(trashed), strings.Join(trashed, ", "))
+				}
+				app.expectInTrash(ids[0], ids[1])
+				app.expectInInbox(ids[2])
+			},
+		},
+		{
+			phrase: "\"Tout archiver\" pour info@boutique.com n'archive que les mails de info@boutique.com, jamais ceux de facturation-info@boutique.com ou de info@boutique.community.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				ids := app.receiveAndSync(
+					incoming{From: "info@boutique.com", Subject: "Soldes"},
+					incoming{From: "info@boutique.com", Subject: "Nouveautés"},
+					incoming{From: "Facturation <facturation-info@boutique.com>", Subject: "Votre facture"},
+					incoming{From: "info@boutique.community", Subject: "Forum"},
+				)
+				app.archiveAllFrom("info@boutique.com")
+				app.expectNotInInbox(ids[0], ids[1])
+				app.expectInInbox(ids[2], ids[3])
+				app.expectNoHistory(ids[2])
+				app.expectNoHistory(ids[3])
 			},
 		},
 		{
@@ -66,31 +121,34 @@ func TestScenarios_WholeSender(t *testing.T) {
 			},
 		},
 		{
-			phrase: "Quand tu te désabonnes en demandant d'archiver, l'app archive aussi les mails des adresses qui contiennent celle de l'expéditeur, comme facturation-info@boutique.com.",
-			status: rejected,
+			phrase: "Quand tu te désabonnes de info@boutique.com en demandant d'archiver, l'app n'archive que les mails de info@boutique.com : ceux de facturation-info@boutique.com et de info@boutique.community restent dans ta boîte de réception.",
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(
 					incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes", Unsubscribe: "<mailto:stop@boutique.com>"},
+					incoming{From: "Boutique <info@boutique.com>", Subject: "Nouveautés", Unsubscribe: "<mailto:stop@boutique.com>"},
 					incoming{From: "Facturation <facturation-info@boutique.com>", Subject: "Votre facture"},
-					incoming{From: "Service client <contact@boutique.com>", Subject: "Votre commande"},
+					incoming{From: "info@boutique.community", Subject: "Forum"},
 				)
 				app.unsubscribeAndArchive(ids[0])
 				app.expectNotInInbox(ids[0], ids[1])
-				app.expectInInbox(ids[2])
-				app.expectHistory(ids[1], "archive", SourceUnsubscribe)
+				app.expectInInbox(ids[2], ids[3])
+				app.expectNoHistory(ids[2])
+				app.expectNoHistory(ids[3])
 			},
 		},
 		{
-			phrase: "Quand tu te désabonnes en demandant d'archiver, les mails d'un expéditeur protégé sont archivés quand même.",
-			status: rejected,
+			phrase: "Quand tu te désabonnes d'un expéditeur protégé (news@banque.fr) en demandant d'archiver, il est bien marqué \"Désabonné\", mais ses mails restent dans ta boîte de réception.",
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
-				app.protect("banque.fr")
+				app.protect("news@banque.fr")
 				ids := app.receiveAndSync(
 					incoming{From: "Ma Banque <news@banque.fr>", Subject: "Lettre d'info", Unsubscribe: "<mailto:stop@banque.fr>"},
 					incoming{From: "Ma Banque <news@banque.fr>", Subject: "Relevé"},
 				)
 				app.unsubscribeAndArchive(ids[0])
-				app.expectNotInInbox(ids...)
+				app.expectUnsubscribed("news@banque.fr")
+				app.expectInInbox(ids...)
 			},
 		},
 	})

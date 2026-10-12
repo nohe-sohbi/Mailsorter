@@ -652,29 +652,51 @@ func (a *testApp) timeComesForSnoozes() {
 	a.h.wakeDueSnoozes()
 }
 
-// senderKey is the value the Expediteurs screen holds for a sender, and sends
-// back for a sender-wide action: the sender's raw From header, as grouped by
-// GET /api/senders.
-func (a *testApp) senderKey(from string) string {
+// senderCard is one row of the Expediteurs screen: the sender key it holds
+// and the count it shows, which is also the count the "Tout supprimer" /
+// "Tout archiver" confirmation announces.
+type senderCard struct {
+	SenderEmail string `json:"senderEmail"`
+	EmailCount  int    `json:"emailCount"`
+}
+
+// senderCardFor returns the Expediteurs row for a sender, as GET /api/senders
+// lists it. It fails the scenario if the screen does not list that sender.
+func (a *testApp) senderCardFor(from string) senderCard {
 	a.t.Helper()
 	code, out := a.call(http.MethodGet, "/api/senders", nil)
 	if code != http.StatusOK {
 		a.fatalf("GET /api/senders a répondu %d : %v", code, out)
 	}
 	raw, _ := out["_raw"].(string)
-	var senders []struct {
-		SenderEmail string `json:"senderEmail"`
-	}
+	var senders []senderCard
 	if err := json.Unmarshal([]byte(raw), &senders); err != nil {
 		a.fatalf("réponse de GET /api/senders illisible : %v", err)
 	}
 	for _, s := range senders {
 		if s.SenderEmail == from {
-			return s.SenderEmail
+			return s
 		}
 	}
 	a.fatalf("l'écran Expéditeurs ne liste pas %q (il liste %v)", from, senders)
-	return ""
+	return senderCard{}
+}
+
+// senderKey is the value the Expediteurs screen holds for a sender, and sends
+// back for a sender-wide action: the sender's raw From header, as grouped by
+// GET /api/senders.
+func (a *testApp) senderKey(from string) string {
+	a.t.Helper()
+	return a.senderCardFor(from).SenderEmail
+}
+
+// announcedCount is the number of mails the Expediteurs screen shows for a
+// sender, the one its "Tout supprimer" confirmation says will go to the trash.
+// A sentence about "what the screen announces" needs it read from the screen's
+// own endpoint rather than counted by the scenario.
+func (a *testApp) announcedCount(from string) int {
+	a.t.Helper()
+	return a.senderCardFor(from).EmailCount
 }
 
 // deleteAllFrom is "Tout supprimer" on the Expediteurs screen.
@@ -682,6 +704,42 @@ func (a *testApp) deleteAllFrom(from string) map[string]interface{} {
 	a.t.Helper()
 	return a.mustCall(http.MethodPost, "/api/ai/apply-bulk",
 		map[string]string{"senderEmail": a.senderKey(from), "action": "delete"}, http.StatusOK)
+}
+
+// archiveAllFrom is "Tout archiver" on the Expediteurs screen: the same call as
+// "Tout supprimer", with the archive action.
+func (a *testApp) archiveAllFrom(from string) map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/ai/apply-bulk",
+		map[string]string{"senderEmail": a.senderKey(from), "action": "archive"}, http.StatusOK)
+}
+
+// expectUnsubscribed checks the "Désabonné" mark on the Abonnements tab: the
+// unsubscribed flag GET /api/subscriptions returns for that bare address. The
+// tab reloads from that endpoint, so it is what the user sees after a refresh.
+func (a *testApp) expectUnsubscribed(addr string) {
+	a.t.Helper()
+	code, out := a.call(http.MethodGet, "/api/subscriptions", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/subscriptions a répondu %d : %v", code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var subs []struct {
+		SenderEmail  string `json:"senderEmail"`
+		Unsubscribed bool   `json:"unsubscribed"`
+	}
+	if err := json.Unmarshal([]byte(raw), &subs); err != nil {
+		a.fatalf("réponse de GET /api/subscriptions illisible : %v", err)
+	}
+	for _, s := range subs {
+		if s.SenderEmail == addr {
+			if !s.Unsubscribed {
+				a.failf("l'onglet Abonnements devrait marquer %s \"Désabonné\", il ne le fait pas", addr)
+			}
+			return
+		}
+	}
+	a.failf("l'onglet Abonnements ne liste pas %s, il ne peut donc pas le marquer \"Désabonné\" (il liste %v)", addr, subs)
 }
 
 // unsubscribeAndArchive is "Se désabonner" with "et archiver ses mails".
