@@ -26,6 +26,24 @@ type Service struct {
 	mu     sync.RWMutex
 	// retry resilience knobs, applied to every Gmail API call (see retry.go).
 	retry retryConfig
+	// endpoint replaces Google's Gmail API root when set. Production never sets
+	// it; see WithEndpoint for the one caller that does.
+	endpoint string
+}
+
+// WithEndpoint points every client this service builds at another Gmail API
+// root, and returns the service.
+//
+// It exists for the acceptance scenarios (internal/api, build tag
+// "acceptance"). They serve a fake Gmail from an httptest server so a scenario
+// can check which messages a handler actually moved, which no test could do
+// while the only Gmail reachable was Google's. main.go never calls this, so a
+// real deployment keeps talking to Google and nothing else.
+func (s *Service) WithEndpoint(root string) *Service {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.endpoint = root
+	return s
 }
 
 func NewService(clientID, clientSecret, redirectURL string) *Service {
@@ -108,7 +126,11 @@ func (s *Service) GetClient(token *oauth2.Token) *gmail.Service {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	client := s.config.Client(context.Background(), token)
-	srv, _ := gmail.NewService(context.Background(), option.WithHTTPClient(client))
+	opts := []option.ClientOption{option.WithHTTPClient(client)}
+	if s.endpoint != "" {
+		opts = append(opts, option.WithEndpoint(s.endpoint))
+	}
+	srv, _ := gmail.NewService(context.Background(), opts...)
 	return srv
 }
 

@@ -365,10 +365,15 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch all emails from this sender
+	// The sender is the key of an Expediteurs card: a stored From header, as
+	// GetSenders groups them. The sweep reaches exactly that group, by equality,
+	// so it acts on the mails the card counted and announced, no more. It used
+	// to be a substring match, which also swept every From that merely
+	// contained the key: a longer address on the same domain, or the same
+	// address on a longer domain.
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId": userEmail,
-		"from":   bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
+		"from":   req.SenderEmail,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")

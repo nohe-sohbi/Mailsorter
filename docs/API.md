@@ -649,7 +649,10 @@ ranked by volume.
 Unsubscribes from the sender of a given message. When the sender supports RFC
 8058 one-click, the POST is performed server-side (`done: true`); otherwise the
 `url` / `mailto` is returned for the client to open. Optionally archives the
-sender's backlog in the same call.
+sender's backlog in the same call: every stored mail from the same address,
+whatever its display name, and only that address (a longer address that contains
+it is another sender). A protected sender is still recorded as unsubscribed, but
+its mail stays in the inbox and is not counted in `archived`.
 
 The server-side POST is the one request in the API whose address is chosen by a
 stranger: it comes from the `List-Unsubscribe` header of a received email. It is
@@ -1236,11 +1239,14 @@ on the Gmail API and false over IMAP, where batch-undo is not ported yet. A
 #### POST /api/ai/apply-bulk
 
 Apply one action to every stored email from a sender ("learn once, clean up
-everything").
+everything"). `senderEmail` is the `senderEmail` of a `GET /api/senders` row, a
+stored From header, and is matched exactly: the action reaches the mails that row
+counts and nothing else, never a From that merely contains it. A protected
+sender's mail is skipped for `archive`, `trash` and `delete`.
 
 **Request body:**
 ```json
-{ "senderEmail": "news@acme.com", "action": "archive", "labelName": "" }
+{ "senderEmail": "Acme News <news@acme.com>", "action": "archive", "labelName": "" }
 ```
 
 **Response:** `200 OK`
