@@ -5,9 +5,9 @@ package api
 // What happens when a message leaves the inbox.
 //
 // Every sentence below was written by reading the code, then proven against the
-// running app. They are "observed": the app does this today, and Nohé has not yet
-// said whether it is what he wants. Each answer turns a sentence into a
-// validated one (keep it), a bug (a /feature flips it), or a decision to take.
+// running app, and started "observed": what the app does today, not yet
+// confirmed by Nohé. His answer makes it validated (keep it) or rejected (a
+// bug: the /feature that fixes it replaces the sentence).
 
 import "testing"
 
@@ -15,7 +15,7 @@ func TestScenarios_SingleMessage(t *testing.T) {
 	playScenarios(t, "Ce que tu fais toi-même, mail par mail", []scenario{
 		{
 			phrase: "Quand tu archives un mail, il quitte ta boîte de réception et l'archivage apparaît dans ton historique.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
 				app.act(ids[0], "archive")
@@ -26,7 +26,7 @@ func TestScenarios_SingleMessage(t *testing.T) {
 		},
 		{
 			phrase: "Quand tu supprimes un mail, il part dans la corbeille de Gmail : rien n'est effacé définitivement.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
 				app.act(ids[0], "delete")
@@ -37,7 +37,7 @@ func TestScenarios_SingleMessage(t *testing.T) {
 		},
 		{
 			phrase: "Un expéditeur protégé ne t'empêche pas d'archiver ou de supprimer toi-même un de ses mails.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				ids := app.receiveAndSync(
@@ -52,7 +52,7 @@ func TestScenarios_SingleMessage(t *testing.T) {
 		},
 		{
 			phrase: "Depuis l'historique, annuler un archivage remet le mail dans ta boîte de réception.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
 				app.act(ids[0], "archive")
@@ -63,7 +63,7 @@ func TestScenarios_SingleMessage(t *testing.T) {
 		},
 		{
 			phrase: "Depuis l'historique, annuler une suppression sort le mail de la corbeille et le remet dans ta boîte de réception.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
 				app.act(ids[0], "delete")
@@ -74,7 +74,7 @@ func TestScenarios_SingleMessage(t *testing.T) {
 		},
 		{
 			phrase: "Quand tu reportes un mail, il quitte ta boîte de réception ; à l'heure prévue, il revient tout seul, marqué non lu.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(incoming{From: "Garage <rdv@garage.fr>", Subject: "Votre rendez-vous"})
 				app.act(ids[0], "read")

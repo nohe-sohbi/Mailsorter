@@ -18,7 +18,7 @@ func TestScenarios_Rules(t *testing.T) {
 	playScenarios(t, "Tes règles", []scenario{
 		{
 			phrase: "Tant que l'option \"appliquer mes règles automatiquement\" est coupée, synchroniser ta boîte ne déplace aucun mail.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.rule("Promos", 1, rules.FieldFrom, rules.OpContains, "boutique.com", archive)
 				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
@@ -28,7 +28,7 @@ func TestScenarios_Rules(t *testing.T) {
 		},
 		{
 			phrase: "Avec cette option activée, chaque synchronisation applique tes règles aux mails de ta boîte, et c'est noté dans l'historique.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.rule("Promos", 1, rules.FieldFrom, rules.OpContains, "boutique.com", archive)
 				app.setAutoApplyRules(true)
@@ -43,7 +43,7 @@ func TestScenarios_Rules(t *testing.T) {
 		},
 		{
 			phrase: "Quand plusieurs règles correspondent à un mail, seule la première dans ton ordre s'applique.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.rule("Étiqueter les promos", 1, rules.FieldFrom, rules.OpContains, "boutique.com", promoLabel)
 				app.rule("Archiver la boutique", 2, rules.FieldFrom, rules.OpContains, "boutique.com", archive)
@@ -55,7 +55,7 @@ func TestScenarios_Rules(t *testing.T) {
 		},
 		{
 			phrase: "Une règle n'archive ni ne supprime jamais le mail d'un expéditeur protégé, mais ses autres actions (libellé, lu, étoile) s'appliquent quand même.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				app.rule("Ranger la banque", 1, rules.FieldFrom, rules.OpContains, "banque.fr", promoLabel, archive)
@@ -67,7 +67,7 @@ func TestScenarios_Rules(t *testing.T) {
 		},
 		{
 			phrase: "\"Appliquer mes règles\" ne traite que les mails encore dans ta boîte de réception, pas ceux déjà archivés.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.rule("Étiqueter les promos", 1, rules.FieldFrom, rules.OpContains, "boutique.com", promoLabel)
 				ids := app.receiveAndSync(

@@ -56,7 +56,7 @@ const scenarioUser = "moi@exemple.fr"
 // Scenarios and the report
 // ---------------------------------------------------------------------------
 
-// status says whether Nohé has confirmed a sentence.
+// status says what Nohé answered about a sentence: nothing yet, yes or no.
 type status int
 
 const (
@@ -65,13 +65,21 @@ const (
 	observed status = iota
 	// validated: Nohé confirmed this is the intended behavior.
 	validated
+	// rejected: Nohé answered no. The test still pins what the app does
+	// today, so the report keeps showing it until the /feature that fixes it
+	// replaces this scenario with the sentence he wants.
+	rejected
 )
 
 func (s status) label() string {
-	if s == validated {
+	switch s {
+	case validated:
 		return "validé"
+	case rejected:
+		return "refusé"
+	default:
+		return "constaté"
 	}
-	return "constaté"
 }
 
 // scenario is one sentence and the test that proves it.
@@ -131,8 +139,10 @@ func TestMain(m *testing.M) {
 }
 
 // writeScenarioReport renders the results as the French page Nohé reads: one
-// line per sentence, OK or KO, validated or only observed. Nothing in it is
-// written by hand, so it cannot claim a behavior the app does not have.
+// line per sentence, OK or KO, validated, rejected or only observed. The
+// rejected ones are listed again on their own, because each is a fix he asked
+// for and a table row is easy to read past. Nothing in it is written by hand,
+// so it cannot claim a behavior the app does not have.
 func writeScenarioReport(path string) error {
 	resultsMu.Lock()
 	defer resultsMu.Unlock()
@@ -140,24 +150,24 @@ func writeScenarioReport(path string) error {
 		return nil
 	}
 
-	ok, ko, valid := 0, 0, 0
+	ok, ko := 0, 0
+	byStatus := map[status]int{}
 	for _, r := range results {
 		if r.passed {
 			ok++
 		} else {
 			ko++
 		}
-		if r.status == validated {
-			valid++
-		}
+		byStatus[r.status]++
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Ce que fait Mailsorter, prouvé par l'app qui tourne\n\n")
-	fmt.Fprintf(&b, "Généré le %s. %d scénarios : %d OK, %d KO. %d validés par toi, %d seulement constatés.\n\n",
-		time.Now().Format("02/01/2006 à 15:04 MST"), len(results), ok, ko, valid, len(results)-valid)
+	fmt.Fprintf(&b, "Généré le %s. %d scénarios : %d OK, %d KO. %d validés par toi, %d refusés par toi, %d seulement constatés.\n\n",
+		time.Now().Format("02/01/2006 à 15:04 MST"), len(results), ok, ko,
+		byStatus[validated], byStatus[rejected], byStatus[observed])
 	fmt.Fprintf(&b, "- **OK** : l'app fait exactement ce que dit la phrase. **KO** : elle ne le fait pas.\n")
-	fmt.Fprintf(&b, "- **validé** : tu as confirmé que c'est voulu. **constaté** : c'est ce que fait l'app aujourd'hui, personne ne l'a encore validé.\n")
+	fmt.Fprintf(&b, "- **validé** : tu as confirmé que c'est voulu. **refusé** : tu as dit non ; la phrase décrit ce que fait l'app aujourd'hui, à corriger avec /feature. **constaté** : c'est ce que fait l'app aujourd'hui, personne ne l'a encore validé.\n")
 
 	theme := ""
 	n := 0
@@ -173,6 +183,17 @@ func writeScenarioReport(path string) error {
 		}
 		phrase := strings.ReplaceAll(r.phrase, "|", "/")
 		fmt.Fprintf(&b, "| %d | %s | %s | %s |\n", n, mark, phrase, r.status.label())
+	}
+
+	if byStatus[rejected] > 0 {
+		fmt.Fprintf(&b, "\n## À corriger (tu as dit non)\n\n")
+		for i, r := range results {
+			if r.status != rejected {
+				continue
+			}
+			// i+1 is the sentence's number in the tables above.
+			fmt.Fprintf(&b, "- **%d.** %s\n", i+1, r.phrase)
+		}
 	}
 
 	if ko > 0 {

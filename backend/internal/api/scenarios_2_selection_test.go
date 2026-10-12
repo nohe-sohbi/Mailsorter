@@ -10,7 +10,7 @@ func TestScenarios_Selection(t *testing.T) {
 	playScenarios(t, "Quand tu agis sur une sélection de mails", []scenario{
 		{
 			phrase: "Quand tu archives ou supprimes une sélection, les mails des expéditeurs protégés ne bougent pas ; les autres, si.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				ids := app.receiveAndSync(
@@ -35,7 +35,7 @@ func TestScenarios_Selection(t *testing.T) {
 		},
 		{
 			phrase: "Juste après avoir archivé une sélection, \"Annuler\" remet tous ces mails dans ta boîte de réception.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(
 					incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"},
@@ -49,7 +49,7 @@ func TestScenarios_Selection(t *testing.T) {
 		},
 		{
 			phrase: "Quand tu reportes une sélection, les mails des expéditeurs protégés ne sont pas reportés et restent dans ta boîte.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				ids := app.receiveAndSync(

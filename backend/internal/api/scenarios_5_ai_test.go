@@ -14,7 +14,7 @@ func TestScenarios_AI(t *testing.T) {
 	playScenarios(t, "L'IA", []scenario{
 		{
 			phrase: "L'IA ne range rien toute seule : elle propose, et le mail reste dans ta boîte tant que tu n'as pas validé.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.ai.willSay("archive", 0.95)
 				ids := app.receiveAndSync(
@@ -32,7 +32,7 @@ func TestScenarios_AI(t *testing.T) {
 		},
 		{
 			phrase: "Pour un expéditeur protégé, l'IA propose toujours de garder le mail, même quand elle voulait l'archiver.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				app.ai.willSay("archive", 0.95)
@@ -46,7 +46,7 @@ func TestScenarios_AI(t *testing.T) {
 		},
 		{
 			phrase: "\"Tout ranger\" laisse en place les mails d'un expéditeur devenu protégé après la proposition de l'IA.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.ai.willSay("archive", 0.95)
 				ids := app.receiveAndSync(
@@ -62,7 +62,7 @@ func TestScenarios_AI(t *testing.T) {
 		},
 		{
 			phrase: "Appliquer une seule proposition de l'IA la suit même si l'expéditeur est devenu protégé entre-temps.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.ai.willSay("archive", 0.95)
 				ids := app.receiveAndSync(incoming{From: "Ma Banque <news@banque.fr>", Subject: "Relevé"})
@@ -75,7 +75,7 @@ func TestScenarios_AI(t *testing.T) {
 		},
 		{
 			phrase: "Le pilote automatique d'un expéditeur range ses mails dès l'analyse, sans te demander et sans consulter l'IA.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.autopilot("Boutique <info@boutique.com>", "archive")
 				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
@@ -89,7 +89,7 @@ func TestScenarios_AI(t *testing.T) {
 		},
 		{
 			phrase: "Le pilote automatique ne range jamais le mail d'un expéditeur protégé.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				app.autopilot("Ma Banque <news@banque.fr>", "archive")

@@ -11,7 +11,7 @@ func TestScenarios_WholeSender(t *testing.T) {
 	playScenarios(t, "Quand tu agis sur tout un expéditeur", []scenario{
 		{
 			phrase: "\"Tout supprimer\" pour un expéditeur met à la corbeille tous ses mails connus de l'app, y compris ceux que tu avais déjà archivés.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(
 					incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"},
@@ -25,7 +25,7 @@ func TestScenarios_WholeSender(t *testing.T) {
 		},
 		{
 			phrase: "\"Tout supprimer\" pour un expéditeur protégé ne met aucun de ses mails à la corbeille.",
-			status: observed,
+			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				ids := app.receiveAndSync(
@@ -39,7 +39,7 @@ func TestScenarios_WholeSender(t *testing.T) {
 		},
 		{
 			phrase: "Quand un expéditeur n'affiche pas de nom (juste info@boutique.com), \"Tout supprimer\" pour lui met aussi à la corbeille les mails de facturation-info@boutique.com et de info@boutique.community.",
-			status: observed,
+			status: rejected,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(
 					incoming{From: "info@boutique.com", Subject: "Soldes"},
@@ -54,7 +54,7 @@ func TestScenarios_WholeSender(t *testing.T) {
 		},
 		{
 			phrase: "Un expéditeur qui change de nom affiché (\"Boutique\" puis \"Boutique Soldes\") compte comme deux expéditeurs : \"Tout supprimer\" sur l'un laisse les mails de l'autre.",
-			status: observed,
+			status: rejected,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(
 					incoming{From: "Boutique <info@boutique.com>", Subject: "Nouveautés"},
@@ -67,7 +67,7 @@ func TestScenarios_WholeSender(t *testing.T) {
 		},
 		{
 			phrase: "Quand tu te désabonnes en demandant d'archiver, l'app archive aussi les mails des adresses qui contiennent celle de l'expéditeur, comme facturation-info@boutique.com.",
-			status: observed,
+			status: rejected,
 			run: func(t *testing.T, app *testApp) {
 				ids := app.receiveAndSync(
 					incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes", Unsubscribe: "<mailto:stop@boutique.com>"},
@@ -82,7 +82,7 @@ func TestScenarios_WholeSender(t *testing.T) {
 		},
 		{
 			phrase: "Quand tu te désabonnes en demandant d'archiver, les mails d'un expéditeur protégé sont archivés quand même.",
-			status: observed,
+			status: rejected,
 			run: func(t *testing.T, app *testApp) {
 				app.protect("banque.fr")
 				ids := app.receiveAndSync(
