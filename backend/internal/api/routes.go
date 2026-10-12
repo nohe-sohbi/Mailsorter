@@ -115,6 +115,8 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/ai/analyze-sender", h.AnalyzeSender).Methods("POST")
 	r.HandleFunc("/api/ai/apply", h.ApplySuggestion).Methods("POST")
 	r.HandleFunc("/api/ai/apply-batch", h.ApplyBatch).Methods("POST")
+	// Ignoring a whole sender group, or the whole panel, in one request.
+	r.HandleFunc("/api/ai/reject-batch", h.RejectBatch).Methods("POST")
 	r.HandleFunc("/api/ai/apply-bulk", h.ApplyBulk).Methods("POST")
 	r.HandleFunc("/api/ai/suggestions", h.GetSuggestions).Methods("GET")
 	r.HandleFunc("/api/ai/suggestions/{id}/reject", h.RejectSuggestion).Methods("POST")

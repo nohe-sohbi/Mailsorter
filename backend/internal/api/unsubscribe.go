@@ -39,12 +39,11 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	token, err := h.getUserToken(ctx, userEmail)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-	gmailClient := h.gmailService.GetClient(token)
 
 	msg, err := h.gmailService.GetMessage(gmailClient, req.MessageID)
 	if err != nil {

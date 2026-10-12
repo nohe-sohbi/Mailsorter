@@ -294,6 +294,10 @@ body.ht-app :focus-visible {
 }
 .ht-app .btn-secondary:not(:disabled):hover { background-color: var(--h-sunk); }
 .ht-app .btn-danger-quiet { border: 1.5px solid var(--h-line); }
+/* A verdict button (the triage plan's "Archiver les 6", the reader's verb) is
+   the bare .btn tinted like its verb's chip: it gets the ink outline every
+   hotel button carries, or it reads as a coloured label rather than a button. */
+.ht-app .btn { border: 1.5px solid var(--h-line); }
 
 /* ---------- Surfaces ---------- */
 
@@ -758,54 +762,6 @@ a.hd-av:hover, .hd-av.is-on { box-shadow: 0 0 0 3px var(--h-mustard); }
 .hd-ibtn.is-ok:hover { transform: translateY(-1px); box-shadow: 0 3px 0 var(--h-line); }
 .hd-ibtn.is-danger { color: rgb(var(--danger-600)); }
 .hd-ibtn.is-danger:hover { background: rgb(var(--danger-50)); }
-
-.hd-props {
-  margin-bottom: 18px;
-  border: 1.5px solid var(--h-line);
-  background: var(--h-surface);
-  box-shadow: 4px 4px 0 var(--h-offset);
-}
-.hd-props__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 14px;
-  padding: 12px 16px;
-  border-bottom: 1.5px solid var(--h-line);
-  background: var(--h-mustard-soft);
-}
-.hd-props__title { display: flex; align-items: center; gap: 10px; }
-.hd-props__title b {
-  font-family: var(--h-font-display);
-  font-optical-sizing: auto;
-  font-style: italic;
-  font-weight: 500;
-  font-size: 21px;
-  color: var(--h-accent);
-}
-.hd-props__acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.hd-props ul { margin: 0; padding: 0; list-style: none; }
-.hd-prop {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--h-hair);
-}
-.hd-prop:first-child { border-top: 0; }
-.hd-prop__t { min-width: 0; }
-.hd-prop__t b, .hd-prop__t span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hd-prop__t b { font-size: 14px; font-weight: 600; }
-.hd-prop__t span { font-size: 12.5px; color: var(--h-muted); }
-.hd-conf { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--h-muted); }
-.hd-prop__acts { display: flex; gap: 6px; }
-@media (max-width: 639px) {
-  .hd-prop { grid-template-columns: minmax(0, 1fr) auto; }
-  .hd-prop .hd-pchip { grid-column: 1 / -1; justify-self: start; }
-  .hd-conf { display: none; }
-}
 
 /* The reader: the subject in the display face, like a page head. */
 .ht-app .card h2.hd-reader-title,

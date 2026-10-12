@@ -1,15 +1,12 @@
 import React from 'react';
 import { actionMeta } from '../../ui/actions';
 import { cn } from '../../ui/cn';
-import Spinner from '../../ui/Spinner';
-import { Archive, Check, Search, Shield, Star, Trash, X } from '../../ui/icons';
+import { Archive, Check, Search, Star, Trash, X } from '../../ui/icons';
 import { hotelTone, initials } from './avatar';
 
 // The inbox, drawn by the Grand Hotel. Inbox.js keeps every handler, every
 // piece of state and the classic markup; these components only draw what it
 // hands them, so the two themes cannot disagree on what a click does.
-
-const pct = (v) => Math.round((v || 0) * 100);
 
 // What Mailsorter proposes, phrased as the question it is. `short` is the
 // version that fits on a row: "Factures ?" rather than "Ranger dans Factures".
@@ -81,69 +78,11 @@ export function HotelFilters({ filters, saved, activeQuery, activeFilter, defaul
   );
 }
 
-// The pile of proposals waiting for a yes or a no.
-export function HotelProposals({ suggestions, emails, senderLabel, highConfOnly, onToggleHighConf, onApply, onReject, onApplyAll, onRejectAll, applyingAll }) {
-  return (
-    <section className="hd-props animate-fade-up" aria-label="Propositions de Mailsorter">
-      <div className="hd-props__head">
-        <div className="hd-props__title">
-          <span className="hd-cap">Mailsorter propose</span>
-          <span className="ht-badge">{suggestions.length}</span>
-        </div>
-        <div className="hd-props__acts">
-          <button
-            onClick={onToggleHighConf}
-            aria-pressed={highConfOnly}
-            className={cn('chip transition-colors', highConfOnly ? 'bg-positive-100 text-positive-700' : 'bg-surface text-ink-700 hover:bg-ink-100')}
-            title="N'afficher que les propositions à haute confiance"
-          >
-            <Shield size={13} /> Haute confiance
-          </button>
-          <button onClick={onRejectAll} className="btn-ghost btn-sm">
-            Tout passer
-          </button>
-          <button onClick={onApplyAll} disabled={applyingAll} className="btn-primary btn-sm" title="Tout valider (a)">
-            {applyingAll ? <Spinner size={14} /> : <Check size={14} />} Tout valider ({suggestions.length})
-          </button>
-        </div>
-      </div>
-      <ul>
-        {suggestions.map((s) => {
-          const local = emails.find((e) => e.messageId === s.emailId);
-          const subject = s.subject || local?.subject || '(Sans sujet)';
-          const from = senderLabel(s.from || local?.from) || 'Expéditeur inconnu';
-          const verb = proposalText(s);
-          return (
-            <li key={s.id || s._id} className="hd-prop">
-              <ProposalChip suggestion={s} />
-              <div className="hd-prop__t">
-                <b>{subject}</b>
-                <span>
-                  {from}
-                  {s.reasoning ? `. ${s.reasoning}` : ''}
-                </span>
-              </div>
-              <span className="hd-conf" title="Confiance du modèle">
-                {pct(s.confidence)}{'\u00a0'}%
-              </span>
-              <span className="hd-prop__acts">
-                <button onClick={() => onApply(s)} className="hd-ibtn is-ok" aria-label={`Valider : ${verb}, ${subject}`} title="Valider">
-                  <Check size={15} />
-                </button>
-                <button onClick={() => onReject(s)} className="hd-ibtn" aria-label={`Passer la proposition pour ${subject}`} title="Passer">
-                  <X size={15} />
-                </button>
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
 // One message on the list. The proposal for it, when there is one, rides on
-// the row itself: the decision is made where the message is read.
+// the row itself, next to the message it is about. The triage plan above
+// stays the place to decide by sender; this is the same verdict, one email at
+// a time, through the same handlers (the Inbox's single apply, the plan's
+// ignore), so the two can never disagree.
 export function HotelRow({
   email,
   name,
@@ -159,7 +98,7 @@ export function HotelRow({
   onArchive,
   onDelete,
   onApply,
-  onReject,
+  onIgnore,
 }) {
   const starred = email.isStarred || (email.labelIds || []).includes('STARRED');
   const subject = email.subject || '(Sans sujet)';
@@ -197,7 +136,7 @@ export function HotelRow({
             <button onClick={() => onApply(suggestion)} className="hd-ibtn is-ok" aria-label={`Valider : ${proposalText(suggestion)}, ${subject}`} title="Valider">
               <Check size={14} />
             </button>
-            <button onClick={() => onReject(suggestion)} className="hd-ibtn" aria-label={`Passer la proposition pour ${subject}`} title="Passer">
+            <button onClick={() => onIgnore(suggestion)} className="hd-ibtn" aria-label={`Ignorer la proposition pour ${subject}`} title="Ignorer">
               <X size={14} />
             </button>
           </>

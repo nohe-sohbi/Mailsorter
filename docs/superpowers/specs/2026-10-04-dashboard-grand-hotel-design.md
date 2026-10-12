@@ -28,8 +28,8 @@ de la landing, branché sur le même interrupteur `UI_THEME` et la même prévis
 | Écran | Classique | Grand Hôtel |
 |---|---|---|
 | En-tête | Onglets | Panneau d'ascenseur numéroté (étage allumé), jauge du quota, avatar ; sur mobile, l'étage courant et un tiroir de boutons d'ascenseur |
-| Boîte | Cartes de stats, suggestions en liste | Plaque d'étage, tableau des compteurs, filtres en étiquettes à bagages, "Mailsorter propose" avec "Archiver ?" en Bodoni, proposition posée sur la ligne du message, "Inbox zéro. Respect." devant la porte "Ne pas déranger" |
-| Lecteur | Carte de recommandation | Sujet en Bodoni, `ht-prop` "Mailsorter propose / Archiver", Valider / Passer, l'e-mail posé comme une lettre |
+| Boîte | Cartes de stats, tri proposé par expéditeur | Plaque d'étage, tableau des compteurs, filtres en étiquettes à bagages, le même tri proposé habillé par le thème (avatars hôtel), la proposition aussi posée sur la ligne du message ("Archiver ?" en Bodoni, jamais "Garder"), "Inbox zéro. Respect." devant la porte "Ne pas déranger" |
+| Lecteur | Carte de recommandation | Sujet en Bodoni, `ht-prop` "Mailsorter propose / Archiver", "À vérifier" au même seuil que le tri, le verbe et Ignorer, l'e-mail posé comme une lettre |
 | Règles, Plus tard | En-tête à icône | Plaques d'étage, portes au panneau de direction et au réveil sur les états vides |
 | Historique | Cartes | Un registre : un titre par jour, une ligne par acte ("Le Monde *archivé*"), Annuler en bout de ligne |
 | Réglages, Compte | Cartes | Titres de section en Bodoni italique, interrupteurs hôtel, coffre-fort sur la confidentialité, semaine en barres de laiton |
@@ -39,8 +39,8 @@ de la landing, branché sur le même interrupteur `UI_THEME` et la même prévis
 
 ## 4. Ton
 
-Celui de la moodboard : les verbes du produit restent simples (Valider, Passer,
-Annuler), l'humour se range dans les titres et les états vides ("Inbox zéro.
+Celui de la moodboard : les verbes du produit restent simples (le verbe de
+l'action, Ignorer, Annuler, comme le tri proposé), l'humour se range dans les titres et les états vides ("Inbox zéro.
 Respect."), l'hôtel se voit mais ne parle pas (aucun jeu de rôle de concierge).
 Ponctuation ASCII.
 

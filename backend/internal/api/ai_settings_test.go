@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
@@ -70,8 +71,14 @@ func TestIsValidBaseURL(t *testing.T) {
 	}{
 		{"", true},
 		{"https://api.openai.com/v1", true},
-		{"http://localhost:11434", true},
-		{"http://127.0.0.1:11434", true},
+		{"https://openrouter.ai/api/v1", true},
+		{"http://api.openai.com/v1", false}, // HTTP not allowed by egress policy
+		{"http://localhost:11434", false},  // HTTP and loopback blocked
+		{"https://localhost:11434", false}, // Loopback blocked
+		{"https://127.0.0.1:11434", false}, // Loopback IP blocked
+		{"https://169.254.169.254/latest", false}, // Cloud metadata service blocked
+		{"https://10.0.0.1/v1", false},    // Private RFC 1918 IP blocked
+		{"https://192.168.1.1/v1", false}, // Private RFC 1918 IP blocked
 		{"file:///etc/passwd", false},
 		{"ftp://example.com", false},
 		{"javascript:alert(1)", false},
@@ -83,5 +90,29 @@ func TestIsValidBaseURL(t *testing.T) {
 		if got := isValidBaseURL(tt.url); got != tt.want {
 			t.Errorf("isValidBaseURL(%q) = %v, want %v", tt.url, got, tt.want)
 		}
+	}
+}
+
+func TestTestAISettingsUnknownProvider(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest("POST", "/api/ai/settings/test", strings.NewReader(`{"provider":"unknown-provider"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Email", "user@example.com")
+	w := httptest.NewRecorder()
+
+	h.TestAISettings(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	errMsg, _ := res["error"].(string)
+	if !strings.Contains(errMsg, "Unknown provider") {
+		t.Errorf("expected 'Unknown provider' in error message, got %q", errMsg)
 	}
 }
