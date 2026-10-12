@@ -40,6 +40,17 @@ years without a fix on code that handles credentials and TLS is the larger risk.
 It also ships `imapserver/imapmemserver`, which is what lets `internal/imap` be
 tested against a real server rather than a mock.
 
+## Changing Behavior: `/feature` and the scenarios
+
+Nohé does not review code. A behavior change goes through `/feature`
+(`.claude/skills/feature/SKILL.md`): sentences in French agreed with him first,
+locked as acceptance scenarios by the `scenariste` agent, made to pass by the
+`codeur` agent, checked by the read-only `controleur` agent, proven by
+`make scenarios`. The scenarios (`backend/internal/api/scenarios_*_test.go`)
+and their harness (`acceptance_*_test.go`) are locked by a hook
+(`.claude/hooks/lock-scenarios.mjs`): only the `scenariste` may write them. If a
+scenario looks wrong, say so; never work around it.
+
 ## Code Quality Standards
 
 1. **Keep the decision logic pure.** Anything that decides (does this rule match,
@@ -128,6 +139,7 @@ All commands verified against this working copy.
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
 | Backend tests | `make test` (= `cd backend && go test ./...`) | 345 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
+| Acceptance scenarios | `make scenarios` | runs `backend/scripts/scenarios.sh`: the scenarios against a throwaway MongoDB (Docker, or a downloaded `mongod` when there is no Docker), then prints the French report. CI runs it in the `scenarios` job and publishes the report as the job summary |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
 | Frontend dev server | `make frontend` or `cd frontend && npm install && npm start` | :3000, proxies nothing, hits :8080 directly |
@@ -480,6 +492,12 @@ as a side effect of another change.
   mount the *real* router (`newRoutedTestServer` in `routes_integration_test.go`) and
   point Mongo at a dead address on purpose so the degraded paths are exercised for real.
 - A bug fix ships with the test that fails without it. Every B-item in `BACKLOG.md` did.
+- Acceptance scenarios (build tag `acceptance`) are the one place the `api` package
+  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), and
+  the only tests that say which messages a handler actually moved. One scenario is
+  one French sentence (`phrase`) Nohé can answer yes or no to, `observed` until he
+  confirms it, `validated` after. They FAIL without `MAILSORTER_TEST_MONGO_URI`
+  rather than skip. `go test ./...` without the tag does not see them.
 
 ### React
 
@@ -516,6 +534,9 @@ as a side effect of another change.
   `snooze`, `config`, `models`, `env`, `header`, `backlog`, `roadmap`. The scope is
   optional and often omitted on a cross-cutting change.
 - Show the diff and the commit message before committing. Do not push or deploy unasked.
+- Exception, inside `/feature` only: the `scenariste` and the `codeur` commit
+  locally on the feature branch, because the commit that locks the scenarios is
+  what the others diff against. Pushing and merging still wait for Nohé.
 
 ## Configuration
 
