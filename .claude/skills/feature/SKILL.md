@@ -27,8 +27,10 @@ Never change direction without saying so in those lines.
 ## The pieces you work with
 
 - **Scenarios**: `backend/internal/api/scenarios_*_test.go`. One `scenario` per
-  sentence, `phrase` verbatim as Nohé validated it, status `validated` or
-  `observed` (what the app does today, never confirmed by Nohé).
+  sentence, `phrase` verbatim as Nohé validated it. Status `validated` (he said
+  yes), `observed` (what the app does today, not answered yet) or `rejected` (he
+  said no: the test still pins today's behavior, and the report lists it under
+  "À corriger" until a /feature fixes it).
 - **Harness**: `backend/internal/api/acceptance_*_test.go`: real router, a
   throwaway MongoDB, a fake Gmail and a fake AI.
 - **Proof**: `make scenarios` (repo root) prints the French report: each
@@ -36,15 +38,18 @@ Never change direction without saying so in those lines.
 - **Lock**: a hook (`.claude/hooks/lock-scenarios.mjs`) lets only the
   `scenariste` agent write those files.
 - **Agents**: `scenariste` (writes the proof), `codeur` (makes it pass),
-  `controleur` (independent check, read-only).
+  `controleur` (independent check, read-only). Typing /feature is Nohé asking
+  for these three: delegate to them as the steps say, it is the point of the
+  command.
 
 ## Step 0. Ground yourself (silent, no message)
 
 1. If the current branch is `main`, create `claude/<topic>` (CLAUDE.md).
 2. Run `make scenarios`. If anything is KO before you start, stop: tell Nohé
    which sentences are KO, you do not build on a red base.
-3. Find the existing sentences this request touches (grep the phrases) and the
-   code paths behind them.
+3. Find the existing sentences this request touches (grep the phrases; a fix
+   usually starts from the `rejected` ones in the report's "À corriger" section)
+   and the code paths behind them.
 
 ## Step 1. Agree on the sentences (Nohé: about 2 minutes)
 
@@ -56,7 +61,8 @@ Send Nohé ONE message with:
   subjects). If the change moves mail out of the inbox, one sentence covers a
   protected sender.
 - **Ce qui change**: existing sentences this replaces, quoted verbatim, with
-  the new wording next to each.
+  the new wording next to each. Every `rejected` sentence the request fixes is
+  in this list: its test pins the bug.
 - **Hors périmètre**: 1 to 3 lines of what you will not touch.
 - **Questions**: at most 3, only those whose answer changes a sentence. Use
   AskUserQuestion when the answer is a choice.
@@ -72,8 +78,10 @@ false" is not.
 ## Step 2. Lock the proof (scenariste)
 
 Delegate to the `scenariste` agent. Give it, verbatim: the validated sentences,
-the existing sentences they replace, the out-of-scope list. Wait for its report
-(subagents may report back in a later turn: wait for it).
+the existing sentences they replace (every `rejected` one this request fixes:
+its test pins today's behavior, so it is rewritten in place, never kept
+alongside), the out-of-scope list. Wait for its report (subagents may report
+back in a later turn: wait for it).
 
 Then check, yourself:
 
@@ -105,7 +113,8 @@ did not see how the code was written.
 Check, yourself, and keep the outputs:
 
 1. `git diff --stat LOCK..HEAD -- 'backend/internal/api/scenarios_*_test.go' 'backend/internal/api/acceptance_*_test.go'` is empty.
-2. `make scenarios` is all OK.
+2. `make scenarios` is all OK, and its "À corriger" section no longer lists
+   the sentences this request fixed.
 3. `cd backend && go vet ./... && go build ./... && go test -race ./...` is green.
 
 Then send Nohé:

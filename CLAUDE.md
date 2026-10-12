@@ -495,8 +495,10 @@ as a side effect of another change.
 - Acceptance scenarios (build tag `acceptance`) are the one place the `api` package
   runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), and
   the only tests that say which messages a handler actually moved. One scenario is
-  one French sentence (`phrase`) Nohé can answer yes or no to, `observed` until he
-  confirms it, `validated` after. They FAIL without `MAILSORTER_TEST_MONGO_URI`
+  one French sentence (`phrase`) Nohé can answer yes or no to: `observed` until he
+  answers, `validated` on a yes, `rejected` on a no. A rejected scenario still pins
+  what the app does today, and the report lists it under "À corriger" until the
+  `/feature` that fixes it rewrites it in place. They FAIL without `MAILSORTER_TEST_MONGO_URI`
   rather than skip. `go test ./...` without the tag does not see them.
 
 ### React

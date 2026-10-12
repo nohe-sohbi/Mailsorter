@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the acceptance scenarios (internal/api/scenarios_*_test.go) against a
 # throwaway MongoDB, then prints the French report: one line per sentence, OK or
-# KO, validated or only observed.
+# KO, and validated, rejected or only observed.
 #
 #   make scenarios                      every scenario
 #   backend/scripts/scenarios.sh -run 'TestScenarios_Rules'   a subset

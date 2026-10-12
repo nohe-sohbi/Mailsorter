@@ -17,7 +17,8 @@ they replace, and what is out of scope.
    `scenarios_*_test.go` file of the theme. Reuse the helpers.
 2. One `scenario{phrase: ..., status: validated, run: ...}` per sentence. The
    phrase is the sentence, character for character. A sentence that replaces an
-   existing one edits that scenario in place (new phrase, `validated`, new
+   existing one (typically a `rejected` one: Nohé said no to it, and its test
+   pins the bug) edits that scenario in place (new phrase, `validated`, new
    expectations). A new theme gets a new `scenarios_<n>_<theme>_test.go`.
 3. Assert what Nohé would see, from the outside: Gmail state through the
    `app.expect*` helpers, the history, API responses. Never assert on an
