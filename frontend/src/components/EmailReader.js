@@ -10,6 +10,9 @@ import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
 import { toneFor } from '../ui/avatar';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import { hotelTone, initials } from './hotel/avatar';
+import { proposalText } from './hotel/InboxBits';
 
 function extractEmail(from) {
   const match = from?.match(/<(.+)>/);
@@ -85,6 +88,7 @@ function EmailReader({
   onRejectSuggestion,
 }) {
   const toast = useToast();
+  const hotel = useHotel();
   const [full, setFull] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -396,7 +400,7 @@ function EmailReader({
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">
-        <h2 className="text-lg font-bold leading-snug text-ink-900 sm:text-xl">
+        <h2 className={hotel ? 'hd-reader-title' : 'text-lg font-bold leading-snug text-ink-900 sm:text-xl'}>
           {merged.subject || '(Sans sujet)'}
         </h2>
 
@@ -404,11 +408,11 @@ function EmailReader({
           <span
             className={cn(
               'flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-base font-bold text-white',
-              toneFor(merged.from)
+              hotel ? hotelTone(merged.from) : toneFor(merged.from)
             )}
             aria-hidden
           >
-            {name[0]?.toUpperCase() || '?'}
+            {hotel ? initials(name) : name[0]?.toUpperCase() || '?'}
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate font-semibold text-ink-900">{name}</div>
@@ -424,8 +428,62 @@ function EmailReader({
           )}
         </div>
 
+        {/* The hotel's proposal: the same verdict as the triage plan, set as
+            what Mailsorter would do, the reason under it, "À vérifier" at the
+            same threshold, and the same two answers (Ignorer, the verb). */}
+        {hotel && aiAnalyzing && (
+          <div className="hd-reader-prop" role="status">
+            <div className="ht-prop">
+              <Spinner size={22} className="shrink-0 text-brand-600" />
+              <div>
+                <small>Mailsorter lit cet e-mail</small>
+                <b>Un instant.</b>
+              </div>
+            </div>
+          </div>
+        )}
+        {hotel && !aiAnalyzing && aiSuggestion && (() => {
+          const meta = actionMeta(aiSuggestion.action);
+          return (
+            <div className="hd-reader-prop">
+              <div className={cn('ht-prop', aiSuggestion.action === 'keep' && 'is-safe')}>
+                <Sparkles size={26} />
+                <div className="min-w-0">
+                  <small>Mailsorter propose</small>
+                  <b>{proposalText(aiSuggestion)}</b>
+                  {!isSure(aiSuggestion.confidence) && (
+                    <span className="chip mt-1.5 bg-caution-50 py-0.5 text-caution-700">
+                      <Alert size={12} aria-hidden /> À vérifier
+                    </span>
+                  )}
+                  {aiSuggestion.reasoning && <p>{aiSuggestion.reasoning}</p>}
+                </div>
+              </div>
+              {(onApplySuggestion || onRejectSuggestion) && (
+                <div className="hd-reader-prop__acts">
+                  {onApplySuggestion && (
+                    <button
+                      type="button"
+                      onClick={() => onApplySuggestion(aiSuggestion)}
+                      className="btn-primary btn-sm"
+                      aria-label={`${proposalText(aiSuggestion)} : appliquer la recommandation`}
+                    >
+                      <meta.Icon size={14} aria-hidden /> {meta.label}
+                    </button>
+                  )}
+                  {onRejectSuggestion && (
+                    <button type="button" onClick={() => onRejectSuggestion(aiSuggestion)} className="btn-secondary btn-sm">
+                      Ignorer
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* AI Analyzing banner */}
-        {aiAnalyzing && (
+        {!hotel && aiAnalyzing && (
           <div className="mt-4 flex items-center gap-3 rounded-xl border border-brand-200/80 bg-brand-50/60 px-4 py-3 text-brand-900 animate-pulse">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
               <Sparkles size={18} className="animate-spin" />
@@ -443,7 +501,7 @@ function EmailReader({
             generic "Appliquer", a gradient the design system rules out (its
             white middle band glared in the dark theme), and accents that had
             been saved as literal "?" bytes. */}
-        {!aiAnalyzing && aiSuggestion && (() => {
+        {!hotel && !aiAnalyzing && aiSuggestion && (() => {
           const meta = actionMeta(aiSuggestion.action);
           const verdict =
             aiSuggestion.action === 'label' && aiSuggestion.labelName

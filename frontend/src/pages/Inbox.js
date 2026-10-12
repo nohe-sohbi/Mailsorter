@@ -16,6 +16,11 @@ import { useScrollLock } from '../ui/scrollLock';
 import { actionMeta, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
 import { toneFor } from '../ui/avatar';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import Plaque from '../ui/hotel/Plaque';
+import PageHead from '../components/hotel/PageHead';
+import { HotelStats, HotelFilters, HotelRow } from '../components/hotel/InboxBits';
+import { hotelTone, initials } from '../components/hotel/avatar';
 import {
   Sparkles, Archive, Trash, Tag, Search, Refresh, Inbox as InboxIcon,
   Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard, BellOff, Star, Filter,
@@ -147,6 +152,14 @@ function senderLabel(from) {
   return from.split('<')[0].replace(/"/g, '').trim() || from;
 }
 
+// The four levers of the first-run dialog, on the hotel's numbered plaques.
+const WELCOME_PLAQUES = [
+  ['I', "Il lit l'expéditeur, l'objet et le début du message.", 'Pour chaque e-mail, il propose : archiver, ranger, reporter. Vous validez ou vous ignorez.'],
+  ['II', 'Vos évidences deviennent des règles.', "Elles trient sans IA, sans quota, et un aperçu montre ce qu'elles feraient avant de toucher à quoi que ce soit."],
+  ['III', 'Les newsletters se coupent ici.', "L'onglet Abonnements les repère et vous désabonne, souvent en un clic."],
+  ['IV', 'Rien ne se perd.', 'Chaque action est notée et annulable, et vos expéditeurs protégés ne sont jamais touchés.'],
+];
+
 const STAT_CARDS = [
   { key: 'inboxCount', label: 'Boîte de réception', tone: 'text-brand-600', Icon: InboxIcon, query: DEFAULT_QUERY },
   { key: 'unreadCount', label: 'Non lus', tone: 'text-caution-700', Icon: Mail, query: 'in:inbox is:unread' },
@@ -157,6 +170,7 @@ const STAT_CARDS = [
 function Inbox() {
   const navigate = useNavigate();
   const toast = useToast();
+  const hotel = useHotel();
   const confirm = useConfirm();
   const {
     emails, senders, subscriptions, suggestions, stats, pagination, error, activeQuery,
@@ -300,6 +314,21 @@ function Inbox() {
   }, [localSenders, senderFilter]);
 
   const activeSubs = useMemo(() => subscriptions.filter((s) => !s.unsubscribed), [subscriptions]);
+
+  // The hotel also puts each proposal on the row of the message it is about.
+  // Not "keep": the plan has stopped treating it as a task (it moves nothing),
+  // and a row offering to validate it would bring that task back.
+  const suggestionByEmail = useMemo(() => {
+    const map = new Map();
+    suggestions.forEach((s) => {
+      if (s.action !== 'keep') map.set(s.emailId, s);
+    });
+    return map;
+  }, [suggestions]);
+
+  // Avatars: the classic fills, or the hotel's inked discs with initials.
+  const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
+  const avatarText = (name) => (hotel ? initials(name) : name[0]?.toUpperCase());
 
   const bumpGamify = (n) => setGamify(recordTriage(n));
 
@@ -1261,79 +1290,113 @@ function Inbox() {
     />
   ) : null;
 
+  // The search box and the two tools beside it, shared by the classic command
+  // bar and the hotel's floor head.
+  const searchForm = (
+    <form onSubmit={handleSearch} className="relative flex-1 sm:flex-none" role="search">
+      <Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
+      <input
+        ref={searchRef}
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        placeholder={hotel ? 'Rechercher ( / )' : 'Rechercher…  ( / )'}
+        aria-label="Rechercher dans la boîte de réception"
+        className="input w-full pl-10 pr-9 sm:w-64"
+      />
+      {searchQuery && (
+        <button
+          type="button"
+          onClick={clearSearch}
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-subtle hover:bg-ink-100 hover:text-ink-900"
+          aria-label="Effacer la recherche"
+        >
+          <X size={15} />
+        </button>
+      )}
+    </form>
+  );
+  const toolButtons = (
+    <>
+      <button onClick={() => setShowShortcuts(true)} className="btn-secondary btn-icon" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
+        <Keyboard size={18} />
+      </button>
+      <button onClick={handleSync} disabled={syncing} className="btn-secondary btn-icon" aria-label="Synchroniser" title="Synchroniser (r)">
+        <Refresh size={18} className={syncing ? 'animate-spin' : ''} />
+      </button>
+    </>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6">
       <LiveAnnouncer message={announcement} />
 
       {/* Command bar */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="font-display text-xl font-extrabold tracking-tight text-ink-900 sm:text-2xl">
-            Votre boîte, sous contrôle.
-          </h1>
-          <p className="mt-0.5 text-sm text-muted">
-            {stats?.inboxCount
-              ? `${formatNumber(stats.inboxCount)} email${stats.inboxCount > 1 ? 's' : ''} en attente de tri.`
-              : 'Synchronisez pour commencer le tri intelligent.'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <form onSubmit={handleSearch} className="relative flex-1 sm:flex-none" role="search">
-            <Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
-            <input
-              ref={searchRef}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Rechercher…  ( / )"
-              aria-label="Rechercher dans la boîte de réception"
-              className="input w-full pl-10 pr-9 sm:w-64"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={clearSearch}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-subtle hover:bg-ink-100 hover:text-ink-900"
-                aria-label="Effacer la recherche"
-              >
-                <X size={15} />
-              </button>
-            )}
-          </form>
-          <button onClick={() => setShowShortcuts(true)} className="btn-secondary btn-icon" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
-            <Keyboard size={18} />
-          </button>
-          <button onClick={handleSync} disabled={syncing} className="btn-secondary btn-icon" aria-label="Synchroniser" title="Synchroniser (r)">
-            <Refresh size={18} className={syncing ? 'animate-spin' : ''} />
-          </button>
-        </div>
-      </div>
-
-      {/* Stats: each one is also the filter it describes */}
-      {stats && (
-        <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-          {STAT_CARDS.map(({ key, label, tone, Icon, query }) => (
-            <button
-              key={key}
-              onClick={() => runQuery(query)}
-              aria-pressed={activeQuery === query}
-              className={cn(
-                'card flex items-center gap-3 p-3 text-left transition-colors hover:border-ink-300',
-                activeQuery === query && 'border-brand-500 ring-1 ring-brand-500'
-              )}
-            >
-              <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-sunken', tone)}>
-                <Icon size={18} />
-              </span>
-              <span className="min-w-0">
-                <span className={cn('block font-display text-lg font-extrabold leading-none', tone)}>
-                  {formatNumber(stats[key])}
-                </span>
-                <span className="mt-1 block truncate text-xs font-medium text-muted">{label}</span>
-              </span>
-            </button>
-          ))}
+      {hotel ? (
+        <PageHead
+          floor="/inbox"
+          title="Boîte de réception"
+          sub={
+            stats
+              ? [
+                  `${formatNumber(stats.unreadCount)} non lu${stats.unreadCount > 1 ? 's' : ''}`,
+                  plan.totals.moves > 0 && `${plan.totals.moves} à ranger`,
+                ]
+                  .filter(Boolean)
+                  .join(', ')
+              : 'Synchronisez pour commencer le tri.'
+          }
+        >
+          {searchForm}
+          {toolButtons}
+        </PageHead>
+      ) : (
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="font-display text-xl font-extrabold tracking-tight text-ink-900 sm:text-2xl">
+              Votre boîte, sous contrôle.
+            </h1>
+            <p className="mt-0.5 text-sm text-muted">
+              {stats?.inboxCount
+                ? `${formatNumber(stats.inboxCount)} email${stats.inboxCount > 1 ? 's' : ''} en attente de tri.`
+                : 'Synchronisez pour commencer le tri intelligent.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {searchForm}
+            {toolButtons}
+          </div>
         </div>
       )}
+
+      {/* Stats: each one is also the filter it describes */}
+      {stats &&
+        (hotel ? (
+          <HotelStats stats={stats} cards={STAT_CARDS} activeQuery={activeQuery} onPick={runQuery} formatNumber={formatNumber} />
+        ) : (
+            <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+              {STAT_CARDS.map(({ key, label, tone, Icon, query }) => (
+                <button
+                  key={key}
+                  onClick={() => runQuery(query)}
+                  aria-pressed={activeQuery === query}
+                  className={cn(
+                    'card flex items-center gap-3 p-3 text-left transition-colors hover:border-ink-300',
+                    activeQuery === query && 'border-brand-500 ring-1 ring-brand-500'
+                  )}
+                >
+                  <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-sunken', tone)}>
+                    <Icon size={18} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className={cn('block font-display text-lg font-extrabold leading-none', tone)}>
+                      {formatNumber(stats[key])}
+                    </span>
+                    <span className="mt-1 block truncate text-xs font-medium text-muted">{label}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+        ))}
 
       {/* Streak, folded into one compact strip. It used to occupy a full card
           of its own above the fold, pushing the first actual email off screen. */}
@@ -1389,76 +1452,91 @@ function Inbox() {
       </div>
 
       {/* Quick filters */}
-      {view === 'emails' && (
-        <div className="mb-4 flex flex-wrap items-center gap-1.5">
-          <Filter size={14} className="text-subtle" aria-hidden />
-          {QUICK_FILTERS.map(({ id, label, query }) => (
-            <button
-              key={id}
-              onClick={() => { setSearchQuery(''); runQuery(query); }}
-              aria-pressed={activeQuery === query}
-              className={cn(
-                'chip transition-colors',
-                activeQuery === query
-                  ? 'bg-brand-fill text-white'
-                  : 'bg-ink-100 text-ink-700 hover:bg-ink-200'
-              )}
-            >
-              {label}
-            </button>
-          ))}
-          {/* Les recherches de l'utilisateur, à la suite des filtres intégrés :
-              ce sont les mêmes objets pour qui les utilise, une requête à un
-              clic. Seul le nom vient de lui. */}
-          {savedSearches.map((s) => (
-            <span
-              key={s.id}
-              className={cn(
-                'chip group transition-colors',
-                activeQuery === s.query ? 'bg-brand-fill text-white' : 'bg-brand-50 text-brand-700 hover:bg-brand-100'
-              )}
-            >
-              <button
-                onClick={() => runSavedSearch(s)}
-                aria-pressed={activeQuery === s.query}
-                title={s.query}
-                className="flex items-center gap-1.5"
-              >
-                <Search size={12} /> {s.name}
-              </button>
-              <button
-                onClick={() => removeSavedSearch(s)}
-                aria-label={`Supprimer la recherche « ${s.name} »`}
-                className="ml-0.5 rounded-full p-0.5 opacity-0 transition-opacity hover:bg-brand-200 focus:opacity-100 group-hover:opacity-100"
-              >
-                <X size={12} />
-              </button>
-            </span>
-          ))}
-
-          {!activeFilter && activeQuery !== DEFAULT_QUERY && (
-            <span className="chip bg-brand-50 text-brand-700">
-              <Search size={12} /> {activeQuery.replace(`${DEFAULT_QUERY} `, '')}
-              {/* Une recherche qu'on vient d'écrire ne vaut souvent d'être
-                  gardée qu'une fois qu'elle a donné le bon résultat : le bouton
-                  est donc ici, sur le filtre actif, et pas dans le champ. */}
-              {!isSaved(activeQuery) && (
+      {view === 'emails' &&
+        (hotel ? (
+          <HotelFilters
+            filters={QUICK_FILTERS}
+            saved={savedSearches}
+            activeQuery={activeQuery}
+            activeFilter={activeFilter}
+            defaultQuery={DEFAULT_QUERY}
+            isSaved={isSaved}
+            onFilter={(query) => { setSearchQuery(''); runQuery(query); }}
+            onSaved={runSavedSearch}
+            onRemoveSaved={removeSavedSearch}
+            onSave={() => setSavingSearch(activeQuery)}
+            onClear={clearSearch}
+          />
+        ) : (
+            <div className="mb-4 flex flex-wrap items-center gap-1.5">
+              <Filter size={14} className="text-subtle" aria-hidden />
+              {QUICK_FILTERS.map(({ id, label, query }) => (
                 <button
-                  onClick={() => setSavingSearch(activeQuery)}
-                  aria-label="Enregistrer cette recherche"
-                  title="Enregistrer cette recherche"
-                  className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100"
+                  key={id}
+                  onClick={() => { setSearchQuery(''); runQuery(query); }}
+                  aria-pressed={activeQuery === query}
+                  className={cn(
+                    'chip transition-colors',
+                    activeQuery === query
+                      ? 'bg-brand-fill text-white'
+                      : 'bg-ink-100 text-ink-700 hover:bg-ink-200'
+                  )}
                 >
-                  <Star size={12} />
+                  {label}
                 </button>
+              ))}
+              {/* Les recherches de l'utilisateur, à la suite des filtres intégrés :
+                  ce sont les mêmes objets pour qui les utilise, une requête à un
+                  clic. Seul le nom vient de lui. */}
+              {savedSearches.map((s) => (
+                <span
+                  key={s.id}
+                  className={cn(
+                    'chip group transition-colors',
+                    activeQuery === s.query ? 'bg-brand-fill text-white' : 'bg-brand-50 text-brand-700 hover:bg-brand-100'
+                  )}
+                >
+                  <button
+                    onClick={() => runSavedSearch(s)}
+                    aria-pressed={activeQuery === s.query}
+                    title={s.query}
+                    className="flex items-center gap-1.5"
+                  >
+                    <Search size={12} /> {s.name}
+                  </button>
+                  <button
+                    onClick={() => removeSavedSearch(s)}
+                    aria-label={`Supprimer la recherche « ${s.name} »`}
+                    className="ml-0.5 rounded-full p-0.5 opacity-0 transition-opacity hover:bg-brand-200 focus:opacity-100 group-hover:opacity-100"
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+
+              {!activeFilter && activeQuery !== DEFAULT_QUERY && (
+                <span className="chip bg-brand-50 text-brand-700">
+                  <Search size={12} /> {activeQuery.replace(`${DEFAULT_QUERY} `, '')}
+                  {/* Une recherche qu'on vient d'écrire ne vaut souvent d'être
+                      gardée qu'une fois qu'elle a donné le bon résultat : le bouton
+                      est donc ici, sur le filtre actif, et pas dans le champ. */}
+                  {!isSaved(activeQuery) && (
+                    <button
+                      onClick={() => setSavingSearch(activeQuery)}
+                      aria-label="Enregistrer cette recherche"
+                      title="Enregistrer cette recherche"
+                      className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100"
+                    >
+                      <Star size={12} />
+                    </button>
+                  )}
+                  <button onClick={clearSearch} aria-label="Effacer le filtre" className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100">
+                    <X size={12} />
+                  </button>
+                </span>
               )}
-              <button onClick={clearSearch} aria-label="Effacer le filtre" className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100">
-                <X size={12} />
-              </button>
-            </span>
-          )}
-        </div>
-      )}
+            </div>
+        ))}
 
       {savingSearch && (
         <SaveSearchDialog
@@ -1666,6 +1744,13 @@ function Inbox() {
               <EmptyState
                 Icon={Check}
                 tone="positive"
+                scene={activeQuery === DEFAULT_QUERY ? { prop: 'dnd', color: '#2F6F73' } : { prop: 'signpost', color: '#7A2E3B' }}
+                hotelTitle={activeQuery === DEFAULT_QUERY ? 'Inbox zéro. Respect.' : 'Rien sous ce filtre.'}
+                hotelDescription={
+                  activeQuery === DEFAULT_QUERY
+                    ? 'Rien à trier ici. Synchronisez pour relever le nouveau courrier.'
+                    : 'Essayez un autre filtre, ou revenez à la boîte complète.'
+                }
                 title={activeQuery === DEFAULT_QUERY ? 'Inbox Zero atteint 🎉' : 'Aucun email pour ce filtre'}
                 description={
                   activeQuery === DEFAULT_QUERY
@@ -1685,7 +1770,7 @@ function Inbox() {
                 }
               />
             ) : (
-              <ul className="divide-y divide-[rgb(var(--hairline))]">
+              <ul className={hotel ? 'hd-list' : 'divide-y divide-[rgb(var(--hairline))]'}>
                 {(triageMode
                   ? triageIds.map((id) => emails.find((e) => e.messageId === id) || { messageId: id, subject: 'Chargement...' })
                   : emails
@@ -1694,6 +1779,38 @@ function Inbox() {
                   const isActive = selectedEmail?.messageId === email.messageId;
                   const isChecked = selectedEmails.includes(email.messageId);
                   const isFocused = idx === focusedIndex;
+                  const openRow = () => {
+                    if (triageMode) {
+                      const foundIdx = triageIds.indexOf(email.messageId);
+                      if (foundIdx !== -1) setTriageIndex(foundIdx);
+                      setSelectedEmail(email);
+                    } else {
+                      setFocusedIndex(idx);
+                      setSelectedEmail(email);
+                    }
+                  };
+                  if (hotel) {
+                    return (
+                      <HotelRow
+                        key={email.messageId}
+                        email={email}
+                        name={name}
+                        rowRef={(el) => (rowRefs.current[idx] = el)}
+                        isActive={isActive}
+                        isChecked={isChecked}
+                        isFocused={isFocused}
+                        current={triageMode && isActive}
+                        suggestion={suggestionByEmail.get(email.messageId)}
+                        when={formatDate(email.receivedDate)}
+                        onToggle={() => handleSelectEmail(email)}
+                        onOpen={openRow}
+                        onArchive={triageMode ? null : () => directAction(email, 'archive')}
+                        onDelete={() => directAction(email, 'delete')}
+                        onApply={triageMode ? handleTriageApplySuggestion : handleApplySuggestion}
+                        onIgnore={plan.ignoreEmail}
+                      />
+                    );
+                  }
                   return (
                     <li
                       key={email.messageId}
@@ -1729,19 +1846,7 @@ function Inbox() {
                           <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-[rgb(var(--surface))] bg-brand-500" />
                         )}
                       </span>
-                      <button
-                        onClick={() => {
-                          if (triageMode) {
-                            const foundIdx = triageIds.indexOf(email.messageId);
-                            if (foundIdx !== -1) setTriageIndex(foundIdx);
-                            setSelectedEmail(email);
-                          } else {
-                            setFocusedIndex(idx);
-                            setSelectedEmail(email);
-                          }
-                        }}
-                        className="min-w-0 flex-1 text-left"
-                      >
+                      <button onClick={openRow} className="min-w-0 flex-1 text-left">
                         <span className="flex items-baseline justify-between gap-2">
                           <span className={cn('truncate text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
                             {name}
@@ -1832,8 +1937,8 @@ function Inbox() {
                 const prefMeta = pref ? actionMeta(pref.defaultAction) : null;
                 return (
                   <div key={sender.senderEmail} className="card flex flex-wrap items-center gap-3 p-4">
-                    <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', toneFor(sender.senderEmail))} aria-hidden>
-                      {(sender.senderName || sender.senderEmail)[0]?.toUpperCase()}
+                    <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sender.senderEmail))} aria-hidden>
+                      {avatarText(sender.senderName || sender.senderEmail)}
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmail.split('@')[0]}</div>
@@ -1903,6 +2008,7 @@ function Inbox() {
                 <EmptyState
                   Icon={BellOff}
                   tone="caution"
+                  scene={{ prop: 'dnd', color: '#7A2E3B' }}
                   title="Aucun abonnement détecté"
                   description="Synchronisez votre boîte : Mailsorter repère vos newsletters et listes de diffusion pour un désabonnement en un clic."
                 />
@@ -1924,8 +2030,8 @@ function Inbox() {
                   const busy = unsubscribing === sub.senderEmail;
                   return (
                     <div key={sub.senderEmail} className={cn('card flex flex-wrap items-center gap-3 p-4', sub.unsubscribed && 'opacity-60')}>
-                      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', toneFor(sub.senderEmail))} aria-hidden>
-                        {(sub.senderName || sub.senderEmail)[0]?.toUpperCase()}
+                      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sub.senderEmail))} aria-hidden>
+                        {avatarText(sub.senderName || sub.senderEmail)}
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmail.split('@')[0]}</div>
@@ -2035,7 +2141,7 @@ function Inbox() {
         open={showWelcome}
         onClose={dismissWelcome}
         size="lg"
-        title="Bienvenue dans Mailsorter 👋"
+        title={hotel ? 'Bienvenue dans Mailsorter' : 'Bienvenue dans Mailsorter 👋'}
         description="Votre boîte va enfin se ranger toute seule. Voici les quatre leviers."
         footer={
           <>
@@ -2049,24 +2155,34 @@ function Inbox() {
           </>
         }
       >
-        <div className="space-y-4">
-          {[
-            { Icon: Sparkles, t: 'Trier avec l’IA', d: "L'IA lit vos emails et propose une action pour chacun. Vous validez, en un clic ou tout d'un coup." },
-            { Icon: Bolt, t: 'Encoder vos évidences en règles', d: 'Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre ce qu’elles feraient avant de rien toucher.' },
-            { Icon: BellOff, t: 'Couper le robinet', d: "L'onglet Abonnements repère vos newsletters et vous désabonne, souvent en un clic." },
-            { Icon: Shield, t: 'Ne rien perdre', d: 'Chaque action est journalisée et annulable, et vos expéditeurs protégés ne sont jamais touchés.' },
-          ].map(({ Icon, t, d }, i) => (
-            <div key={i} className="flex gap-3">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-                <Icon size={18} />
-              </span>
-              <div>
-                <div className="text-sm font-bold text-ink-900">{t}</div>
-                <div className="text-sm text-muted">{d}</div>
+        {hotel ? (
+          <div className="space-y-4">
+            {WELCOME_PLAQUES.map(([n, lead, rest]) => (
+              <Plaque key={n} n={n}>
+                <strong>{lead}</strong> {rest}
+              </Plaque>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {[
+              { Icon: Sparkles, t: 'Trier avec l’IA', d: "L'IA lit vos emails et propose une action pour chacun. Vous validez, en un clic ou tout d'un coup." },
+              { Icon: Bolt, t: 'Encoder vos évidences en règles', d: 'Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre ce qu’elles feraient avant de rien toucher.' },
+              { Icon: BellOff, t: 'Couper le robinet', d: "L'onglet Abonnements repère vos newsletters et vous désabonne, souvent en un clic." },
+              { Icon: Shield, t: 'Ne rien perdre', d: 'Chaque action est journalisée et annulable, et vos expéditeurs protégés ne sont jamais touchés.' },
+            ].map(({ Icon, t, d }, i) => (
+              <div key={i} className="flex gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+                  <Icon size={18} />
+                </span>
+                <div>
+                  <div className="text-sm font-bold text-ink-900">{t}</div>
+                  <div className="text-sm text-muted">{d}</div>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </Modal>
 
       {/* Keyboard shortcuts */}

@@ -7,6 +7,8 @@ import { useConfirm } from '../../ui/Confirm';
 import { track } from '../../lib/analytics';
 import { actionMeta, canonicalAction, pastParticiple, plural } from '../../ui/actions';
 import { toneFor } from '../../ui/avatar';
+import { useHotel } from '../../ui/hotel/HotelTheme';
+import { hotelTone, initials } from '../hotel/avatar';
 import { cn } from '../../ui/cn';
 import Spinner from '../../ui/Spinner';
 import { Sparkles, Bolt, Check, ChevronDown, X, Tag, Pin, Alert } from '../../ui/icons';
@@ -273,16 +275,19 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   };
 }
 
+// Under the Grand Hotel theme, the inked disc with initials every other
+// screen draws for the same sender (components/hotel/avatar.js).
 function Avatar({ group }) {
+  const hotel = useHotel();
   return (
     <span
       className={cn(
         'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white',
-        toneFor(group.from)
+        hotel ? hotelTone(group.from) : toneFor(group.from)
       )}
       aria-hidden
     >
-      {group.name[0]?.toUpperCase() || '?'}
+      {hotel ? initials(group.name) : group.name[0]?.toUpperCase() || '?'}
     </span>
   );
 }

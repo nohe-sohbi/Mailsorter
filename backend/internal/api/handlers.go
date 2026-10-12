@@ -79,8 +79,9 @@ var Version = "dev"
 // internal/provider, and the catalog served by GET /api/providers.
 var Edition = provider.EditionSelfHosted
 
-// UITheme is the landing the SPA renders on /, set from configuration at
-// startup (UI_THEME) and reported by GET /api/config/status.
+// UITheme is the look of the SPA (landing and dashboard) and of the digest
+// email, set from configuration at startup (UI_THEME) and reported by
+// GET /api/config/status.
 var UITheme = config.UIThemeHotel
 
 // AllowedOrigins is the CORS allow-list applied by SetupRoutes. It defaults to
