@@ -33,6 +33,48 @@ jobs:
       - name: Test
         run: go test -v -race ./...
 
+  scenarios:
+    # The acceptance scenarios: what the app does, proven against the real
+    # router, a real MongoDB and a fake Gmail. The French report they produce
+    # is published as the job summary, so it reads on the PR's checks page.
+    name: Scenarios (Go + MongoDB)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1})'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      MAILSORTER_TEST_MONGO_URI: mongodb://localhost:27017
+      SCENARIO_REPORT: ${{ github.workspace }}/scenarios-report.md
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: backend/go.sum
+
+      - name: Vet with the acceptance tag
+        run: go vet -tags acceptance ./internal/api/
+
+      - name: Scenarios
+        run: scripts/scenarios.sh
+
+      - name: Publish the report
+        if: always()
+        run: |
+          if [ -f "$SCENARIO_REPORT" ]; then cat "$SCENARIO_REPORT" >> "$GITHUB_STEP_SUMMARY"; fi
+
   frontend:
     name: Frontend (React)
     runs-on: ubuntu-latest
