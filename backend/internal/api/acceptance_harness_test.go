@@ -18,9 +18,8 @@ package api
 // scenario that silently skips reads as green.
 //
 // Two files are this harness and every scenarios_*_test.go file uses it. All of
-// them are locked for every agent except the scenariste (.claude/hooks): the
-// tests are the definition of done, so whoever writes the code must not be
-// able to rewrite them.
+// them are the definition of done: whoever writes the code must not rewrite
+// them to make a change pass.
 
 import (
 	"bytes"
@@ -66,7 +65,7 @@ const (
 	// validated: Nohé confirmed this is the intended behavior.
 	validated
 	// rejected: Nohé answered no. The test still pins what the app does
-	// today, so the report keeps showing it until the /feature that fixes it
+	// today, so the report keeps showing it until the change that fixes it
 	// replaces this scenario with the sentence he wants.
 	rejected
 )
@@ -167,7 +166,7 @@ func writeScenarioReport(path string) error {
 		time.Now().Format("02/01/2006 à 15:04 MST"), len(results), ok, ko,
 		byStatus[validated], byStatus[rejected], byStatus[observed])
 	fmt.Fprintf(&b, "- **OK** : l'app fait exactement ce que dit la phrase. **KO** : elle ne le fait pas.\n")
-	fmt.Fprintf(&b, "- **validé** : tu as confirmé que c'est voulu. **refusé** : tu as dit non ; la phrase décrit ce que fait l'app aujourd'hui, à corriger avec /feature. **constaté** : c'est ce que fait l'app aujourd'hui, personne ne l'a encore validé.\n")
+	fmt.Fprintf(&b, "- **validé** : tu as confirmé que c'est voulu. **refusé** : tu as dit non ; la phrase décrit ce que fait l'app aujourd'hui, à corriger. **constaté** : c'est ce que fait l'app aujourd'hui, personne ne l'a encore validé.\n")
 
 	theme := ""
 	n := 0

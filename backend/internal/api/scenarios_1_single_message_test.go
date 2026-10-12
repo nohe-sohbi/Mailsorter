@@ -7,7 +7,7 @@ package api
 // Every sentence below was written by reading the code, then proven against the
 // running app, and started "observed": what the app does today, not yet
 // confirmed by Nohé. His answer makes it validated (keep it) or rejected (a
-// bug: the /feature that fixes it replaces the sentence).
+// bug: the change that fixes it replaces the sentence).
 
 import "testing"
 
