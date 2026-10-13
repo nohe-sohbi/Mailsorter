@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -44,10 +45,11 @@ func TestSignInWithMailboxIsReachableWithoutASession(t *testing.T) {
 
 func TestSignInWithMailboxRefusesAnIncompleteBody(t *testing.T) {
 	cases := map[string]string{
-		"nothing":      `{}`,
-		"no password":  `{"address":"someone@orange.fr"}`,
-		"no address":   `{"password":"abcd efgh ijkl mnop"}`,
-		"blank spaces": `{"address":"   ","password":"x"}`,
+		"nothing":            `{}`,
+		"no password":        `{"address":"someone@orange.fr"}`,
+		"no address":         `{"password":"abcd efgh ijkl mnop"}`,
+		"blank spaces":       `{"address":"   ","password":"x"}`,
+		"oversized password": `{"address":"someone@orange.fr","password":"` + strings.Repeat("x", 1025) + `"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
