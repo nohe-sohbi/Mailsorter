@@ -95,7 +95,7 @@ func TestIsValidBaseURL(t *testing.T) {
 
 func TestTestAISettingsUnknownProvider(t *testing.T) {
 	h := newTestHandler(t)
-	req := httptest.NewRequest("POST", "/api/ai/settings/test", strings.NewReader(`{"provider":"unknown-provider"}`))
+	req := httptest.NewRequest("POST", "/api/ai/settings/test", strings.NewReader(`{"provider":"unknown-provider-payload-123"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-Email", "user@example.com")
 	w := httptest.NewRecorder()
@@ -112,7 +112,10 @@ func TestTestAISettingsUnknownProvider(t *testing.T) {
 	}
 
 	errMsg, _ := res["error"].(string)
-	if !strings.Contains(errMsg, "Unknown provider") {
-		t.Errorf("expected 'Unknown provider' in error message, got %q", errMsg)
+	if errMsg != "Unknown provider" {
+		t.Errorf("expected exact 'Unknown provider' error message, got %q", errMsg)
+	}
+	if strings.Contains(errMsg, "unknown-provider-payload-123") {
+		t.Errorf("unvalidated provider input reflected in error response: %q", errMsg)
 	}
 }
