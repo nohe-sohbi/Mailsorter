@@ -1,6 +1,9 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
@@ -46,4 +49,38 @@ func TestAllowsWrapper(t *testing.T) {
 	if !allows("archive", "anyone@else.com", protectedList) {
 		t.Error("archive on unprotected sender should be allowed")
 	}
+}
+
+func TestCreateProtectedInputValidation(t *testing.T) {
+	h := &Handler{}
+
+	t.Run("RejectsOversizedValue", func(t *testing.T) {
+		oversizedValue := "a" + strings.Repeat("a", 250) + "@example.com" // > 254 bytes
+		body := strings.NewReader(`{"value":"` + oversizedValue + `","note":"valid note"}`)
+		req := httptest.NewRequest("POST", "/api/protected", body)
+		req.Header.Set("X-User-Email", "user@example.com")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.CreateProtected(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("RejectsOversizedNote", func(t *testing.T) {
+		oversizedNote := strings.Repeat("n", 501) // > 500 bytes
+		body := strings.NewReader(`{"value":"vip@example.com","note":"` + oversizedNote + `"}`)
+		req := httptest.NewRequest("POST", "/api/protected", body)
+		req.Header.Set("X-User-Email", "user@example.com")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		h.CreateProtected(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
 }
