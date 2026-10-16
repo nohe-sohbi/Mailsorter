@@ -7,3 +7,8 @@
 **Vulnerability:** User-supplied AI base URLs in BYOK settings were only checked for basic HTTP/HTTPS scheme structure, allowing SSRF attacks targeting loopback interfaces, local networks, or cloud metadata endpoints (169.254.169.254).
 **Learning:** Checking `net.ParseIP` on URL hostnames misses hostname aliases like `localhost` or `.local`. Egress validation must check both hostname patterns and parsed IP addresses.
 **Prevention:** Always validate external/custom URLs using `internal/egress.Parse` rather than custom `url.Parse` checks.
+
+## 2026-10-16 - Batch endpoint array slice bounds for DoS prevention
+**Vulnerability:** Batch AI endpoints (`AnalyzeEmails` and `ApplyBatch`) lacked upper bound checks on input slice lengths, allowing arbitrary-length arrays in JSON payloads to exhaust server CPU, memory, database operations, and external AI service calls (DoS).
+**Learning:** Batch handlers decoding array fields into structs must validate slice size bounds right after JSON decoding, before reaching external service logic or database queries.
+**Prevention:** Always check `len(req.SliceField) > maxBatchSize` immediately after `decodeJSON` in batch API handlers.
