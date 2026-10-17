@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -25,22 +26,22 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
-	if !aiClient.Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
-		return
-	}
-	if userEmail == "" {
-		writeError(w, http.StatusUnauthorized, "User email required")
-		return
-	}
-
 	var req models.AnalyzeEmailsRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.EmailIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "No email IDs provided")
+		return
+	}
+	if len(req.EmailIDs) > maxBatchActionSize {
+		writeError(w, http.StatusBadRequest, "Too many emails to analyze at once")
+		return
+	}
+
+	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
+	if !aiClient.Available() {
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
 		return
 	}
 
@@ -263,6 +264,10 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "No suggestion IDs provided")
 		return
 	}
+	if len(req.SuggestionIDs) > maxBatchActionSize {
+		writeError(w, http.StatusBadRequest, "Too many suggestions to apply at once")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
@@ -336,6 +341,9 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		"total":            len(req.SuggestionIDs),
 		"appliedIds":       appliedIDs,
 		"protectedSkipped": protectedSkipped,
+		// Lets the client offer "Annuler" only where it would work, the way
+		// batch-action already says so for a selection.
+		"reversible": batchUndoReaches(session.Transport),
 	})
 }
 
@@ -355,19 +363,21 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	// Get user token
-	token, err := h.getUserToken(ctx, userEmail)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
 
-	gmailClient := h.gmailService.GetClient(token)
-
-	// Fetch all emails from this sender
+	// The sender is the key of an Expediteurs card: a stored From header, as
+	// GetSenders groups them. The sweep reaches exactly that group, by equality,
+	// so it acts on the mails the card counted and announced, no more. It used
+	// to be a substring match, which also swept every From that merely
+	// contained the key: a longer address on the same domain, or the same
+	// address on a longer domain.
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId": userEmail,
-		"from":   bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
+		"from":   req.SenderEmail,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
@@ -515,6 +525,73 @@ func (h *Handler) RejectSuggestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// maxRejectBatchSize bounds one reject-batch. The client never holds more than
+// the 100 pending suggestions GetSuggestions returns, so this is "everything on
+// screen" with room to spare.
+const maxRejectBatchSize = 200
+
+// RejectBatch rejects several pending suggestions in one request: a whole
+// sender group, or everything the panel shows.
+//
+// The client used to send one POST /api/ai/suggestions/{id}/reject per row, all
+// at once. Past the rate limiter's burst of 40 the rest were answered 429, the
+// client had already hidden the rows and swallowed the failures, and the next
+// refresh brought them back: "Tout ignorer" on a full panel left about sixty
+// of a hundred suggestions pending. One UpdateMany is one request at any size.
+//
+// Only pending rows move. An applied suggestion is history, and rejecting it
+// after the fact would contradict what the ledger says happened.
+func (h *Handler) RejectBatch(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		writeError(w, http.StatusUnauthorized, "User email required")
+		return
+	}
+
+	var req models.RejectBatchRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.SuggestionIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "Aucune suggestion à ignorer")
+		return
+	}
+	if len(req.SuggestionIDs) > maxRejectBatchSize {
+		writeError(w, http.StatusBadRequest, "Trop de suggestions à ignorer en une fois")
+		return
+	}
+	// Every id is checked before the datastore is touched. They all come from
+	// GetSuggestions, so a malformed one is a client bug, and skipping it would
+	// report the batch as done while that suggestion stays pending.
+	objectIDs := make([]primitive.ObjectID, 0, len(req.SuggestionIDs))
+	for _, id := range req.SuggestionIDs {
+		oid, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Identifiant de suggestion invalide")
+			return
+		}
+		objectIDs = append(objectIDs, oid)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	result, err := h.db.AISuggestions().UpdateMany(ctx,
+		bson.M{"_id": bson.M{"$in": objectIDs}, "userId": userEmail, "status": "pending"},
+		bson.M{"$set": bson.M{"status": "rejected"}},
+	)
+	if err != nil {
+		log.Printf("ai: reject-batch failed for %s: %v", userEmail, err)
+		writeError(w, http.StatusInternalServerError, "Failed to reject suggestions")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]int64{
+		"rejected": result.ModifiedCount,
+		"total":    int64(len(req.SuggestionIDs)),
+	})
 }
 
 // GetSenders returns aggregated sender statistics
@@ -678,14 +755,11 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Get user token to create Gmail label
-	token, err := h.getUserToken(ctx, userEmail)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-
-	gmailClient := h.gmailService.GetClient(token)
 
 	// Create Gmail label
 	gmailLabelID, err := h.gmailService.CreateLabel(gmailClient, label.Name)

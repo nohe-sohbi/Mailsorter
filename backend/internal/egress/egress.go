@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 )
 
 // ErrNotHTTPS is returned for any scheme but https. RFC 8058 requires https for
@@ -73,13 +74,18 @@ func Allowed(u *url.URL) error {
 	if u.Scheme != "https" {
 		return fmt.Errorf("%w: got %q", ErrNotHTTPS, u.Scheme)
 	}
-	if u.Hostname() == "" {
+	hostname := u.Hostname()
+	if hostname == "" {
 		return ErrNoHost
+	}
+	lowerHost := strings.ToLower(hostname)
+	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") || strings.HasSuffix(lowerHost, ".local") {
+		return fmt.Errorf("%w: %v", ErrPrivateAddress, hostname)
 	}
 	// A bare IP literal is judged now as well as at dial time. Dialing would
 	// catch it anyway, but refusing here makes the intent explicit and keeps the
 	// error the caller sees the same whether the host was a name or an address.
-	if ip := net.ParseIP(u.Hostname()); ip != nil {
+	if ip := net.ParseIP(hostname); ip != nil {
 		return AllowedIP(ip)
 	}
 	return nil

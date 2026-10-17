@@ -14,10 +14,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// maxPasswordLength bounds password input to prevent bcrypt truncation confusion
-// and CPU exhaustion DoS attacks on authentication endpoints.
-const maxPasswordLength = 72
-
 // isValidEmail checks basic RFC 5322 address syntax and structure.
 func isValidEmail(email string) bool {
 	if len(email) < 3 || len(email) > 254 {
@@ -50,8 +46,14 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(password) < 8 || len(password) > maxPasswordLength {
-		writeError(w, http.StatusBadRequest, "Le mot de passe doit comporter entre 8 et 72 caractères.")
+	if len(password) < 8 {
+		writeError(w, http.StatusBadRequest, "Le mot de passe doit comporter au moins 8 caractères.")
+		return
+	}
+	// bcrypt truncates input at 72 bytes. Enforce a maximum byte length to prevent
+	// CPU exhaustion DoS attacks and silent password truncation.
+	if len(password) > 72 {
+		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
 		return
 	}
 
@@ -115,9 +117,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Adresse email et mot de passe requis.")
 		return
 	}
-
-	if len(password) > maxPasswordLength {
-		writeError(w, http.StatusUnauthorized, "Identifiants incorrects.")
+	if len(password) > 72 {
+		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
 		return
 	}
 
