@@ -70,6 +70,12 @@ func (h *Handler) GetProtected(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"protected": rows})
 }
 
+// Maximum input bounds for protected sender entries to prevent resource exhaustion / DoS.
+const (
+	maxProtectedValueLength = 254 // RFC 5321 maximum address length
+	maxProtectedNoteLength  = 500 // Upper bound for user note
+)
+
 // CreateProtected adds a sender (full address or whole domain) to the protected
 // list. The value is normalized and classified server-side; duplicates are a
 // no-op thanks to the unique {userId, value} index.
@@ -86,8 +92,12 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 	}
 
 	value, kind := protect.NormalizeEntry(in.Value)
-	if value == "" {
+	if value == "" || len(value) > maxProtectedValueLength {
 		writeError(w, http.StatusBadRequest, "Adresse ou domaine invalide")
+		return
+	}
+	if len(in.Note) > maxProtectedNoteLength {
+		writeError(w, http.StatusBadRequest, "Note trop longue")
 		return
 	}
 

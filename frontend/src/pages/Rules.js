@@ -7,6 +7,8 @@ import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
 import { actionMeta } from '../ui/actions';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import PageHead from '../components/hotel/PageHead';
 import { Bolt, Trash, Tag, Check, X, Refresh, Search, ChevronDown, Copy, Download, Upload } from '../ui/icons';
 
 const FIELDS = [
@@ -412,6 +414,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
 
 function Rules() {
   const toast = useToast();
+  const hotel = useHotel();
   const confirm = useConfirm();
   const [rules, setRules] = useState(null);
   const [error, setError] = useState(null);
@@ -636,27 +639,44 @@ function Rules() {
   const enabledCount = (rules || []).filter((r) => r.enabled).length;
   const hasRules = !error && rules && rules.length > 0;
 
+  // Aperçu and Appliquer, in the classic header or on the hotel's floor head.
+  const ruleTools = (
+    <>
+      <button onClick={runPreview} disabled={previewing || enabledCount === 0} className="btn-secondary" title="Voir ce que feraient vos règles, sans rien modifier">
+        {previewing ? <Spinner size={16} /> : <Search size={16} />} Aperçu
+      </button>
+      <button onClick={applyNow} disabled={applying || enabledCount === 0} className="btn-primary">
+        {applying ? <Spinner size={16} /> : <Refresh size={16} />} Appliquer maintenant
+      </button>
+    </>
+  );
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
-      <div className="mb-6 flex items-end justify-between gap-4">
-        <div>
-          <span className="chip mb-2 bg-brand-50 text-brand-700"><Bolt size={14} /> Tri automatique, sans IA</span>
-          <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Règles de tri</h1>
-          <p className="mt-1 max-w-lg text-sm text-ink-500">
-            Encodez vos cas évidents une fois : les règles s’appliquent instantanément, gratuitement et sans consommer votre quota IA.
-          </p>
-        </div>
-        {hasRules && (
-          <div className="flex shrink-0 items-center gap-2">
-            <button onClick={runPreview} disabled={previewing || enabledCount === 0} className="btn-secondary" title="Voir ce que feraient vos règles, sans rien modifier">
-              {previewing ? <Spinner size={16} /> : <Search size={16} />} Aperçu
-            </button>
-            <button onClick={applyNow} disabled={applying || enabledCount === 0} className="btn-primary">
-              {applying ? <Spinner size={16} /> : <Refresh size={16} />} Appliquer maintenant
-            </button>
+      {hotel ? (
+        <PageHead
+          floor="/rules"
+          title="Règles de tri"
+          sub="Les évidences n'ont pas besoin d'IA. Vos règles passent avant le modèle, et ne touchent pas à votre quota."
+        >
+          {hasRules && ruleTools}
+        </PageHead>
+      ) : (
+        <div className="mb-6 flex items-end justify-between gap-4">
+          <div>
+            <span className="chip mb-2 bg-brand-50 text-brand-700"><Bolt size={14} /> Tri automatique, sans IA</span>
+            <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Règles de tri</h1>
+            <p className="mt-1 max-w-lg text-sm text-ink-500">
+              Encodez vos cas évidents une fois : les règles s’appliquent instantanément, gratuitement et sans consommer votre quota IA.
+            </p>
           </div>
-        )}
-      </div>
+          {hasRules && (
+            <div className="flex shrink-0 items-center gap-2">
+              {ruleTools}
+            </div>
+          )}
+        </div>
+      )}
 
       {hasRules && (
         <div className="card mb-5 flex items-center gap-3 p-4">
@@ -738,6 +758,9 @@ function Rules() {
         <div className="card">
           <EmptyState
             Icon={Bolt}
+            scene={{ prop: 'signpost', color: '#2F6F73' }}
+            hotelTitle="Aucune règle pour l'instant."
+            hotelDescription="Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota."
             title="Aucune règle pour l’instant"
             description="Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents."
             action={<button onClick={() => setEditing('new')} className="btn-primary">+ Créer une règle</button>}

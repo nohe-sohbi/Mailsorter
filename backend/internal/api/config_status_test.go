@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/config"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/digest"
 )
 
 func withUITheme(t *testing.T, theme config.UITheme, fn func()) {
@@ -31,6 +32,25 @@ func TestConfigStatusCarriesTheUITheme(t *testing.T) {
 			}
 			if body["uiTheme"] != string(theme) {
 				t.Errorf("uiTheme = %#v with UI_THEME=%q, want %q", body["uiTheme"], theme, theme)
+			}
+		})
+	}
+}
+
+// The digest is the one thing the server draws itself, and it follows the
+// same switch as the SPA: a hotel instance mails a hotel recap.
+func TestDigestStyleFollowsTheUITheme(t *testing.T) {
+	cases := []struct {
+		theme config.UITheme
+		want  digest.Style
+	}{
+		{config.UIThemeHotel, digest.StyleHotel},
+		{config.UIThemeClassic, digest.StyleClassic},
+	}
+	for _, tc := range cases {
+		withUITheme(t, tc.theme, func() {
+			if got := digestStyle(); got != tc.want {
+				t.Errorf("digestStyle() with UI_THEME=%q = %q, want %q", tc.theme, got, tc.want)
 			}
 		})
 	}

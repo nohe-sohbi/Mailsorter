@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/config"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/digest"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailer"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -101,11 +102,21 @@ func (h *Handler) sendOneDigest(ctx context.Context, userEmail string) {
 	log.Printf("digest: sent to %s", userEmail)
 }
 
+// digestStyle is the look of the recap's HTML body: the instance's UI theme,
+// so the email a user receives each morning wears the same clothes as the app
+// it comes from. Switched by the same UI_THEME, at the same restart.
+func digestStyle() digest.Style {
+	if UITheme == config.UIThemeHotel {
+		return digest.StyleHotel
+	}
+	return digest.StyleClassic
+}
+
 // deliverDigest renders a summary and sends it to the user through their own
 // Gmail. Shared by the scheduler and the "envoyer un test" button so a test
 // exercises the real delivery path, headers included, rather than a lookalike.
 func (h *Handler) deliverDigest(ctx context.Context, userEmail string, summary activity.Summary) (digest.Digest, error) {
-	d := digest.Render(summary, time.Now())
+	d := digest.RenderStyle(summary, time.Now(), digestStyle())
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {

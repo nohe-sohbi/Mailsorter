@@ -58,8 +58,9 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 		"X-Content-Type-Options":           "nosniff",
 		"X-XSS-Protection":                 "1; mode=block",
 		"Referrer-Policy":                  "strict-origin-when-cross-origin",
+		"Content-Security-Policy":          "default-src 'none'; frame-ancestors 'none'",
+		"Permissions-Policy":               "geolocation=(), microphone=(), camera=()",
 		"X-Permitted-Cross-Domain-Policies": "none",
-		"Permissions-Policy":               "camera=(), microphone=(), geolocation=()",
 	}
 
 	for header, want := range headers {

@@ -235,7 +235,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 			From:         from,
 			To:           to,
 			Subject:      subject,
-			Snippet:      msg.Snippet,
+			Snippet:      gmail.Snippet(msg),
 			Body:         gmail.GetEmailBody(msg),
 			ReceivedDate: date,
 		}
@@ -321,7 +321,7 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 			From:         from,
 			To:           to,
 			Subject:      subject,
-			Snippet:      msg.Snippet,
+			Snippet:      gmail.Snippet(msg),
 			Body:         gmail.GetEmailBody(msg),
 			ReceivedDate: date,
 		})
