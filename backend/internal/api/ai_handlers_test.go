@@ -78,3 +78,37 @@ func TestRejectBatchReportsADatastoreFailure(t *testing.T) {
 		t.Errorf("RejectBatch did not answer a JSON error envelope: %s", rec.Body.String())
 	}
 }
+
+func TestAnalyzeEmailsRejectsOversizedBatch(t *testing.T) {
+	srv := newRoutedTestServer(t)
+	token := newTestAuth(t).IssueSession("nohe@example.com")
+
+	tooMany := make([]string, maxBatchActionSize+1)
+	for i := range tooMany {
+		tooMany[i] = "msg-123"
+	}
+
+	res := postBatch(t, srv.URL, "/api/ai/analyze", token, models.AnalyzeEmailsRequest{
+		EmailIDs: tooMany,
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("POST /api/ai/analyze with oversized batch = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestApplyBatchRejectsOversizedBatch(t *testing.T) {
+	srv := newRoutedTestServer(t)
+	token := newTestAuth(t).IssueSession("nohe@example.com")
+
+	tooMany := make([]string, maxBatchActionSize+1)
+	for i := range tooMany {
+		tooMany[i] = validSuggestionID
+	}
+
+	res := postBatch(t, srv.URL, "/api/ai/apply-batch", token, models.ApplyBatchRequest{
+		SuggestionIDs: tooMany,
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("POST /api/ai/apply-batch with oversized batch = %d, want 400", res.StatusCode)
+	}
+}

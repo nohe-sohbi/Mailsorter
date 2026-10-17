@@ -26,22 +26,22 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
-	if !aiClient.Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
-		return
-	}
-	if userEmail == "" {
-		writeError(w, http.StatusUnauthorized, "User email required")
-		return
-	}
-
 	var req models.AnalyzeEmailsRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.EmailIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "No email IDs provided")
+		return
+	}
+	if len(req.EmailIDs) > maxBatchActionSize {
+		writeError(w, http.StatusBadRequest, "Too many emails to analyze at once")
+		return
+	}
+
+	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
+	if !aiClient.Available() {
+		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
 		return
 	}
 
@@ -262,6 +262,10 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.SuggestionIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "No suggestion IDs provided")
+		return
+	}
+	if len(req.SuggestionIDs) > maxBatchActionSize {
+		writeError(w, http.StatusBadRequest, "Too many suggestions to apply at once")
 		return
 	}
 
