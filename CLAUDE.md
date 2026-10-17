@@ -40,16 +40,19 @@ years without a fix on code that handles credentials and TLS is the larger risk.
 It also ships `imapserver/imapmemserver`, which is what lets `internal/imap` be
 tested against a real server rather than a mock.
 
-## Changing Behavior: `/feature` and the scenarios
+## Changing Behavior: the acceptance scenarios
 
-Nohé does not review code. A behavior change goes through `/feature`
-(`.claude/skills/feature/SKILL.md`): sentences in French agreed with him first,
-locked as acceptance scenarios by the `scenariste` agent, made to pass by the
-`codeur` agent, checked by the read-only `controleur` agent, proven by
-`make scenarios`. The scenarios (`backend/internal/api/scenarios_*_test.go`)
-and their harness (`acceptance_*_test.go`) are locked by a hook
-(`.claude/hooks/lock-scenarios.mjs`): only the `scenariste` may write them. If a
-scenario looks wrong, say so; never work around it.
+Nohé does not review code. He validates behavior: a change starts from short
+French sentences he agreed to, each proven by an acceptance scenario
+(`backend/internal/api/scenarios_*_test.go`, running on the harness in
+`acceptance_*_test.go`), and `make scenarios` is the proof. The scenarios are
+the definition of done: never edit one to make a change pass. If a scenario
+looks wrong, say so; never work around it.
+
+Rules for the sentences in this project:
+
+- If the change moves mail out of the inbox, one sentence covers a protected
+  sender.
 
 ## Code Quality Standards
 
@@ -498,7 +501,7 @@ as a side effect of another change.
   one French sentence (`phrase`) Nohé can answer yes or no to: `observed` until he
   answers, `validated` on a yes, `rejected` on a no. A rejected scenario still pins
   what the app does today, and the report lists it under "À corriger" until the
-  `/feature` that fixes it rewrites it in place. They FAIL without `MAILSORTER_TEST_MONGO_URI`
+  change that fixes it rewrites it in place. They FAIL without `MAILSORTER_TEST_MONGO_URI`
   rather than skip. `go test ./...` without the tag does not see them.
 
 ### React
@@ -536,9 +539,10 @@ as a side effect of another change.
   `snooze`, `config`, `models`, `env`, `header`, `backlog`, `roadmap`. The scope is
   optional and often omitted on a cross-cutting change.
 - Show the diff and the commit message before committing. Do not push or deploy unasked.
-- Exception, inside `/feature` only: the `scenariste` and the `codeur` commit
-  locally on the feature branch, because the commit that locks the scenarios is
-  what the others diff against. Pushing and merging still wait for Nohé.
+- Exception, for a behavior change run through the acceptance scenarios: the
+  commit that locks the scenarios and the commit that makes them pass are made
+  locally on the feature branch without asking, because the first one is what
+  the check diffs against. Pushing and merging still wait for Nohé.
 
 ## Configuration
 
