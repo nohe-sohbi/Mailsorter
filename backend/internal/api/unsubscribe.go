@@ -10,6 +10,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
@@ -31,7 +32,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.MessageID == "" {
+	if req.MessageID == "" || len(req.MessageID) > 256 {
 		writeError(w, http.StatusBadRequest, "Message ID required")
 		return
 	}
@@ -39,12 +40,11 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	token, err := h.getUserToken(ctx, userEmail)
+	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-	gmailClient := h.gmailService.GetClient(token)
 
 	msg, err := h.gmailService.GetMessage(gmailClient, req.MessageID)
 	if err != nil {
@@ -115,29 +115,53 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// archiveBySender removes INBOX from every stored email of a sender and returns
-// how many were archived. Best-effort: individual failures are skipped.
+// archiveBySender archives every stored email sent from senderAddr, whatever
+// display name each one carries, and returns how many were archived.
+//
+// The datastore query is only a narrowing: a case-insensitive substring of the
+// address, which every mail of that sender contains. protect.SameAddress is what
+// decides, because the same substring is also inside longer addresses (a prefix
+// on the local part, a longer domain), other senders this sweep used to archive
+// too.
+//
+// A protected sender is still unsubscribed (the caller has recorded it before
+// this runs) but its mail stays in the inbox, as with every other sweep.
+//
+// Best-effort past the listing: the unsubscribe itself has already happened, so
+// a mail that fails to move is logged and skipped rather than failing the call.
 func (h *Handler) archiveBySender(ctx context.Context, gmailClient *gmailapi.Service, userEmail, senderAddr string) int {
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId": userEmail,
 		"from":   bson.M{"$regex": regexp.QuoteMeta(senderAddr), "$options": "i"},
 	})
 	if err != nil {
+		log.Printf("unsubscribe: listing the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)
 		return 0
 	}
 	defer cursor.Close(ctx)
 
 	var emails []models.Email
 	if err := cursor.All(ctx, &emails); err != nil {
+		log.Printf("unsubscribe: reading the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)
 		return 0
 	}
 
+	protectedList := h.protectedValues(ctx, userEmail)
+	mb := h.mailboxOf(gmailClient)
 	n := 0
 	for _, e := range emails {
-		if err := h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(e.MessageID), "archive", ""); err == nil {
-			n++
-			h.logActionMeta(ctx, userEmail, e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
+		if !protect.SameAddress(e.From, senderAddr) {
+			continue
 		}
+		if !allows(protect.ActionArchive, e.From, protectedList) {
+			continue
+		}
+		if err := h.applyVerb(ctx, mb, mailbox.OnAccount(e.MessageID), "archive", ""); err != nil {
+			log.Printf("unsubscribe: archiving %s for %s failed: %v", e.MessageID, userEmail, err)
+			continue
+		}
+		n++
+		h.logActionMeta(ctx, userEmail, e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
 	}
 	return n
 }

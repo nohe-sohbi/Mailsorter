@@ -68,6 +68,45 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+func TestSameAddress(t *testing.T) {
+	cases := []struct {
+		name string
+		from string
+		addr string
+		want bool
+	}{
+		{"bare address, same", "info@boutique.com", "info@boutique.com", true},
+		{"display name on the mail", "Boutique <info@boutique.com>", "info@boutique.com", true},
+		{"another display name, same address", "Boutique Soldes <info@boutique.com>", "info@boutique.com", true},
+		{"quoted display name", `"Boutique, Paris" <info@boutique.com>`, "info@boutique.com", true},
+		{"addr given as a From header", "info@boutique.com", "Boutique <info@boutique.com>", true},
+		{"case-insensitive", "Boutique <INFO@Boutique.COM>", "info@boutique.com", true},
+		{"surrounding whitespace", "  info@boutique.com  ", "info@boutique.com", true},
+		// The bug this function exists for: each of these contains the
+		// address as a substring and is another sender.
+		{"longer local part", "Facturation <facturation-info@boutique.com>", "info@boutique.com", false},
+		{"longer local part, bare", "facturation-info@boutique.com", "info@boutique.com", false},
+		{"longer domain", "info@boutique.community", "info@boutique.com", false},
+		{"subdomain", "info@boutique.com.evil.io", "info@boutique.com", false},
+		{"other sender on the domain", "Service client <contact@boutique.com>", "info@boutique.com", false},
+		{"address in the display name only", "info@boutique.com <spoof@evil.io>", "info@boutique.com", false},
+		// No usable address on the sweep side must reach nothing, not everything.
+		{"empty addr", "info@boutique.com", "", false},
+		{"empty addr, empty from", "", "", false},
+		{"addr without @", "boutique.com", "boutique.com", false},
+		{"addr without local part", "@boutique.com", "@boutique.com", false},
+		{"addr without domain", "info@", "info@", false},
+		{"empty from", "", "info@boutique.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SameAddress(tc.from, tc.addr); got != tc.want {
+				t.Errorf("SameAddress(%q, %q) = %v, want %v", tc.from, tc.addr, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsDestructiveAndAllowed(t *testing.T) {
 	for _, a := range []string{"archive", "trash", "delete", "ARCHIVE", " Delete "} {
 		if !IsDestructive(a) {

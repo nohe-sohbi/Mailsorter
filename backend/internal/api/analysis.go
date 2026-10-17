@@ -95,7 +95,7 @@ func (h *Handler) runAnalysis(
 						To:            to,
 						Subject:       subject,
 						Body:          plain,
-						Snippet:       msg.Snippet,
+						Snippet:       gmail.Snippet(msg),
 						LabelIDs:      msg.LabelIds,
 						ReceivedDate:  date,
 						IsRead:        mailbox.GmailIsRead(msg.LabelIds),

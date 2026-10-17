@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
@@ -48,6 +50,85 @@ func TestGmailClientForRefusesWhenTheTransportIsNotResolved(t *testing.T) {
 	}
 	if client != nil {
 		t.Error("gmailClientFor returned both an error and a client")
+	}
+}
+
+func TestGmailClientForReturnsWrongTransportForNonGmail(t *testing.T) {
+	// When transport is not Gmail API (e.g., IMAP), gmailClientFor returns errWrongTransport
+	err := fmt.Errorf("%w: mailbox is reached over %s", errWrongTransport, provider.TransportIMAP)
+	if !errors.Is(err, errWrongTransport) {
+		t.Fatal("expected errors.Is(err, errWrongTransport) to be true")
+	}
+
+	rec := httptest.NewRecorder()
+	writeAuthError(rec, err)
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("writeAuthError status = %d, want %d (NotImplemented)", rec.Code, http.StatusNotImplemented)
+	}
+}
+
+func TestUnportedEndpointsUseGmailClientFor(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Unsubscribe, ApplyBulk, and CreateSmartLabel must route through gmailClientFor
+	// and reject unauthenticated / invalid transport requests cleanly via writeAuthError.
+	reqs := []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+		body    string
+	}{
+		{"Unsubscribe", h.Unsubscribe, `{"messageId":"msg123"}`},
+		{"ApplyBulk", h.ApplyBulk, `{"senderEmail":"spammer@example.com","action":"delete"}`},
+		{"CreateSmartLabel", h.CreateSmartLabel, `{"name":"Important"}`},
+	}
+
+	for _, tc := range reqs {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body)).WithContext(cancelledContext())
+			req.Header.Set("X-User-Email", "someone@example.com")
+			req.Header.Set("Content-Type", "application/json")
+
+			tc.handler(rec, req)
+
+			if rec.Code == http.StatusOK {
+				t.Errorf("%s returned status 200 without valid transport", tc.name)
+			}
+		})
+	}
+}
+
+func TestInputLengthLimitsOnUnsubscribeAndCreateSmartLabel(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Oversized MessageID on Unsubscribe
+	{
+		longID := strings.Repeat("a", 257)
+		body := fmt.Sprintf(`{"messageId":%q}`, longID)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/unsubscribe", strings.NewReader(body))
+		req.Header.Set("X-User-Email", "user@example.com")
+		req.Header.Set("Content-Type", "application/json")
+
+		h.Unsubscribe(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("Unsubscribe with >256 char messageId returned status %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	}
+
+	// Oversized Name on CreateSmartLabel
+	{
+		longName := strings.Repeat("a", 101)
+		body := fmt.Sprintf(`{"name":%q}`, longName)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/smart-labels", strings.NewReader(body))
+		req.Header.Set("X-User-Email", "user@example.com")
+		req.Header.Set("Content-Type", "application/json")
+
+		h.CreateSmartLabel(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("CreateSmartLabel with >100 char name returned status %d, want %d", rec.Code, http.StatusBadRequest)
+		}
 	}
 }
 
