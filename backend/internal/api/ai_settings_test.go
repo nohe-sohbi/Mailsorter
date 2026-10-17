@@ -119,3 +119,74 @@ func TestTestAISettingsUnknownProvider(t *testing.T) {
 		t.Errorf("unvalidated provider input reflected in error response: %q", errMsg)
 	}
 }
+
+func TestAISettingsInputLengthBounds(t *testing.T) {
+	h := newTestHandler(t)
+
+	tests := []struct {
+		name    string
+		payload map[string]interface{}
+		wantErr string
+	}{
+		{
+			name: "oversized apiKey",
+			payload: map[string]interface{}{
+				"provider": "openai",
+				"apiKey":   strings.Repeat("a", 1025),
+			},
+			wantErr: "Clé API trop longue",
+		},
+		{
+			name: "oversized model",
+			payload: map[string]interface{}{
+				"provider": "openai",
+				"model":    strings.Repeat("m", 257),
+			},
+			wantErr: "Nom de modèle trop long",
+		},
+		{
+			name: "oversized baseUrl",
+			payload: map[string]interface{}{
+				"provider": "openai",
+				"baseUrl":  "https://example.com/" + strings.Repeat("u", 2048),
+			},
+			wantErr: "URL de base trop longue",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.payload)
+
+			// Test UpdateAISettings
+			reqUpdate := httptest.NewRequest("POST", "/api/ai/settings", strings.NewReader(string(body)))
+			reqUpdate.Header.Set("Content-Type", "application/json")
+			reqUpdate.Header.Set("X-User-Email", "user@example.com")
+			wUpdate := httptest.NewRecorder()
+
+			h.UpdateAISettings(wUpdate, reqUpdate)
+
+			if wUpdate.Code != http.StatusBadRequest {
+				t.Fatalf("UpdateAISettings: expected status 400, got %d: %s", wUpdate.Code, wUpdate.Body.String())
+			}
+			if !strings.Contains(wUpdate.Body.String(), tt.wantErr) {
+				t.Errorf("UpdateAISettings: expected error message to contain %q, got %s", tt.wantErr, wUpdate.Body.String())
+			}
+
+			// Test TestAISettings
+			reqTest := httptest.NewRequest("POST", "/api/ai/settings/test", strings.NewReader(string(body)))
+			reqTest.Header.Set("Content-Type", "application/json")
+			reqTest.Header.Set("X-User-Email", "user@example.com")
+			wTest := httptest.NewRecorder()
+
+			h.TestAISettings(wTest, reqTest)
+
+			if wTest.Code != http.StatusBadRequest {
+				t.Fatalf("TestAISettings: expected status 400, got %d: %s", wTest.Code, wTest.Body.String())
+			}
+			if !strings.Contains(wTest.Body.String(), tt.wantErr) {
+				t.Errorf("TestAISettings: expected error message to contain %q, got %s", tt.wantErr, wTest.Body.String())
+			}
+		})
+	}
+}
