@@ -13,6 +13,26 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// Maximum input bounds to prevent resource exhaustion / DoS on custom AI provider settings.
+const (
+	maxAISettingAPIKeyLength  = 1024
+	maxAISettingModelLength   = 256
+	maxAISettingBaseURLLength = 2048
+)
+
+func validateAISettingsInput(apiKey, model, baseURL string) string {
+	if len(apiKey) > maxAISettingAPIKeyLength {
+		return "Clé API trop longue"
+	}
+	if len(model) > maxAISettingModelLength {
+		return "Nom de modèle trop long"
+	}
+	if len(baseURL) > maxAISettingBaseURLLength {
+		return "URL de base trop longue"
+	}
+	return ""
+}
+
 // isValidBaseURL reports whether rawURL is empty or a valid public HTTPS URL.
 // It uses egress.Parse to prevent SSRF targeting internal services or metadata endpoints.
 func isValidBaseURL(rawURL string) bool {
@@ -107,6 +127,11 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if errMsg := validateAISettingsInput(req.APIKey, req.Model, req.BaseURL); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+
 	if !isValidBaseURL(req.BaseURL) {
 		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
 		return
@@ -177,6 +202,11 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validProvider {
 		writeError(w, http.StatusBadRequest, "Unknown provider")
+		return
+	}
+
+	if errMsg := validateAISettingsInput(req.APIKey, req.Model, req.BaseURL); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 
