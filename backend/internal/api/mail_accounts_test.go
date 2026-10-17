@@ -185,6 +185,32 @@ func TestConnectMailboxRefusesAnEmptyBody(t *testing.T) {
 	}
 }
 
+func TestConnectMailboxRefusesAnOversizedPassword(t *testing.T) {
+	srv := newRoutedTestServer(t)
+	token := newTestAuth(t).IssueSession("someone@example.com")
+
+	longPassword := strings.Repeat("a", 1025)
+	body, err := json.Marshal(models.ConnectMailboxRequest{Address: "someone@orange.fr", Password: longPassword})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/mailbox/connect", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("connect with password length 1025 = %d, want 400", resp.StatusCode)
+	}
+}
+
 // A provider the running edition does not reach over IMAP has to be refused
 // before any connection is attempted, and with a status that says "this cannot
 // work here" rather than "your password is wrong". In self-hosted, Gmail is the

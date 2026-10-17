@@ -7,6 +7,7 @@ import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
 import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
+import TriagePlan, { useTriagePlan } from '../components/inbox/TriagePlan';
 import SnoozeButton from '../ui/SnoozeMenu';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
@@ -14,6 +15,12 @@ import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitive
 import { useScrollLock } from '../ui/scrollLock';
 import { actionMeta, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
+import { toneFor } from '../ui/avatar';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import Plaque from '../ui/hotel/Plaque';
+import PageHead from '../components/hotel/PageHead';
+import { HotelStats, HotelFilters, HotelRow } from '../components/hotel/InboxBits';
+import { hotelTone, initials } from '../components/hotel/avatar';
 import {
   Sparkles, Archive, Trash, Tag, Search, Refresh, Inbox as InboxIcon,
   Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard, BellOff, Star, Filter,
@@ -43,7 +50,7 @@ const SHORTCUTS = [
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
   ['S', 'Mettre en favori'],
-  ['A', 'Tout appliquer (suggestions)'],
+  ['A', 'Ranger les suggestions sûres'],
   ['I', "Demander un tri IA (dans l'email)"],
   ['R', 'Synchroniser'],
   ['/', 'Rechercher'],
@@ -62,13 +69,6 @@ const QUICK_FILTERS = [
   { id: 'attach', label: 'Pièces jointes', query: 'in:inbox has:attachment', Icon: Tag },
   { id: 'big', label: 'Volumineux', query: 'in:inbox larger:5M', Icon: Archive },
 ];
-
-const AVATAR_TONES = ['bg-brand-fill', 'bg-info-fill', 'bg-positive-fill', 'bg-caution-fill', 'bg-danger-fill'];
-const toneFor = (seed = '') => {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  return AVATAR_TONES[h % AVATAR_TONES.length];
-};
 
 // Mirrors internal/search.SuggestName: the save dialog opens on the query's
 // most specific term rather than an empty field, because naming a filter is the
@@ -140,27 +140,6 @@ function SaveSearchDialog({ query, onCancel, onSave }) {
   );
 }
 
-function ConfidenceRing({ value = 0, color = 'rgb(var(--brand-600))' }) {
-  const pct = Math.round((value || 0) * 100);
-  const r = 13;
-  const c = 2 * Math.PI * r;
-  return (
-    <div className="relative h-9 w-9 shrink-0" title={`Confiance ${pct}%`}>
-      <svg viewBox="0 0 32 32" className="h-9 w-9 -rotate-90" aria-hidden>
-        <circle cx="16" cy="16" r={r} fill="none" stroke="rgb(var(--ink-200))" strokeWidth="3" />
-        <circle
-          cx="16" cy="16" r={r} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"
-          strokeDasharray={c} strokeDashoffset={c - (pct / 100) * c}
-        />
-      </svg>
-      <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-ink-700">
-        {pct}
-      </span>
-      <span className="sr-only">Confiance {pct} %</span>
-    </div>
-  );
-}
-
 // The display name out of a From header.
 //
 // The quotes are the part that is easy to forget: RFC 5322 wraps a display name
@@ -173,6 +152,14 @@ function senderLabel(from) {
   return from.split('<')[0].replace(/"/g, '').trim() || from;
 }
 
+// The four levers of the first-run dialog, on the hotel's numbered plaques.
+const WELCOME_PLAQUES = [
+  ['I', "Il lit l'expéditeur, l'objet et le début du message.", 'Pour chaque e-mail, il propose : archiver, ranger, reporter. Vous validez ou vous ignorez.'],
+  ['II', 'Vos évidences deviennent des règles.', "Elles trient sans IA, sans quota, et un aperçu montre ce qu'elles feraient avant de toucher à quoi que ce soit."],
+  ['III', 'Les newsletters se coupent ici.', "L'onglet Abonnements les repère et vous désabonne, souvent en un clic."],
+  ['IV', 'Rien ne se perd.', 'Chaque action est notée et annulable, et vos expéditeurs protégés ne sont jamais touchés.'],
+];
+
 const STAT_CARDS = [
   { key: 'inboxCount', label: 'Boîte de réception', tone: 'text-brand-600', Icon: InboxIcon, query: DEFAULT_QUERY },
   { key: 'unreadCount', label: 'Non lus', tone: 'text-caution-700', Icon: Mail, query: 'in:inbox is:unread' },
@@ -183,12 +170,22 @@ const STAT_CARDS = [
 function Inbox() {
   const navigate = useNavigate();
   const toast = useToast();
+  const hotel = useHotel();
   const confirm = useConfirm();
   const {
     emails, senders, subscriptions, suggestions, stats, pagination, error, activeQuery,
     loading, loadingMore, errorRetryable, fetchData, loadMoreEmails, removeEmails, patchEmail,
-    addSuggestion, removeSuggestion, removeSuggestions, restoreSuggestions, markUnsubscribed,
+    addSuggestion, removeSuggestion, restoreSuggestions, markUnsubscribed,
   } = useEmails();
+  // The AI's proposals, grouped by sender. Held here rather than inside the
+  // panel because the "a" shortcut applies it and every hand-made action below
+  // settles the verdicts it made moot.
+  const plan = useTriagePlan({
+    onTriaged: (n) => bumpGamify(n),
+    // The plan can open mail the list does not hold, so leaving the list is not
+    // enough to close the reader on a message the plan just moved.
+    onMoved: (ids) => setSelectedEmail((prev) => (prev && ids.includes(prev.messageId) ? null : prev)),
+  });
 
   const [aiAnalyzingId, setAiAnalyzingId] = useState(null);
 
@@ -201,13 +198,11 @@ function Inbox() {
   const [triageLabeling, setTriageLabeling] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [applyingAll, setApplyingAll] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [localSenders, setLocalSenders] = useState([]);
   const [senderFilter, setSenderFilter] = useState('');
   const [analyzingSender, setAnalyzingSender] = useState(null);
-  const [highConfOnly, setHighConfOnly] = useState(false);
   const [unsubscribing, setUnsubscribing] = useState(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -283,28 +278,30 @@ function Inbox() {
   }, [activeQuery, view]);
 
   // Drop ids that have left the list (triaged elsewhere, filtered out), and
-  // close the reader when the email it shows is gone: archiving from the list
-  // used to leave the message open in the panel, still offering Archiver and
-  // Supprimer on something that was no longer there.
+  // close the reader when the email it shows leaves the list: archiving from the
+  // list used to leave the message open in the panel, still offering Archiver
+  // and Supprimer on something that was no longer there.
+  //
+  // "Leaves", not "is absent". The triage plan opens mail the loaded page does
+  // not hold (a filter is on, or the page stops at 100), and closing on absence
+  // shut that reader at the first unrelated change to the list.
+  const listedRef = useRef(new Set());
   useEffect(() => {
     const live = new Set(emails.map((e) => e.messageId));
+    const listed = listedRef.current;
+    listedRef.current = live;
     setSelectedEmails((prev) => {
       if (prev.length === 0) return prev;
       const next = prev.filter((id) => live.has(id));
       return next.length === prev.length ? prev : next;
     });
-    setSelectedEmail((prev) => (prev && !live.has(prev.messageId) ? null : prev));
+    setSelectedEmail((prev) => (prev && listed.has(prev.messageId) && !live.has(prev.messageId) ? null : prev));
   }, [emails]);
 
   const dismissWelcome = () => {
     localStorage.setItem('mailsorter_onboarded', '1');
     setShowWelcome(false);
   };
-
-  const visibleSuggestions = useMemo(
-    () => (highConfOnly ? suggestions.filter((s) => (s.confidence || 0) >= 0.8) : suggestions),
-    [suggestions, highConfOnly]
-  );
 
   const filteredSenders = useMemo(() => {
     const q = senderFilter.trim().toLowerCase();
@@ -317,6 +314,21 @@ function Inbox() {
   }, [localSenders, senderFilter]);
 
   const activeSubs = useMemo(() => subscriptions.filter((s) => !s.unsubscribed), [subscriptions]);
+
+  // The hotel also puts each proposal on the row of the message it is about.
+  // Not "keep": the plan has stopped treating it as a task (it moves nothing),
+  // and a row offering to validate it would bring that task back.
+  const suggestionByEmail = useMemo(() => {
+    const map = new Map();
+    suggestions.forEach((s) => {
+      if (s.action !== 'keep') map.set(s.emailId, s);
+    });
+    return map;
+  }, [suggestions]);
+
+  // Avatars: the classic fills, or the hotel's inked discs with initials.
+  const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
+  const avatarText = (name) => (hotel ? initials(name) : name[0]?.toUpperCase());
 
   const bumpGamify = (n) => setGamify(recordTriage(n));
 
@@ -623,53 +635,19 @@ function Inbox() {
     }
   };
 
-  const handleApplyAll = async () => {
-    const batch = visibleSuggestions;
-    if (batch.length === 0) return;
-    const destructive = batch.filter((s) => actionMeta(s.action).destructive);
-    // "Tout appliquer" is also bound to a single keystroke, so it must never be
-    // able to trash mail without asking.
-    if (destructive.length > 0) {
-      const ok = await confirm({
-        title: 'Appliquer toutes les suggestions ?',
-        message: `${batch.length} action${batch.length > 1 ? 's' : ''} seront appliquées, dont ${destructive.length} suppression${destructive.length > 1 ? 's' : ''}.`,
-        detail: 'Les suppressions partent à la corbeille Gmail et restent récupérables 30 jours.',
-        confirmLabel: 'Tout appliquer',
-        danger: true,
-      });
-      if (!ok) return;
-    }
-
-    const ids = batch.map((s) => s.id || s._id);
-    setApplyingAll(true);
-    try {
-      const res = await aiService.applyBatch(ids);
-      const appliedIds = res.data?.appliedIds || ids;
-      removeSuggestions(appliedIds);
-      const appliedSet = new Set(appliedIds);
-      removeEmails(batch.filter((s) => appliedSet.has(s.id || s._id) && s.action !== 'keep').map((s) => s.emailId));
-      track('apply_all', { applied: res.data?.applied ?? appliedIds.length });
-      bumpGamify(res.data?.applied ?? appliedIds.length);
-      const n = res.data?.applied ?? appliedIds.length;
-      toast.success(`${n} action${n > 1 ? 's' : ''} appliquée${n > 1 ? 's' : ''}`);
-      if (res.data?.failed) toast.error(`${res.data.failed} action(s) ont échoué`);
-    } catch (err) {
-      toast.error("Impossible d'appliquer les suggestions");
-    } finally {
-      setApplyingAll(false);
-    }
-  };
-
-  const handleRejectAll = () => {
-    const batch = visibleSuggestions;
-    const ids = batch.map((s) => s.id || s._id);
-    removeSuggestions(ids);
-    ids.forEach((id) => aiService.rejectSuggestion(id).catch(() => {}));
-    // No "Rétablir" here: rejection is persisted server-side and there is no
-    // un-reject endpoint, so the button would only put rows back on screen that
-    // the next refresh would remove again. Rejecting costs nothing anyway:
-    // nothing was done to the emails themselves.
-    toast.info(`${ids.length} suggestion${plural(ids.length)} ignorée${plural(ids.length)}`);
+  // Opens one email of a plan group in the reader. The list may not hold it (a
+  // filter is on, or it sits past the loaded page), so the suggestion's own
+  // identity stands in until the reader has fetched the message.
+  const openSuggestedEmail = (suggestion) => {
+    const listed = emails.find((e) => e.messageId === suggestion.emailId);
+    setSelectedEmail(
+      listed || {
+        messageId: suggestion.emailId,
+        subject: suggestion.subject,
+        from: suggestion.from,
+        snippet: suggestion.snippet,
+      }
+    );
   };
 
   // --- Bulk actions over the selection --------------------------------------
@@ -729,8 +707,10 @@ function Inbox() {
 
         // Archiving and trashing take the message out of the inbox view; a
         // label or a read flag does not.
-        if (action === 'archive' || action === 'delete') removeEmails(applied);
-        else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
+        if (action === 'archive' || action === 'delete') {
+          removeEmails(applied);
+          plan.settle(applied);
+        } else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
         else if (action === 'unread') applied.forEach((id) => patchEmail(id, { isRead: false }));
         else if (action === 'star') applied.forEach((id) => patchEmail(id, { isStarred: true }));
         else if (action === 'unstar') applied.forEach((id) => patchEmail(id, { isStarred: false }));
@@ -809,6 +789,7 @@ function Inbox() {
         track('bulk_snooze', { preset: choice.preset || 'custom', snoozed: snoozed.length });
         bumpGamify(snoozed.length);
         removeEmails(snoozed);
+        plan.settle(snoozed);
         setSelectedEmails([]);
 
         if (snoozed.length === 0) {
@@ -841,6 +822,7 @@ function Inbox() {
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
       await emailService.action(email.messageId, action);
+      plan.settle(email.messageId);
       bumpGamify(1);
       undoToast(email.messageId, action, action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
     } catch (err) {
@@ -885,6 +867,7 @@ function Inbox() {
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
       await emailService.snooze(email.messageId, choice);
+      plan.settle(email.messageId);
       // `custom` rather than the instant itself: an exact wake time is personal
       // data and product analytics only needs to know the affordance was used.
       track('snooze', { preset: choice.preset || 'custom' });
@@ -1206,7 +1189,7 @@ function Inbox() {
       if (e.key === '?') { setShowShortcuts((s) => !s); return; }
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
       if (e.key === 'r') { handleSync(); return; }
-      if (e.key === 'a' && visibleSuggestions.length) { handleApplyAll(); return; }
+      if (e.key === 'a' && plan.totals.sure > 0) { plan.applyAll(); return; }
       if (view !== 'emails' || emails.length === 0) return;
 
       const cur = emails[focusedIndex];
@@ -1253,7 +1236,7 @@ function Inbox() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails, focusedIndex, view, visibleSuggestions, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
+  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
 
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
   const goalHit = gamify.today >= gamify.goal;
@@ -1307,79 +1290,113 @@ function Inbox() {
     />
   ) : null;
 
+  // The search box and the two tools beside it, shared by the classic command
+  // bar and the hotel's floor head.
+  const searchForm = (
+    <form onSubmit={handleSearch} className="relative flex-1 sm:flex-none" role="search">
+      <Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
+      <input
+        ref={searchRef}
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        placeholder={hotel ? 'Rechercher ( / )' : 'Rechercher…  ( / )'}
+        aria-label="Rechercher dans la boîte de réception"
+        className="input w-full pl-10 pr-9 sm:w-64"
+      />
+      {searchQuery && (
+        <button
+          type="button"
+          onClick={clearSearch}
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-subtle hover:bg-ink-100 hover:text-ink-900"
+          aria-label="Effacer la recherche"
+        >
+          <X size={15} />
+        </button>
+      )}
+    </form>
+  );
+  const toolButtons = (
+    <>
+      <button onClick={() => setShowShortcuts(true)} className="btn-secondary btn-icon" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
+        <Keyboard size={18} />
+      </button>
+      <button onClick={handleSync} disabled={syncing} className="btn-secondary btn-icon" aria-label="Synchroniser" title="Synchroniser (r)">
+        <Refresh size={18} className={syncing ? 'animate-spin' : ''} />
+      </button>
+    </>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6">
       <LiveAnnouncer message={announcement} />
 
       {/* Command bar */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="font-display text-xl font-extrabold tracking-tight text-ink-900 sm:text-2xl">
-            Votre boîte, sous contrôle.
-          </h1>
-          <p className="mt-0.5 text-sm text-muted">
-            {stats?.inboxCount
-              ? `${formatNumber(stats.inboxCount)} email${stats.inboxCount > 1 ? 's' : ''} en attente de tri.`
-              : 'Synchronisez pour commencer le tri intelligent.'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <form onSubmit={handleSearch} className="relative flex-1 sm:flex-none" role="search">
-            <Search size={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
-            <input
-              ref={searchRef}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Rechercher…  ( / )"
-              aria-label="Rechercher dans la boîte de réception"
-              className="input w-full pl-10 pr-9 sm:w-64"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={clearSearch}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-subtle hover:bg-ink-100 hover:text-ink-900"
-                aria-label="Effacer la recherche"
-              >
-                <X size={15} />
-              </button>
-            )}
-          </form>
-          <button onClick={() => setShowShortcuts(true)} className="btn-secondary btn-icon" aria-label="Raccourcis clavier" title="Raccourcis clavier (?)">
-            <Keyboard size={18} />
-          </button>
-          <button onClick={handleSync} disabled={syncing} className="btn-secondary btn-icon" aria-label="Synchroniser" title="Synchroniser (r)">
-            <Refresh size={18} className={syncing ? 'animate-spin' : ''} />
-          </button>
-        </div>
-      </div>
-
-      {/* Stats: each one is also the filter it describes */}
-      {stats && (
-        <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-          {STAT_CARDS.map(({ key, label, tone, Icon, query }) => (
-            <button
-              key={key}
-              onClick={() => runQuery(query)}
-              aria-pressed={activeQuery === query}
-              className={cn(
-                'card flex items-center gap-3 p-3 text-left transition-colors hover:border-ink-300',
-                activeQuery === query && 'border-brand-500 ring-1 ring-brand-500'
-              )}
-            >
-              <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-sunken', tone)}>
-                <Icon size={18} />
-              </span>
-              <span className="min-w-0">
-                <span className={cn('block font-display text-lg font-extrabold leading-none', tone)}>
-                  {formatNumber(stats[key])}
-                </span>
-                <span className="mt-1 block truncate text-xs font-medium text-muted">{label}</span>
-              </span>
-            </button>
-          ))}
+      {hotel ? (
+        <PageHead
+          floor="/inbox"
+          title="Boîte de réception"
+          sub={
+            stats
+              ? [
+                  `${formatNumber(stats.unreadCount)} non lu${stats.unreadCount > 1 ? 's' : ''}`,
+                  plan.totals.moves > 0 && `${plan.totals.moves} à ranger`,
+                ]
+                  .filter(Boolean)
+                  .join(', ')
+              : 'Synchronisez pour commencer le tri.'
+          }
+        >
+          {searchForm}
+          {toolButtons}
+        </PageHead>
+      ) : (
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="font-display text-xl font-extrabold tracking-tight text-ink-900 sm:text-2xl">
+              Votre boîte, sous contrôle.
+            </h1>
+            <p className="mt-0.5 text-sm text-muted">
+              {stats?.inboxCount
+                ? `${formatNumber(stats.inboxCount)} email${stats.inboxCount > 1 ? 's' : ''} en attente de tri.`
+                : 'Synchronisez pour commencer le tri intelligent.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {searchForm}
+            {toolButtons}
+          </div>
         </div>
       )}
+
+      {/* Stats: each one is also the filter it describes */}
+      {stats &&
+        (hotel ? (
+          <HotelStats stats={stats} cards={STAT_CARDS} activeQuery={activeQuery} onPick={runQuery} formatNumber={formatNumber} />
+        ) : (
+            <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+              {STAT_CARDS.map(({ key, label, tone, Icon, query }) => (
+                <button
+                  key={key}
+                  onClick={() => runQuery(query)}
+                  aria-pressed={activeQuery === query}
+                  className={cn(
+                    'card flex items-center gap-3 p-3 text-left transition-colors hover:border-ink-300',
+                    activeQuery === query && 'border-brand-500 ring-1 ring-brand-500'
+                  )}
+                >
+                  <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-sunken', tone)}>
+                    <Icon size={18} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className={cn('block font-display text-lg font-extrabold leading-none', tone)}>
+                      {formatNumber(stats[key])}
+                    </span>
+                    <span className="mt-1 block truncate text-xs font-medium text-muted">{label}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+        ))}
 
       {/* Streak, folded into one compact strip. It used to occupy a full card
           of its own above the fold, pushing the first actual email off screen. */}
@@ -1401,7 +1418,11 @@ function Inbox() {
 
       {/* View toggle + primary action */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="inline-flex rounded-xl border border-hairline bg-surface p-1 shadow-soft" role="tablist">
+        {/* Bounded by the page and scrollable on its own. At 409px wide it made
+            the whole page wider than a 390px phone, and the browser widened the
+            layout viewport to match: every fixed toast, "Annuler" included, was
+            laid out off the bottom of the screen. */}
+        <div className="inline-flex max-w-full overflow-x-auto rounded-xl border border-hairline bg-surface p-1 shadow-soft" role="tablist">
           {[
             { id: 'emails', label: 'Emails', Icon: InboxIcon },
             { id: 'senders', label: `Expéditeurs · ${localSenders.length}`, Icon: Users },
@@ -1413,11 +1434,11 @@ function Inbox() {
               aria-selected={view === id}
               onClick={() => setView(id)}
               className={cn(
-                'flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors',
+                'flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-sm font-semibold transition-colors sm:px-3',
                 view === id ? 'bg-brand-fill text-white shadow-soft' : 'text-muted hover:text-ink-900'
               )}
             >
-              <Icon size={16} /> {label}
+              <Icon size={16} className="hidden sm:block" /> {label}
             </button>
           ))}
         </div>
@@ -1431,76 +1452,91 @@ function Inbox() {
       </div>
 
       {/* Quick filters */}
-      {view === 'emails' && (
-        <div className="mb-4 flex flex-wrap items-center gap-1.5">
-          <Filter size={14} className="text-subtle" aria-hidden />
-          {QUICK_FILTERS.map(({ id, label, query }) => (
-            <button
-              key={id}
-              onClick={() => { setSearchQuery(''); runQuery(query); }}
-              aria-pressed={activeQuery === query}
-              className={cn(
-                'chip transition-colors',
-                activeQuery === query
-                  ? 'bg-brand-fill text-white'
-                  : 'bg-ink-100 text-ink-700 hover:bg-ink-200'
-              )}
-            >
-              {label}
-            </button>
-          ))}
-          {/* Les recherches de l'utilisateur, à la suite des filtres intégrés :
-              ce sont les mêmes objets pour qui les utilise, une requête à un
-              clic. Seul le nom vient de lui. */}
-          {savedSearches.map((s) => (
-            <span
-              key={s.id}
-              className={cn(
-                'chip group transition-colors',
-                activeQuery === s.query ? 'bg-brand-fill text-white' : 'bg-brand-50 text-brand-700 hover:bg-brand-100'
-              )}
-            >
-              <button
-                onClick={() => runSavedSearch(s)}
-                aria-pressed={activeQuery === s.query}
-                title={s.query}
-                className="flex items-center gap-1.5"
-              >
-                <Search size={12} /> {s.name}
-              </button>
-              <button
-                onClick={() => removeSavedSearch(s)}
-                aria-label={`Supprimer la recherche « ${s.name} »`}
-                className="ml-0.5 rounded-full p-0.5 opacity-0 transition-opacity hover:bg-brand-200 focus:opacity-100 group-hover:opacity-100"
-              >
-                <X size={12} />
-              </button>
-            </span>
-          ))}
-
-          {!activeFilter && activeQuery !== DEFAULT_QUERY && (
-            <span className="chip bg-brand-50 text-brand-700">
-              <Search size={12} /> {activeQuery.replace(`${DEFAULT_QUERY} `, '')}
-              {/* Une recherche qu'on vient d'écrire ne vaut souvent d'être
-                  gardée qu'une fois qu'elle a donné le bon résultat : le bouton
-                  est donc ici, sur le filtre actif, et pas dans le champ. */}
-              {!isSaved(activeQuery) && (
+      {view === 'emails' &&
+        (hotel ? (
+          <HotelFilters
+            filters={QUICK_FILTERS}
+            saved={savedSearches}
+            activeQuery={activeQuery}
+            activeFilter={activeFilter}
+            defaultQuery={DEFAULT_QUERY}
+            isSaved={isSaved}
+            onFilter={(query) => { setSearchQuery(''); runQuery(query); }}
+            onSaved={runSavedSearch}
+            onRemoveSaved={removeSavedSearch}
+            onSave={() => setSavingSearch(activeQuery)}
+            onClear={clearSearch}
+          />
+        ) : (
+            <div className="mb-4 flex flex-wrap items-center gap-1.5">
+              <Filter size={14} className="text-subtle" aria-hidden />
+              {QUICK_FILTERS.map(({ id, label, query }) => (
                 <button
-                  onClick={() => setSavingSearch(activeQuery)}
-                  aria-label="Enregistrer cette recherche"
-                  title="Enregistrer cette recherche"
-                  className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100"
+                  key={id}
+                  onClick={() => { setSearchQuery(''); runQuery(query); }}
+                  aria-pressed={activeQuery === query}
+                  className={cn(
+                    'chip transition-colors',
+                    activeQuery === query
+                      ? 'bg-brand-fill text-white'
+                      : 'bg-ink-100 text-ink-700 hover:bg-ink-200'
+                  )}
                 >
-                  <Star size={12} />
+                  {label}
                 </button>
+              ))}
+              {/* Les recherches de l'utilisateur, à la suite des filtres intégrés :
+                  ce sont les mêmes objets pour qui les utilise, une requête à un
+                  clic. Seul le nom vient de lui. */}
+              {savedSearches.map((s) => (
+                <span
+                  key={s.id}
+                  className={cn(
+                    'chip group transition-colors',
+                    activeQuery === s.query ? 'bg-brand-fill text-white' : 'bg-brand-50 text-brand-700 hover:bg-brand-100'
+                  )}
+                >
+                  <button
+                    onClick={() => runSavedSearch(s)}
+                    aria-pressed={activeQuery === s.query}
+                    title={s.query}
+                    className="flex items-center gap-1.5"
+                  >
+                    <Search size={12} /> {s.name}
+                  </button>
+                  <button
+                    onClick={() => removeSavedSearch(s)}
+                    aria-label={`Supprimer la recherche « ${s.name} »`}
+                    className="ml-0.5 rounded-full p-0.5 opacity-0 transition-opacity hover:bg-brand-200 focus:opacity-100 group-hover:opacity-100"
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+
+              {!activeFilter && activeQuery !== DEFAULT_QUERY && (
+                <span className="chip bg-brand-50 text-brand-700">
+                  <Search size={12} /> {activeQuery.replace(`${DEFAULT_QUERY} `, '')}
+                  {/* Une recherche qu'on vient d'écrire ne vaut souvent d'être
+                      gardée qu'une fois qu'elle a donné le bon résultat : le bouton
+                      est donc ici, sur le filtre actif, et pas dans le champ. */}
+                  {!isSaved(activeQuery) && (
+                    <button
+                      onClick={() => setSavingSearch(activeQuery)}
+                      aria-label="Enregistrer cette recherche"
+                      title="Enregistrer cette recherche"
+                      className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100"
+                    >
+                      <Star size={12} />
+                    </button>
+                  )}
+                  <button onClick={clearSearch} aria-label="Effacer le filtre" className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100">
+                    <X size={12} />
+                  </button>
+                </span>
               )}
-              <button onClick={clearSearch} aria-label="Effacer le filtre" className="ml-0.5 rounded-full p-0.5 hover:bg-brand-100">
-                <X size={12} />
-              </button>
-            </span>
-          )}
-        </div>
-      )}
+            </div>
+        ))}
 
       {savingSearch && (
         <SaveSearchDialog
@@ -1534,76 +1570,10 @@ function Inbox() {
         </div>
       )}
 
-      {/* Suggestions panel */}
-      {visibleSuggestions.length > 0 && view === 'emails' && (
-        <div className="card mb-4 overflow-hidden animate-fade-up">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-brand-50/60 px-5 py-3">
-            <div className="flex items-center gap-2">
-              <Sparkles size={18} className="text-brand-600" />
-              <span className="font-bold text-ink-900">Suggestions IA</span>
-              <span className="chip bg-brand-100 text-brand-700">{visibleSuggestions.length}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setHighConfOnly((v) => !v)}
-                aria-pressed={highConfOnly}
-                className={cn('chip transition-colors', highConfOnly ? 'bg-positive-100 text-positive-700' : 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
-                title="N'afficher que les suggestions à haute confiance"
-              >
-                <Shield size={13} /> Haute confiance
-              </button>
-              <button onClick={handleRejectAll} className="btn-ghost btn-sm">Tout ignorer</button>
-              <button onClick={handleApplyAll} disabled={applyingAll} className="btn-primary btn-sm" title="Tout appliquer (a)">
-                {applyingAll ? <Spinner size={14} /> : <Bolt size={14} />} Tout appliquer
-              </button>
-            </div>
-          </div>
-          <ul className="divide-y divide-[rgb(var(--hairline))]">
-            {visibleSuggestions.map((suggestion) => {
-              const meta = actionMeta(suggestion.action);
-              // Identity now comes with the suggestion itself; the local list is
-              // only a fallback for an older backend.
-              const local = emails.find((e) => e.messageId === suggestion.emailId);
-              const subject = suggestion.subject || local?.subject;
-              const from = suggestion.from || local?.from;
-              return (
-                <li key={suggestion.id || suggestion._id} className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-surface-sunken sm:px-5">
-                  <ConfidenceRing value={suggestion.confidence} color={meta.ring} />
-                  <span className={cn('chip shrink-0', meta.chip)}>
-                    <meta.Icon size={13} />
-                    <span className="hidden sm:inline">
-                      {suggestion.action === 'label' ? suggestion.labelName || 'Libellé' : meta.label}
-                    </span>
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold text-ink-900">{subject || '(Sans sujet)'}</div>
-                    <div className="truncate text-xs text-muted">
-                      <span>{senderLabel(from) || 'Expéditeur inconnu'}</span>
-                      {suggestion.reasoning ? ` · ${suggestion.reasoning}` : ''}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      onClick={() => handleApplySuggestion(suggestion)}
-                      className="rounded-lg p-2 text-positive-600 transition-colors hover:bg-positive-50"
-                      aria-label={`Appliquer : ${meta.label}, ${subject || 'sans sujet'}`}
-                    >
-                      <Check size={18} />
-                    </button>
-                    <button
-                      onClick={() => handleRejectSuggestion(suggestion)}
-                      className="rounded-lg p-2 text-muted transition-colors hover:bg-ink-100"
-                      aria-label={`Ignorer la suggestion pour ${subject || 'sans sujet'}`}
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+      {/* The AI's proposals, one decision per sender rather than one row per
+          email. It used to be a flat list of every verdict, which turned eight
+          notifications from one sender into eight identical rows. */}
+      {view === 'emails' && <TriagePlan plan={plan} onOpenEmail={openSuggestedEmail} />}
 
       {/* Main content */}
       <div
@@ -1774,6 +1744,13 @@ function Inbox() {
               <EmptyState
                 Icon={Check}
                 tone="positive"
+                scene={activeQuery === DEFAULT_QUERY ? { prop: 'dnd', color: '#2F6F73' } : { prop: 'signpost', color: '#7A2E3B' }}
+                hotelTitle={activeQuery === DEFAULT_QUERY ? 'Inbox zéro. Respect.' : 'Rien sous ce filtre.'}
+                hotelDescription={
+                  activeQuery === DEFAULT_QUERY
+                    ? 'Rien à trier ici. Synchronisez pour relever le nouveau courrier.'
+                    : 'Essayez un autre filtre, ou revenez à la boîte complète.'
+                }
                 title={activeQuery === DEFAULT_QUERY ? 'Inbox Zero atteint 🎉' : 'Aucun email pour ce filtre'}
                 description={
                   activeQuery === DEFAULT_QUERY
@@ -1793,7 +1770,7 @@ function Inbox() {
                 }
               />
             ) : (
-              <ul className="divide-y divide-[rgb(var(--hairline))]">
+              <ul className={hotel ? 'hd-list' : 'divide-y divide-[rgb(var(--hairline))]'}>
                 {(triageMode
                   ? triageIds.map((id) => emails.find((e) => e.messageId === id) || { messageId: id, subject: 'Chargement...' })
                   : emails
@@ -1802,6 +1779,38 @@ function Inbox() {
                   const isActive = selectedEmail?.messageId === email.messageId;
                   const isChecked = selectedEmails.includes(email.messageId);
                   const isFocused = idx === focusedIndex;
+                  const openRow = () => {
+                    if (triageMode) {
+                      const foundIdx = triageIds.indexOf(email.messageId);
+                      if (foundIdx !== -1) setTriageIndex(foundIdx);
+                      setSelectedEmail(email);
+                    } else {
+                      setFocusedIndex(idx);
+                      setSelectedEmail(email);
+                    }
+                  };
+                  if (hotel) {
+                    return (
+                      <HotelRow
+                        key={email.messageId}
+                        email={email}
+                        name={name}
+                        rowRef={(el) => (rowRefs.current[idx] = el)}
+                        isActive={isActive}
+                        isChecked={isChecked}
+                        isFocused={isFocused}
+                        current={triageMode && isActive}
+                        suggestion={suggestionByEmail.get(email.messageId)}
+                        when={formatDate(email.receivedDate)}
+                        onToggle={() => handleSelectEmail(email)}
+                        onOpen={openRow}
+                        onArchive={triageMode ? null : () => directAction(email, 'archive')}
+                        onDelete={() => directAction(email, 'delete')}
+                        onApply={triageMode ? handleTriageApplySuggestion : handleApplySuggestion}
+                        onIgnore={plan.ignoreEmail}
+                      />
+                    );
+                  }
                   return (
                     <li
                       key={email.messageId}
@@ -1837,19 +1846,7 @@ function Inbox() {
                           <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-[rgb(var(--surface))] bg-brand-500" />
                         )}
                       </span>
-                      <button
-                        onClick={() => {
-                          if (triageMode) {
-                            const foundIdx = triageIds.indexOf(email.messageId);
-                            if (foundIdx !== -1) setTriageIndex(foundIdx);
-                            setSelectedEmail(email);
-                          } else {
-                            setFocusedIndex(idx);
-                            setSelectedEmail(email);
-                          }
-                        }}
-                        className="min-w-0 flex-1 text-left"
-                      >
+                      <button onClick={openRow} className="min-w-0 flex-1 text-left">
                         <span className="flex items-baseline justify-between gap-2">
                           <span className={cn('truncate text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
                             {name}
@@ -1940,8 +1937,8 @@ function Inbox() {
                 const prefMeta = pref ? actionMeta(pref.defaultAction) : null;
                 return (
                   <div key={sender.senderEmail} className="card flex flex-wrap items-center gap-3 p-4">
-                    <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', toneFor(sender.senderEmail))} aria-hidden>
-                      {(sender.senderName || sender.senderEmail)[0]?.toUpperCase()}
+                    <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sender.senderEmail))} aria-hidden>
+                      {avatarText(sender.senderName || sender.senderEmail)}
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmail.split('@')[0]}</div>
@@ -2011,6 +2008,7 @@ function Inbox() {
                 <EmptyState
                   Icon={BellOff}
                   tone="caution"
+                  scene={{ prop: 'dnd', color: '#7A2E3B' }}
                   title="Aucun abonnement détecté"
                   description="Synchronisez votre boîte : Mailsorter repère vos newsletters et listes de diffusion pour un désabonnement en un clic."
                 />
@@ -2032,8 +2030,8 @@ function Inbox() {
                   const busy = unsubscribing === sub.senderEmail;
                   return (
                     <div key={sub.senderEmail} className={cn('card flex flex-wrap items-center gap-3 p-4', sub.unsubscribed && 'opacity-60')}>
-                      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', toneFor(sub.senderEmail))} aria-hidden>
-                        {(sub.senderName || sub.senderEmail)[0]?.toUpperCase()}
+                      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sub.senderEmail))} aria-hidden>
+                        {avatarText(sub.senderName || sub.senderEmail)}
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmail.split('@')[0]}</div>
@@ -2143,7 +2141,7 @@ function Inbox() {
         open={showWelcome}
         onClose={dismissWelcome}
         size="lg"
-        title="Bienvenue dans Mailsorter 👋"
+        title={hotel ? 'Bienvenue dans Mailsorter' : 'Bienvenue dans Mailsorter 👋'}
         description="Votre boîte va enfin se ranger toute seule. Voici les quatre leviers."
         footer={
           <>
@@ -2157,24 +2155,34 @@ function Inbox() {
           </>
         }
       >
-        <div className="space-y-4">
-          {[
-            { Icon: Sparkles, t: 'Trier avec l’IA', d: "L'IA lit vos emails et propose une action pour chacun. Vous validez, en un clic ou tout d'un coup." },
-            { Icon: Bolt, t: 'Encoder vos évidences en règles', d: 'Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre ce qu’elles feraient avant de rien toucher.' },
-            { Icon: BellOff, t: 'Couper le robinet', d: "L'onglet Abonnements repère vos newsletters et vous désabonne, souvent en un clic." },
-            { Icon: Shield, t: 'Ne rien perdre', d: 'Chaque action est journalisée et annulable, et vos expéditeurs protégés ne sont jamais touchés.' },
-          ].map(({ Icon, t, d }, i) => (
-            <div key={i} className="flex gap-3">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-                <Icon size={18} />
-              </span>
-              <div>
-                <div className="text-sm font-bold text-ink-900">{t}</div>
-                <div className="text-sm text-muted">{d}</div>
+        {hotel ? (
+          <div className="space-y-4">
+            {WELCOME_PLAQUES.map(([n, lead, rest]) => (
+              <Plaque key={n} n={n}>
+                <strong>{lead}</strong> {rest}
+              </Plaque>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {[
+              { Icon: Sparkles, t: 'Trier avec l’IA', d: "L'IA lit vos emails et propose une action pour chacun. Vous validez, en un clic ou tout d'un coup." },
+              { Icon: Bolt, t: 'Encoder vos évidences en règles', d: 'Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre ce qu’elles feraient avant de rien toucher.' },
+              { Icon: BellOff, t: 'Couper le robinet', d: "L'onglet Abonnements repère vos newsletters et vous désabonne, souvent en un clic." },
+              { Icon: Shield, t: 'Ne rien perdre', d: 'Chaque action est journalisée et annulable, et vos expéditeurs protégés ne sont jamais touchés.' },
+            ].map(({ Icon, t, d }, i) => (
+              <div key={i} className="flex gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+                  <Icon size={18} />
+                </span>
+                <div>
+                  <div className="text-sm font-bold text-ink-900">{t}</div>
+                  <div className="text-sm text-muted">{d}</div>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </Modal>
 
       {/* Keyboard shortcuts */}

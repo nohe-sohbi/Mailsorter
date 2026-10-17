@@ -40,6 +40,20 @@ years without a fix on code that handles credentials and TLS is the larger risk.
 It also ships `imapserver/imapmemserver`, which is what lets `internal/imap` be
 tested against a real server rather than a mock.
 
+## Changing Behavior: the acceptance scenarios
+
+Nohé does not review code. He validates behavior: a change starts from short
+French sentences he agreed to, each proven by an acceptance scenario
+(`backend/internal/api/scenarios_*_test.go`, running on the harness in
+`acceptance_*_test.go`), and `make scenarios` is the proof. The scenarios are
+the definition of done: never edit one to make a change pass. If a scenario
+looks wrong, say so; never work around it.
+
+Rules for the sentences in this project:
+
+- If the change moves mail out of the inbox, one sentence covers a protected
+  sender.
+
 ## Code Quality Standards
 
 1. **Keep the decision logic pure.** Anything that decides (does this rule match,
@@ -94,12 +108,22 @@ frontend/
                          InstanceContext: what this deployment is (edition, billing, configured)
   src/styles/hotel.css   the Grand Hotel theme (UI_THEME=hotel): tokens under
                          .theme-hotel, day and night, ht- primitives, motion
+  src/styles/hotel-app.css the theme's dashboard half: the classic tokens
+                         re-pointed at the hotel palette, the shape language,
+                         and the hd- classes. Loaded on demand, never by classic
   src/ui/hotel/          the theme's drawings and bricks: HotelFacade, Door, Vault,
-                         KeyTag, ElevatorPanel, Plaque, Emblem, useHotelFonts
+                         KeyTag, ElevatorPanel, Plaque, Emblem, useHotelFonts,
+                         and HotelTheme.js (the switch: HotelThemeProvider, useHotel)
   src/components/landing/ the Grand Hotel landing's sections (hl- classes) and
                          features.js, what the landing may promise (GMAIL_ONLY)
+  src/components/hotel/  the Grand Hotel dashboard (hd- classes): the lift-panel
+                         header, floors.js, PageHead, the inbox bits, the lift doors
+  src/components/inbox/  the AI's triage plan on /inbox: TriagePlan.js (the panel
+                         and useTriagePlan, which applies, ignores, undoes and
+                         settles) and planGroups.js (pure: one group per sender
+                         and verdict, the "sure" threshold, the held order)
   src/services/api.js    every HTTP call in the app, grouped by service object
-  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak)
+  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak, avatar)
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
@@ -116,8 +140,9 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 325 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | 345 test functions, all green |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
+| Acceptance scenarios | `make scenarios` | runs `backend/scripts/scenarios.sh`: the scenarios against a throwaway MongoDB (Docker, or a downloaded `mongod` when there is no Docker), then prints the French report. CI runs it in the `scenarios` job and publishes the report as the job summary |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
 | Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
 | Frontend dev server | `make frontend` or `cd frontend && npm install && npm start` | :3000, proxies nothing, hits :8080 directly |
@@ -158,7 +183,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
-| `digest` | The 7-day recap rendered into subject + text + HTML | `Digest` |
+| `digest` | The 7-day recap rendered into subject + text + HTML, the HTML in the instance's look (classic or Grand Hotel, email-safe) | `Digest`, `Render`, `RenderStyle`, `Style*` |
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
@@ -185,7 +210,7 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (71 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (79 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `publicPrefixes` |
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
@@ -212,7 +237,7 @@ The outbound clients and primitives:
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
 | `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport` |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
-| `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail |
+| `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail, and `digestStyle()`, the UI theme as a digest style |
 | `auto_sync.go` | 30 min per-user background inbox sync |
 
 ### Request pipeline
@@ -282,7 +307,7 @@ telling them to create a Google Cloud project that edition can never use.
 | Route | Page | Purpose |
 |---|---|---|
 | `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
-| `/inbox` | `pages/Inbox.js` | The cockpit: triage, suggestions, bulk apply, keyboard shortcuts (1068 lines, the heaviest file) |
+| `/inbox` | `pages/Inbox.js` | The cockpit: triage, the AI's triage plan (`components/inbox/`), bulk apply, keyboard shortcuts (2288 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
 | `/history` | `pages/History.js` | Action ledger + undo |
@@ -334,6 +359,19 @@ not answer gets the boot-error screen instead, which is a different branch.
   `selfHosted`, `uiTheme`). Never probe the instance from a component: App and Pricing each
   called it separately and could disagree about the same instance for a few
   hundred milliseconds. Everything else is local `useState`.
+  `useHotel()` (`ui/hotel/HotelTheme.js`) is not a third store: it is a boolean
+  derived once from `uiTheme` and the `?ui=` preview, true only once the hotel
+  stylesheet has loaded. Branch on it, never on `uiTheme` directly.
+- **The AI's suggestions are a plan, one row per sender and verdict, not one per
+  email.** `components/inbox/planGroups.js` groups them and is pure;
+  `useTriagePlan` in `TriagePlan.js` does the I/O, and the Inbox holds it because
+  the `a` shortcut needs it. Three rules come with it. A `keep` verdict is not a
+  task: it has its own block and applying it moves nothing. The bulk "Ranger"
+  takes only groups whose every verdict reaches `SURE_CONFIDENCE` (0.8, also what
+  flags the reader's card "À vérifier"), and "Annuler" is offered only when
+  apply-batch answers `reversible`. And any action that takes mail out of the
+  inbox by hand must call `plan.settle(ids)`, or the plan goes on proposing to
+  archive a message that is already gone.
 - **The edition is a frontend concern too.** A `self-hosted` instance bills nobody,
   so the header drops its pricing entry and `/pricing` redirects instead of
   rendering a page with no offer. The SPA still hardcodes no provider: the connect
@@ -348,7 +386,9 @@ not answer gets the boot-error screen instead, which is a different branch.
   address and an app password, and two copies of that table would be two copies
   that drift.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
-  state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`).
+  state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`), and so
+  does whether the triage plan is folded (`mailsorter_plan_collapsed`), a per-browser
+  convenience that is allowed to reset.
 
 ### Design system
 
@@ -383,6 +423,36 @@ not answer gets the boot-error screen instead, which is a different branch.
   which keeps the hairlines thick enough at that size.
   The reference rendering is `docs/design/moodboard.html`, which loads the real
   `hotel.css`: open it before touching the theme.
+- **The dashboard wears the hotel too, in two layers, and classic stays
+  byte-for-byte what it was.** Layer one is CSS only (`styles/hotel-app.css`,
+  everything under `.ht-app`, set on `<body>` off the landing): it re-points the
+  classic tokens (`brand`, `ink`, `surface`, the status ramps) at the hotel
+  palette, day and night, and gives `.btn*`, `.card`, `.input`, `.chip` and
+  `.skeleton` the hotel's shape (square, 1.5px ink, solid offset shadow, no blur,
+  no gradient). That alone restyles every screen. Layer two is what the hotel
+  says rather than wears: JSX behind `useHotel()` (the lift-panel header, floor
+  plaques via `components/hotel/PageHead`, the counters board, luggage-tag
+  filters, proposals on the rows, the history as a register, drawings on empty
+  states via `EmptyState`'s `scene` / `hotelTitle` / `hotelDescription`). The
+  triage plan is the same `TriagePlan` in both themes, wearing the skin and the
+  hotel avatars: it stays the one place to decide by sender, and a row's
+  proposal goes through the same handlers (single apply, `plan.ignoreEmail`),
+  never `keep`, which the plan no longer treats as a task. A hotel
+  variant is always a branch that leaves the classic markup untouched: the
+  classic theme was checked pixel-identical (68 screenshots, day and night,
+  1440 and 390) after this work, keep it that way. Copy in the hotel branches
+  follows the moodboard's tone (the action's own verb, Ignorer, Annuler, as the
+  triage plan says them; the humour in titles and empty states only), ASCII
+  punctuation.
+- **`hotel-app.css` loads after Tailwind, so it beats the utilities.** An `hd-`
+  class that sets `display` overrides `hidden` / `lg:flex` on the same element,
+  which is how the header once showed its phone-only floor indicator on a
+  desktop. Set an `hd-` element's display in `hotel-app.css`, with its own media
+  query, never with a Tailwind display utility.
+- **Bodoni figures run at a low optical size in the dashboard.** `opsz 28` keeps a
+  4 and a hyphen readable for words set large (`.hd-title`), not for figures on a
+  1x screen: "47" drew as "/17". `.font-display`, the counters and every brass
+  button number are pinned at `opsz` 9 to 12.
 
 ## Key Conventions
 
@@ -425,6 +495,14 @@ as a side effect of another change.
   mount the *real* router (`newRoutedTestServer` in `routes_integration_test.go`) and
   point Mongo at a dead address on purpose so the degraded paths are exercised for real.
 - A bug fix ships with the test that fails without it. Every B-item in `BACKLOG.md` did.
+- Acceptance scenarios (build tag `acceptance`) are the one place the `api` package
+  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), and
+  the only tests that say which messages a handler actually moved. One scenario is
+  one French sentence (`phrase`) Nohé can answer yes or no to: `observed` until he
+  answers, `validated` on a yes, `rejected` on a no. A rejected scenario still pins
+  what the app does today, and the report lists it under "À corriger" until the
+  change that fixes it rewrites it in place. They FAIL without `MAILSORTER_TEST_MONGO_URI`
+  rather than skip. `go test ./...` without the tag does not see them.
 
 ### React
 
@@ -461,6 +539,10 @@ as a side effect of another change.
   `snooze`, `config`, `models`, `env`, `header`, `backlog`, `roadmap`. The scope is
   optional and often omitted on a cross-cutting change.
 - Show the diff and the commit message before committing. Do not push or deploy unasked.
+- Exception, for a behavior change run through the acceptance scenarios: the
+  commit that locks the scenarios and the commit that makes them pass are made
+  locally on the feature branch without asking, because the first one is what
+  the check diffs against. Pushing and merging still wait for Nohé.
 
 ## Configuration
 
@@ -477,7 +559,7 @@ as a side effect of another change.
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` | optional | empty key keeps the waitlist CTA instead of checkout |
 | `ALLOWED_ORIGINS` | optional | comma separated. Empty falls back to localhost:3000, localhost, mailsorter.sohbi.dev. No rebuild needed |
 | `EDITION` | yes (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers: the Gmail API and Proton exist only in `self-hosted` |
-| `UI_THEME` | optional (defaults to `hotel`) | `hotel` or `classic`: which landing `/` renders, read at runtime from `GET /api/config/status`, so switching is a backend restart, not a rebuild. Boot **refuses** anything else. `?ui=hotel\|classic` previews the other one for one tab |
+| `UI_THEME` | optional (defaults to `hotel`) | `hotel` or `classic`: the look of the landing, of every dashboard screen and of the daily digest email, read at runtime from `GET /api/config/status`, so switching is a backend restart, not a rebuild. Boot **refuses** anything else. `?ui=hotel\|classic` previews the other one for one tab (the digest, sent by the server, follows `UI_THEME` only) |
 | `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest default 07:00 UTC |
 | `REACT_APP_API_URL`, `REACT_APP_UMAMI_WEBSITE_ID` | build args | **inlined into the static bundle at image build time.** Leave `REACT_APP_API_URL` unset so it defaults to `/` and the SPA calls the API same-origin through the nginx proxy |
 
@@ -690,6 +772,13 @@ Do not duplicate these into this file. Point at them.
   app either. (`GET /api/stats/digest` and `GET /api/labels` used to be in this list;
   both are now wired, to the digest preview in Réglages and to the rules/reader label
   pickers.)
+- **Under the hotel, the digest preview in Réglages is an iframe, not `.email-body`.**
+  The hotel recap is laid out with tables, as email clients need, and
+  `.email-body` turns tables into scrolling blocks so a newsletter cannot widen
+  the reader. Rendered there, the preview stopped being "exactly what you will
+  receive". `DigestFrame` (`pages/Settings.js`) gives it its own document:
+  sanitised, `sandbox="allow-same-origin"` without `allow-scripts`, so nothing in
+  it runs and the parent can still read its height. Classic keeps `.email-body`.
 - **Size and color modifiers in `index.css` must come AFTER the color variants.**
   Every `.btn-*` variant does `@apply btn`, which copies `.btn`'s height and padding
   into itself. At equal specificity the last rule wins, so `.btn-sm` / `.btn-icon`

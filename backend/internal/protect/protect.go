@@ -6,6 +6,11 @@
 // The whole package is pure (no I/O) so the guard logic can be tested
 // exhaustively. Callers load the user's protected values once and ask Allowed
 // before performing any destructive Gmail mutation.
+//
+// It also says which mails a sweep that names a sender by its ADDRESS may reach
+// (SameAddress). That lives here because it is the same question the shield
+// answers for an address entry, read through the same NormalizeAddress: the
+// sweep and the guard in front of it cannot disagree about who the sender is.
 package protect
 
 import "strings"
@@ -136,6 +141,25 @@ func Match(from string, entries []string) bool {
 		}
 	}
 	return false
+}
+
+// SameAddress reports whether an email whose raw From header is `from` was sent
+// from `addr` (a bare address, or a From header of its own). Both sides are
+// reduced to the bare, lower-cased address and compared whole, whatever display
+// name either carries.
+//
+// Whole, never as a substring: "info@boutique.com" is inside
+// "facturation-info@boutique.com" and "info@boutique.community", which are
+// other senders, and a sweep that matched on containment archived or trashed
+// their mail too. An addr with no usable address (empty, or no local part or
+// domain) matches nothing, because an empty pattern contains every sender.
+func SameAddress(from, addr string) bool {
+	want := NormalizeAddress(addr)
+	at := strings.LastIndex(want, "@")
+	if at <= 0 || at == len(want)-1 {
+		return false
+	}
+	return NormalizeAddress(from) == want
 }
 
 // Allowed reports whether action may be applied to an email from `from`, given

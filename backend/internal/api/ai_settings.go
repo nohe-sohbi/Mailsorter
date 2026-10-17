@@ -3,26 +3,44 @@ package api
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/egress"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// isValidBaseURL reports whether rawURL is empty or a valid HTTP/HTTPS URL.
+// Maximum input bounds to prevent resource exhaustion / DoS on custom AI provider settings.
+const (
+	maxAISettingAPIKeyLength  = 1024
+	maxAISettingModelLength   = 256
+	maxAISettingBaseURLLength = 2048
+)
+
+func validateAISettingsInput(apiKey, model, baseURL string) string {
+	if len(apiKey) > maxAISettingAPIKeyLength {
+		return "Clé API trop longue"
+	}
+	if len(model) > maxAISettingModelLength {
+		return "Nom de modèle trop long"
+	}
+	if len(baseURL) > maxAISettingBaseURLLength {
+		return "URL de base trop longue"
+	}
+	return ""
+}
+
+// isValidBaseURL reports whether rawURL is empty or a valid public HTTPS URL.
+// It uses egress.Parse to prevent SSRF targeting internal services or metadata endpoints.
 func isValidBaseURL(rawURL string) bool {
 	if rawURL == "" {
 		return true
 	}
-	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return false
-	}
-	return true
+	_, err := egress.Parse(rawURL)
+	return err == nil
 }
 
 // GetAIProviders returns the catalog of known AI providers with their
@@ -105,7 +123,12 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !validProvider {
-		writeError(w, http.StatusBadRequest, "Unknown provider: "+req.Provider)
+		writeError(w, http.StatusBadRequest, "Unknown provider")
+		return
+	}
+
+	if errMsg := validateAISettingsInput(req.APIKey, req.Model, req.BaseURL); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 
@@ -169,6 +192,24 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate provider name
+	validProvider := false
+	for _, p := range ai.KnownProviders {
+		if p.Name == req.Provider {
+			validProvider = true
+			break
+		}
+	}
+	if !validProvider {
+		writeError(w, http.StatusBadRequest, "Unknown provider")
+		return
+	}
+
+	if errMsg := validateAISettingsInput(req.APIKey, req.Model, req.BaseURL); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+
 	if !isValidBaseURL(req.BaseURL) {
 		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
 		return
@@ -215,6 +256,9 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "no such host") {
 			writeError(w, http.StatusBadRequest, "Impossible de joindre le serveur — vérifiez l'URL")
 			return
+		}
+		if req.APIKey != "" {
+			errMsg = strings.ReplaceAll(errMsg, req.APIKey, "[REDACTED]")
 		}
 		writeError(w, http.StatusBadRequest, "Erreur du provider: "+errMsg)
 		return

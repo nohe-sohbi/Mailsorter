@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"strings"
@@ -25,6 +26,24 @@ type Service struct {
 	mu     sync.RWMutex
 	// retry resilience knobs, applied to every Gmail API call (see retry.go).
 	retry retryConfig
+	// endpoint replaces Google's Gmail API root when set. Production never sets
+	// it; see WithEndpoint for the one caller that does.
+	endpoint string
+}
+
+// WithEndpoint points every client this service builds at another Gmail API
+// root, and returns the service.
+//
+// It exists for the acceptance scenarios (internal/api, build tag
+// "acceptance"). They serve a fake Gmail from an httptest server so a scenario
+// can check which messages a handler actually moved, which no test could do
+// while the only Gmail reachable was Google's. main.go never calls this, so a
+// real deployment keeps talking to Google and nothing else.
+func (s *Service) WithEndpoint(root string) *Service {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.endpoint = root
+	return s
 }
 
 func NewService(clientID, clientSecret, redirectURL string) *Service {
@@ -107,7 +126,11 @@ func (s *Service) GetClient(token *oauth2.Token) *gmail.Service {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	client := s.config.Client(context.Background(), token)
-	srv, _ := gmail.NewService(context.Background(), option.WithHTTPClient(client))
+	opts := []option.ClientOption{option.WithHTTPClient(client)}
+	if s.endpoint != "" {
+		opts = append(opts, option.WithEndpoint(s.endpoint))
+	}
+	srv, _ := gmail.NewService(context.Background(), opts...)
 	return srv
 }
 
@@ -520,6 +543,21 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 	}
 	date = parseDateHeader(dateHeader, message.InternalDate)
 	return
+}
+
+// Snippet returns the message's preview as plain text.
+//
+// Gmail hands the snippet over escaped for HTML, so an apostrophe arrives as
+// "&#39;". Everything downstream treats it as text: the SPA rendered
+// "l&#39;avancement" verbatim in the list, a rule on the snippet field could
+// never match a phrase with an apostrophe in it (most French sentences), and
+// the model's prompt carried the entities as noise. The IMAP transport already
+// builds its snippet from the decoded body, so this also makes the two agree.
+func Snippet(message *gmail.Message) string {
+	if message == nil {
+		return ""
+	}
+	return html.UnescapeString(message.Snippet)
 }
 
 func GetEmailBody(message *gmail.Message) string {

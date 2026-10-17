@@ -8,6 +8,10 @@ import Spinner from '../ui/Spinner';
 import { Shield, Trash, Alert, Bolt, Settings as SettingsIcon, Check } from '../ui/icons';
 
 import { actionMeta } from '../ui/actions';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import Vault from '../ui/hotel/Vault';
+import PageHead from '../components/hotel/PageHead';
+import { initials } from '../components/hotel/avatar';
 
 // Go zero-value dates come back as year 1, which would render as "1 janvier 1".
 // Treat anything before Mailsorter existed as "unknown" rather than printing it.
@@ -24,6 +28,7 @@ function formatJoinDate(iso) {
 // These belong to the account, which is why they live here rather than in the
 // preferences screen.
 function PrivacyData() {
+  const hotel = useHotel();
   const toast = useToast();
   const [exporting, setExporting] = useState(false);
   const [confirm, setConfirm] = useState('');
@@ -73,10 +78,20 @@ function PrivacyData() {
         </span>
         <h2 className="text-lg font-bold text-ink-900">Données &amp; confidentialité</h2>
       </div>
-      <p className="mb-5 text-sm text-ink-500">
-        Vos emails ne quittent jamais votre contrôle. Récupérez tout ce que Mailsorter stocke à votre sujet,
-        ou effacez définitivement votre compte.
-      </p>
+      {hotel ? (
+        <div className="mb-5 flex items-center gap-5">
+          <p className="flex-1 text-sm text-ink-500">
+            Vos accès sont chiffrés, et ce que Mailsorter garde vous appartient. Récupérez-le, ou effacez
+            définitivement votre compte.
+          </p>
+          <Vault className="hidden h-24 w-24 shrink-0 sm:block" />
+        </div>
+      ) : (
+        <p className="mb-5 text-sm text-ink-500">
+          Vos emails ne quittent jamais votre contrôle. Récupérez tout ce que Mailsorter stocke à votre sujet,
+          ou effacez définitivement votre compte.
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-3">
         <button onClick={exportData} disabled={exporting} className="btn-secondary">
@@ -120,6 +135,7 @@ function PrivacyData() {
 // clicking your own address in the header should have opened all along.
 function Account() {
   const navigate = useNavigate();
+  const hotel = useHotel();
   const [profile, setProfile] = useState(null);
   const [usage, setUsage] = useState(null);
   const [activity, setActivity] = useState(null);
@@ -164,17 +180,33 @@ function Account() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
-      <div className="mb-8 flex flex-wrap items-center gap-4">
-        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-fill text-xl font-bold text-white">
-          {initial}
-        </span>
-        <div className="min-w-0">
-          <h1 className="truncate font-display text-2xl font-extrabold tracking-tight text-ink-900">{email}</h1>
-          <p className="text-sm text-ink-500">
-            {joinedOn ? `Membre depuis le ${joinedOn}.` : 'Compte Mailsorter.'}
-          </p>
+      {hotel ? (
+        <PageHead
+          badge={
+            <span className="hd-floor is-av" aria-hidden="true">
+              {initials(email.split('@')[0].replace(/[._-]+/g, ' '))}
+            </span>
+          }
+          title="Votre compte"
+          sub={
+            <>
+              <b>{email}</b>. {joinedOn ? `Membre depuis le ${joinedOn}.` : ''}
+            </>
+          }
+        />
+      ) : (
+        <div className="mb-8 flex flex-wrap items-center gap-4">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-fill text-xl font-bold text-white">
+            {initial}
+          </span>
+          <div className="min-w-0">
+            <h1 className="truncate font-display text-2xl font-extrabold tracking-tight text-ink-900">{email}</h1>
+            <p className="text-sm text-ink-500">
+              {joinedOn ? `Membre depuis le ${joinedOn}.` : 'Compte Mailsorter.'}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="card animate-fade-up p-7">
         <div className="mb-3 flex items-center justify-between">
@@ -196,15 +228,21 @@ function Account() {
             {isPro ? 'emails analysés ce mois · illimité' : `/ ${usage?.limit ?? 200} emails analysés ce mois`}
           </span>
         </div>
-        <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
-          <div
-            className={cn(
-              'h-full rounded-full transition-all duration-500',
-              isPro ? 'bg-positive-fill' : usedPct >= 100 ? 'bg-danger-fill' : 'bg-brand-fill'
-            )}
-            style={{ width: isPro ? '100%' : `${usedPct}%` }}
-          />
-        </div>
+        {hotel ? (
+          <span className={cn('hd-meter', isPro ? 'is-teal' : usedPct >= 90 && 'is-plum')} style={{ height: 12 }} aria-hidden="true">
+            <i style={{ width: isPro ? '100%' : `${usedPct}%` }} />
+          </span>
+        ) : (
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all duration-500',
+                isPro ? 'bg-positive-fill' : usedPct >= 100 ? 'bg-danger-fill' : 'bg-brand-fill'
+              )}
+              style={{ width: isPro ? '100%' : `${usedPct}%` }}
+            />
+          </div>
+        )}
         <p className="mt-3 text-xs text-muted">
           {usage?.period ? `Période ${usage.period}. ` : ''}
           Le cache et l'auto-pilote ne consomment pas votre quota.
@@ -232,7 +270,7 @@ function Account() {
           {(activity?.days || []).map((d) => (
             <div key={d.date} className="flex flex-1 flex-col items-center gap-1.5">
               <div
-                className="w-full rounded-t-md bg-brand-500/80 transition-all"
+                className={hotel ? 'hd-weekbar w-full transition-all' : 'w-full rounded-t-md bg-brand-500/80 transition-all'}
                 style={{ height: `${Math.max(4, (d.count / maxDay) * 72)}px` }}
                 title={`${d.count} le ${d.date}`}
               />

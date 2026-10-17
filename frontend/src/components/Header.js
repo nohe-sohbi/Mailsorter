@@ -3,6 +3,9 @@ import { NavLink, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useInstance } from '../contexts/InstanceContext';
 import { cn } from '../ui/cn';
 import { useTheme } from '../ui/theme';
+import { useHotel } from '../ui/hotel/HotelTheme';
+import HotelAppBar from './hotel/HotelAppBar';
+import { initials as initialsOf } from './hotel/avatar';
 import { Logo, Inbox, Settings, LogOut, Bolt, Tag, Clock, History, Menu, X, Sun, Moon, Monitor } from '../ui/icons';
 
 // Same set Modal uses to confine Tab.
@@ -47,6 +50,7 @@ function ThemeButton({ className }) {
 
 function Header() {
   const { selfHosted } = useInstance();
+  const hotel = useHotel();
   const navigate = useNavigate();
   const location = useLocation();
   const userEmail = localStorage.getItem('userEmail');
@@ -119,6 +123,24 @@ function Header() {
   }
 
   const initial = (userEmail[0] || '?').toUpperCase();
+
+  // Same state, same drawer behaviour, another drawing: the lift panel.
+  if (hotel) {
+    return (
+      <HotelAppBar
+        pathname={location.pathname}
+        selfHosted={selfHosted}
+        userEmail={userEmail}
+        initials={initialsOf(userEmail.split('@')[0].replace(/[._-]+/g, ' '))}
+        themeButton={<ThemeButton />}
+        onLogout={handleLogout}
+        mobileOpen={mobileOpen}
+        setMobileOpen={setMobileOpen}
+        drawerRef={drawerRef}
+        toggleRef={toggleRef}
+      />
+    );
+  }
 
   // Real anchors, not buttons: middle-click, ctrl-click, "open in new tab" and
   // the browser's own affordances all come for free, and assistive technology

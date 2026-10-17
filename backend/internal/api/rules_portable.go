@@ -38,6 +38,11 @@ func (h *Handler) ReorderRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Aucun ordre fourni")
 		return
 	}
+	// Enforce upper bound to prevent resource exhaustion / CPU DoS with oversized arrays.
+	if len(req.IDs) > rules.MaxImportRules {
+		writeError(w, http.StatusBadRequest, "Trop de règles fournies pour le réordonnancement")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()

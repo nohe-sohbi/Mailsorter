@@ -63,6 +63,12 @@ func (h *Handler) SignInWithMailbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Adresse et mot de passe requis.")
 		return
 	}
+	// Enforce an upper bound on password length to prevent CPU/memory exhaustion (DoS)
+	// during AES encryption and network transport operations.
+	if len(req.Password) > 1024 {
+		writeError(w, http.StatusBadRequest, "Mot de passe trop long.")
+		return
+	}
 
 	// Keyed on the address as well as the caller, so neither rotating addresses
 	// from one machine nor hammering one address from many gets a free pass.
