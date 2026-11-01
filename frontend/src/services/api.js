@@ -163,6 +163,9 @@ export const aiService = {
     apiClient.post('/api/ai/apply-bulk', { senderEmail, action, labelName }),
   getSuggestions: (status = 'pending') => apiClient.get(`/api/ai/suggestions?status=${status}`),
   rejectSuggestion: (id) => apiClient.post(`/api/ai/suggestions/${id}/reject`),
+  // One request for a whole group: one POST per suggestion ran past the rate
+  // limiter's burst, and the refused ones came back on the next refresh.
+  rejectBatch: (suggestionIds) => apiClient.post('/api/ai/reject-batch', { suggestionIds }),
   getProviders: () => apiClient.get('/api/ai/providers'),
   getSettings: () => apiClient.get('/api/ai/settings'),
   updateSettings: (data) => apiClient.put('/api/ai/settings', data),

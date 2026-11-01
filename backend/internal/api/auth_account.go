@@ -46,9 +46,14 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap password length to 128 characters to prevent CPU exhaustion (DoS) during bcrypt hashing.
-	if len(password) < 8 || len(password) > 128 {
-		writeError(w, http.StatusBadRequest, "Le mot de passe doit comporter entre 8 et 128 caractères.")
+	if len(password) < 8 {
+		writeError(w, http.StatusBadRequest, "Le mot de passe doit comporter au moins 8 caractères.")
+		return
+	}
+	// bcrypt truncates input at 72 bytes. Enforce a maximum byte length to prevent
+	// CPU exhaustion DoS attacks and silent password truncation.
+	if len(password) > 72 {
+		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
 		return
 	}
 
@@ -112,10 +117,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Adresse email et mot de passe requis.")
 		return
 	}
-
-	// Reject overly long passwords immediately to avoid unnecessary CPU load in bcrypt comparisons.
-	if len(password) > 128 {
-		writeError(w, http.StatusUnauthorized, "Identifiants incorrects.")
+	if len(password) > 72 {
+		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
 		return
 	}
 

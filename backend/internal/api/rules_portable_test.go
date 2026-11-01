@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -126,5 +127,25 @@ func TestReorderRulesRejectsAnEmptyOrder(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("reorder with no ids = %d, want 400", rec.Code)
+	}
+}
+
+func TestReorderRulesRejectsAnOversizedOrder(t *testing.T) {
+	h := newTestHandler(t)
+
+	ids := make([]string, rules.MaxImportRules+1)
+	for i := range ids {
+		ids[i] = "rule-id"
+	}
+	body, _ := json.Marshal(map[string]interface{}{"ids": ids})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/rules/reorder", bytes.NewReader(body))
+	req.Header.Set("X-User-Email", "user@example.com")
+	rec := httptest.NewRecorder()
+
+	h.ReorderRules(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("reorder with oversized ids = %d, want 400", rec.Code)
 	}
 }

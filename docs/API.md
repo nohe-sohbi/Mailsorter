@@ -649,7 +649,10 @@ ranked by volume.
 Unsubscribes from the sender of a given message. When the sender supports RFC
 8058 one-click, the POST is performed server-side (`done: true`); otherwise the
 `url` / `mailto` is returned for the client to open. Optionally archives the
-sender's backlog in the same call.
+sender's backlog in the same call: every stored mail from the same address,
+whatever its display name, and only that address (a longer address that contains
+it is another sender). A protected sender is still recorded as unsubscribed, but
+its mail stays in the inbox and is not counted in `archived`.
 
 The server-side POST is the one request in the API whose address is chosen by a
 stranger: it comes from the `List-Unsubscribe` header of a received email. It is
@@ -860,6 +863,11 @@ Renders the same 7-day recap into a ready-to-send email digest (subject +
 plain-text body + HTML body). This is the content payload also used by the daily
 digest scheduler (see Account Settings). Delivery uses the `gmail.send` scope; a
 background loop emails opted-in users once a day at their chosen UTC hour.
+
+The HTML body is drawn in the instance's look (`UI_THEME`): the plain recap
+under `classic`, the Grand Hotel one under `hotel` (email-safe tables and
+inline styles, web-safe font fallbacks). `subject` and `text` are the same in
+both. This route returns exactly what the scheduler sends, theme included.
 
 ```json
 {
@@ -1218,19 +1226,27 @@ server-side).
 
 **Response:** `200 OK`
 ```json
-{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1 }
+{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1, "reversible": true }
 ```
+
+`reversible` says whether `POST /api/emails/batch-undo` can reverse what this
+batch moved, so the client offers "Annuler" only when it would work. It is true
+on the Gmail API and false over IMAP, where batch-undo is not ported yet. A
+`keep` suggestion moves nothing and has nothing to undo either way.
 
 ### Apply in bulk for a sender
 
 #### POST /api/ai/apply-bulk
 
 Apply one action to every stored email from a sender ("learn once, clean up
-everything").
+everything"). `senderEmail` is the `senderEmail` of a `GET /api/senders` row, a
+stored From header, and is matched exactly: the action reaches the mails that row
+counts and nothing else, never a From that merely contains it. A protected
+sender's mail is skipped for `archive`, `trash` and `delete`.
 
 **Request body:**
 ```json
-{ "senderEmail": "news@acme.com", "action": "archive", "labelName": "" }
+{ "senderEmail": "Acme News <news@acme.com>", "action": "archive", "labelName": "" }
 ```
 
 **Response:** `200 OK`
@@ -1258,6 +1274,29 @@ omitted when the message is no longer in the stored mailbox.
 Reject a pending suggestion. Marks it `rejected`; nothing changes in Gmail.
 
 **Response:** `204 No Content`
+
+### Reject many suggestions
+
+#### POST /api/ai/reject-batch
+
+Reject several pending suggestions in one request: a whole sender group, or the
+whole panel. One request whatever the count, which is the point: one POST per
+suggestion ran past the rate limiter's burst of 40, and the rejections it
+refused came back on the next refresh. Nothing changes in the mailbox.
+
+**Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
+
+**Response:** `200 OK`
+```json
+{ "rejected": 3, "total": 3 }
+```
+
+Only `pending` suggestions move: an id that is already applied or rejected, or
+that belongs to another user, is counted in `total` and not in `rejected`.
+
+**Errors:** `400` for an empty list, more than 200 ids, or any id that is not a
+valid ObjectID (checked before anything is written, so a bad id rejects
+nothing). `500` when the datastore write fails.
 
 ---
 
@@ -1669,8 +1708,10 @@ It decides which mailbox providers exist (see `GET /api/providers`), hence
 `mailboxSignIn`, and whether there is anything to bill at all.
 
 `uiTheme` is `hotel` or `classic`, from the `UI_THEME` environment variable
-(default `hotel`). The SPA renders the Grand Hotel landing or the classic one on
-`/`, chosen at runtime: switching needs a backend restart, never a rebuild. A
+(default `hotel`). The SPA wears the Grand Hotel theme or the classic one, on
+the landing and on every screen of the dashboard, chosen at runtime: switching
+needs a backend restart, never a rebuild. The same variable decides the look of
+the daily digest email (see `GET /api/stats/digest`). A
 visitor can preview the other one for their tab with `?ui=hotel` or
 `?ui=classic` (`?ui=default` clears it).
 

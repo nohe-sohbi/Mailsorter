@@ -16,15 +16,29 @@ import (
 // so the stored rows stay meaningful if a second tier ever opens.
 const waitlistPlan = PlanPro
 
+// Maximum input bounds to prevent resource exhaustion / DoS on this public route.
+const (
+	maxWaitlistEmailLength  = 254 // RFC 5321 maximum email address length
+	maxWaitlistSourceLength = 64  // Upper bound for surface source names
+)
+
 // normalizeWaitlistEmail validates an address and returns it in the form we
 // store: trimmed and lowercased, so "Nohe@Example.com " and "nohe@example.com"
-// are one signup rather than two. Returns "" when the address is not usable.
+// are one signup rather than two. Returns "" when the address is not usable or
+// exceeds RFC 5321 length limits.
 func normalizeWaitlistEmail(raw string) string {
-	addr, err := mail.ParseAddress(strings.TrimSpace(raw))
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) == 0 || len(trimmed) > maxWaitlistEmailLength {
+		return ""
+	}
+	addr, err := mail.ParseAddress(trimmed)
 	if err != nil {
 		return ""
 	}
 	// ParseAddress accepts `Name <a@b.c>`; keep only the address itself.
+	if len(addr.Address) > maxWaitlistEmailLength {
+		return ""
+	}
 	at := strings.LastIndex(addr.Address, "@")
 	if at <= 0 || at == len(addr.Address)-1 {
 		return ""
@@ -54,6 +68,11 @@ func (h *Handler) JoinWaitlist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	source := strings.TrimSpace(in.Source)
+	// Enforce maximum length on source string to prevent resource exhaustion / DoS.
+	if len(source) > maxWaitlistSourceLength {
+		writeError(w, http.StatusBadRequest, "Source trop longue")
+		return
+	}
 	if source == "" {
 		source = "pricing"
 	}

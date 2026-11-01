@@ -47,6 +47,15 @@ var temporalOperators = map[string]bool{
 	OpOlderThan: true, OpNewerThan: true,
 }
 
+// Resource bounds for DoS prevention.
+const (
+	MaxRuleNameLen       = 100
+	MaxConditionsPerRule = 20
+	MaxActionsPerRule    = 10
+	MaxLabelNameLen      = 100
+	MaxConditionValueLen = 500
+)
+
 // Supported actions.
 const (
 	ActionArchive  = "archive"
@@ -310,20 +319,34 @@ func Validate(rule models.SortingRule) error {
 	if strings.TrimSpace(rule.Name) == "" {
 		return fmt.Errorf("le nom de la règle est requis")
 	}
+	if len(rule.Name) > MaxRuleNameLen {
+		return fmt.Errorf("le nom de la règle ne peut pas dépasser %d caractères", MaxRuleNameLen)
+	}
 	acts := EffectiveActions(rule)
 	if len(acts) == 0 {
 		return fmt.Errorf("au moins une action est requise")
+	}
+	if len(acts) > MaxActionsPerRule {
+		return fmt.Errorf("une règle ne peut pas comporter plus de %d actions", MaxActionsPerRule)
 	}
 	for _, a := range acts {
 		if !validActions[a.Type] {
 			return fmt.Errorf("action invalide : %q", a.Type)
 		}
-		if a.Type == ActionLabel && strings.TrimSpace(a.LabelName) == "" {
-			return fmt.Errorf("un libellé est requis pour l'action \"label\"")
+		if a.Type == ActionLabel {
+			if strings.TrimSpace(a.LabelName) == "" {
+				return fmt.Errorf("un libellé est requis pour l'action \"label\"")
+			}
+			if len(a.LabelName) > MaxLabelNameLen {
+				return fmt.Errorf("le nom du libellé ne peut pas dépasser %d caractères", MaxLabelNameLen)
+			}
 		}
 	}
 	if len(rule.Conditions) == 0 {
 		return fmt.Errorf("au moins une condition est requise")
+	}
+	if len(rule.Conditions) > MaxConditionsPerRule {
+		return fmt.Errorf("une règle ne peut pas comporter plus de %d conditions", MaxConditionsPerRule)
 	}
 	for i, c := range rule.Conditions {
 		if !validFields[strings.ToLower(c.Field)] {
@@ -334,6 +357,9 @@ func Validate(rule models.SortingRule) error {
 		}
 		if strings.TrimSpace(c.Value) == "" {
 			return fmt.Errorf("condition %d : la valeur est requise", i+1)
+		}
+		if len(c.Value) > MaxConditionValueLen {
+			return fmt.Errorf("condition %d : la valeur ne peut pas dépasser %d caractères", i+1, MaxConditionValueLen)
 		}
 		if c.Operator == OpRegex {
 			if _, err := regexp.Compile(c.Value); err != nil {

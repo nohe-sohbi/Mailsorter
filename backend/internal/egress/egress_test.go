@@ -126,6 +126,8 @@ func TestParseRefusesAPrivateIPLiteral(t *testing.T) {
 		"https://127.0.0.1/unsub",
 		"https://127.0.0.1:8080/api/metrics",
 		"https://[::1]/unsub",
+		"https://localhost/unsub",
+		"https://service.local/unsub",
 		"https://169.254.169.254/latest/meta-data/",
 		"https://10.0.0.5:27017/",
 	} {

@@ -236,6 +236,50 @@ func TestEffectiveActions(t *testing.T) {
 	}
 }
 
+func TestValidateUpperBounds(t *testing.T) {
+	longName := make([]byte, MaxRuleNameLen+1)
+	for i := range longName {
+		longName[i] = 'a'
+	}
+	longVal := make([]byte, MaxConditionValueLen+1)
+	for i := range longVal {
+		longVal[i] = 'v'
+	}
+	longLabel := make([]byte, MaxLabelNameLen+1)
+	for i := range longLabel {
+		longLabel[i] = 'l'
+	}
+
+	tooManyConds := make([]models.RuleCondition, MaxConditionsPerRule+1)
+	for i := range tooManyConds {
+		tooManyConds[i] = cond(FieldFrom, OpContains, "a")
+	}
+
+	tooManyActs := make([]models.RuleAction, MaxActionsPerRule+1)
+	for i := range tooManyActs {
+		tooManyActs[i] = act(ActionArchive, "")
+	}
+
+	boundsTests := []struct {
+		name string
+		rule models.SortingRule
+	}{
+		{"name too long", models.SortingRule{Name: string(longName), Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "a")}}},
+		{"value too long", models.SortingRule{Name: "valid", Action: ActionArchive, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, string(longVal))}}},
+		{"label too long", models.SortingRule{Name: "valid", Actions: []models.RuleAction{act(ActionLabel, string(longLabel))}, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "a")}}},
+		{"too many conditions", models.SortingRule{Name: "valid", Action: ActionArchive, Conditions: tooManyConds}},
+		{"too many actions", models.SortingRule{Name: "valid", Actions: tooManyActs, Conditions: []models.RuleCondition{cond(FieldFrom, OpContains, "a")}}},
+	}
+
+	for _, tc := range boundsTests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := Validate(tc.rule); err == nil {
+				t.Errorf("expected validation error for %s, got nil", tc.name)
+			}
+		})
+	}
+}
+
 func TestValidateMultiAction(t *testing.T) {
 	base := []models.RuleCondition{cond(FieldFrom, OpContains, "acme")}
 

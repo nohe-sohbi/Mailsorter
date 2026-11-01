@@ -1,4 +1,4 @@
-.PHONY: help build up down logs clean test backend frontend
+.PHONY: help build up down logs clean test scenarios backend frontend
 
 help:
 	@echo "Mailsorter - Makefile commands"
@@ -9,6 +9,7 @@ help:
 	@echo "  make logs      - Show logs from all services"
 	@echo "  make clean     - Remove all containers and volumes"
 	@echo "  make test      - Run tests"
+	@echo "  make scenarios - Prove what the app does, against a real MongoDB (French report)"
 	@echo "  make backend   - Build and run backend locally"
 	@echo "  make frontend  - Build and run frontend locally"
 
@@ -43,6 +44,13 @@ test:
 	@echo "Running backend tests..."
 	cd backend && go test ./...
 	@echo "Backend tests completed"
+
+# The acceptance scenarios: each one is a sentence about what the app does,
+# proven against the real router, a throwaway MongoDB and a fake Gmail. The
+# script finds or starts the MongoDB (Docker, or a downloaded mongod) and prints
+# the report. See backend/scripts/scenarios.sh.
+scenarios:
+	backend/scripts/scenarios.sh
 
 backend:
 	@echo "Building backend..."
