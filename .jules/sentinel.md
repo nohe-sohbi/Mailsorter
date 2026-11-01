@@ -12,3 +12,8 @@
 **Vulnerability:** Batch AI endpoints (`AnalyzeEmails` and `ApplyBatch`) lacked upper bound checks on input slice lengths, allowing arbitrary-length arrays in JSON payloads to exhaust server CPU, memory, database operations, and external AI service calls (DoS).
 **Learning:** Batch handlers decoding array fields into structs must validate slice size bounds right after JSON decoding, before reaching external service logic or database queries.
 **Prevention:** Always check `len(req.SliceField) > maxBatchSize` immediately after `decodeJSON` in batch API handlers.
+
+## 2025-05-19 - Transport guard bypass in multi-transport API handlers
+**Vulnerability:** Handlers (`Unsubscribe`, `ApplyBulk`, `CreateSmartLabel`) called `getUserToken` directly instead of `gmailClientFor`, bypassing transport verification for non-Gmail/IMAP accounts.
+**Learning:** Calling token resolution helpers directly instead of transport-aware wrappers (`gmailClientFor` or `openSession`) bypasses transport checks, risking execution of Gmail mutations with IMAP message/folder identifiers.
+**Prevention:** Always route transport-specific client instantiation through `gmailClientFor` (for Gmail-only paths) or `openSession` (for multi-transport paths) rather than calling `getUserToken` directly.
