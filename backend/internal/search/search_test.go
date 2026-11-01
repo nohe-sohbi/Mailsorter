@@ -21,6 +21,8 @@ func TestNormalize(t *testing.T) {
 		{"no query", "Vide", "  ", "", "", true},
 		{"name too long", strings.Repeat("a", MaxNameLength+1), "in:inbox", "", "", true},
 		{"query too long", "Long", strings.Repeat("a", MaxQueryLength+1), "", "", true},
+		{"raw name exceeds max byte limit", strings.Repeat("a", maxRawInputBytes+1), "in:inbox", "", "", true},
+		{"raw query exceeds max byte limit", "Long", strings.Repeat("a", maxRawInputBytes+1), "", "", true},
 		{"multiline query", "Collé", "in:inbox\nfrom:x", "", "", true},
 	}
 
