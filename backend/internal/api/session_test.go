@@ -98,6 +98,40 @@ func TestUnportedEndpointsUseGmailClientFor(t *testing.T) {
 	}
 }
 
+func TestInputLengthLimitsOnUnsubscribeAndCreateSmartLabel(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Oversized MessageID on Unsubscribe
+	{
+		longID := strings.Repeat("a", 257)
+		body := fmt.Sprintf(`{"messageId":%q}`, longID)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/unsubscribe", strings.NewReader(body))
+		req.Header.Set("X-User-Email", "user@example.com")
+		req.Header.Set("Content-Type", "application/json")
+
+		h.Unsubscribe(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("Unsubscribe with >256 char messageId returned status %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	}
+
+	// Oversized Name on CreateSmartLabel
+	{
+		longName := strings.Repeat("a", 101)
+		body := fmt.Sprintf(`{"name":%q}`, longName)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/smart-labels", strings.NewReader(body))
+		req.Header.Set("X-User-Email", "user@example.com")
+		req.Header.Set("Content-Type", "application/json")
+
+		h.CreateSmartLabel(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("CreateSmartLabel with >100 char name returned status %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	}
+}
+
 // A path reached by a mailbox it does not support is not a broken request and
 // not a broken server: it is a capability that does not exist there yet. 501
 // says that; 400 blames the caller and 500 blames the server.
