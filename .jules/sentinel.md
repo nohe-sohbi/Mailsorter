@@ -19,3 +19,4 @@
 **Prevention:** Always route transport-specific client instantiation through `gmailClientFor` (for Gmail-only paths) or `openSession` (for multi-transport paths) rather than calling `getUserToken` directly.
 
 
+
