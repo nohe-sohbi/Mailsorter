@@ -28,9 +28,15 @@ const (
 	MaxQueryLength = 512
 )
 
+// maxRawInputBytes bounds raw input string size before allocation-heavy operations.
+const maxRawInputBytes = 2048
+
 // Normalize trims and validates a name/query pair, returning the values to
 // store. Errors are user-facing (French), like rules.Validate.
 func Normalize(name, query string) (string, string, error) {
+	if len(name) > maxRawInputBytes || len(query) > maxRawInputBytes {
+		return "", "", fmt.Errorf("recherche trop longue")
+	}
 	name = strings.Join(strings.Fields(name), " ")
 	query = strings.TrimSpace(query)
 
