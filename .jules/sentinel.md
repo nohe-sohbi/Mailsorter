@@ -18,3 +18,4 @@
 **Learning:** Calling token resolution helpers directly instead of transport-aware wrappers (`gmailClientFor` or `openSession`) bypasses transport checks, risking execution of Gmail mutations with IMAP message/folder identifiers.
 **Prevention:** Always route transport-specific client instantiation through `gmailClientFor` (for Gmail-only paths) or `openSession` (for multi-transport paths) rather than calling `getUserToken` directly.
 
+
