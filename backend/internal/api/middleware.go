@@ -270,6 +270,7 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+
 		next.ServeHTTP(w, r)
 	})
 }
