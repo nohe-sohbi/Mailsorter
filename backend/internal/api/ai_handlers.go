@@ -747,7 +747,7 @@ func (h *Handler) CreateSmartLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if label.Name == "" {
+	if label.Name == "" || len(label.Name) > 100 {
 		writeError(w, http.StatusBadRequest, "Label name required")
 		return
 	}

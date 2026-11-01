@@ -32,7 +32,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.MessageID == "" {
+	if req.MessageID == "" || len(req.MessageID) > 256 {
 		writeError(w, http.StatusBadRequest, "Message ID required")
 		return
 	}
