@@ -18,7 +18,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
       - name: Download modules
@@ -61,7 +61,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
       - name: Vet with the acceptance tag
@@ -94,3 +94,19 @@ jobs:
 
       - name: Build
         run: CI=false npm run build
+
+  docker:
+    # Builds both images exactly as Dokploy does on a push to main. The jobs
+    # above prove the code; this one proves the image. It is what would have
+    # caught go.mod moving to go 1.26 while the Dockerfile stayed on 1.21:
+    # setup-go downloads a newer toolchain on its own, the golang image does not.
+    name: Images Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the backend image
+        run: docker build -t mailsorter-backend:ci backend
+
+      - name: Build the frontend image
+        run: docker build -t mailsorter-frontend:ci frontend

@@ -142,7 +142,7 @@ flowchart LR
 | Brique | Stack | Rôle |
 | --- | --- | --- |
 | Frontend | React 18, Tailwind, Axios | Cockpit de tri, design system maison, zéro librairie d'icônes |
-| Backend | Go 1.21+, Gorilla Mux, OAuth2 | API REST, orchestration IA, accès aux boîtes, ordonnanceurs |
+| Backend | Go 1.26+, Gorilla Mux, OAuth2 | API REST, orchestration IA, accès aux boîtes, ordonnanceurs |
 | Base | MongoDB 7 | Comptes, suggestions, règles, journal d'actions |
 | IA | Mistral AI | Classification des emails |
 

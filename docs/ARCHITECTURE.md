@@ -75,7 +75,7 @@
 ### 2. Backend (Go)
 
 **Technologies:**
-- Go 1.21
+- Go 1.26
 - Gorilla Mux (routing)
 - MongoDB Driver
 - Google OAuth2 & Gmail API
