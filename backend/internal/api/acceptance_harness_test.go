@@ -125,7 +125,11 @@ func playScenarios(t *testing.T, theme string, list []scenario) {
 }
 
 func TestMain(m *testing.M) {
+	// First, before anything verifies a certificate: Go reads the system
+	// roots once, and the IMAP scenarios need the test CA among them.
+	removeTestCA := trustIMAPTestCertificate()
 	code := m.Run()
+	removeTestCA()
 	if path := os.Getenv("SCENARIO_REPORT"); path != "" {
 		if err := writeScenarioReport(path); err != nil {
 			fmt.Fprintf(os.Stderr, "scenario report: %v\n", err)
@@ -271,6 +275,11 @@ func newTestApp(t *testing.T, res *scenarioResult) *testApp {
 	db := &database.Database{Client: client, DB: client.Database(name)}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	// The database starts as production's volume is, then boots like the
+	// server: see seedProductionVolume.
+	if err := seedProductionVolume(ctx, db); err != nil {
+		app.fatalf("index de la base de production : %v", err)
+	}
 	if err := db.EnsureIndexes(ctx); err != nil {
 		app.fatalf("création des index MongoDB : %v", err)
 	}
@@ -427,6 +436,13 @@ func (a *testApp) act(id, action string) {
 // status and the decoded JSON body (nil when the body is not a JSON object).
 func (a *testApp) call(method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
+	return a.callAs(a.token, method, path, body)
+}
+
+// callAs is call, signed in as someone other than the scenario's user: the
+// scenarios with several people, each with their own session.
+func (a *testApp) callAs(token, method, path string, body interface{}) (int, map[string]interface{}) {
+	a.t.Helper()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -439,7 +455,7 @@ func (a *testApp) call(method, path string, body interface{}) (int, map[string]i
 	if err != nil {
 		a.fatalf("requête %s %s : %v", method, path, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+a.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
