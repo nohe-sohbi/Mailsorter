@@ -876,6 +876,18 @@ func (a *testApp) ownAIKeyShown() map[string]interface{} {
 	return a.mustCall(http.MethodGet, "/api/ai/settings", nil, http.StatusOK)
 }
 
+// ownAIKeyPage is the same answer as ownAIKeyShown, undecoded: a sentence
+// about what the card must never show reads every byte the screen receives,
+// not only the fields it knows about.
+func (a *testApp) ownAIKeyPage() string {
+	a.t.Helper()
+	code, raw := a.callRaw(http.MethodGet, "/api/ai/settings", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/ai/settings a répondu %d : %s", code, raw)
+	}
+	return raw
+}
+
 // ownAIKeyAlreadySaved stores a personal AI key the way "Enregistrer" leaves it
 // (the key sealed, the rest as typed), straight in the datastore. A sentence
 // about a key ALREADY saved must not depend on the save accepting that address

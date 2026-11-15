@@ -70,5 +70,36 @@ func TestScenarios_OwnAIKey(t *testing.T) {
 				}
 			},
 		},
+		{
+			phrase: "Enregistrer ta clé IA personnelle avec l'adresse publique de ton fournisseur la garde : Réglages la montre ensuite.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				// Saving does not call the provider: nothing has to answer at
+				// that address, it only has to be a public one.
+				key := ownAIKey{
+					Provider: "openai-compatible",
+					APIKey:   "sk-perso-0123456789abcdef",
+					Model:    "modele-perso",
+					BaseURL:  "https://" + intranetPublicHost + "/v1/chat/completions",
+				}
+				if code, out := app.saveOwnAIKey(key); code < 200 || code >= 300 {
+					app.failf("enregistrer ta clé IA personnelle (%s, %s) devrait réussir, la réponse est %d : %v", key.Provider, key.BaseURL, code, out)
+				}
+				shown := app.ownAIKeyShown()
+				if shown["configured"] != true {
+					app.failf("après l'enregistrement, Réglages devrait montrer ta clé IA personnelle, il montre celle de l'instance (personnel : %v, fournisseur : %v)", shown["configured"], shown["provider"])
+				}
+				for _, f := range []struct{ field, want string }{
+					{"provider", key.Provider}, {"model", key.Model}, {"baseUrl", key.BaseURL},
+				} {
+					if shown[f.field] != f.want {
+						app.failf("après l'enregistrement, Réglages devrait montrer %s = %q, il montre %v", f.field, f.want, shown[f.field])
+					}
+				}
+				if page := app.ownAIKeyPage(); strings.Contains(page, key.APIKey) {
+					app.failf("Réglages montre ta clé IA en clair (%q) : %s", key.APIKey, page)
+				}
+			},
+		},
 	})
 }

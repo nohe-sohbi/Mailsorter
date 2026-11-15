@@ -14,8 +14,8 @@ package api
 // harness changes what the process sees of the network, the way an operator's
 // network would:
 //
-//   - a tiny DNS responder answers intranetHost with 127.0.0.1, and
-//     net.DefaultResolver becomes the pure-Go resolver dialing that responder:
+//   - a tiny DNS responder answers intranetHost with 127.0.0.1 (and a public
+//     provider's name with a public address), and net.DefaultResolver becomes the pure-Go resolver dialing that responder:
 //     every http.Client in the process that does not bring its own resolver
 //     resolves names through it, as it would through the host's DNS;
 //   - a CA generated at startup signs the service's certificate, and
@@ -69,6 +69,12 @@ const (
 	// 127.0.0.1. ".test" is reserved (RFC 2606): it never exists on the real DNS.
 	intranetHost = "ia-interne.example.test"
 
+	// intranetPublicHost is a provider on the public internet, as the same DNS
+	// sees it: it resolves to intranetPublicIP. Without it every name but
+	// intranetHost would be "no such host" in this process, and a scenario about
+	// a public address would in fact be about an address that does not exist.
+	intranetPublicHost = "api.fournisseur-ia.example.test"
+
 	// intranetSecret is in everything the internal service answers. It must
 	// never come back to whoever chose the address.
 	intranetSecret = "SECRET-INTERNE-42"
@@ -77,6 +83,15 @@ const (
 	// is reachable by its name. It is not recorded as a request the app sent.
 	intranetProbePath = "/__banc-d-essai/joignable"
 )
+
+// intranetNames is everything the simulated DNS knows. intranetPublicHost gets
+// a documentation address (203.0.113.0/24, RFC 5737): publicly routable by
+// egress's rules, and routed nowhere, so even a request sent there by mistake
+// reaches no one.
+var intranetNames = map[string][4]byte{
+	intranetHost:       {127, 0, 0, 1},
+	intranetPublicHost: {203, 0, 113, 10},
+}
 
 var (
 	// intranetErr is why the internal network could not be simulated, if it
@@ -194,9 +209,9 @@ func intranetTrustCA(dir string, caPEM []byte) error {
 	return os.Setenv("SSL_CERT_FILE", path)
 }
 
-// intranetDNS starts a DNS responder on 127.0.0.1 that knows one name,
-// intranetHost (A 127.0.0.1, no AAAA), and answers "no such name" for any
-// other, then points net.DefaultResolver at it. The resolver's Dial ignores the
+// intranetDNS starts a DNS responder on 127.0.0.1 that knows the names in
+// intranetNames (one A record each, no AAAA), and answers "no such name" for
+// any other, then points net.DefaultResolver at it. The resolver's Dial ignores the
 // nameserver from /etc/resolv.conf: in this process, this responder IS the DNS.
 func intranetDNS() (stop func(), err error) {
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -243,7 +258,7 @@ func intranetDNSReply(query []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	known := strings.EqualFold(strings.TrimSuffix(q.Name.String(), "."), intranetHost)
+	ip, known := intranetNames[strings.ToLower(strings.TrimSuffix(q.Name.String(), "."))]
 	hdr := dnsmessage.Header{
 		ID:                 h.ID,
 		Response:           true,
@@ -267,7 +282,7 @@ func intranetDNSReply(query []byte) ([]byte, error) {
 	if known && q.Type == dnsmessage.TypeA {
 		if err := b.AResource(
 			dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: 60},
-			dnsmessage.AResource{A: [4]byte{127, 0, 0, 1}},
+			dnsmessage.AResource{A: ip},
 		); err != nil {
 			return nil, err
 		}
