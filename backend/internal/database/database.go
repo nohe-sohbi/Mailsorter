@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -150,16 +151,15 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 			firstErr = err
 		}
 	}
+	if err := d.ensureEmailIdentity(ctx); err != nil && firstErr == nil {
+		firstErr = err
+	}
 
 	specs := []struct {
 		coll  *mongo.Collection
 		model mongo.IndexModel
 	}{
-		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "messageId", Value: 1}}}},
 		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "from", Value: 1}}}},
-		// The IMAP listing is served from this collection, newest first
-		// (internal/api/mirror.go), on every page load.
-		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "receivedDate", Value: -1}}}},
 		{d.AISuggestions(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "status", Value: 1}}}},
 		{d.SenderPreferences(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}}},
 		{d.AnalysisCache(), mongo.IndexModel{Keys: bson.D{{Key: "key", Value: 1}}, Options: options.Index().SetUnique(true)}},
@@ -191,6 +191,54 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+// emailIdentityKeys is what names a stored message: whose mailbox, and the id
+// that mailbox gives it.
+var emailIdentityKeys = bson.D{{Key: "userId", Value: 1}, {Key: "messageId", Value: 1}}
+
+// ensureEmailIdentity makes (userId, messageId) unique: one stored copy of a
+// message per person.
+//
+// It replaces the guarantee messageId_1 gave, scoped to its owner. Without it,
+// a manual sync and the background one storing the same new message at the
+// same moment could each insert it, and over IMAP, where the listing is read
+// from this collection, the mail would show twice. With it, the second upsert
+// hits the unique key and MongoDB retries it as an update.
+//
+// Earlier boots created the same keys WITHOUT unique, and MongoDB refuses a
+// second index on identical keys, so that one is dropped and rebuilt. Should
+// the rebuild fail (a person already has duplicates, which only a database
+// that never had messageId_1 can hold), the plain index is put back so the
+// lookups stay fast, and the failure is returned for the boot log.
+func (d *Database) ensureEmailIdentity(ctx context.Context) error {
+	idx := d.Emails().Indexes()
+	unique := mongo.IndexModel{Keys: emailIdentityKeys, Options: options.Index().SetUnique(true)}
+	_, err := idx.CreateOne(ctx, unique)
+	if err == nil || !isIndexConflict(err) {
+		return err
+	}
+	if _, err := idx.DropOne(ctx, "userId_1_messageId_1"); err != nil && !isMissingIndex(err) {
+		return err
+	}
+	if _, err := idx.CreateOne(ctx, unique); err != nil {
+		if _, plainErr := idx.CreateOne(ctx, mongo.IndexModel{Keys: emailIdentityKeys}); plainErr != nil {
+			return fmt.Errorf("emails: per-person unique index not built (%v), and the plain one not restored: %w", err, plainErr)
+		}
+		return fmt.Errorf("emails: per-person unique index not built, plain index kept: %w", err)
+	}
+	return nil
+}
+
+// isIndexConflict reports whether an index could not be created because one on
+// the same keys exists with other options (IndexOptionsConflict, 85, or
+// IndexKeySpecsConflict, 86).
+func isIndexConflict(err error) bool {
+	var cmdErr mongo.CommandError
+	if errors.As(err, &cmdErr) {
+		return cmdErr.Code == 85 || cmdErr.Code == 86
+	}
+	return false
 }
 
 // isMissingIndex reports whether dropping an index failed only because there
