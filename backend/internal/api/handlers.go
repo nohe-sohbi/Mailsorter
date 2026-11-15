@@ -565,7 +565,9 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 		filter := bson.M{"messageId": msg.Id, "userId": userEmail}
 		update := bson.M{"$set": email}
 		opts := options.Update().SetUpsert(true)
-		if _, uErr := h.db.Emails().UpdateOne(ctx, filter, update, opts); uErr == nil {
+		if _, uErr := h.db.Emails().UpdateOne(ctx, filter, update, opts); uErr != nil {
+			log.Printf("gmail sync: message %s not stored: %v", msg.Id, uErr)
+		} else {
 			synced++
 		}
 

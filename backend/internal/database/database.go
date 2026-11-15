@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -129,15 +130,36 @@ func (d *Database) AISettings() *mongo.Collection {
 	return d.DB.Collection("ai_settings")
 }
 
+// legacyEmailIndexes are indexes an older mongo-init/init-db.js created and the
+// code must not live with. That script only runs on an empty volume, so a
+// database created before it was fixed keeps them until something drops them.
+//
+// messageId_1 was UNIQUE on messageId alone. A Gmail id names a message
+// worldwide, so that held as long as every mailbox was a Gmail one. An IMAP UID
+// only names a message inside one folder of one mailbox: two people both have a
+// message 1, and the index refused the second person's, every time, while the
+// sync reported success.
+var legacyEmailIndexes = []string{"messageId_1"}
+
 // EnsureIndexes creates the indexes that keep hot queries fast at scale.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
+	var firstErr error
+	for _, name := range legacyEmailIndexes {
+		if _, err := d.Emails().Indexes().DropOne(ctx, name); err != nil && !isMissingIndex(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	specs := []struct {
 		coll  *mongo.Collection
 		model mongo.IndexModel
 	}{
 		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "messageId", Value: 1}}}},
 		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "from", Value: 1}}}},
+		// The IMAP listing is served from this collection, newest first
+		// (internal/api/mirror.go), on every page load.
+		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "receivedDate", Value: -1}}}},
 		{d.AISuggestions(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "status", Value: 1}}}},
 		{d.SenderPreferences(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}}},
 		{d.AnalysisCache(), mongo.IndexModel{Keys: bson.D{{Key: "key", Value: 1}}, Options: options.Index().SetUnique(true)}},
@@ -163,11 +185,21 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.AISettings(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}}, Options: options.Index().SetUnique(true)}},
 	}
 
-	var firstErr error
 	for _, s := range specs {
 		if _, err := s.coll.Indexes().CreateOne(ctx, s.model); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// isMissingIndex reports whether dropping an index failed only because there
+// was nothing to drop: the index is gone already (IndexNotFound, 27), or the
+// collection does not exist yet on a fresh database (NamespaceNotFound, 26).
+func isMissingIndex(err error) bool {
+	var cmdErr mongo.CommandError
+	if errors.As(err, &cmdErr) {
+		return cmdErr.Code == 27 || cmdErr.Code == 26
+	}
+	return false
 }

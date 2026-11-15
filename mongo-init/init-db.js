@@ -8,7 +8,11 @@ db.createCollection('labels');
 db.createCollection('users');
 
 // Create indexes
-db.emails.createIndex({ "messageId": 1 }, { unique: true });
+// Not unique on messageId alone: over IMAP a message id is a UID, which every
+// mailbox numbers from 1, so a unique index refused the second person's mail.
+// EnsureIndexes (backend/internal/database/database.go) is the source of truth
+// and drops that old index from databases this script created before.
+db.emails.createIndex({ "userId": 1, "messageId": 1 });
 db.emails.createIndex({ "userId": 1, "receivedDate": -1 });
 db.emails.createIndex({ "userId": 1, "labelIds": 1 });
 
