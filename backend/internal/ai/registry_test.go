@@ -143,3 +143,30 @@ func TestRegistryWithUserOverride(t *testing.T) {
 		t.Errorf("expected fallback provider to be 'mistral', got %q", userReg.providers[1].config.Name)
 	}
 }
+
+// A provider a user configured never gets a client that can reach the server's
+// own network: a refused base URL builds nothing, and Ollama needs an address.
+// The operator's providers are left alone, internal addresses included.
+func TestNewAnalyzerGuardsUserSuppliedProviders(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     ProviderConfig
+		wantErr bool
+	}{
+		{"user openai-compatible on a public https host", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "https://api.example.com/v1/chat/completions", UserSupplied: true}, false},
+		{"user openai-compatible on loopback", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "https://127.0.0.1/v1", UserSupplied: true}, true},
+		{"user openai-compatible over http", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "http://api.example.com/v1", UserSupplied: true}, true},
+		{"user mistral pointed at metadata", ProviderConfig{Name: "mistral", APIKey: "k", BaseURL: "https://169.254.169.254/", UserSupplied: true}, true},
+		{"user ollama without address", ProviderConfig{Name: "ollama", UserSupplied: true}, true},
+		{"operator ollama without address", ProviderConfig{Name: "ollama"}, false},
+		{"operator openai-compatible on the docker network", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "http://10.0.0.5:8000/v1"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := newAnalyzer(tc.cfg)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("newAnalyzer(%+v) error = %v, want error %v", tc.cfg, err, tc.wantErr)
+			}
+		})
+	}
+}

@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/egress"
@@ -687,33 +685,15 @@ func checkUnsubscribeRedirect(req *http.Request, via []*http.Request) error {
 	return egress.Allowed(req.URL)
 }
 
-// unsubscribeClient is the hardened client the one-click POST goes through.
-//
-// The Control hook is the load-bearing part. It runs after the name is
-// resolved and before the socket connects, on the address actually being
-// dialled, which is the only place the check cannot be raced: a host that
-// answers with a public address when it is validated and a private one when it
-// is connected to (DNS rebinding) is caught here, and again on every redirect
-// hop, because each hop dials again.
+// unsubscribeClient is the hardened client the one-click POST goes through:
+// every connection is judged at dial time by egress.GuardedTransport (which
+// explains why that is the only place the check cannot be raced), and every
+// redirect hop by checkUnsubscribeRedirect.
 func unsubscribeClient() *http.Client {
-	dialer := &net.Dialer{
-		Timeout:   5 * time.Second,
-		KeepAlive: 5 * time.Second,
-		Control: func(_, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return err
-			}
-			return egress.AllowedIP(net.ParseIP(host))
-		},
-	}
 	return &http.Client{
 		Timeout:       12 * time.Second,
 		CheckRedirect: checkUnsubscribeRedirect,
-		Transport: &http.Transport{
-			DialContext:         dialer.DialContext,
-			TLSHandshakeTimeout: 5 * time.Second,
-		},
+		Transport:     egress.GuardedTransport(),
 	}
 }
 

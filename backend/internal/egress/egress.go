@@ -24,9 +24,10 @@
 //     on the second is caught at the second, because the address checked is the
 //     address connected to.
 //
-// The package is pure. url.Parse and net.ParseIP do no I/O, and nothing here
-// opens a connection or resolves a name: that belongs to the caller's dialer,
-// which asks this package for the verdict.
+// The verdicts are pure. url.Parse and net.ParseIP do no I/O, and nothing in
+// this file opens a connection or resolves a name. client.go is the one
+// exception: it wires the verdicts into a dialer, so the clients that need one
+// (the unsubscribe POST, a personal AI provider) share a single copy of it.
 package egress
 
 import (
