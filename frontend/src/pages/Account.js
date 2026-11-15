@@ -4,6 +4,7 @@ import { accountService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { cn } from '../ui/cn';
 import { track } from '../lib/analytics';
+import { signOut } from '../lib/session';
 import Spinner from '../ui/Spinner';
 import { Shield, Trash, Alert, Bolt, Settings as SettingsIcon, Check } from '../ui/icons';
 
@@ -61,8 +62,7 @@ function PrivacyData() {
     try {
       await accountService.deleteAccount();
       toast.success('Compte et données supprimés. À bientôt.');
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('userEmail');
+      signOut();
       setTimeout(() => window.location.assign('/'), 800);
     } catch (err) {
       toast.error('Suppression impossible.');
