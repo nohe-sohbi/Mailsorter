@@ -46,6 +46,11 @@ import (
 // provider would rightly start refusing us for every user. One attempt every
 // three seconds, five in reserve, is generous for a person typing and useless
 // for a machine guessing.
+//
+// It is keyed on the visitor's address (clientIP), never on a bearer string:
+// signing in is what a caller WITHOUT a session does, so any token sent along
+// is one the caller made up, and keying on it handed out a fresh bucket per
+// attempt.
 const (
 	signInRatePerSec = 1.0 / 3.0
 	signInBurst      = 5
@@ -73,7 +78,7 @@ func (h *Handler) SignInWithMailbox(w http.ResponseWriter, r *http.Request) {
 	// Keyed on the address as well as the caller, so neither rotating addresses
 	// from one machine nor hammering one address from many gets a free pass.
 	limiter := h.signInLimiter()
-	if !limiter.allow(clientKey(r)) || !limiter.allow("addr:"+address) {
+	if !limiter.allow("ip:"+clientIP(r)) || !limiter.allow("addr:"+address) {
 		w.Header().Set("Retry-After", "3")
 		writeError(w, http.StatusTooManyRequests,
 			"Trop de tentatives. Patientez quelques instants.")
