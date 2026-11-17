@@ -24,6 +24,7 @@ import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
 import { isAuthed, sessionOwner } from './lib/session';
 import { effectiveUiTheme, bootUiTheme } from './lib/uiTheme';
+import BackToTop from './ui/BackToTop';
 import { HotelThemeProvider, useHotel, loadHotelStyles } from './ui/hotel/HotelTheme';
 import { useHotelFonts } from './ui/hotel/useHotelFonts';
 import Emblem from './ui/hotel/Emblem';
@@ -383,6 +384,7 @@ function App() {
                   Aller au contenu
                 </a>
                 <Header />
+                <BackToTop />
                 <main id="main">
                   <Routes>
                     {/* /setup stays reachable by its address whatever the

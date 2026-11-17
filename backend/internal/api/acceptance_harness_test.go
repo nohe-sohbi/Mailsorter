@@ -46,6 +46,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // scenarioUser is the account every scenario runs as.
@@ -427,6 +428,13 @@ func (a *testApp) act(id, action string) {
 // status and the decoded JSON body (nil when the body is not a JSON object).
 func (a *testApp) call(method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
+	return a.send(method, path, body, map[string]string{"Authorization": "Bearer " + a.token})
+}
+
+// send is call with the headers the caller chooses and no other: it is how a
+// visitor (below), who has no session, reaches the same router.
+func (a *testApp) send(method, path string, body interface{}, headers map[string]string) (int, map[string]interface{}) {
+	a.t.Helper()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -439,7 +447,9 @@ func (a *testApp) call(method, path string, body interface{}) (int, map[string]i
 	if err != nil {
 		a.fatalf("requête %s %s : %v", method, path, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+a.token)
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -826,5 +836,159 @@ func (a *testApp) autopilot(from, action string) {
 		UpdatedAt:     now,
 	}); err != nil {
 		a.fatalf("activation du pilote automatique pour %q : %v", from, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Visitors: people on the landing page, before any session
+// ---------------------------------------------------------------------------
+
+// visitor is a person on the internet, at their own network address, who has
+// no session yet: whoever fills in "Se connecter" or "Créer un compte" on the
+// landing page. The scenario user above is already signed in; a visitor is
+// everyone else.
+//
+// No visitor reaches the backend directly. Every /api request goes through
+// the frontend's nginx (frontend/nginx.conf, location /api), so the TCP peer
+// the backend sees is always that proxy, whoever is behind it. The contract
+// with the proxy: it sets X-Real-IP to the visitor's address on every request
+// it forwards, overwriting whatever the visitor sent, and the backend believes
+// that header only from a peer on the internal network. The harness plays it
+// the same way: the httptest server is reached from 127.0.0.1, which stands
+// for the proxy, and the visitor's address travels in X-Real-IP. So two
+// visitors of a scenario are one peer, exactly as two strangers are one peer
+// to the production backend, and only that header tells them apart.
+type visitor struct {
+	app  *testApp
+	addr string
+	// bearer, when not empty, is sent as "Authorization: Bearer <bearer>":
+	// a session the server issued, or any string the visitor made up.
+	bearer string
+}
+
+// visitorFrom is someone connecting from addr. Use the documentation ranges
+// (203.0.113.0/24, 198.51.100.0/24): they belong to nobody.
+func (a *testApp) visitorFrom(addr string) visitor {
+	return visitor{app: a, addr: addr}
+}
+
+// bearing is the same visitor attaching this token to their requests, as the
+// app does once signed in, or as anyone can with a token of their own making.
+func (v visitor) bearing(token string) visitor {
+	v.bearer = token
+	return v
+}
+
+// answer is what the server said to one request: the status and the JSON body.
+type answer struct {
+	code int
+	body map[string]interface{}
+}
+
+// said is the sentence the landing page shows for a refusal: the "error"
+// field, which the form displays as is.
+func (r answer) said() string {
+	s, _ := r.body["error"].(string)
+	return s
+}
+
+func (r answer) String() string {
+	if s := r.said(); s != "" {
+		return fmt.Sprintf("%d %q", r.code, s)
+	}
+	return fmt.Sprintf("%d %v", r.code, r.body)
+}
+
+// call sends one request as this visitor, through the proxy.
+func (v visitor) call(method, path string, body interface{}) answer {
+	v.app.t.Helper()
+	headers := map[string]string{"X-Real-IP": v.addr}
+	if v.bearer != "" {
+		headers["Authorization"] = "Bearer " + v.bearer
+	}
+	code, out := v.app.send(method, path, body, headers)
+	return answer{code: code, body: out}
+}
+
+// signIn is "Se connecter" on the landing page: an address and a password.
+func (v visitor) signIn(email, password string) answer {
+	v.app.t.Helper()
+	return v.call(http.MethodPost, "/api/auth/login", map[string]string{"email": email, "password": password})
+}
+
+// signUp is "Créer un compte" on the landing page.
+func (v visitor) signUp(email, password string) answer {
+	v.app.t.Helper()
+	return v.call(http.MethodPost, "/api/auth/register", map[string]string{"email": email, "password": password})
+}
+
+// accountWithPassword stores a password account as POST /api/auth/register
+// leaves it (the address lowercased, a bcrypt hash, the creation date), without
+// going through that route: the route is throttled, and the setup of a
+// scenario about the throttle must not spend the attempts the scenario counts.
+// The hash is at bcrypt's minimum cost. The cost is written into the hash and
+// only decides how long checking a password takes; the throttle gives one
+// attempt back every three seconds, so a scenario that counts attempts must
+// not spend that long hashing between two of them.
+func (a *testApp) accountWithPassword(email, password string) {
+	a.t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	if err != nil {
+		a.fatalf("hachage du mot de passe de %s : %v", email, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.Users().InsertOne(ctx, models.User{
+		Email:        strings.ToLower(email),
+		PasswordHash: string(hash),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		a.fatalf("création du compte %s : %v", email, err)
+	}
+}
+
+// expectLetIn checks that "Se connecter" or "Créer un compte" let the person
+// in: the status the route answers on success (want), a session for that
+// address, and that session opening that very account on the Compte screen
+// (GET /api/account/profile): the address, and the date the account was
+// created, which only an account on file has. who names the person in the
+// failure.
+func (v visitor) expectLetIn(who, email string, got answer, want int) {
+	v.app.t.Helper()
+	if got.code != want {
+		v.app.failf("%s (depuis %s) devrait entrer dans son compte %s du premier coup, le serveur a répondu %s", who, v.addr, email, got)
+		return
+	}
+	token, _ := got.body["accessToken"].(string)
+	if token == "" || got.body["userEmail"] != email {
+		v.app.failf("%s (depuis %s) devrait recevoir une session pour %s, la réponse est %v", who, v.addr, email, got.body)
+		return
+	}
+	profile := v.bearing(token).call(http.MethodGet, "/api/account/profile", nil)
+	if profile.code != http.StatusOK {
+		v.app.failf("la session reçue par %s devrait ouvrir l'écran Compte, le serveur a répondu %s", who, profile)
+		return
+	}
+	if profile.body["email"] != email {
+		v.app.failf("la session reçue par %s devrait ouvrir le compte %s, l'écran Compte montre %v", who, email, profile.body["email"])
+	}
+	created, _ := profile.body["createdAt"].(string)
+	if at, err := time.Parse(time.RFC3339, created); err != nil || at.Year() < 2020 {
+		v.app.failf("l'écran Compte de %s devrait montrer la date de création du compte %s, il reçoit %q : le compte n'est pas enregistré", who, email, created)
+	}
+}
+
+// tooManyAttempts is the refusal the landing page shows when a visitor has
+// tried too often.
+const tooManyAttempts = "Trop de tentatives. Patientez quelques instants."
+
+// expectTooManyAttempts checks that a request was refused as one attempt too
+// many: 429 and the sentence the form shows. what names the attempt.
+func (a *testApp) expectTooManyAttempts(what string, got answer) {
+	a.t.Helper()
+	if got.code != http.StatusTooManyRequests || got.said() != tooManyAttempts {
+		a.failf("%s devrait être refusé avec %q, le serveur a répondu %s", what, tooManyAttempts, got)
 	}
 }

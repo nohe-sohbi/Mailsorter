@@ -409,7 +409,7 @@ only logs a warning. This is the real source of truth for indexes.
 
 | Collection | Keys | Options |
 |---|---|---|
-| `emails` | `{userId: 1, messageId: 1}` | none |
+| `emails` | `{userId: 1, messageId: 1}` | unique (one copy per message per person; replaces a non-unique one built by older boots) |
 | `emails` | `{userId: 1, from: 1}` | none |
 | `ai_suggestions` | `{userId: 1, status: 1}` | none |
 | `sender_preferences` | `{userId: 1, senderEmail: 1}` | none |
@@ -436,7 +436,7 @@ not:
 
 | Collection | Keys | Options |
 |---|---|---|
-| `emails` | `{messageId: 1}` | unique, GLOBAL not per user |
+| `emails` | `{userId: 1, messageId: 1}` | unique (older scripts made `{messageId: 1}` unique GLOBALLY; `EnsureIndexes` drops that one at boot) |
 | `emails` | `{userId: 1, receivedDate: -1}` | none |
 | `emails` | `{userId: 1, labelIds: 1}` | none |
 | `sorting_rules` | `{userId: 1, priority: 1}` | none, duplicate of the boot one |
@@ -554,9 +554,11 @@ plain `$set`.
 sync rewrites it to `time.Now()`. Use `receivedDate` for anything chronological.
 
 **Two different index sets exist in the wild.** `mongo-init/init-db.js` only runs
-on an empty data directory. A database created that way has a GLOBALLY unique
-`emails.messageId`, a unique `labels.{userId,name}`, a unique `users.email` and
-two extra `emails` indexes. A database created any other way (existing volume,
+on an empty data directory. A database created that way has a unique
+`labels.{userId,name}`, a unique `users.email` and two extra `emails` indexes.
+One created by an OLDER script also had a GLOBALLY unique `emails.messageId`,
+which refused the second IMAP user's UID 1; `EnsureIndexes` drops it at boot
+(`legacyEmailIndexes`) and makes `{userId, messageId}` unique instead. A database created any other way (existing volume,
 managed Mongo, a restored dump) has only what `EnsureIndexes` builds, meaning
 `users.email` is neither unique nor indexed. Never assume uniqueness you did not
 read from `EnsureIndexes`.

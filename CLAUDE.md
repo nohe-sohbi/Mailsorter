@@ -496,7 +496,9 @@ as a side effect of another change.
   point Mongo at a dead address on purpose so the degraded paths are exercised for real.
 - A bug fix ships with the test that fails without it. Every B-item in `BACKLOG.md` did.
 - Acceptance scenarios (build tag `acceptance`) are the one place the `api` package
-  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), and
+  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), or a
+  real in-memory IMAP server over TLS trusted through `SSL_CERT_FILE`, with the
+  database prepared as the production volume is (`acceptance_imap_test.go`), and
   the only tests that say which messages a handler actually moved. One scenario is
   one French sentence (`phrase`) Nohé can answer yes or no to: `observed` until he
   answers, `validated` on a yes, `rejected` on a no. A rejected scenario still pins
@@ -765,6 +767,16 @@ Do not duplicate these into this file. Point at them.
   (`label`) included: the Grand Hotel landing reads it to decide what it may
   promise, and keeps promising nothing it cannot deliver. So porting a promised
   feature to IMAP also means deleting its line there.
+- **The visitor's address is `X-Real-IP`, and the backend believes it only from a
+  private or loopback peer.** Every request arrives through nginx, so the TCP peer is
+  always nginx; keying the limiters on it put every visitor in one bucket, and one
+  script failing logins locked everybody out. `clientIP` (`middleware.go`) reads the
+  header, `frontend/nginx.conf` resolves the visitor through the platform proxy's
+  `X-Forwarded-For` (private hops only) and SETS the header, overwriting the
+  visitor's. Two rules come with it: any new `location` that `proxy_pass`es to the
+  backend must set `X-Real-IP` too, or the visitor's own value goes through and they
+  pick their bucket; and the sign-in limiter is keyed on that address, never on a
+  bearer, since a caller signing in has no session and any token it sends is made up.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are
