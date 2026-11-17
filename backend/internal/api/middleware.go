@@ -229,34 +229,62 @@ func (rl *rateLimiter) sweep() {
 	}
 }
 
-// rateLimitMiddleware throttles requests per client (session token if present,
-// otherwise remote IP). The webhook is exempt: Stripe controls its own rate.
-func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/billing/webhook") || r.URL.Path == "/health" || r.URL.Path == "/metrics" {
+// middlewareBy throttles requests per client, as named by key. The webhook is
+// exempt: Stripe controls its own rate.
+func (rl *rateLimiter) middlewareBy(key func(*http.Request) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/billing/webhook") || r.URL.Path == "/health" || r.URL.Path == "/metrics" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !rl.allow(key(r)) {
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusTooManyRequests, "Too many requests")
+				return
+			}
 			next.ServeHTTP(w, r)
-			return
-		}
-		key := clientKey(r)
-		if !rl.allow(key) {
-			w.Header().Set("Retry-After", "1")
-			writeError(w, http.StatusTooManyRequests, "Too many requests")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+		})
+	}
 }
 
-// clientKey identifies the caller for rate-limiting: prefer the bearer token,
-// fall back to the network address.
-func clientKey(r *http.Request) string {
-	if t := bearerToken(r); t != "" {
-		return "tok:" + t
+// rateKey names the caller for the global limiter: the account behind a VALID
+// session, otherwise the visitor's address.
+//
+// The bearer string itself used to be the key, read before anyone checked it,
+// so a made-up token was a fresh bucket: a client sending a new one with each
+// request was never limited at all, and kept a map entry alive per request.
+// Keying on the verified account also gives one person's several sessions one
+// bucket, which is what "per client" meant.
+func (h *Handler) rateKey(r *http.Request) string {
+	if t := bearerToken(r); t != "" && h.auth != nil {
+		if email, err := h.auth.VerifySession(t); err == nil {
+			return "user:" + email
+		}
 	}
-	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return "ip:" + ip
+	return "ip:" + clientIP(r)
+}
+
+// clientIP is the visitor's address, which in production is not the TCP peer.
+//
+// Every request reaches the backend through the frontend's nginx, so the peer
+// is always nginx, and keying on it put every visitor in one bucket: one
+// script failing logins locked everybody out of signing in. nginx sets
+// X-Real-IP to the visitor's address, overwriting whatever the visitor sent.
+// The header is believed only from a loopback or private peer, which is where
+// that proxy sits: a request reaching the backend from the internet directly
+// cannot pick its own address by sending the header.
+func clientIP(r *http.Request) string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		peer = host
 	}
-	return "ip:" + r.RemoteAddr
+	if ip := net.ParseIP(peer); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		if real := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); real != nil {
+			return real.String()
+		}
+	}
+	return peer
 }
 
 // securityHeadersMiddleware enforces standard security headers on all responses

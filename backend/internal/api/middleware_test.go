@@ -185,3 +185,59 @@ func TestAuthMiddlewareStillRejectsProtectedRoutes(t *testing.T) {
 		}
 	}
 }
+
+// clientIP believes X-Real-IP only from the proxy's side of the network. From
+// any other peer the header is the visitor's own claim, and believing it would
+// let a client pick its bucket per request.
+func TestClientIPTrustsRealIPOnlyFromAPrivatePeer(t *testing.T) {
+	cases := []struct {
+		name, peer, realIP, want string
+	}{
+		{"nginx on the docker network", "172.18.0.5:41234", "203.0.113.7", "203.0.113.7"},
+		{"loopback proxy", "127.0.0.1:5000", "198.51.100.4", "198.51.100.4"},
+		{"ipv6 loopback proxy", "[::1]:5000", "2001:db8::1", "2001:db8::1"},
+		{"public peer claiming an address", "203.0.113.9:443", "10.0.0.1", "203.0.113.9"},
+		{"private peer without the header", "10.0.0.2:5000", "", "10.0.0.2"},
+		{"private peer with garbage", "10.0.0.2:5000", "not-an-ip", "10.0.0.2"},
+		{"peer without a port", "192.168.1.3", "203.0.113.7", "203.0.113.7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/api/auth/login", nil)
+			r.RemoteAddr = tc.peer
+			if tc.realIP != "" {
+				r.Header.Set("X-Real-IP", tc.realIP)
+			}
+			if got := clientIP(r); got != tc.want {
+				t.Errorf("clientIP(peer %q, X-Real-IP %q) = %q, want %q", tc.peer, tc.realIP, got, tc.want)
+			}
+		})
+	}
+}
+
+// A made-up bearer must not buy a fresh bucket: only a session the server
+// signed names the caller, anything else falls back to the address.
+func TestRateKeyIgnoresUnverifiedBearers(t *testing.T) {
+	mgr := auth.NewManager("middleware-test-secret-key-1234567890")
+	h := &Handler{auth: mgr}
+
+	req := func(bearer string) *http.Request {
+		r := httptest.NewRequest("GET", "/api/emails", nil)
+		r.RemoteAddr = "172.18.0.5:41234"
+		r.Header.Set("X-Real-IP", "203.0.113.7")
+		if bearer != "" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		return r
+	}
+
+	if got, want := h.rateKey(req("")), "ip:203.0.113.7"; got != want {
+		t.Errorf("rateKey(no bearer) = %q, want %q", got, want)
+	}
+	if got, want := h.rateKey(req("made-up-1")), "ip:203.0.113.7"; got != want {
+		t.Errorf("rateKey(made-up bearer) = %q, want %q", got, want)
+	}
+	if got, want := h.rateKey(req(mgr.IssueSession("anne@exemple.fr"))), "user:anne@exemple.fr"; got != want {
+		t.Errorf("rateKey(valid session) = %q, want %q", got, want)
+	}
+}
