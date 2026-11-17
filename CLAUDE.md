@@ -496,7 +496,9 @@ as a side effect of another change.
   point Mongo at a dead address on purpose so the degraded paths are exercised for real.
 - A bug fix ships with the test that fails without it. Every B-item in `BACKLOG.md` did.
 - Acceptance scenarios (build tag `acceptance`) are the one place the `api` package
-  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), and
+  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), or a
+  real in-memory IMAP server over TLS trusted through `SSL_CERT_FILE`, with the
+  database prepared as the production volume is (`acceptance_imap_test.go`), and
   the only tests that say which messages a handler actually moved. One scenario is
   one French sentence (`phrase`) Nohé can answer yes or no to: `observed` until he
   answers, `validated` on a yes, `rejected` on a no. A rejected scenario still pins
