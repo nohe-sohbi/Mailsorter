@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
@@ -185,6 +186,11 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 		return 0, 0, err
 	}
 
+	// A message that cannot be stored is not on the user's screen, and nothing
+	// else will ever tell them it exists: the listing is served from this
+	// mirror. So each failure is logged with what it was, the others are still
+	// stored, and the sync answers an error rather than a success.
+	failed := 0
 	for _, email := range emails {
 		email.UserID = userEmail
 		// The folder is stored with the message because on IMAP it is half of
@@ -195,12 +201,22 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 			bson.M{"messageId": email.MessageID, "userId": userEmail},
 			bson.M{"$set": email},
 			options.Update().SetUpsert(true),
-		); uErr == nil {
-			synced++
+		); uErr != nil {
+			failed++
+			log.Printf("imap sync: message uid %s in %s not stored: %v", email.MessageID, folder, uErr)
+			continue
 		}
+		synced++
+	}
+	if failed > 0 {
+		return synced, len(emails), fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
 	}
 	return synced, len(emails), nil
 }
+
+// errMessagesNotStored is a sync that read the mailbox but could not mirror all
+// of it. Its text is what the user is told, so it names no datastore detail.
+var errMessagesNotStored = errors.New("des messages de la boîte n'ont pas pu être enregistrés")
 
 // identityIn resolves a message's sender and subject for the ledger, through
 // whichever transport the caller is on.

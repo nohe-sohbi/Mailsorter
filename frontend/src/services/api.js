@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { signOut } from '../lib/session';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
 
@@ -30,8 +31,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401 && !error.config?.optional) {
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('userEmail');
+      signOut();
       if (window.location.pathname !== '/') {
         window.location.assign('/');
       }
