@@ -1,5 +1,8 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+# The tag must match the `go` line of go.mod. Official golang images set
+# GOTOOLCHAIN=local, so a tag older than go.mod refuses to build instead of
+# downloading the newer toolchain the way CI does.
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
