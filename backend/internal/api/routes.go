@@ -160,7 +160,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.Use(requestIDMiddleware)
 	r.Use(h.metricsMiddleware)
 	r.Use(loggingMiddleware)
-	r.Use(rl.middleware)
+	r.Use(rl.middlewareBy(h.rateKey))
 	r.Use(h.authMiddleware)
 
 	// Setup CORS (allow-list configurable via ALLOWED_ORIGINS at startup)
