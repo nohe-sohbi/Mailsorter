@@ -64,7 +64,7 @@ func TestResolveAnalyzerFallbackToInstance(t *testing.T) {
 	}
 }
 
-func TestIsValidBaseURL(t *testing.T) {
+func TestBaseURLProblem(t *testing.T) {
 	tests := []struct {
 		url  string
 		want bool
@@ -87,8 +87,22 @@ func TestIsValidBaseURL(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := isValidBaseURL(tt.url); got != tt.want {
-			t.Errorf("isValidBaseURL(%q) = %v, want %v", tt.url, got, tt.want)
+		if got := baseURLProblem("openai-compatible", tt.url) == ""; got != tt.want {
+			t.Errorf("baseURLProblem(openai-compatible, %q) accepted = %v, want %v", tt.url, got, tt.want)
+		}
+	}
+
+	// The operator's Ollama defaults to localhost, the server itself. A user's
+	// must say where it is, and that address follows the same rule as any other.
+	ollama := map[string]bool{
+		"":                                 false,
+		"https://ollama.example.com":       true,
+		"https://127.0.0.1:11434":          false,
+		"http://ollama.example.com:11434":  false,
+	}
+	for url, want := range ollama {
+		if got := baseURLProblem("ollama", url) == ""; got != want {
+			t.Errorf("baseURLProblem(ollama, %q) accepted = %v, want %v", url, got, want)
 		}
 	}
 }

@@ -125,7 +125,12 @@ func playScenarios(t *testing.T, theme string, list []scenario) {
 }
 
 func TestMain(m *testing.M) {
+	// Before m.Run: intranetSetup changes the resolver, the trusted roots and
+	// the proxy variables, all process-wide and read once. See
+	// acceptance_intranet_test.go.
+	stopIntranet := intranetSetup()
 	code := m.Run()
+	stopIntranet()
 	if path := os.Getenv("SCENARIO_REPORT"); path != "" {
 		if err := writeScenarioReport(path); err != nil {
 			fmt.Fprintf(os.Stderr, "scenario report: %v\n", err)
@@ -427,6 +432,19 @@ func (a *testApp) act(id, action string) {
 // status and the decoded JSON body (nil when the body is not a JSON object).
 func (a *testApp) call(method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
+	code, raw := a.callRaw(method, path, body)
+	var out map[string]interface{}
+	_ = json.Unmarshal([]byte(raw), &out)
+	if out == nil && len(raw) > 0 {
+		out = map[string]interface{}{"_raw": raw}
+	}
+	return code, out
+}
+
+// callRaw is call without the decoding: the status and the body exactly as the
+// screen receives it, for a sentence about what a response must never contain.
+func (a *testApp) callRaw(method, path string, body interface{}) (int, string) {
+	a.t.Helper()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -448,13 +466,11 @@ func (a *testApp) call(method, path string, body interface{}) (int, map[string]i
 		a.fatalf("appel %s %s : %v", method, path, err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	var out map[string]interface{}
-	_ = json.Unmarshal(raw, &out)
-	if out == nil && len(raw) > 0 {
-		out = map[string]interface{}{"_raw": string(raw)}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		a.fatalf("lecture de la réponse à %s %s : %v", method, path, err)
 	}
-	return resp.StatusCode, out
+	return resp.StatusCode, string(raw)
 }
 
 // mustCall is call with an expected status; any other status fails the
@@ -826,5 +842,75 @@ func (a *testApp) autopilot(from, action string) {
 		UpdatedAt:     now,
 	}); err != nil {
 		a.fatalf("activation du pilote automatique pour %q : %v", from, err)
+	}
+}
+
+// ownAIKey is what the "Intelligence Artificielle & Fournisseurs" card of
+// Réglages sends when you bring your own key: the provider, the key, the model
+// and the provider's address.
+type ownAIKey struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"apiKey"`
+	Model    string `json:"model"`
+	BaseURL  string `json:"baseUrl"`
+}
+
+// testOwnAIKey is "Tester la connexion" on that card. It returns the status and
+// the body exactly as received: the card shows the "error" field of a refusal
+// as is, so a sentence about what that message contains reads the whole body.
+func (a *testApp) testOwnAIKey(key ownAIKey) (int, string) {
+	a.t.Helper()
+	return a.callRaw(http.MethodPost, "/api/ai/settings/test", key)
+}
+
+// saveOwnAIKey is "Enregistrer" on that card. It returns the status and the
+// decoded body, whatever they are: a sentence about a refusal checks them.
+func (a *testApp) saveOwnAIKey(key ownAIKey) (int, map[string]interface{}) {
+	a.t.Helper()
+	return a.call(http.MethodPut, "/api/ai/settings", key)
+}
+
+// ownAIKeyShown is what the card shows after a reload: GET /api/ai/settings.
+func (a *testApp) ownAIKeyShown() map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodGet, "/api/ai/settings", nil, http.StatusOK)
+}
+
+// ownAIKeyPage is the same answer as ownAIKeyShown, undecoded: a sentence
+// about what the card must never show reads every byte the screen receives,
+// not only the fields it knows about.
+func (a *testApp) ownAIKeyPage() string {
+	a.t.Helper()
+	code, raw := a.callRaw(http.MethodGet, "/api/ai/settings", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/ai/settings a répondu %d : %s", code, raw)
+	}
+	return raw
+}
+
+// ownAIKeyAlreadySaved stores a personal AI key the way "Enregistrer" leaves it
+// (the key sealed, the rest as typed), straight in the datastore. A sentence
+// about a key ALREADY saved must not depend on the save accepting that address
+// today: the address a name leads to can change after it was saved, so what
+// matters is what the app does with the key it holds.
+func (a *testApp) ownAIKeyAlreadySaved(key ownAIKey) {
+	a.t.Helper()
+	sealed, err := a.h.encryptor.Encrypt(key.APIKey)
+	if err != nil {
+		a.fatalf("chiffrement de la clé IA personnelle : %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.AISettings().InsertOne(ctx, models.AIProviderSettings{
+		UserID:    scenarioUser,
+		Provider:  key.Provider,
+		APIKey:    sealed,
+		Model:     key.Model,
+		BaseURL:   key.BaseURL,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		a.fatalf("enregistrement de la clé IA personnelle : %v", err)
 	}
 }

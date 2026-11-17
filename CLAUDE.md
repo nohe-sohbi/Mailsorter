@@ -189,7 +189,7 @@ Everything below is pure by construction, and each one says so in its package do
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
-| `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
+| `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe (a URL a stranger chooses) and a personal AI provider's base URL (a URL a user chooses). Pure verdicts, plus `client.go`, the one shared guarded dialer | `Parse`, `Allowed`, `AllowedIP`, `GuardedTransport`, `NewClient`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 | `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
 
 The outbound clients and primitives:
@@ -723,14 +723,20 @@ Do not duplicate these into this file. Point at them.
   app password instead. `internal/provider` holds that rule as data and a test enforces it,
   so do not special-case a provider in a handler: add or fix its route in the catalog.
 - **Any outbound request whose URL is not a constant goes through `internal/egress`.**
-  There is exactly one today: the RFC 8058 one-click unsubscribe, whose address
-  comes from the `List-Unsubscribe` header of a received email, so a stranger picks
-  it. Unguarded, that is a server-side request forgery: the server POSTs to its own
-  loopback API, to the datastore on the Docker bridge, or to 169.254.169.254 for the
-  host's credentials. The scheme check must be https-only, the address check must
-  run from the dialer's `Control` hook (not before the lookup, or DNS rebinding
-  walks past it), and every redirect hop must be re-judged. Mistral and Stripe are
-  safe for one reason only: their base URL is a constant.
+  There are two today. The RFC 8058 one-click unsubscribe, whose address comes from
+  the `List-Unsubscribe` header of a received email, so a stranger picks it. And a
+  personal AI provider (bring your own key): its base URL is typed by the user, so
+  `ai.ProviderConfig.UserSupplied` routes it through `egress.NewClient`, refuses a
+  user's Ollama without an address (the operator's defaults to localhost, the
+  server itself), and is judged at save time AND at every connection, since a name
+  can resolve elsewhere later. Unguarded, either is a server-side request forgery:
+  the server sends to its own loopback API, to the datastore on the Docker bridge,
+  or to 169.254.169.254 for the host's credentials. The scheme check must be
+  https-only, the address check must run from the dialer's `Control` hook (not
+  before the lookup, or DNS rebinding walks past it), and every redirect hop must
+  be re-judged: use `egress.GuardedTransport`, never a second dialer. The
+  operator's providers (env vars), Mistral's default and Stripe are left unguarded
+  for one reason only: their base URL is a constant the operator chose.
 - **An IMAP UID is NOT a message id, and `mailbox.Ref` is how the two stay apart.**
   Over the Gmail API a message id names a message on the account and never
   changes. Over IMAP a UID names a message inside one folder, so a move ends its

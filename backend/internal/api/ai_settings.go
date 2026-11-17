@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -33,14 +35,22 @@ func validateAISettingsInput(apiKey, model, baseURL string) string {
 	return ""
 }
 
-// isValidBaseURL reports whether rawURL is empty or a valid public HTTPS URL.
-// It uses egress.Parse to prevent SSRF targeting internal services or metadata endpoints.
-func isValidBaseURL(rawURL string) bool {
-	if rawURL == "" {
-		return true
+// baseURLProblem says, in the user's words, why a personal provider's address
+// cannot be used, or "" when it can. The shape is judged here, before anything
+// is stored or called; where the name leads is judged again at every
+// connection (ai.ProviderConfig.UserSupplied), because a name that resolves
+// publicly today may not tomorrow.
+func baseURLProblem(provider, rawURL string) string {
+	if provider == "ollama" && rawURL == "" {
+		return "Indiquez l'adresse de votre serveur Ollama."
 	}
-	_, err := egress.Parse(rawURL)
-	return err == nil
+	if rawURL == "" {
+		return ""
+	}
+	if _, err := egress.Parse(rawURL); err != nil {
+		return "URL de base invalide : il faut une adresse publique en https://."
+	}
+	return ""
 }
 
 // GetAIProviders returns the catalog of known AI providers with their
@@ -132,8 +142,8 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isValidBaseURL(req.BaseURL) {
-		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
+	if msg := baseURLProblem(req.Provider, req.BaseURL); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -151,21 +161,28 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	settings := models.AIProviderSettings{
-		UserID:    userEmail,
-		Provider:  req.Provider,
-		APIKey:    encryptedKey,
-		Model:     req.Model,
-		BaseURL:   req.BaseURL,
-		UpdatedAt: time.Now(),
-	}
-
+	// The fields are listed rather than $set with the whole struct: the struct
+	// carries createdAt too, and MongoDB refuses an update that writes the same
+	// path from $set and $setOnInsert. That conflict made every save answer 500,
+	// so no personal key could be stored at all.
+	now := time.Now()
 	_, err := h.db.AISettings().UpdateOne(ctx,
 		bson.M{"userId": userEmail},
-		bson.M{"$set": settings, "$setOnInsert": bson.M{"createdAt": time.Now()}},
+		bson.M{
+			"$set": bson.M{
+				"userId":    userEmail,
+				"provider":  req.Provider,
+				"apiKey":    encryptedKey,
+				"model":     req.Model,
+				"baseUrl":   req.BaseURL,
+				"updatedAt": now,
+			},
+			"$setOnInsert": bson.M{"createdAt": now},
+		},
 		options.Update().SetUpsert(true),
 	)
 	if err != nil {
+		log.Printf("ai settings: save for %s failed: %v", userEmail, err)
 		writeError(w, http.StatusInternalServerError, "Failed to save AI settings")
 		return
 	}
@@ -210,19 +227,19 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isValidBaseURL(req.BaseURL) {
-		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
+	if msg := baseURLProblem(req.Provider, req.BaseURL); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-
 	// Build a one-off analyzer from the provided credentials
 	cfg := ai.ProviderConfig{
-		Name:       req.Provider,
-		APIKey:     req.APIKey,
-		Model:      req.Model,
-		BaseURL:    req.BaseURL,
-		MaxRetries: 0, // no retries for test
-		Enabled:    true,
+		Name:         req.Provider,
+		APIKey:       req.APIKey,
+		Model:        req.Model,
+		BaseURL:      req.BaseURL,
+		MaxRetries:   0, // no retries for test
+		Enabled:      true,
+		UserSupplied: true,
 	}
 	testRegistry := ai.NewRegistry([]ai.ProviderConfig{cfg})
 	if !testRegistry.Available() {
@@ -251,6 +268,10 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.Contains(errMsg, "status 403") {
 			writeError(w, http.StatusBadRequest, "Accès refusé — vérifiez votre clé API et vos permissions")
+			return
+		}
+		if errors.Is(err, egress.ErrPrivateAddress) || strings.Contains(errMsg, "not publicly routable") {
+			writeError(w, http.StatusBadRequest, "Cette adresse mène au réseau interne du serveur : elle est refusée.")
 			return
 		}
 		if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "no such host") {
@@ -315,13 +336,14 @@ func (h *Handler) resolveAnalyzer(ctx context.Context, userEmail string) *ai.Reg
 	}
 
 	userCfg := ai.ProviderConfig{
-		Name:       settings.Provider,
-		APIKey:     apiKey,
-		Model:      settings.Model,
-		BaseURL:    settings.BaseURL,
-		MaxRetries: 2,
-		Priority:   0,
-		Enabled:    true,
+		Name:         settings.Provider,
+		APIKey:       apiKey,
+		Model:        settings.Model,
+		BaseURL:      settings.BaseURL,
+		MaxRetries:   2,
+		Priority:     0,
+		Enabled:      true,
+		UserSupplied: true,
 	}
 
 	return h.aiRegistry.WithUserOverride(userCfg)
