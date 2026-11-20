@@ -109,6 +109,31 @@ Un écran d'avertissement Google apparaît à la connexion : c'est normal, vous 
 
 Les autres fournisseurs demandent un identifiant que vous générez chez eux, jamais le mot de passe de votre compte. L'application vous indique lequel et où le trouver, depuis le même catalogue que celui avec lequel elle se connecte.
 
+En plus de `MISTRAL_API_KEY` du lancement, il faut propager (via `.env`, et `make up` le vers le conteneur `backend` dans `docker-compose.yml`) les variables suivantes, lues à la boot par `backend/internal/config.Load` :
+
+```env
+# Open AI
+OPENAI_API_KEY=votre_cle_openai
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_BASE_URL=  # optionnel, pour une API proxy/entreprise
+
+# Anthropic
+ANTHROPIC_API_KEY=votre_cle_anthropic
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+
+# Ollama (local, hors réseau)
+OLLAMA_MODEL=  # vide = désactivé
+OLLAMA_BASE_URL=http://ollama:11434  # ADAPTER : c'est l'adresse du SERVEUR Ollama
+                                     # dans le réseau Compose, pas celle du poste
+                                     # de l'opérateur. Dans le conteneur,
+                                     # "localhost" est le conteneur, pas la machine hôte.
+
+# Fournisseur de repli (nom du provider ci-dessus à activer)
+AI_FALLBACK_PROVIDER=openai
+```
+
+Lorsqu'une variable est vide, le provider est silencieusement désactivé (sauf `OLLAMA_BASE_URL` qui tombe sur le nom de service Compose par défaut, `http://ollama:11434`). Utilisez uniquement le nom du provider listé dans `GET /api/providers`.
+
 ## Ce qui est intéressant dedans
 
 Les décisions d'ingénierie qui valent le détour, avec leur point d'entrée dans le code.
