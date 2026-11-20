@@ -39,6 +39,29 @@ read from the environment at boot (`GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`,
 `GMAIL_REDIRECT_URL`) and have no HTTP surface, so they can be neither read nor
 written over the API.
 
+## Configuration
+
+### Variables d'environnement (AI / multi-fournisseurs)
+
+Le backend lit ces variables à la boot (`backend/internal/config.Load`) ; chacune
+doit être propagée au conteneur `backend` par `docker-compose.yml`
+(et `.env` pour le dev local) :
+
+| Variable | Lecture par `config.Load` | Valeur par défaut |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `OpenAIAPIKey` | (vide = désactivé) |
+| `OPENAI_MODEL` | `OpenAIModel` | `gpt-4o-mini` |
+| `OPENAI_BASE_URL` | `OpenAIBaseURL` | (vide) |
+| `ANTHROPIC_API_KEY` | `AnthropicAPIKey` | (vide = désactivé) |
+| `ANTHROPIC_MODEL` | `AnthropicModel` | `claude-sonnet-4-20250514` |
+| `OLLAMA_MODEL` | `OllamaModel` | (vide = désactivé) |
+| `OLLAMA_BASE_URL` | `OllamaBaseURL` | `http://ollama:11434` — **adresse du serveur Compose**, pas du poste de l'opérateur |
+| `AI_FALLBACK_PROVIDER` | `AIFallbackProvider` | (vide) |
+
+Un fournisseur vide est silencieusement désactivé, sauf `OLLAMA_BASE_URL` qui
+tombe sur le nom de service Compose par défaut (`http://ollama:11434`). Voir
+`Connecter un autre fournisseur` dans le README pour la liste des fournisseurs.
+
 ## Endpoints
 
 ### Health Check
