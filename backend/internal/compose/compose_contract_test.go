@@ -62,7 +62,7 @@ func TestBackendEnvironmentContainsAllConfigVars(t *testing.T) {
 		expected := "${" + name + "}"
 		found := strings.Contains(content, expected) || strings.Contains(content, "${"+name+":-")
 		if !found {
-			t.Errorf("docker-compose.yml ne contient pas le mapping ${%s} (ou ${%s:-...}) dans %s backend.environment", name, name)
+			t.Errorf("docker-compose.yml ne contient pas le mapping ${%s} (ou ${%s:-...}) pour le fichier %s", name, name, composeFile)
 		}
 	}
 }
