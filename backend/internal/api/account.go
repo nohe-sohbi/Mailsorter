@@ -9,11 +9,13 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/digest"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// FreeMonthlyLimit is how many AI-analyzed emails a free account gets per month.
+// FreeMonthlyLimit is how many AI-analyzed emails a free account of the hosted
+// service gets per month. A self-hosted instance has no cap (analysisCapFor).
 // Cache hits and sender auto-pilot do NOT count against it.
 const FreeMonthlyLimit = 200
 
@@ -40,13 +42,23 @@ func (h *Handler) incrUsage(ctx context.Context, userEmail string, n int) {
 	)
 }
 
-// quotaExceeded is true only for free users who have spent their monthly budget.
-// Pro is unlimited.
-func (h *Handler) quotaExceeded(ctx context.Context, userEmail string) bool {
-	if h.getPlan(ctx, userEmail) == PlanPro {
-		return false
+// analysisCapFor is how many AI analyses an account may run this month, or -1 for
+// no cap. Only free accounts of the hosted service are capped. Installed at
+// home, the operator pays for its own key or runs its own model, so there is
+// nothing to ration, whatever the plan field says. Pure: the edition and the
+// plan are read by the caller.
+func analysisCapFor(edition provider.Edition, plan string) int {
+	if edition == provider.EditionSelfHosted || plan == PlanPro {
+		return -1
 	}
-	return h.getUsage(ctx, userEmail) >= FreeMonthlyLimit
+	return FreeMonthlyLimit
+}
+
+// quotaExceeded is true only for capped accounts that have spent their monthly
+// budget. See analysisCapFor for who is capped.
+func (h *Handler) quotaExceeded(ctx context.Context, userEmail string) bool {
+	limit := analysisCapFor(Edition, h.getPlan(ctx, userEmail))
+	return limit >= 0 && h.getUsage(ctx, userEmail) >= limit
 }
 
 // GetUsage reports this month's AI usage against the plan's limit.
@@ -62,10 +74,7 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 
 	used := h.getUsage(ctx, userEmail)
 	plan := h.getPlan(ctx, userEmail)
-	limit := FreeMonthlyLimit
-	if plan == PlanPro {
-		limit = -1 // unlimited
-	}
+	limit := analysisCapFor(Edition, plan) // -1: no cap
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"used":      used,

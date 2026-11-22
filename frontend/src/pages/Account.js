@@ -174,6 +174,8 @@ function Account() {
   const email = profile?.email || localStorage.getItem('userEmail') || '';
   const initial = (email[0] || '?').toUpperCase();
   const isPro = (profile?.plan || usage?.plan) === 'pro';
+  // No cap: Pro, or an instance installed at home (the API sends limit -1).
+  const unlimited = isPro || (usage && usage.limit < 0);
   const joinedOn = formatJoinDate(profile?.createdAt);
   const usedPct = usage && usage.limit > 0 ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : 0;
   const maxDay = activity ? Math.max(1, ...activity.days.map((d) => d.count)) : 1;
@@ -225,21 +227,21 @@ function Account() {
         <div className="mb-2 flex items-baseline gap-1.5">
           <span className="font-display text-3xl font-extrabold text-ink-900">{usage?.used ?? 0}</span>
           <span className="text-sm text-ink-500">
-            {isPro ? 'emails analysés ce mois · illimité' : `/ ${usage?.limit ?? 200} emails analysés ce mois`}
+            {unlimited ? 'emails analysés ce mois · illimité' : `/ ${usage?.limit ?? 200} emails analysés ce mois`}
           </span>
         </div>
         {hotel ? (
-          <span className={cn('hd-meter', isPro ? 'is-teal' : usedPct >= 90 && 'is-plum')} style={{ height: 12 }} aria-hidden="true">
-            <i style={{ width: isPro ? '100%' : `${usedPct}%` }} />
+          <span className={cn('hd-meter', unlimited ? 'is-teal' : usedPct >= 90 && 'is-plum')} style={{ height: 12 }} aria-hidden="true">
+            <i style={{ width: unlimited ? '100%' : `${usedPct}%` }} />
           </span>
         ) : (
           <div className="h-2.5 w-full overflow-hidden rounded-full bg-ink-100">
             <div
               className={cn(
                 'h-full rounded-full transition-all duration-500',
-                isPro ? 'bg-positive-fill' : usedPct >= 100 ? 'bg-danger-fill' : 'bg-brand-fill'
+                unlimited ? 'bg-positive-fill' : usedPct >= 100 ? 'bg-danger-fill' : 'bg-brand-fill'
               )}
-              style={{ width: isPro ? '100%' : `${usedPct}%` }}
+              style={{ width: unlimited ? '100%' : `${usedPct}%` }}
             />
           </div>
         )}
