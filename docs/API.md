@@ -1095,7 +1095,8 @@ header (HMAC-SHA256, 5-minute tolerance) before processing. Keeps the user's
 **Response:** `200 OK` on success, `400 Bad Request` on signature failure.
 
 > Usage/plan is reported by `GET /api/usage` → `{ used, limit, plan, billingOn }`
-> where `limit: -1` means unlimited (Pro).
+> where `limit: -1` means no cap: a Pro account, or any account of a self-hosted
+> instance (`EDITION=self-hosted`). Only free accounts of the hosted service are capped.
 
 ---
 
@@ -1129,9 +1130,11 @@ The AI triage surface. Every email is classified into an action
 (`archive` / `delete` / `label` / `keep`) with a confidence score and a short
 reasoning, persisted as a pending suggestion the user reviews and applies.
 
-> All endpoints in this section require the AI to be configured (`MISTRAL_API_KEY`)
-> and answer `503 Service Unavailable` otherwise. On the free plan they answer
-> `402 Payment Required` once the monthly quota is exhausted (see `GET /api/usage`).
+> All endpoints in this section require an AI provider to be configured (a Mistral,
+> OpenAI or Anthropic key, or a local model, see "IA locale" in the README) and
+> answer `503 Service Unavailable` otherwise. On the free plan of the hosted service
+> (`EDITION=hosted`) they answer `402 Payment Required` once the monthly quota is
+> exhausted (see `GET /api/usage`). A self-hosted instance has no monthly cap.
 
 ### Analyze (synchronous)
 
