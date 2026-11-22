@@ -126,7 +126,12 @@ func playScenarios(t *testing.T, theme string, list []scenario) {
 }
 
 func TestMain(m *testing.M) {
+	// First, before anything in the process verifies a certificate: Go reads
+	// the system roots once, so a CA trusted later is never seen and every
+	// IMAP scenario fails to reach its server.
+	cleanup := trustIMAPTestCertificate()
 	code := m.Run()
+	cleanup()
 	if path := os.Getenv("SCENARIO_REPORT"); path != "" {
 		if err := writeScenarioReport(path); err != nil {
 			fmt.Fprintf(os.Stderr, "scenario report: %v\n", err)
@@ -428,7 +433,14 @@ func (a *testApp) act(id, action string) {
 // status and the decoded JSON body (nil when the body is not a JSON object).
 func (a *testApp) call(method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
-	return a.send(method, path, body, map[string]string{"Authorization": "Bearer " + a.token})
+	return a.callAs(a.token, method, path, body)
+}
+
+// callAs is call, signed in as someone other than the scenario's user: the
+// scenarios with several people, each with their own session.
+func (a *testApp) callAs(token, method, path string, body interface{}) (int, map[string]interface{}) {
+	a.t.Helper()
+	return a.send(method, path, body, map[string]string{"Authorization": "Bearer " + token})
 }
 
 // send is call with the headers the caller chooses and no other: it is how a
