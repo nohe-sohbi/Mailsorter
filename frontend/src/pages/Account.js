@@ -247,7 +247,7 @@ function Account() {
         )}
         <p className="mt-3 text-xs text-muted">
           {usage?.period ? `Période ${usage.period}. ` : ''}
-          Le cache et l'auto-pilote ne consomment pas votre quota.
+          {unlimited ? '' : "Le cache et l'auto-pilote ne consomment pas votre quota."}
         </p>
 
         <div className="mt-5 flex flex-wrap gap-3">
