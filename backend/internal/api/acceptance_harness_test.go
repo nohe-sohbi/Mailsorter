@@ -43,6 +43,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -848,6 +849,88 @@ func (a *testApp) autopilot(from, action string) {
 		UpdatedAt:     now,
 	}); err != nil {
 		a.fatalf("activation du pilote automatique pour %q : %v", from, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The edition, and the month's analyses
+// ---------------------------------------------------------------------------
+
+// installedAtHome runs the scenario on a Mailsorter someone installed for
+// themselves: EDITION=self-hosted, what the server boots with by default.
+func (a *testApp) installedAtHome() {
+	a.t.Helper()
+	a.runsAs(provider.EditionSelfHosted)
+}
+
+// onManagedService runs the scenario on the managed service: EDITION=hosted.
+func (a *testApp) onManagedService() {
+	a.t.Helper()
+	a.runsAs(provider.EditionHosted)
+}
+
+// runsAs sets the edition for this scenario only. Edition is a package
+// variable the server sets once at boot, so it is process-wide: without the
+// restore, every scenario after this one would run in the edition this one
+// chose, and pass or fail for that reason.
+func (a *testApp) runsAs(e provider.Edition) {
+	a.t.Helper()
+	previous := Edition
+	Edition = e
+	a.t.Cleanup(func() { Edition = previous })
+}
+
+// alreadyAnalyzed puts this month's counter of the account signed in with
+// token where n analyses by the AI leave it: the usage row incrUsage writes
+// (analysis.go), keyed by the month as account.go counts it. Running n real
+// analyses would take n mails with n different subjects, since a verdict
+// served from the cache is not counted. Then it reads the counter back from
+// the Compte screen's endpoint: a scenario about mails already analyzed this
+// month proves nothing if the app does not count them.
+func (a *testApp) alreadyAnalyzed(email, token string, n int) {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := a.h.db.Usage().UpdateOne(ctx,
+		bson.M{"userId": email, "period": currentPeriod()},
+		bson.M{"$set": bson.M{"analyzed": n, "updatedAt": time.Now()}},
+		options.Update().SetUpsert(true),
+	); err != nil {
+		a.fatalf("enregistrement des %d mails déjà analysés ce mois-ci par %s : %v", n, email, err)
+	}
+	if used := a.number(a.usageAs(token), "used"); used != n {
+		a.fatalf("le compteur d'analyses du mois de %s devrait montrer %d mails déjà analysés, il en montre %d : le scénario ne prouve rien (à corriger dans acceptance_harness_test.go)", email, n, used)
+	}
+}
+
+// usageAs is the month's counter of the account signed in with token, as the
+// header and the Compte screen load it (GET /api/usage): "used", the
+// analyses spent, and "limit", negative when there is none.
+func (a *testApp) usageAs(token string) map[string]interface{} {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodGet, "/api/usage", nil)
+	if code != http.StatusOK {
+		a.fatalf("le compteur d'analyses du mois ne s'affiche pas : GET /api/usage a répondu %d : %v", code, out)
+	}
+	return out
+}
+
+// workersRunQueuedAnalyses does what the pool of analysis workers does in
+// production (startAnalysisWorkers, jobs.go): it runs every analysis queued
+// in the background (what "Trier avec l'IA" asks for on a selection of more
+// than 10 mails, ASYNC_THRESHOLD in Inbox.js), then returns. The harness builds
+// the Handler without NewHandler, so no worker runs on its own; a scenario
+// calls this at the moment it chooses, as timeComesForSnoozes does for the
+// snooze sweep.
+func (a *testApp) workersRunQueuedAnalyses() {
+	a.t.Helper()
+	for {
+		select {
+		case jobID := <-a.h.jobQueue:
+			a.h.processAnalysisJob(jobID)
+		default:
+			return
+		}
 	}
 }
 
