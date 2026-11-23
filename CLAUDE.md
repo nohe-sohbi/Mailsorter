@@ -1,6 +1,6 @@
 # Mailsorter
 
-AI-assisted Gmail triage: the model reads, understands and sorts an inbox, but every
+AI-assisted email triage: the model reads, understands and sorts an inbox, but every
 action stays a reversible proposal the user validates. Go REST API + React SPA +
 MongoDB, self-hosted end to end on [mailsorter.sohbi.dev](https://mailsorter.sohbi.dev).
 
@@ -17,7 +17,7 @@ Solo-developer project. Production is live. The 12 roadmap phases are delivered
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
 | Google | `golang.org/x/oauth2` 0.38.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
 | IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned, plus its companion `go-message` v0.18.2 (already in the graph, promoted to direct for MIME body parsing) | `backend/go.mod` |
-| AI | Mistral chat completions, hand-rolled HTTP client | `backend/internal/ai/mistral.go` |
+| AI | Mistral, OpenAI-compatible, Anthropic and Ollama (local), hand-rolled HTTP clients behind a fallback registry | `backend/internal/ai/registry.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
 | Frontend | React 18.2, react-router-dom 6.21, axios 1.6, dompurify 3.0 | `frontend/package.json` |
 | Build (front) | Create React App (`react-scripts` 5.0.1) + Tailwind 3.4 | `frontend/package.json` |
@@ -42,8 +42,8 @@ tested against a real server rather than a mock.
 
 ## Changing Behavior: the acceptance scenarios
 
-Nohé does not review code. He validates behavior: a change starts from short
-French sentences he agreed to, each proven by an acceptance scenario
+Behavior is validated, not just code: a change starts from short
+French sentences the maintainer agreed to, each proven by an acceptance scenario
 (`backend/internal/api/scenarios_*_test.go`, running on the harness in
 `acceptance_*_test.go`), and `make scenarios` is the proof. The scenarios are
 the definition of done: never edit one to make a change pass. If a scenario

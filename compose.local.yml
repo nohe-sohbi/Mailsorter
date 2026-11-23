@@ -20,6 +20,10 @@ services:
     # deployment keeps exactly the variables it had. See "IA locale" in the
     # README.
     environment:
+      # The container always listens on 8080: the healthcheck, the frontend
+      # proxy and the port mapping above all expect it. BACKEND_PORT only
+      # moves the HOST side, so a busy 8080 on your machine is one .env line.
+      PORT: "8080"
       OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
