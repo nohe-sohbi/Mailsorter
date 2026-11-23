@@ -40,11 +40,13 @@ Ce qui se paie dans le service géré, ce n'est donc pas la fonctionnalité, c'e
 
 Seize fournisseurs, dix-huit routes. Le catalogue vit dans [`backend/internal/provider`](backend/internal/provider/catalog.go) et l'application ne propose jamais un fournisseur que son édition ne sait pas joindre.
 
-**Dans les deux éditions.** Outlook.com et Microsoft 365 (OAuth, un bouton, aucun plafond), Gmail et Google Workspace (IMAP + mot de passe d'application), Orange, La Poste, Free, SFR, Yahoo, AOL, iCloud, Fastmail, Zoho, OVH, Infomaniak, et tout serveur IMAP, y compris auto-hébergé.
+**Dans les deux éditions.** Gmail et Google Workspace (IMAP + mot de passe d'application), Orange, La Poste, Free, SFR, Yahoo, AOL, iCloud, Fastmail, Zoho, OVH, Infomaniak, et tout serveur IMAP, y compris auto-hébergé. Outlook.com et Microsoft 365 passent par l'API de Microsoft (Graph), pas encore branchée : ils sont au catalogue, et l'application les affiche "bientôt".
 
 **Auto-hébergée uniquement.** Gmail et Workspace par l'API complète, et Proton Mail via Bridge.
 
 Sur Gmail, l'IMAP ne dégrade presque rien : les extensions `X-GM-EXT-1` conservent les libellés, la syntaxe de recherche Gmail et un identifiant de message stable.
+
+**Ce qui passe par quel chemin.** Par l'API Gmail, tout est branché. Sur une boîte IMAP, Mailsorter lit, analyse et range (archiver, supprimer, garder) ; les étiquettes, les règles, l'annulation, le report, le désabonnement et le récap passent encore par l'API Gmail et sont en cours de portage. L'application le dit elle-même, fournisseur par fournisseur.
 
 ## Ce qu'elle fait
 
@@ -91,6 +93,8 @@ make up
 | Application | http://localhost:3000 |
 | API | http://localhost:8080 |
 | Santé | http://localhost:8080/health |
+
+Un port déjà pris sur votre machine ? `FRONTEND_PORT=3300` ou `BACKEND_PORT=8181` dans le `.env`. `make up` affiche les adresses réellement publiées.
 
 `make up` empile `docker-compose.yml` et `compose.local.yml`, ce second fichier publiant les ports sur l'hôte. Un `docker compose up` seul démarre la pile sans rien exposer : le fichier principal est celui du déploiement, où le routage passe par un proxy.
 
@@ -156,6 +160,8 @@ Le modèle reçoit les emails par lots de 8 et doit répondre en JSON : une acti
 
 Sur 16 Go, prenez la quantification IQ4_XS ci-dessus : le `qwen3.8:27b` du catalogue Ollama pèse 18 Go et déborde de la carte, ce qui renvoie une partie du calcul sur le processeur. Les modèles ouverts changent tous les mois et tout modèle qui répond en JSON convient : ce tableau donne un point de départ, pas une liste fermée.
 
+Mailsorter demande au modèle de ne pas réfléchir à voix haute (`think: false`) : les modèles qui raisonnent avant de répondre, comme Qwen, le font sinon par défaut, et un tri n'a besoin que d'une réponse courte. Si le modèle tarde quand même, l'erreur le dit (`ollama timeout`) au lieu de parler de réseau.
+
 Plus le modèle est gros, moins il se trompe sur les cas limites, et c'est ce qui compte avant de le laisser agir en tâche de fond. Le pilote automatique ne supprime ni n'archive jamais un expéditeur protégé, quel que soit le modèle.
 
 ### llama.cpp, LM Studio, vLLM
@@ -199,7 +205,8 @@ flowchart LR
   B --> M[("MongoDB")]
   B --> X{{"internal/mailbox<br/>verbes neutres"}}
   X --> G([Gmail])
-  X -.->|a venir| I([IMAP / Graph])
+  X --> I([IMAP])
+  X -.->|a venir| GR([Microsoft Graph])
   B --> AI(["Modèle IA<br/>Ollama en local, ou API"])
   B -.->|tickers| S["Boucles de fond<br/>sync · snooze · digest"]
 ```
@@ -218,7 +225,7 @@ Détail : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · API complète : [`do
 ```bash
 cd backend  && go run cmd/server/main.go
 cd frontend && npm install && npm start
-cd backend  && go test -race ./...      # la suite complète, 205 tests
+cd backend  && go test -race ./...      # la suite complète
 ```
 
 La CI (`.github/workflows/ci.yml`) joue `vet`, `build` et `test -race` sur le backend, et le build du frontend, à chaque push et chaque PR.
