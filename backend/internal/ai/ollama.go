@@ -3,8 +3,10 @@ package ai
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -75,7 +77,12 @@ func (c *OllamaClient) chat(prompt string) (string, error) {
 		Model    string `json:"model"`
 		Messages []msg  `json:"messages"`
 		Stream   bool   `json:"stream"`
-		Options  struct {
+		// Think false: triage needs a short JSON answer, not a reasoning trace.
+		// Thinking models (Qwen among them) think by default when this is unset,
+		// which multiplies the tokens of every batch and can outlast the client
+		// timeout. Ollama ignores false on a model that cannot think.
+		Think   bool `json:"think"`
+		Options struct {
 			Temperature float64 `json:"temperature"`
 		} `json:"options"`
 	}
@@ -100,7 +107,14 @@ func (c *OllamaClient) chat(prompt string) (string, error) {
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("ollama server unreachable: %w", err)
+		// A server that is up but slower than the client timeout is not
+		// unreachable: say which one it is, or the operator debugs the network
+		// instead of the model. "timeout" also marks it transient for fallback.
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return "", fmt.Errorf("ollama timeout: model %q at %s gave no answer within %s (still loading, or too slow for this batch): %w", c.model, c.baseURL, c.httpClient.Timeout, err)
+		}
+		return "", fmt.Errorf("ollama server unreachable at %s: %w", c.baseURL, err)
 	}
 	defer resp.Body.Close()
 
