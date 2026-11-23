@@ -19,6 +19,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -123,7 +124,7 @@ func main() {
 	if cfg.StripeSecretKey != "" {
 		billingCfg.Client = billing.New(cfg.StripeSecretKey)
 		log.Println("Stripe billing initialized")
-	} else {
+	} else if cfg.Edition == provider.EditionHosted {
 		log.Println("Warning: STRIPE_SECRET_KEY not set - billing disabled")
 	}
 

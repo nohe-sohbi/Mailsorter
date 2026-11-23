@@ -1,5 +1,6 @@
 import React from 'react';
 import Spinner from '../../ui/Spinner';
+import { useInstance } from '../../contexts/InstanceContext';
 import { Google } from '../../ui/icons';
 import './SignupCard.css';
 
@@ -9,6 +10,9 @@ import './SignupCard.css';
 // both landings answer to the same selectors.
 export default function SignupCard({ auth, isConfigured }) {
   const register = auth.mode === 'register';
+  // Installed at home there is no monthly cap and nothing to pay: the hosted
+  // offer's fine print would be false there.
+  const { selfHosted } = useInstance();
   const locked = auth.busy || auth.googleBusy;
   return (
     <form className="hl-fiche" id="auth-card" onSubmit={auth.submit}>
@@ -64,7 +68,9 @@ export default function SignupCard({ auth, isConfigured }) {
           {register ? 'Se connecter' : 'Créer un compte'}
         </button>
       </p>
-      <p className="hl-fiche__fine">Gratuit jusqu'à 200 tris par mois. Sans carte bancaire.</p>
+      <p className="hl-fiche__fine">
+        {selfHosted ? 'Votre instance : sans limite de tris, rien à payer.' : "Gratuit jusqu'à 200 tris par mois. Sans carte bancaire."}
+      </p>
     </form>
   );
 }

@@ -24,8 +24,10 @@ build:
 up:
 	$(COMPOSE) up -d
 	@echo "Services are starting..."
-	@echo "Frontend: http://localhost:$${FRONTEND_PORT:-3000}"
-	@echo "Backend:  http://localhost:$${BACKEND_PORT:-8080}/health"
+	@# Ask Compose for the ports it actually published: FRONTEND_PORT and
+	@# BACKEND_PORT usually live in .env, which this shell never reads.
+	@echo "Frontend: http://localhost:$$($(COMPOSE) port frontend 80 | sed 's/.*://')"
+	@echo "Backend:  http://localhost:$$($(COMPOSE) port backend 8080 | sed 's/.*://')/health"
 
 down:
 	$(COMPOSE) down
