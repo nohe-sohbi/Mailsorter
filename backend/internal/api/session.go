@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
@@ -188,8 +189,9 @@ func writeTransportError(w http.ResponseWriter) {
 // the inbox ("Appliquer maintenant" is how those are sorted), and a mail put
 // back by "Annuler" after a rule is not sorted again at the next sync. An
 // arrival is marked (rulesDue) as it is stored, and judged until it is: a sync
-// that could not judge it answers an error, and the next one judges it again.
-func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *mailSession) (synced, total, rulesApplied int, err error) {
+// that could not judge it says so (syncRulesDone.pending, a success all the
+// same: the mails were read and listed), and the next one judges it again.
+func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *mailSession) (synced, total int, ruled syncRulesDone, err error) {
 	const folder = string(mailbox.FolderInbox)
 
 	auto := h.syncRulesFor(ctx, userEmail, session.account)
@@ -197,7 +199,7 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	listedAt := time.Now()
 	emails, err := session.imapc.List(ctx, folder, imapListLimit)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 	// Before dropStaleInbox, which may drop the row of a mail that left and
 	// is coming back.
@@ -218,7 +220,7 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	statesAt := time.Now()
 	states, err := session.imapc.States(folder)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 	present := make(map[string]bool, len(states))
 	for uid := range states {
@@ -250,7 +252,7 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	}
 	// Right after they are stored, before the phases that may lose the
 	// connection.
-	rulesApplied, rulesErr := h.rulesOnArrivals(ctx, userEmail, session, auto)
+	ruled = h.rulesOnArrivals(ctx, userEmail, session, auto)
 
 	// Each phase that reads by halves may open the connection again a few
 	// times, when a FETCH answer it cannot parse closes it
@@ -262,14 +264,14 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	stateErr := h.refreshInboxState(ctx, userEmail, states, statesAt)
 	structureErr := h.completeInboxStructure(ctx, userEmail, session, present, h.sessionReopener(ctx, userEmail, session))
 	if failed > 0 {
-		return synced, len(emails), rulesApplied, fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
+		return synced, len(emails), ruled, fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
 	}
-	for _, err := range []error{dropErr, starredErr, stateErr, structureErr, rulesErr} {
+	for _, err := range []error{dropErr, starredErr, stateErr, structureErr} {
 		if err != nil {
-			return synced, len(emails), rulesApplied, err
+			return synced, len(emails), ruled, err
 		}
 	}
-	return synced, len(emails), rulesApplied, nil
+	return synced, len(emails), ruled, nil
 }
 
 // imapListLimit is how many of the most recent inbox messages a sync reads.
@@ -390,35 +392,60 @@ func (h *Handler) comingBack(ctx context.Context, userEmail string, listed []mod
 	return out, nil
 }
 
-// errRulesNotApplied is a sync that could not judge every mail marked for the
-// rules (their text could not be read, an action failed): they stay marked,
-// and the next sync judges them again. Its text is what the user is told.
-var errRulesNotApplied = errors.New("vos règles n'ont pas pu être appliquées à tous les nouveaux mails, la prochaine synchronisation réessaiera")
-
 // maxRuleTries is how many syncs judge a marked mail before giving up on it
-// (logged): a failure that does not go away (a folder the server refuses)
-// must not fail every sync.
+// (logged, and told once): a failure that does not go away (a folder the
+// server refuses) must not be announced at every sync.
 const maxRuleTries = 3
+
+// syncRulesDone is what the rules did at a sync: the mails they acted on
+// (applied), the arrivals they could not judge, left marked for the next sync
+// (pending), and the ones given up after maxRuleTries syncs (givenUp), which
+// stay in the inbox.
+type syncRulesDone struct {
+	applied, pending, givenUp int
+}
+
+// rulesMessage is what the screen tells after a sync whose rules could not
+// judge every mail that arrived, as information: the sync itself worked, the
+// mails were read and are listed. Empty when there is nothing to tell. A mail
+// given up is told at the sync that gives it up, once.
+func rulesMessage(pending, givenUp int) string {
+	var parts []string
+	switch {
+	case pending == 1:
+		parts = append(parts, "Vos règles n'ont pas pu être appliquées à 1 nouveau mail : la prochaine synchronisation réessaiera.")
+	case pending > 1:
+		parts = append(parts, fmt.Sprintf("Vos règles n'ont pas pu être appliquées à %d nouveaux mails : la prochaine synchronisation réessaiera.", pending))
+	}
+	switch {
+	case givenUp == 1:
+		parts = append(parts, "1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte.")
+	case givenUp > 1:
+		parts = append(parts, fmt.Sprintf("%d mails n'ont pas pu être rangés par vos règles : laissés dans la boîte.", givenUp))
+	}
+	return strings.Join(parts, " ")
+}
 
 // rulesOnArrivals applies the rules to the mails marked for them (rulesDue):
 // the arrivals of this sync and of the syncs before that could not judge
-// them, still in the inbox and received since the option counts. It says how
-// many a rule acted on. Each action is written in the history like those of
-// "Appliquer maintenant" (runRules). A mail judged, or whose text cannot be
-// read (NotReached, unparseable: logged by withTexts), is unmarked; one whose
-// text read stopped or whose rule failed stays marked for the next sync,
-// maxRuleTries times at most, and the sync answers errRulesNotApplied.
-func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session *mailSession, auto syncRules) (int, error) {
+// them, still in the inbox and received since the option counts. Each action
+// is written in the history like those of "Appliquer maintenant" (runRules). A
+// mail judged, or whose text cannot be read (NotReached, unparseable: logged
+// by withTexts), is unmarked; one whose text read stopped or whose rule failed
+// stays marked for the next sync (pending), maxRuleTries times at most
+// (givenUp). A datastore that cannot be asked which mails are marked is
+// logged: they stay marked, and the next sync judges them.
+func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session *mailSession, auto syncRules) syncRulesDone {
 	if !auto.on() {
-		return 0, nil
+		return syncRulesDone{}
 	}
 	due, claim, err := h.claimRulesDue(ctx, userEmail, auto.since)
 	if err != nil {
-		log.Printf("imap sync: take the mails of %s marked for the rules: %v", userEmail, err)
-		return 0, errRulesNotApplied
+		log.Printf("imap sync: take the mails of %s marked for the rules, judged at the next sync: %v", userEmail, err)
+		return syncRulesDone{}
 	}
 	if len(due) == 0 {
-		return 0, nil
+		return syncRulesDone{}
 	}
 	ids := make([]string, 0, len(due))
 	for _, e := range due {
@@ -429,8 +456,8 @@ func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session
 		withText, err := h.withTexts(ctx, userEmail, session, due)
 		if err != nil {
 			log.Printf("imap sync: the text of %d mails of %s marked for the rules could not be read, judged at the next sync: %v", len(due), userEmail, err)
-			h.releaseRulesDue(ctx, userEmail, claim, nil, ids)
-			return 0, errRulesNotApplied
+			pending, givenUp := h.releaseRulesDue(ctx, userEmail, claim, nil, ids)
+			return syncRulesDone{pending: pending, givenUp: givenUp}
 		}
 		judged = withText
 	}
@@ -445,11 +472,8 @@ func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session
 			ok = append(ok, id)
 		}
 	}
-	h.releaseRulesDue(ctx, userEmail, claim, ok, done.failed)
-	if len(done.failed) > 0 {
-		return done.applied, errRulesNotApplied
-	}
-	return done.applied, nil
+	pending, givenUp := h.releaseRulesDue(ctx, userEmail, claim, ok, done.failed)
+	return syncRulesDone{applied: done.applied, pending: pending, givenUp: givenUp}
 }
 
 // claimRulesDue takes the mails this sync judges: marked for the rules, still
@@ -483,10 +507,11 @@ func (h *Handler) claimRulesDue(ctx context.Context, userEmail string, since tim
 }
 
 // releaseRulesDue ends a claim: the mails judged are unmarked; the ones that
-// failed stay marked for the next sync, with one try more, and are unmarked
-// once they reach maxRuleTries. A write that fails is logged: the mail is then
-// judged once more, or its claim expires (moveInFlight).
-func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, judged, failed []string) {
+// failed stay marked for the next sync, with one try more (pending), and are
+// unmarked once they reach maxRuleTries (givenUp). A write that fails is
+// logged: the mail is then judged once more, or its claim expires
+// (moveInFlight), and it counts as pending.
+func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, judged, failed []string) (pending, givenUp int) {
 	folder := string(mailbox.FolderInbox)
 	if len(judged) > 0 {
 		if _, err := h.db.Emails().UpdateMany(ctx,
@@ -497,25 +522,28 @@ func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, 
 		}
 	}
 	if len(failed) == 0 {
-		return
+		return 0, 0
 	}
 	if _, err := h.db.Emails().UpdateMany(ctx,
 		bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim, "messageId": bson.M{"$in": failed}},
 		bson.M{"$unset": bson.M{"rulesClaim": "", "rulesClaimAt": ""}, "$inc": bson.M{"rulesTries": 1}},
 	); err != nil {
 		log.Printf("imap sync: %d mails of %s the rules could not judge, not released for the next sync: %v", len(failed), userEmail, err)
-		return
+		return len(failed), 0
 	}
 	res, err := h.db.Emails().UpdateMany(ctx,
 		bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": failed}, "rulesTries": bson.M{"$gte": maxRuleTries}},
 		bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": ""}},
 	)
-	switch {
-	case err != nil:
+	if err != nil {
 		log.Printf("imap sync: give up the rules on mails of %s after %d tries: %v", userEmail, maxRuleTries, err)
-	case res.ModifiedCount > 0:
-		log.Printf("imap sync: the rules gave up on %d mails of %s after %d tries (among %v)", res.ModifiedCount, userEmail, maxRuleTries, failed)
+		return len(failed), 0
 	}
+	givenUp = int(res.ModifiedCount)
+	if givenUp > 0 {
+		log.Printf("imap sync: the rules gave up on %d mails of %s after %d tries (among %v)", givenUp, userEmail, maxRuleTries, failed)
+	}
+	return len(failed) - givenUp, givenUp
 }
 
 // storeInboxMessage writes a message the sync read in full (its envelope)

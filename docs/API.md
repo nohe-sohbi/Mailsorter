@@ -377,10 +377,15 @@ moved out, then back after a sync went by, is not recognized: that sync
 dropped it from the copy, and it is judged as a message that arrives if its
 INTERNALDATE allows it. An arrival is marked as it is stored, then judged. One
 whose text could not be read, or on which an action of its rule failed, stays
-marked: the sync answers `500` ("vos règles n'ont pas pu être appliquées à
-tous les nouveaux mails, la prochaine synchronisation réessaiera"), and the
-next syncs judge it again, 3 syncs in all, then give up (logged). A marked
-message that left the inbox meanwhile is not judged, nor counted. A rule on
+marked, and the next syncs judge it again, 3 syncs in all, then give up on it
+(logged, and left in the inbox). The sync still answers `200`, since the
+messages were read and listed: `rulesPending` counts the messages left for the
+next sync, and `rulesMessage` says it for the screen to show as information,
+in French ("Vos règles n'ont pas pu être appliquées à 2 nouveaux mails : la
+prochaine synchronisation réessaiera.", and, at the sync that gives up, once:
+"1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte.").
+`rulesMessage` is absent when there is nothing to tell. A marked message that
+left the inbox meanwhile is not judged, nor counted. A rule on
 `body` or `snippet` reads the text of those messages from the server first.
 The listing, and that text, are read with PEEK, so syncing never marks a
 message read.
@@ -393,9 +398,12 @@ message read.
 {
   "synced": 42,
   "total": 50,
-  "rulesApplied": 3
+  "rulesApplied": 3,
+  "rulesPending": 0
 }
 ```
+
+`rulesPending` is always `0` over the Gmail API.
 
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant

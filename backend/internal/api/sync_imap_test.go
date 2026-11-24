@@ -158,6 +158,28 @@ func TestSyncRulesArrival(t *testing.T) {
 	}
 }
 
+// What the screen is told after a sync whose rules could not judge every mail
+// that arrived: nothing when they all were, one sentence per case otherwise,
+// in the singular for one mail.
+func TestRulesMessage(t *testing.T) {
+	cases := []struct {
+		pending, givenUp int
+		want             string
+	}{
+		{0, 0, ""},
+		{1, 0, "Vos règles n'ont pas pu être appliquées à 1 nouveau mail : la prochaine synchronisation réessaiera."},
+		{3, 0, "Vos règles n'ont pas pu être appliquées à 3 nouveaux mails : la prochaine synchronisation réessaiera."},
+		{0, 1, "1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte."},
+		{0, 2, "2 mails n'ont pas pu être rangés par vos règles : laissés dans la boîte."},
+		{2, 1, "Vos règles n'ont pas pu être appliquées à 2 nouveaux mails : la prochaine synchronisation réessaiera. 1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte."},
+	}
+	for _, tc := range cases {
+		if got := rulesMessage(tc.pending, tc.givenUp); got != tc.want {
+			t.Errorf("rulesMessage(%d, %d) = %q, want %q", tc.pending, tc.givenUp, got, tc.want)
+		}
+	}
+}
+
 // The reopen budget of one phase of a sync: phaseReopens openings, then
 // imap.ErrReopenLimit, which ReadInHalves reads as "leave the rest for next
 // time" rather than as a lost mailbox. The test handler's datastore is

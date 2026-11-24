@@ -67,8 +67,9 @@ syncInbox(compte)
           synchro seule) ; leur texte lu en PEEK si une règle le regarde (pas jugé : un
           texte illisible, ou au-delà des 256 Ko lus) ; lu et favori avant le rangement,
           expéditeurs protégés épargnés, entrée au journal (source "rule") ; un mail
-          dont la lecture ou une action a échoué reste marqué, la synchro répond une
-          erreur, les suivantes le rejugent, 3 fois en tout
+          dont la lecture ou une action a échoué reste marqué, les suivantes le
+          rejugent, 3 fois en tout ; la synchro répond 200 quand même (rulesPending,
+          et rulesMessage, que l'écran montre comme une information)
        -> les mails en favori que la copie n'a pas encore (un ancien favori), 500 au
           plus par synchro, les plus récents d'abord
        -> lu, favori et taille remis à jour sur chaque mail de la copie, ancien compris ;

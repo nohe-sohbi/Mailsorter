@@ -83,11 +83,15 @@ export function EmailProvider({ children }) {
       // handed back to the caller: the "Synchroniser" button used to announce
       // "Boîte synchronisée" after a sync that had failed.
       let syncError = '';
+      // What a sync that worked has to say besides (over IMAP, rules that
+      // could not run on some new mails yet): information, never an error.
+      let syncNotice = '';
       try {
         const now = Date.now();
         if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
           try {
-            await emailService.syncEmails();
+            const syncRes = await emailService.syncEmails();
+            syncNotice = syncRes?.data?.rulesMessage || '';
             lastSyncRef.current = now;
           } catch (syncErr) {
             console.warn('Sync failed:', syncErr);
@@ -114,7 +118,7 @@ export function EmailProvider({ children }) {
           subscriptionService.getSubscriptions(),
         ]);
 
-        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError };
+        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError, syncNotice };
 
         // The listing is the one call whose failure the user must see: without
         // it the screen falls back to an empty list, which the inbox used to
@@ -122,7 +126,7 @@ export function EmailProvider({ children }) {
         if (emailsRes.status === 'rejected') {
           reportError(emailsRes.reason);
           setLoading(false);
-          return { emails, senders, suggestions, stats: newStats, syncError, listError: true };
+          return { emails, senders, suggestions, stats: newStats, syncError, syncNotice, listError: true };
         }
 
         let newEmails = [];
@@ -151,10 +155,17 @@ export function EmailProvider({ children }) {
         setSubscriptions(newSubscriptions);
         lastFetchRef.current = Date.now();
 
-        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats, syncError };
+        return {
+          emails: newEmails,
+          senders: newSenders,
+          suggestions: newSuggestions,
+          stats: newStats,
+          syncError,
+          syncNotice,
+        };
       } catch (err) {
         if (!isStale()) reportError(err);
-        return { emails, senders, suggestions, stats, syncError, listError: true };
+        return { emails, senders, suggestions, stats, syncError, syncNotice, listError: true };
       } finally {
         if (!isStale()) setLoading(false);
       }

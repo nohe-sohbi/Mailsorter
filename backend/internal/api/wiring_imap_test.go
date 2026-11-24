@@ -264,10 +264,33 @@ func archiveFolderGone(moi *imapPerson) {
 	}
 }
 
+// expectRulesPending checks what a sync answered about the rules: 200, as
+// any sync that read and listed the mails, with the mails left for the next
+// sync (rulesPending) and the sentence the screen shows as information
+// (rulesMessage, absent when there is nothing to tell). when names the sync.
+func expectRulesPending(moi *imapPerson, when string, pending int, message string) {
+	a := moi.app
+	a.t.Helper()
+	code, out := moi.syncAnswer()
+	if code != http.StatusOK {
+		a.fatalf("%s de %s devrait répondre 200 (les mails sont relevés et listés), elle a répondu %d : %v", when, moi.email, code, out)
+	}
+	if n := a.number(out, "rulesPending"); n != pending {
+		a.failf("%s de %s devrait laisser %d mail(s) aux règles de la synchronisation suivante (rulesPending), elle en laisse %d", when, moi.email, pending, n)
+	}
+	got, has := out["rulesMessage"].(string)
+	switch {
+	case message == "" && has:
+		a.failf("%s de %s ne devrait rien dire des règles, elle dit %q", when, moi.email, got)
+	case message != "" && got != message:
+		a.failf("%s de %s devrait dire %q, elle dit %q", when, moi.email, message, got)
+	}
+}
+
 // A sync whose rules could not range the mails that arrived (the archive is
-// refused) answers an error, and the next sync judges them again, once the
-// archive is back. A mail the person put away by hand in between is not
-// judged, nor counted.
+// refused) answers 200 all the same, saying they are left for the next sync,
+// and the next sync judges them again, once the archive is back. A mail the
+// person put away by hand in between is not judged, nor counted.
 func TestAcceptance_AutoRulesJudgeAgainWhatTheyCouldNotRange(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
 	moi := app.imapPerson(imapInboxOwner)
@@ -276,9 +299,8 @@ func TestAcceptance_AutoRulesJudgeAgainWhatTheyCouldNotRange(t *testing.T) {
 	archiveFolderGone(moi)
 
 	uids := moi.arrive(shopOrder, shopSale)
-	if code, out := moi.syncAnswer(); code == http.StatusOK {
-		app.failf("la synchronisation de %s, dont les règles n'ont pas pu archiver les mails arrivés, devrait répondre une erreur, elle a répondu 200 : %v", moi.email, out)
-	}
+	expectRulesPending(moi, "la synchronisation dont les règles n'ont pas pu archiver les mails arrivés", 2,
+		"Vos règles n'ont pas pu être appliquées à 2 nouveaux mails : la prochaine synchronisation réessaiera.")
 	moi.expectOnServer(serverInbox, shopOrder.Subject)
 	moi.expectShows(uids[0], shopOrder.Subject)
 
@@ -293,6 +315,12 @@ func TestAcceptance_AutoRulesJudgeAgainWhatTheyCouldNotRange(t *testing.T) {
 	if n := app.number(out, "rulesApplied"); n != 1 {
 		app.failf("la synchronisation suivante de %s devrait compter 1 mail rangé par les règles (celui mis à la corbeille à la main n'est plus à juger), elle en compte %d", moi.email, n)
 	}
+	if n := app.number(out, "rulesPending"); n != 0 {
+		app.failf("la synchronisation suivante de %s ne devrait plus rien laisser aux règles, elle laisse %d mail(s)", moi.email, n)
+	}
+	if msg, has := out["rulesMessage"]; has {
+		app.failf("la synchronisation suivante de %s ne devrait rien dire des règles, elle dit %v", moi.email, msg)
+	}
 	moi.expectOnServer(serverArchive, shopOrder.Subject)
 	moi.expectNotOnServer(serverInbox, shopOrder.Subject, "la synchronisation suivante l'a archivé")
 	if _, ok := ruleLineFor(moi, uids[0], "archive"); !ok {
@@ -303,8 +331,8 @@ func TestAcceptance_AutoRulesJudgeAgainWhatTheyCouldNotRange(t *testing.T) {
 }
 
 // A mail its rule cannot range sync after sync is given up after maxRuleTries
-// syncs: the next ones answer 200, and leave it where it is, even once the
-// archive is back.
+// syncs: the sync that gives it up says so, once; the next ones say nothing,
+// and leave it where it is, even once the archive is back.
 func TestAcceptance_AutoRulesGiveUpAfterTries(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
 	moi := app.imapPerson(imapInboxOwner)
@@ -313,12 +341,13 @@ func TestAcceptance_AutoRulesGiveUpAfterTries(t *testing.T) {
 	archiveFolderGone(moi)
 
 	uids := moi.arrive(shopOrder)
-	for i := 1; i <= maxRuleTries; i++ {
-		if code, out := moi.syncAnswer(); code == http.StatusOK {
-			app.failf("la synchronisation n°%d de %s, la règle échouant encore, devrait répondre une erreur, elle a répondu 200 : %v", i, moi.email, out)
-		}
+	for i := 1; i < maxRuleTries; i++ {
+		expectRulesPending(moi, fmt.Sprintf("la synchronisation n°%d, la règle échouant encore,", i), 1,
+			"Vos règles n'ont pas pu être appliquées à 1 nouveau mail : la prochaine synchronisation réessaiera.")
 	}
-	moi.sync()
+	expectRulesPending(moi, fmt.Sprintf("la synchronisation n°%d, qui abandonne,", maxRuleTries), 0,
+		"1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte.")
+	expectRulesPending(moi, "la synchronisation d'après", 0, "")
 	moi.newFolderElsewhere(serverArchive)
 	moi.sync()
 	moi.expectOnServer(serverInbox, shopOrder.Subject)

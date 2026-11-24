@@ -523,7 +523,10 @@ function Inbox() {
         }`
       );
     } else if (!result?.listError) {
-      toast.success('Boîte synchronisée');
+      // Rules that could not run on some new mails do not make the sync a
+      // failure: the mails were read and are listed. Told as information.
+      if (result?.syncNotice) toast.info(`Boîte synchronisée. ${result.syncNotice}`);
+      else toast.success('Boîte synchronisée');
     }
   };
 

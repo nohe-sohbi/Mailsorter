@@ -481,7 +481,7 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
+	synced, total, ruled, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
 		if errors.Is(err, errReauthRequired) {
 			writeAuthError(w, err)
@@ -491,11 +491,18 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	out := map[string]interface{}{
 		"synced":       synced,
 		"total":        total,
-		"rulesApplied": rulesApplied,
-	})
+		"rulesApplied": ruled.applied,
+		// Mails the rules could not judge at this sync, over IMAP: the sync
+		// worked all the same, so this is information, not an error.
+		"rulesPending": ruled.pending,
+	}
+	if msg := rulesMessage(ruled.pending, ruled.givenUp); msg != "" {
+		out["rulesMessage"] = msg
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // syncInbox mirrors the caller's inbox into Mongo, through whichever transport
@@ -504,17 +511,17 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 // quota-free). It is shared by the manual SyncEmails handler and the
 // background auto-sync scheduler so both behave identically. It returns how
 // many emails were persisted, how many were seen, and how many had a rule
-// applied.
+// applied, could not be judged yet, or were given up (syncRulesDone).
 //
 // This is the fork the whole edition split was for. Everything above it (the
 // handler, the auto-sync loop) asks for a sync and gets one; only this function
 // knows there are two ways to perform it. The rules do not judge the same
 // messages on both: every message listed over the Gmail API, only the ones
 // that arrive over IMAP (see syncInboxIMAP).
-func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
+func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total int, ruled syncRulesDone, err error) {
 	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 	defer session.Close()
 
@@ -524,10 +531,10 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 	return h.syncInboxGmail(ctx, userEmail, session)
 }
 
-func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session *mailSession) (synced, total, rulesApplied int, err error) {
+func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session *mailSession) (synced, total int, ruled syncRulesDone, err error) {
 	messages, err := h.gmailService.ListMessages(session.gmail, "in:inbox", 100)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 
 	// Autopilot: when the user opted in, run their deterministic rules over each
@@ -575,7 +582,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 			if match := rules.FirstMatch(email, autoRules); match != nil {
 				appliedActs, _, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
 				if len(appliedActs) > 0 {
-					rulesApplied++
+					ruled.applied++
 					byRule[match.Name]++
 					for _, act := range appliedActs {
 						h.logActionMeta(ctx, userEmail, msg.Id, act, SourceRule, email.Subject, email.From)
@@ -587,7 +594,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 
 	h.countRuleHits(ctx, userEmail, byRule)
 
-	return synced, len(messages), rulesApplied, nil
+	return synced, len(messages), ruled, nil
 }
 
 // reversedBy names, for each inverse a client sends right after an action, the

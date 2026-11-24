@@ -272,9 +272,13 @@ mail. Each sentence of "Tes règles sur une boîte IMAP" pins part of this.
   is taken over), reads their text if a rule needs it, and runs `runRules`.
   `releaseRulesDue` unmarks the mails judged (and those whose text cannot be
   read or is `NotReached`, logged); a mail whose text read stopped or whose
-  rule failed keeps its mark with `rulesTries + 1`, and the sync answers
-  `errRulesNotApplied`; at `maxRuleTries` (3) it is unmarked and logged. A
-  marked mail that left the inbox meanwhile is not judged nor counted.
+  rule failed keeps its mark with `rulesTries + 1` (pending); at
+  `maxRuleTries` (3) it is unmarked and logged (given up). The sync still
+  answers 200, the mails being read and listed: `rulesPending` and
+  `rulesMessage` (`rulesMessage(pending, givenUp)`, the given-up ones told at
+  the sync that gives them up, once), which `handleSync` in `Inbox.js` shows
+  as an information toast. A marked mail that left the inbox meanwhile is not
+  judged nor counted.
 - Old favorites stored by `storeStarredOutsideList` are never marked.
 
 `rulesApplied` counts the marked mails a rule acted on at this sync.
@@ -580,8 +584,11 @@ response `protectedSkipped` and that the message is still in the inbox.
   mail program moved out still stored answers `errAlreadyOut` / `errLeftInbox`
   and is neither counted nor journaled.
 - **An IMAP arrival is judged 3 syncs at most.** A failure that does not go
-  away (a folder the server refuses) fails 3 syncs, then the mail is given up
-  (logged) and left where it is; "Appliquer maintenant" still judges it.
+  away (a folder the server refuses) is told at 3 syncs, then the mail is
+  given up (logged, told once) and left where it is; "Appliquer maintenant"
+  still judges it. Only the "Synchroniser" button shows the message: a sync
+  run on page load or in the background (`auto_sync.go`, which logs it) does
+  not.
 - **A mail is an arrival by its server's clock.** INTERNALDATE is set by the
   mail server, the option's stamp by Mailsorter's: a skew between the two moves
   the boundary by as much.

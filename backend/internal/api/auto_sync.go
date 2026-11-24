@@ -62,13 +62,16 @@ func (h *Handler) runDueAutoSyncs() {
 		// Stamp first so a failure does not get retried every sweep all day.
 		h.stampAutoSync(ctx, u.Email)
 
-		_, _, rulesApplied, err := h.syncInbox(ctx, u.Email)
+		_, _, ruled, err := h.syncInbox(ctx, u.Email)
 		if err != nil {
 			log.Printf("autosync: sync failed for %s: %v", u.Email, err)
 			continue
 		}
-		if rulesApplied > 0 {
-			log.Printf("autosync: %s, %d email(s) auto-triaged", u.Email, rulesApplied)
+		if ruled.applied > 0 {
+			log.Printf("autosync: %s, %d email(s) auto-triaged", u.Email, ruled.applied)
+		}
+		if ruled.pending > 0 || ruled.givenUp > 0 {
+			log.Printf("autosync: %s, rules left %d email(s) for the next sync, gave up on %d", u.Email, ruled.pending, ruled.givenUp)
 		}
 	}
 }
