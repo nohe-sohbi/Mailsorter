@@ -111,7 +111,8 @@ function Privacy() {
           Pour afficher votre boîte sans rappeler votre fournisseur à chaque clic, Mailsorter conserve une copie
           locale des messages synchronisés dans la base de données de l'instance :{' '}
           <strong className="text-ink-900">expéditeur, destinataires, sujet, extrait, contenu, libellés
-          et date</strong>. Les pièces jointes ne sont pas stockées : quand l'application vous propose
+          et date</strong>, ainsi que l'état du message (lu ou non, en favori ou non), sa taille et le
+          fait qu'il ait ou non des pièces jointes. Les pièces jointes elles-mêmes ne sont pas stockées : quand l'application vous propose
           d'en télécharger une, elle la récupère chez votre fournisseur au moment où vous cliquez.
         </p>
         <p>Sont également conservés les éléments que vous créez dans l'application :</p>

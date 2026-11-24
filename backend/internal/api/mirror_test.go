@@ -58,6 +58,35 @@ func TestMirrorFilterTranslatesTheQueriesTheAppSends(t *testing.T) {
 			},
 		},
 		{
+			name:  "the favorites chip",
+			query: "in:inbox is:starred",
+			want:  bson.M{"userId": "u@example.com", "leftInbox": notLeft, "folder": "INBOX", "isStarred": true},
+		},
+		{
+			name:  "the attachments chip",
+			query: "in:inbox has:attachment",
+			want:  bson.M{"userId": "u@example.com", "leftInbox": notLeft, "folder": "INBOX", "hasAttachments": true},
+		},
+		{
+			name:  "the large mail chip",
+			query: "in:inbox larger:5M",
+			want: bson.M{
+				"userId":       "u@example.com",
+				"leftInbox":    notLeft,
+				"folder":       "INBOX",
+				"sizeEstimate": bson.M{"$gt": int64(5 << 20)},
+			},
+		},
+		{
+			name:  "a size window is one clause",
+			query: "larger:100K smaller:1M",
+			want: bson.M{
+				"userId":       "u@example.com",
+				"leftInbox":    notLeft,
+				"sizeEstimate": bson.M{"$gt": int64(100 << 10), "$lt": int64(1 << 20)},
+			},
+		},
+		{
 			name:  "no query at all still scopes to the user",
 			query: "",
 			want:  bson.M{"userId": "u@example.com", "leftInbox": notLeft},
@@ -138,13 +167,13 @@ func TestMirrorFilterKeepsBothEndsOfADateWindow(t *testing.T) {
 // A filter that cannot be answered is refused, and refused BEFORE the
 // datastore: the check is on the query, not on what comes back.
 //
-// Running it without the term instead would answer a full inbox under a button
-// labelled "Pieces jointes", and nothing on screen would say the filter did
+// Running it without the term instead would answer a full inbox under a saved
+// search named "Factures", and nothing on screen would say the filter did
 // nothing.
 func TestListFromMirrorRefusesAQueryItCannotAnswer(t *testing.T) {
 	h := newTestHandler(t)
 
-	page, err := h.listFromMirror(cancelledContext(), "u@example.com", "in:inbox has:attachment", 50, "")
+	page, err := h.listFromMirror(cancelledContext(), "u@example.com", "in:inbox label:Factures", 50, "")
 	if err == nil {
 		t.Fatal("a query with an unanswerable term returned a page instead of an error")
 	}
@@ -156,8 +185,8 @@ func TestListFromMirrorRefusesAQueryItCannotAnswer(t *testing.T) {
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("err = %v, want an errUnsupportedQuery so the handler can answer 501", err)
 	}
-	if !reflect.DeepEqual(unsupported.terms, []string{"has:attachment"}) {
-		t.Errorf("terms = %v, want [has:attachment] so the message can name it", unsupported.terms)
+	if !reflect.DeepEqual(unsupported.terms, []string{"label:Factures"}) {
+		t.Errorf("terms = %v, want [label:Factures] so the message can name it", unsupported.terms)
 	}
 }
 

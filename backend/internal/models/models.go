@@ -82,6 +82,22 @@ type Email struct {
 	HeaderMessageID string    `json:"-" bson:"headerMessageId,omitempty"`
 	ReceivedDate    time.Time `json:"receivedDate" bson:"receivedDate"`
 	IsRead          bool      `json:"isRead" bson:"isRead"`
+	// IsStarred is the star ("Favori"), set on the IMAP transport only, where
+	// it is the \Flagged flag; over the Gmail API the star is the STARRED
+	// label in LabelIDs. Omitted from JSON when false, and that is
+	// load-bearing: the reader reads `isStarred ?? labelIds.includes('STARRED')`,
+	// and a false sent with every Gmail message would hide its star. Stored even
+	// when false, so a star taken off clears the stored one.
+	IsStarred bool `json:"isStarred,omitempty" bson:"isStarred"`
+	// SizeEstimate is the size of the whole message in bytes (RFC822.SIZE) and
+	// HasAttachments whether it carries a file, both set on the IMAP transport
+	// only, by the sync (see syncInboxIMAP), which stores false too once it has
+	// read the structure: a stored message without hasAttachments has not been
+	// read for it yet. Both are omitted when empty here, so writing a message
+	// back from a listing or from the reader, which do not read them, never
+	// erases what the sync stored.
+	SizeEstimate   int64 `json:"sizeEstimate,omitempty" bson:"sizeEstimate,omitempty"`
+	HasAttachments bool  `json:"hasAttachments,omitempty" bson:"hasAttachments,omitempty"`
 	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.
 	UnsubURL      string    `json:"unsubUrl,omitempty" bson:"unsubUrl,omitempty"`
 	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`

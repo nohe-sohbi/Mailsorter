@@ -268,6 +268,36 @@ func TestListReportsReadState(t *testing.T) {
 	}
 }
 
+// The star comes off the server too: \Flagged, set here or by another mail
+// program, is what the row shows as "Favori".
+func TestListReportsTheStar(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	appendRaw(t, c, "INBOX", message("a@b.com", "Un"))
+	appendRaw(t, c, "INBOX", message("a@b.com", "Deux"))
+
+	emails, err := c.List(context.Background(), "INBOX", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	starred := emails[0].MessageID
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", starred), mailbox.Mutation{Action: mailbox.ActionStar}); err != nil {
+		t.Fatalf("star: %v", err)
+	}
+
+	emails, err = c.List(context.Background(), "INBOX", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, e := range emails {
+		if want := e.MessageID == starred; e.IsStarred != want {
+			t.Errorf("message %s lists IsStarred = %v, want %v", e.MessageID, e.IsStarred, want)
+		}
+		if e.IsRead {
+			t.Errorf("message %s lists read: a star is not a read", e.MessageID)
+		}
+	}
+}
+
 func TestFormatAddress(t *testing.T) {
 	cases := []struct {
 		in   []imapv2.Address

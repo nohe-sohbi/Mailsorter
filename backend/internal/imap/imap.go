@@ -155,6 +155,12 @@ func (c *Client) Close() error {
 	return c.c.Close()
 }
 
+// Closed says whether the connection is gone: closed here, or by go-imap
+// on an answer it could not read. Nothing more can be asked on it.
+func (c *Client) Closed() bool {
+	return c.c == nil || c.c.State() == imapv2.ConnStateLogout
+}
+
 // folderInfo is one mailbox as the server described it.
 type folderInfo struct {
 	Name  string
@@ -312,27 +318,6 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 		landed.ID = id
 	}
 	return landed, nil
-}
-
-// UIDs returns the UID of every message in folder. A listing reads only the
-// newest messages; this is how the sync tells which of the older ones it
-// stored are still there, in one round trip whatever the size of the folder.
-func (c *Client) UIDs(folder string) (map[string]bool, error) {
-	// Re-selected, like a listing: the answer must reflect the folder now.
-	c.selected = ""
-	if err := c.selectFolder(folder); err != nil {
-		return nil, err
-	}
-	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{}, nil).Wait()
-	if err != nil {
-		return nil, fmt.Errorf("imap: list the uids of %q: %w", folder, err)
-	}
-	uids := res.AllUIDs()
-	out := make(map[string]bool, len(uids))
-	for _, u := range uids {
-		out[strconv.FormatUint(uint64(u), 10)] = true
-	}
-	return out, nil
 }
 
 // MoveRecorded moves the message Mailsorter recorded as uid in folder. When

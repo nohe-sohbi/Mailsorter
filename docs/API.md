@@ -334,7 +334,12 @@ reader fetches the one it opens (`GET /api/emails/{id}`).
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
 set of labels; `folder` carries that folder instead, and `messageId` is the
-message's UID in it. See "Transports and what works on each".
+message's UID in it. Three fields come with it there: `isStarred` (`true` when
+the server holds `\Flagged`, absent otherwise), `sizeEstimate` (the whole
+message in bytes, `RFC822.SIZE`) and `hasAttachments` (`true` when it carries a
+file, absent otherwise), the last two read by the sync. The Gmail API's
+answer carries none of them: the star is the `STARRED` label there. See
+"Transports and what works on each".
 
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
@@ -405,8 +410,9 @@ and `unstar` over IMAP answer `404` "Ce mail n'est plus dans votre boîte de
 réception." when the message has left the inbox (the server would accept the
 change on a number that names nothing). A move elsewhere (`delete` on
 a mail Mailsorter archived) moves it from where it is, and "Annuler" still
-finds it. `read` and `unread` over IMAP also change the stored copy, so the
-list shows them at once. `unarchive`
+finds it. `read`, `unread`, `star` and `unstar` over IMAP also change the
+stored copy, so the list and its filters (`is:unread`, `is:starred`) show them
+at once. `unarchive`
 and `untrash` are what "Annuler" sends right after an action: they mark the
 most recent matching forward entry `undone` and record the reversal (source
 `undo`), as `POST /api/activity/undo` does.
@@ -472,7 +478,8 @@ entirely.
 
 On a mailbox reached over IMAP the fetch PEEKS: it downloads the body without
 setting `\Seen`, so opening a message stays distinct from reading it and only
-`markRead=1` changes the flag. `attachments` and `labelIds` come back empty
+`markRead=1` changes the flag. The star comes as `isStarred`, read off the
+server. `attachments` and `labelIds` come back empty
 there: the download route has not been ported, and a chip that answers 501 when
 clicked is worse than no chip.
 
@@ -811,7 +818,7 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | Works on IMAP | Answers 501 on IMAP |
 |---|---|
 | `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
-| `GET /api/emails` (served from the stored mailbox, see below) | the `has:`, `larger:`, `smaller:`, `label:`, `filename:`, `category:` terms, `is:` other than `read` / `unread`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` |
+| `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
 | `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
 | `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
@@ -845,11 +852,43 @@ Two consequences worth knowing:
   a message that left, either way, become `moot`: they leave the plan, and
   applying one from a screen loaded before does nothing (`ApplySuggestion`
   answers `{"status":"already"}`, `apply-batch` neither counts nor fails it).
+- Each sync also reads the flags and the size of every message of the inbox,
+  in one `FETCH` of `FLAGS` and `RFC822.SIZE` whatever its size, and carries the
+  read state, the star and the size into every stored message: a mail read or
+  starred on another mail program shows so after the next sync, however old it
+  is, and `larger:` / `smaller:` know every stored message from the first sync.
+  A read state or a star changed from Mailsorter after that read (`flagsAt`) is
+  left as it is.
+- It stores the starred messages of the inbox the copy does not hold yet, up
+  to 500 a sync, most recent first: a favorite older than the 100 most recent
+  is in `is:starred` from the first sync.
+- And it reads the MIME structure (`BODYSTRUCTURE`, no message downloaded) of
+  up to 500 stored inbox messages it has not read it for yet, newest first,
+  which the next syncs complete. A message carries a file when a part is
+  marked `Content-Disposition: attachment`, or is a named file that is neither
+  text nor a picture the HTML draws (a part with a `Content-ID`). Until it is
+  read, a message does not match `has:attachment`. A message whose structure
+  the server describes in a way that cannot be parsed, even alone (the batch
+  it is in fails, the connection is opened again and the batch read by
+  halves), is logged, kept without an attachment and marked
+  `structureUnreadable`, and not asked again; the others are read. A starred
+  message whose envelope cannot be parsed is logged and tried again at the
+  next sync. Only an answer that cannot be parsed says something about a
+  message: a server that refuses a read (`NO`, `[UNAVAILABLE]`,
+  `[THROTTLED]`) or runs out of time concludes nothing, and the sync answers
+  `500` "votre boîte n'a pas répondu jusqu'au bout de la synchronisation,
+  réessayez dans un instant"; a connection that cannot be opened again,
+  `500` "la connexion à votre boîte a été perdue pendant la synchronisation".
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
+The filters the inbox offers are all answered: `is:unread`, `is:read`,
+`is:starred`, `newer_than:`, `older_than:`, `has:attachment`, and `larger:` /
+`smaller:`, whose size is a count of bytes, or of kilobytes (`K`, 1024 bytes)
+or megabytes (`M`, 1024 x 1024 bytes): `larger:5M` is over 5,242,880 bytes.
+
 A query term the mirror cannot answer is **refused with 501, naming the term**,
-rather than dropped. Dropping `has:attachment` does not produce an error, it
-produces a full inbox under a button labelled "Pieces jointes", and nothing on
+rather than dropped. Dropping `label:Factures` does not produce an error, it
+produces a full inbox under a saved search named "Factures", and nothing on
 screen would say the filter did nothing.
 
 ## Mailbox Endpoints
@@ -1126,8 +1165,12 @@ The entry is marked `undone` and the reversal is itself appended to the ledger
 **Responses:** `200 { "status": "undone", "action": "unarchive" }`; `400` not
 reversible or an invalid id; `404` not found, or, on IMAP, "Ce mail n'est plus là
 où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
-entry stays not undone); `409` already undone; `502` the provider refused the
-reversal. On IMAP a moved message stays recorded for 30 days after it left the
+entry stays not undone); `409` already undone, except that a request within
+2 minutes of another one that undid it, with nothing done to the mail since,
+answers `200` like it (two clicks, two tabs): once the mail was archived again,
+a screen left open on the old line gets `409`; `500` "Annulation impossible à
+vérifier, réessayez." when the actions since cannot be read; `502` the provider
+refused the reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette
 action est trop ancienne pour être annulée ici : retrouvez ce mail dans
 l'archive ou la corbeille de votre messagerie." and nothing moves.

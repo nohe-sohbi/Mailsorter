@@ -26,6 +26,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -351,8 +352,8 @@ func (p *imapPerson) receive(mails ...incoming) []string {
 		if m.Unsubscribe != "" {
 			fmt.Fprintf(&raw, "List-Unsubscribe: %s\r\n", m.Unsubscribe)
 		}
-		raw.WriteString("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
-		raw.WriteString(body + "\r\n")
+		raw.WriteString("MIME-Version: 1.0\r\n")
+		writeMailContent(&raw, m, body)
 
 		data, err := p.mailbox.Append("INBOX", bytes.NewReader([]byte(raw.String())), &imapv2.AppendOptions{Time: date})
 		if err != nil {
@@ -361,6 +362,69 @@ func (p *imapPerson) receive(mails ...incoming) []string {
 		uids = append(uids, fmt.Sprint(uint32(data.UID)))
 	}
 	return uids
+}
+
+// The boundaries of the multipart mails receive writes. "=_" cannot occur in
+// base64, and the texts of a scenario never hold it.
+const (
+	mixedBoundary       = "=_mailsorter_mixed"
+	alternativeBoundary = "=_mailsorter_alternative"
+)
+
+// writeMailContent writes the mail's Content-Type and everything after it:
+// its text alone (text/plain), the way receive always wrote it, or, with an
+// HTML version, both versions (multipart/alternative), and with an
+// attachment, those first and then the file (multipart/mixed, the file with
+// Content-Disposition: attachment), which is how a mail program sends one.
+func writeMailContent(raw *strings.Builder, m incoming, body string) {
+	if m.Attachment == nil {
+		writeMailText(raw, m, body)
+		return
+	}
+	f := m.Attachment
+	fmt.Fprintf(raw, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", mixedBoundary)
+	fmt.Fprintf(raw, "--%s\r\n", mixedBoundary)
+	writeMailText(raw, m, body)
+	fmt.Fprintf(raw, "--%s\r\n", mixedBoundary)
+	fmt.Fprintf(raw, "Content-Type: %s; name=\"%s\"\r\n", f.Type, f.Name)
+	fmt.Fprintf(raw, "Content-Disposition: attachment; filename=\"%s\"\r\n", f.Name)
+	raw.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+	// Lines of 76 characters, as RFC 2045 asks of base64.
+	encoded := base64.StdEncoding.EncodeToString(fileContent(*f))
+	for len(encoded) > 76 {
+		raw.WriteString(encoded[:76] + "\r\n")
+		encoded = encoded[76:]
+	}
+	raw.WriteString(encoded + "\r\n")
+	fmt.Fprintf(raw, "--%s--\r\n", mixedBoundary)
+}
+
+// writeMailText writes the text of the mail, headers of its part included:
+// text/plain, or multipart/alternative when it has an HTML version.
+func writeMailText(raw *strings.Builder, m incoming, body string) {
+	if m.HTML == "" {
+		raw.WriteString("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+		raw.WriteString(body + "\r\n")
+		return
+	}
+	fmt.Fprintf(raw, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", alternativeBoundary)
+	fmt.Fprintf(raw, "--%s\r\n", alternativeBoundary)
+	raw.WriteString("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+	raw.WriteString(body + "\r\n")
+	fmt.Fprintf(raw, "--%s\r\n", alternativeBoundary)
+	raw.WriteString("Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+	raw.WriteString(m.HTML + "\r\n")
+	fmt.Fprintf(raw, "--%s--\r\n", alternativeBoundary)
+}
+
+// fileContent is the filler an attached file holds: Size bytes of text, a
+// sentence naming the file over and over.
+func fileContent(f attachedFile) []byte {
+	if f.Size <= 0 {
+		return nil
+	}
+	pattern := []byte("Contenu du fichier " + f.Name + ". ")
+	return bytes.Repeat(pattern, f.Size/len(pattern)+1)[:f.Size]
 }
 
 // expectNumbered checks what the scenario takes for granted about the
@@ -389,12 +453,31 @@ func (p *imapPerson) sync() {
 }
 
 // shownMail is one row of the inbox screen. IsRead is what the row shows as
-// read or "non lu" (FLAG_PATCH in Inbox.js patches the same field).
+// read or "non lu" (FLAG_PATCH in Inbox.js patches the same field). IsStarred
+// and LabelIDs are the two fields the row reads its star from (see starred).
 type shownMail struct {
-	MessageID string `json:"messageId"`
-	From      string `json:"from"`
-	Subject   string `json:"subject"`
-	IsRead    bool   `json:"isRead"`
+	MessageID string   `json:"messageId"`
+	From      string   `json:"from"`
+	Subject   string   `json:"subject"`
+	IsRead    bool     `json:"isRead"`
+	IsStarred *bool    `json:"isStarred"`
+	LabelIDs  []string `json:"labelIds"`
+}
+
+// starred is whether the row shows the star "Favori", read the way both
+// themes read it (the row in Inbox.js, HotelRow in
+// components/hotel/InboxBits.js): isStarred, or the STARRED label among
+// labelIds.
+func (m shownMail) starred() bool {
+	if m.IsStarred != nil && *m.IsStarred {
+		return true
+	}
+	for _, l := range m.LabelIDs {
+		if l == labelStarred {
+			return true
+		}
+	}
+	return false
 }
 
 // inbox is what this person's inbox screen shows: the listing it loads, with
@@ -455,6 +538,106 @@ func (p *imapPerson) wholeInbox() []shownMail {
 			return all
 		}
 	}
+}
+
+// quickFilter is one of the filters above the inbox: its label, and the query
+// the inbox loads when it is clicked (QUICK_FILTERS in Inbox.js).
+type quickFilter struct {
+	label string
+	query string
+}
+
+var (
+	favoritesFilter   = quickFilter{label: "Favoris", query: "in:inbox is:starred"}
+	attachmentsFilter = quickFilter{label: "Pièces jointes", query: "in:inbox has:attachment"}
+	largeMailFilter   = quickFilter{label: "Volumineux", query: "in:inbox larger:5M"}
+)
+
+// underFilter is everything this person's inbox shows once the filter is
+// clicked and the list scrolled to the end: the first page the filter loads,
+// then "Charger plus" for as long as the listing hands back a next page, with
+// the page size the SPA asks for (fetchData and loadMoreEmails in
+// EmailContext.js, 100 at a time). A filter that does not display stops the
+// scenario: there is then nothing on the screen to look at.
+func (p *imapPerson) underFilter(f quickFilter) []shownMail {
+	a := p.app
+	a.t.Helper()
+	var all []shownMail
+	token := ""
+	for page := 1; ; page++ {
+		// A bound, so a listing that hands back the same token forever stops
+		// the scenario instead of hanging it.
+		if page > 50 {
+			a.fatalf("le filtre « %s » de %s propose encore « Charger plus » après 50 pages : la liste ne finit pas", f.label, p.email)
+		}
+		path := "/api/emails?q=" + url.QueryEscape(f.query) + "&maxResults=100"
+		if token != "" {
+			path += "&pageToken=" + url.QueryEscape(token)
+		}
+		code, out := a.callAs(p.token, http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			a.fatalf("le filtre « %s » de %s ne s'affiche pas (page %d) : GET /api/emails avec q=%q a répondu %d : %v", f.label, p.email, page, f.query, code, out)
+		}
+		raw, err := json.Marshal(out["emails"])
+		if err != nil {
+			a.fatalf("réponse du filtre « %s » illisible pour %s : %v", f.label, p.email, err)
+		}
+		var mails []shownMail
+		if err := json.Unmarshal(raw, &mails); err != nil {
+			a.fatalf("réponse du filtre « %s » illisible pour %s : %v", f.label, p.email, err)
+		}
+		all = append(all, mails...)
+		token, _ = out["nextPageToken"].(string)
+		if token == "" {
+			return all
+		}
+	}
+}
+
+// expectFilterShows checks what the filter shows, every page: each mail of
+// want, by its subject, once, and no other. left gives, for a mail the filter
+// must leave out, why it must, for the failure message. when says at which
+// moment the filter is read.
+func (p *imapPerson) expectFilterShows(f quickFilter, when string, want []string, left map[string]string) {
+	a := p.app
+	a.t.Helper()
+	mails := p.underFilter(f)
+	count := map[string]int{}
+	for _, m := range mails {
+		count[m.Subject]++
+	}
+	wanted := map[string]bool{}
+	for _, subject := range want {
+		wanted[subject] = true
+		switch n := count[subject]; {
+		case n == 0:
+			a.failf("%s, le filtre « %s » de %s devrait montrer le mail %q, il ne le montre pas (il montre : %s)", when, f.label, p.email, subject, describeInbox(mails))
+		case n > 1:
+			a.failf("%s, le filtre « %s » de %s devrait montrer le mail %q une fois, il le montre %d fois", when, f.label, p.email, subject, n)
+		}
+	}
+	for _, m := range mails {
+		if wanted[m.Subject] {
+			continue
+		}
+		if why, ok := left[m.Subject]; ok {
+			a.failf("%s, le filtre « %s » de %s ne devrait pas montrer le mail n°%s %q (%s), il le montre", when, f.label, p.email, m.MessageID, m.Subject, why)
+			continue
+		}
+		a.failf("%s, le filtre « %s » de %s ne devrait montrer que %s, il montre aussi le mail n°%s %q", when, f.label, p.email, quotedList(want), m.MessageID, m.Subject)
+	}
+}
+
+// quotedList is subjects in a failure message: each quoted, comma separated.
+func quotedList(subjects []string) string {
+	if len(subjects) == 0 {
+		return "aucun mail"
+	}
+	parts := make([]string, 0, len(subjects))
+	for _, s := range subjects {
+		parts = append(parts, fmt.Sprintf("%q", s))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // openMail is opening a mail in the reader, as this person: the reader loads
@@ -808,6 +991,54 @@ func (p *imapPerson) deletedElsewhere(uid string) {
 	p.expectGoneElsewhere(c, uid, "un autre logiciel l'a supprimé définitivement")
 }
 
+// flaggedElsewhere is another mail program putting this mail of the inbox in
+// its favorites: the person starred it on their phone, which sets \Flagged on
+// the server. It does not sync.
+func (p *imapPerson) flaggedElsewhere(uid string) {
+	p.app.t.Helper()
+	p.flagElsewhere(uid, imapv2.FlagFlagged, "mettre en favori", "en favori")
+}
+
+// readElsewhere is another mail program marking this mail of the inbox read:
+// the person read it on their phone, which sets \Seen on the server. It does
+// not sync.
+func (p *imapPerson) readElsewhere(uid string) {
+	p.app.t.Helper()
+	p.flagElsewhere(uid, imapv2.FlagSeen, "marquer lu", "lu")
+}
+
+// flagElsewhere sets this flag on this mail of the inbox from another mail
+// program, then reads it back on the same connection: a STORE on a number the
+// folder does not hold answers OK and does nothing, so without the check a
+// scenario built on a wrong number would prove nothing and say nothing. change
+// and state name the change and the state it leaves in a failure.
+func (p *imapPerson) flagElsewhere(uid string, flag imapv2.Flag, change, state string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openInboxElsewhere()
+	defer c.Close()
+	set := p.serverUID(uid)
+	add := &imapv2.StoreFlags{Op: imapv2.StoreFlagsAdd, Silent: true, Flags: []imapv2.Flag{flag}}
+	if err := c.Store(imapv2.UIDSetNum(set), add, nil).Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu %s le mail n°%s de %s : %v", change, uid, p.email, err)
+	}
+	msgs, err := c.Fetch(imapv2.UIDSetNum(set), &imapv2.FetchOptions{UID: true, Flags: true}).Collect()
+	if err != nil {
+		a.fatalf("relecture des drapeaux du mail n°%s de %s, qu'un autre logiciel vient de %s : %v", uid, p.email, change, err)
+	}
+	for _, m := range msgs {
+		if m.UID != set {
+			continue
+		}
+		for _, f := range m.Flags {
+			if f == flag {
+				return
+			}
+		}
+	}
+	a.fatalf("le mail n°%s de la boîte de réception du serveur IMAP de %s n'est pas %s alors qu'un autre logiciel vient de le %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", uid, p.email, state, change)
+}
+
 // openFolderElsewhere is another mail program with this folder of the
 // person's mailbox open, ready to change it.
 func (p *imapPerson) openFolderElsewhere(folder string) *imapclient.Client {
@@ -952,10 +1183,26 @@ func (p *imapPerson) onServer(folder string) []string {
 
 // seenOnServer says whether the mail with this subject in this folder of the
 // person's server is read there (the \Seen flag), as another mail program
-// shows it. Opened read-only and read from the flags, so looking marks
-// nothing read. A folder without that mail stops the scenario: a flag read on
-// nothing proves nothing.
+// shows it.
 func (p *imapPerson) seenOnServer(folder, subject string) bool {
+	p.app.t.Helper()
+	return p.hasFlagOnServer(folder, subject, imapv2.FlagSeen)
+}
+
+// flaggedOnServer says whether the mail with this subject in this folder of
+// the person's server is a favorite there (the \Flagged flag, which mail
+// programs show as a star or a flag), as another mail program shows it.
+func (p *imapPerson) flaggedOnServer(folder, subject string) bool {
+	p.app.t.Helper()
+	return p.hasFlagOnServer(folder, subject, imapv2.FlagFlagged)
+}
+
+// hasFlagOnServer says whether the mail with this subject in this folder of
+// the person's server carries this flag, as another mail program shows it.
+// Opened read-only and read from the flags, so looking marks nothing read. A
+// folder without that mail stops the scenario: a flag read on nothing proves
+// nothing.
+func (p *imapPerson) hasFlagOnServer(folder, subject string, flag imapv2.Flag) bool {
 	a := p.app
 	a.t.Helper()
 	c := p.otherProgram()
@@ -973,7 +1220,7 @@ func (p *imapPerson) seenOnServer(folder, subject string) bool {
 			continue
 		}
 		for _, f := range m.Flags {
-			if f == imapv2.FlagSeen {
+			if f == flag {
 				return true
 			}
 		}
@@ -981,6 +1228,31 @@ func (p *imapPerson) seenOnServer(folder, subject string) bool {
 	}
 	a.fatalf("le serveur IMAP de %s ne donne pas les drapeaux du mail %q du dossier %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", p.email, subject, folder)
 	return false
+}
+
+// sizeOnServer is the size in bytes of the mail with this subject in this
+// folder of the person's server (RFC822.SIZE), as another mail program reads
+// it. Opened read-only. A folder without that mail stops the scenario.
+func (p *imapPerson) sizeOnServer(folder, subject string) int64 {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
+	}
+	uid := p.numberElsewhere(c, folder, subject)
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uid), &imapv2.FetchOptions{UID: true, RFC822Size: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture de la taille du mail %q dans le dossier %s du serveur IMAP de %s : %v", subject, folder, p.email, err)
+	}
+	for _, m := range msgs {
+		if m.UID == uid {
+			return m.RFC822Size
+		}
+	}
+	a.fatalf("le serveur IMAP de %s ne donne pas la taille du mail %q du dossier %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", p.email, subject, folder)
+	return 0
 }
 
 // expectOnServer checks that this folder of the person's server holds a mail

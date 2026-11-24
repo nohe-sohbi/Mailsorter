@@ -8,7 +8,7 @@ import (
 
 func TestParseReadsTheQueriesTheAppProduces(t *testing.T) {
 	// Every one of these is a string the SPA actually sends: the default query,
-	// the five filter chips, the stats tile, and a hand-typed one.
+	// the filter chips, the stats tile, and hand-typed ones.
 	cases := []struct {
 		name  string
 		query string
@@ -28,6 +28,31 @@ func TestParseReadsTheQueriesTheAppProduces(t *testing.T) {
 			name:  "the today chip",
 			query: "in:inbox newer_than:1d",
 			want:  Criteria{Folder: FolderInbox, NewerThan: 24 * time.Hour},
+		},
+		{
+			name:  "the favorites chip",
+			query: "in:inbox is:starred",
+			want:  Criteria{Folder: FolderInbox, Starred: true},
+		},
+		{
+			name:  "the attachments chip",
+			query: "in:inbox has:attachment",
+			want:  Criteria{Folder: FolderInbox, HasAttachment: true},
+		},
+		{
+			name:  "the large mail chip",
+			query: "in:inbox larger:5M",
+			want:  Criteria{Folder: FolderInbox, Larger: 5 << 20},
+		},
+		{
+			name:  "a size window",
+			query: "larger:100K smaller:2M",
+			want:  Criteria{Larger: 100 << 10, Smaller: 2 << 20},
+		},
+		{
+			name:  "two bounds of one kind keep the narrower",
+			query: "larger:1M larger:5M smaller:3M smaller:4M",
+			want:  Criteria{Larger: 5 << 20, Smaller: 3 << 20},
 		},
 		{
 			name:  "a hand-typed one",
@@ -75,12 +100,14 @@ func TestParseReadsTheQueriesTheAppProduces(t *testing.T) {
 // say so.
 func TestParseNamesWhatAStoredMailboxCannotAnswer(t *testing.T) {
 	cases := map[string][]string{
-		"in:inbox has:attachment": {"has:attachment"},
-		"in:inbox larger:5M":      {"larger:5M"},
-		"in:inbox is:starred":     {"is:starred"},
-		"in:sent":                 {"in:sent"},
-		"label:Promotions":        {"label:Promotions"},
-		"smaller:1M filename:pdf": {"smaller:1M", "filename:pdf"},
+		"in:inbox has:drive":        {"has:drive"},
+		"in:inbox is:important":     {"is:important"},
+		"in:sent":                   {"in:sent"},
+		"label:Promotions":          {"label:Promotions"},
+		"smaller:1M filename:pdf":   {"filename:pdf"},
+		"larger:5G":                 {"larger:5G"},
+		"larger:big smaller:0":      {"larger:big", "smaller:0"},
+		"has:attachment category:x": {"category:x"},
 	}
 	for query, want := range cases {
 		_, got := Parse(query)
@@ -93,10 +120,10 @@ func TestParseNamesWhatAStoredMailboxCannotAnswer(t *testing.T) {
 // And the supported half of the same query still comes back, so a caller that
 // chooses to ignore the unsupported term is not left with nothing.
 func TestParseKeepsWhatItUnderstandsAlongsideWhatItCannot(t *testing.T) {
-	crit, unsupported := Parse("in:inbox is:unread has:attachment")
+	crit, unsupported := Parse("in:inbox is:unread label:Factures")
 
-	if len(unsupported) != 1 || unsupported[0] != "has:attachment" {
-		t.Errorf("unsupported = %v, want [has:attachment]", unsupported)
+	if len(unsupported) != 1 || unsupported[0] != "label:Factures" {
+		t.Errorf("unsupported = %v, want [label:Factures]", unsupported)
 	}
 	if crit.Folder != FolderInbox {
 		t.Errorf("Folder = %q, want %q", crit.Folder, FolderInbox)
@@ -146,17 +173,52 @@ func TestParseAge(t *testing.T) {
 	}
 }
 
+// A size is bytes, or kilobytes and megabytes of 1024: what the filter
+// "Volumineux" (larger:5M) and a hand-typed bound send.
+func TestParseSize(t *testing.T) {
+	cases := map[string]struct {
+		want int64
+		ok   bool
+	}{
+		"5M":                   {5 << 20, true},
+		"5m":                   {5 << 20, true},
+		"100K":                 {100 << 10, true},
+		"100k":                 {100 << 10, true},
+		"5000000":              {5_000_000, true},
+		"1":                    {1, true},
+		"0":                    {0, false},
+		"0M":                   {0, false},
+		"-1M":                  {0, false},
+		"M":                    {0, false},
+		"":                     {0, false},
+		"5G":                   {0, false},
+		"5MB":                  {0, false},
+		"1.5M":                 {0, false},
+		"abc":                  {0, false},
+		"9223372036854775807M": {0, false},
+		"9223372036854775807":  {9223372036854775807, true},
+	}
+	for in, tc := range cases {
+		got, ok := parseSize(in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("parseSize(%q) = %v, %v; want %v, %v", in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 func TestCriteriaEmpty(t *testing.T) {
 	if crit, _ := Parse(""); !crit.Empty() {
 		t.Errorf("Parse(\"\") = %+v, want Empty()", crit)
 	}
 	// An unsupported term alone constrains nothing either, which is exactly why
 	// a caller must not treat "no criteria" as "no filter asked for".
-	if crit, _ := Parse("has:attachment"); !crit.Empty() {
-		t.Errorf("Parse(%q) = %+v, want Empty()", "has:attachment", crit)
+	if crit, _ := Parse("label:Factures"); !crit.Empty() {
+		t.Errorf("Parse(%q) = %+v, want Empty()", "label:Factures", crit)
 	}
-	if crit, _ := Parse("in:inbox"); crit.Empty() {
-		t.Error("Parse(\"in:inbox\") reads as empty although it named a folder")
+	for _, query := range []string{"in:inbox", "is:starred", "has:attachment", "larger:5M", "smaller:1K"} {
+		if crit, _ := Parse(query); crit.Empty() {
+			t.Errorf("Parse(%q) reads as empty although it constrained something", query)
+		}
 	}
 }
 

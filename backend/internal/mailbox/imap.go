@@ -134,8 +134,19 @@ func IMAPOpsFor(muts []Mutation) ([]IMAPOp, error) {
 // GmailIsRead, and the inverse convention: over IMAP read is the PRESENCE of
 // \Seen, where over the Gmail API it is the ABSENCE of UNREAD.
 func IMAPIsRead(flags []string) bool {
+	return hasFlag(flags, FlagSeen)
+}
+
+// IMAPIsStarred reads the star from a message's flags: \Flagged, which mail
+// programs show as a star or a flag. Over the Gmail API the same star is the
+// STARRED label.
+func IMAPIsStarred(flags []string) bool {
+	return hasFlag(flags, FlagFlagged)
+}
+
+func hasFlag(flags []string, want string) bool {
 	for _, f := range flags {
-		if f == FlagSeen {
+		if f == want {
 			return true
 		}
 	}

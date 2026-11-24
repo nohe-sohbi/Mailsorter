@@ -79,10 +79,13 @@ function EmailReader({
   onSnooze,
   onProtect,
   onFlag,
-  // Whether this mailbox keeps a star. Over IMAP the stored copy does not, so
-  // a star set from here came back empty at the next listing and the toggle
-  // could only ever say "Mettre en favori": the button is not drawn there.
+  // Whether the star can be offered: both transports keep it (over IMAP the
+  // stored copy follows \Flagged), so the Inbox passes it once the mailbox is
+  // known.
   canStar = false,
+  // Whether this mailbox has labels to name: the Gmail API's. An IMAP message
+  // sits in one folder, and GET /api/labels answers 501 there.
+  hasLabels = false,
   unsubscribing,
   onRead,
   triage,
@@ -156,9 +159,9 @@ function EmailReader({
   }, [messageId, loadMessage]);
 
   // Label names are per-account and rarely change; fetch once for the session.
-  // A mailbox without a star has no labels either (IMAP): nothing to ask.
+  // A mailbox without labels (IMAP): nothing to ask.
   useEffect(() => {
-    if (!canStar) return undefined;
+    if (!hasLabels) return undefined;
     let cancelled = false;
     labelService
       .list()
@@ -174,17 +177,20 @@ function EmailReader({
     return () => {
       cancelled = true;
     };
-  }, [canStar]);
+  }, [hasLabels]);
 
   if (!email) return null;
 
   const merged = { ...email, ...(full || {}) };
   const canUnsubscribe = Boolean(merged.unsubUrl || merged.unsubMailto);
   const attachments = full?.attachments || [];
-  // The list keeps a local isStarred flag (patched optimistically), while the
-  // freshly loaded message only carries Gmail's labels. Read both so the toggle
-  // reflects whichever one is newer.
-  const starred = merged.isStarred ?? (merged.labelIds || []).includes('STARRED');
+  // The list keeps a local isStarred flag (patched optimistically), so it is
+  // read first: it is the newest. Then the freshly loaded message, which over
+  // IMAP says isStarred when the server holds the star (another mail program
+  // may have set it since the sync), and over the Gmail API carries the
+  // STARRED label instead. Reading the loaded message first would undo a
+  // "Retirer des favoris" on screen until the reader was opened again.
+  const starred = email.isStarred ?? full?.isStarred ?? (merged.labelIds || []).includes('STARRED');
 
   // The download goes through axios because the route is session-authenticated:
   // a plain <a href> would send no Authorization header and get a 401. So the

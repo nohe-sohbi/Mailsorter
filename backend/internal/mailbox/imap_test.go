@@ -160,3 +160,22 @@ func TestIMAPIsReadIsTheOppositeConventionFromGmail(t *testing.T) {
 		t.Error("a read message reads differently across the two transports")
 	}
 }
+
+// The star is \Flagged and nothing else: a read message is not a favorite.
+func TestIMAPIsStarredReadsFlagged(t *testing.T) {
+	cases := []struct {
+		flags []string
+		want  bool
+	}{
+		{[]string{FlagFlagged}, true},
+		{[]string{FlagSeen, FlagFlagged}, true},
+		{[]string{FlagSeen}, false},
+		{[]string{}, false},
+		{nil, false},
+	}
+	for _, tc := range cases {
+		if got := IMAPIsStarred(tc.flags); got != tc.want {
+			t.Errorf("IMAPIsStarred(%v) = %v, want %v", tc.flags, got, tc.want)
+		}
+	}
+}

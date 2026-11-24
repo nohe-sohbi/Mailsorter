@@ -40,6 +40,12 @@ const FLAG_PATCH = {
 };
 const FLAG_INVERSE = { read: 'unread', unread: 'read', star: 'unstar', unstar: 'star' };
 
+// Whether a flag change takes the mail out of the list on screen: "Retirer
+// des favoris" under the filter "Favoris" (is:starred) does, the way
+// archiving takes a mail out of the inbox. Left in place, the row would stay
+// in a list of favorites until the next load.
+const leavesList = (action, query) => action === 'unstar' && /(^|\s)is:starred(\s|$)/i.test(query || '');
+
 // Mirrors maxBatchActionSize in backend/internal/api/batch.go.
 const BATCH_LIMIT = 200;
 
@@ -51,8 +57,8 @@ const SHORTCUTS = [
   ['Suppr / Retour arrière', 'Supprimer'],
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
-  // Not over IMAP, like the reader's star (see flagAction).
-  ['S', 'Mettre en favori', 'star'],
+  // Once the mailbox is known, like the reader's star (see flagAction).
+  ['S', 'Mettre en favori', 'mailbox'],
   ['A', 'Ranger les suggestions sûres'],
   ['I', "Demander un tri IA (dans l'email)"],
   ['R', 'Synchroniser'],
@@ -64,15 +70,17 @@ const SHORTCUTS = [
 // Saved searches, expressed in the Gmail query language the backend already
 // speaks. They exist because the search box asked people to know that language:
 // the placeholder literally read "from:amazon, is:unread...".
-// `gmailOnly` marks a filter the stored copy of an IMAP mailbox cannot answer
-// (the server says 501): it is not offered there.
+// Every one is answered on both transports: over IMAP from the stored copy,
+// which keeps the star, the size and whether a mail carries a file.
+// `needsMailbox` marks a filter offered once the mailbox is known, as these
+// three always were: it appears with that answer, never on a guess.
 const QUICK_FILTERS = [
   { id: 'inbox', label: 'Tout', query: DEFAULT_QUERY, Icon: InboxIcon },
   { id: 'unread', label: 'Non lus', query: 'in:inbox is:unread', Icon: Mail },
   { id: 'today', label: "Aujourd'hui", query: 'in:inbox newer_than:1d', Icon: Bolt },
-  { id: 'starred', label: 'Favoris', query: 'in:inbox is:starred', Icon: Star, gmailOnly: true },
-  { id: 'attach', label: 'Pièces jointes', query: 'in:inbox has:attachment', Icon: Tag, gmailOnly: true },
-  { id: 'big', label: 'Volumineux', query: 'in:inbox larger:5M', Icon: Archive, gmailOnly: true },
+  { id: 'starred', label: 'Favoris', query: 'in:inbox is:starred', Icon: Star, needsMailbox: true },
+  { id: 'attach', label: 'Pièces jointes', query: 'in:inbox has:attachment', Icon: Tag, needsMailbox: true },
+  { id: 'big', label: 'Volumineux', query: 'in:inbox larger:5M', Icon: Archive, needsMailbox: true },
 ];
 
 // Mirrors internal/search.SuggestName: the save dialog opens on the query's
@@ -226,16 +234,17 @@ function Inbox() {
     addSuggestion, removeSuggestion, restoreSuggestions, markUnsubscribed,
   } = useEmails();
   const { selfHosted } = useInstance();
-  // Over IMAP only reading and the AI's archive / delete / keep work today.
-  // Every control the server would answer "not available" to is hidden, not
-  // disabled (the one rule, see IMAP_UNAVAILABLE in landing/features.js), and
-  // undo is never offered: the server cannot put an IMAP message back yet.
+  // Over IMAP reading, archiving, deleting, read and the star on one mail, the
+  // quick filters, the AI's archive / delete / keep and undo work today. Every
+  // control the server would answer "not available" to is hidden, not
+  // disabled (the one rule, see IMAP_UNAVAILABLE in landing/features.js).
   // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
   // and stays false when that answer failed: a guess offers nothing the server
-  // may refuse. `isImap` is only for what is said about IMAP.
+  // may refuse. `known` is for what works on both transports once the mailbox
+  // is known. `isImap` is only for what is said about IMAP.
   const { isImap, known, fullFeatures } = useMailbox();
   const can = (feature) => canPromise(feature, fullFeatures);
-  const quickFilters = QUICK_FILTERS.filter((f) => fullFeatures || !f.gmailOnly);
+  const quickFilters = QUICK_FILTERS.filter((f) => known || !f.needsMailbox);
   const statCards = STAT_CARDS.filter((c) => fullFeatures || !c.gmailOnly);
   // The AI's proposals, grouped by sender. Held here rather than inside the
   // panel because the "a" shortcut applies it and every hand-made action below
@@ -808,7 +817,11 @@ function Inbox() {
         } else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
         else if (action === 'unread') applied.forEach((id) => patchEmail(id, { isRead: false }));
         else if (action === 'star') applied.forEach((id) => patchEmail(id, { isStarred: true }));
-        else if (action === 'unstar') applied.forEach((id) => patchEmail(id, { isStarred: false }));
+        else if (action === 'unstar') {
+          // Under "Favoris" they leave the list, as one mail does (leavesList).
+          if (leavesList(action, activeQuery)) removeEmails(applied);
+          else applied.forEach((id) => patchEmail(id, { isStarred: false }));
+        }
 
         setSelectedEmails([]);
 
@@ -861,7 +874,7 @@ function Inbox() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedEmails, confirm]
+    [selectedEmails, confirm, activeQuery]
   );
 
   // Snooze the whole selection to one wake time. Same chunking as runBulk (the
@@ -947,15 +960,23 @@ function Inbox() {
     const optimistic = FLAG_PATCH[action];
     const rollback = FLAG_PATCH[FLAG_INVERSE[action]];
     if (optimistic) patchEmail(email.messageId, optimistic);
+    // Once the server agreed. The reader, if open on it, stays open: it reads
+    // the mail it was opened on once the row is gone, so that one is patched.
+    const settle = () => {
+      toast.success(actionMeta(action).past, { duration: 1800 });
+      if (!leavesList(action, activeQuery)) return;
+      removeEmails(email.messageId);
+      setSelectedEmail((prev) => (prev && prev.messageId === email.messageId ? { ...prev, ...optimistic } : prev));
+    };
     // Over IMAP the batch route does not exist yet (501), while the single
-    // action does read and unread: that one is used there, and whenever the
-    // mailbox is not known, since it works on both transports. The star is not
-    // offered over IMAP: the stored copy keeps no star, so it came back empty
-    // at the next listing.
+    // action does read, unread and the star: that one is used there, and
+    // whenever the mailbox is not known, since it works on both transports.
+    // The stored copy of an IMAP inbox keeps the star, so it stays at the next
+    // listing.
     if (!fullFeatures) {
       try {
         await emailService.action(email.messageId, action);
-        toast.success(actionMeta(action).past, { duration: 1800 });
+        settle();
       } catch (err) {
         if (rollback) patchEmail(email.messageId, rollback);
         toast.error(apiError(err, "L'action a échoué"));
@@ -976,7 +997,7 @@ function Inbox() {
         toast.error(data.protectedSkipped ? 'Expéditeur protégé : action ignorée.' : "L'action a échoué");
         return;
       }
-      toast.success(actionMeta(action).past, { duration: 1800 });
+      settle();
     } catch {
       if (rollback) patchEmail(email.messageId, rollback);
       toast.error("L'action a échoué");
@@ -1346,7 +1367,7 @@ function Inbox() {
           if (cur) flagAction(cur, 'read');
           break;
         case 's':
-          if (cur && fullFeatures) flagAction(cur, 'star');
+          if (cur && known) flagAction(cur, 'star');
           break;
         // '#' is Gmail's delete key but needs Alt+3 on a French AZERTY layout,
         // and Alt-modified events are filtered out above, so it was simply
@@ -1363,7 +1384,7 @@ function Inbox() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail, fullFeatures]);
+  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail, fullFeatures, known]);
 
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
   const goalHit = gamify.today >= gamify.goal;
@@ -1397,7 +1418,8 @@ function Inbox() {
         can('snooze') ? (choice) => (triageMode ? handleTriageSnooze(choice) : handleSnooze(openEmail, choice)) : undefined
       }
       onFlag={(action) => flagAction(openEmail, action)}
-      canStar={fullFeatures}
+      canStar={known}
+      hasLabels={fullFeatures}
       onProtect={() => handleProtect(openEmail)}
       onUnsubscribe={can('unsubscribe') ? () => handleUnsubscribe({ messageId: openEmail.messageId }) : undefined}
       unsubscribing={unsubscribing === openEmail.messageId}
@@ -2333,7 +2355,7 @@ function Inbox() {
       {/* Keyboard shortcuts */}
       <Modal open={showShortcuts} onClose={() => setShowShortcuts(false)} title="Raccourcis clavier" size="md">
         <div className="space-y-1">
-          {SHORTCUTS.filter(([, , needs]) => !needs || fullFeatures).map(([keys, desc]) => (
+          {SHORTCUTS.filter(([, , needs]) => !needs || known).map(([keys, desc]) => (
             <div key={keys} className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-sunken">
               <span className="text-ink-700">{desc}</span>
               <kbd className="shrink-0 rounded-md border border-hairline bg-surface-sunken px-2 py-0.5 font-mono text-xs font-semibold text-ink-800">

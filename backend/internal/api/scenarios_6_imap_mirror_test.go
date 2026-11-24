@@ -23,6 +23,11 @@ package api
 // What the person changes from Mailsorter shows at once, without a sync: a
 // mail marked "non lu", and the counters above the inbox once a mail is
 // archived.
+//
+// The second theme of this file, "Favoris et filtres", is what the copy must
+// hold besides the subject and the sender for the filters above the inbox to
+// answer from it: the star, the size, the attachments, and a read or a star
+// changed on another mail program, older mails included.
 
 import (
 	"fmt"
@@ -412,4 +417,316 @@ func numberedMails(format string, n int) []incoming {
 		mails = append(mails, incoming{From: "Le Journal <lettre@journal.fr>", Subject: fmt.Sprintf(format, i)})
 	}
 	return mails
+}
+
+// ---------------------------------------------------------------------------
+// Favoris et filtres
+//
+// The filters above the inbox ask the listing a question in Gmail's language
+// (QUICK_FILTERS in Inbox.js): "Favoris" is:starred, "Pièces jointes"
+// has:attachment, "Volumineux" larger:5M. Over IMAP the listing is served
+// from the copy of the inbox the sync writes (mirror.go), so a filter can
+// only answer what that copy holds: the star (\Flagged on the server), the
+// size, whether a mail carries a file. And a star or a read set on another
+// mail program reaches the copy only through a sync, which lists the 100 most
+// recent mails (imapListLimit): an older mail must follow all the same.
+// ---------------------------------------------------------------------------
+
+// The mails of the sentences about the filters "Pièces jointes" and
+// "Volumineux". A real attachment is a part of a multipart/mixed mail with
+// Content-Disposition: attachment (writeMailContent in
+// acceptance_imap_test.go).
+var (
+	// invoiceWithPDF is a shop's invoice, in text and HTML, with the invoice
+	// attached: a small mail with an attachment.
+	invoiceWithPDF = incoming{From: "Boutique <info@boutique.com>", Subject: "Votre facture en pièce jointe",
+		HTML:       "<p>Bonjour, vous trouverez votre facture en pièce jointe.</p>",
+		Attachment: &attachedFile{Name: "facture.pdf", Type: "application/pdf", Size: 40_000}}
+	// weeklyLetter is a newsletter in text and HTML, with nothing attached:
+	// multipart, yet no attachment.
+	weeklyLetter = incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre de la semaine",
+		HTML: "<h1>La lettre de la semaine</h1><p>Les nouvelles de la semaine.</p>"}
+	// contractWithPDF is a mail with an attachment the scenario archives.
+	contractWithPDF = incoming{From: "Assurance <contrat@assurance.fr>", Subject: "Votre contrat signé",
+		Attachment: &attachedFile{Name: "contrat.pdf", Type: "application/pdf", Size: 60_000}}
+	// flatPlans and hdPhotos weigh over 8 MB with their attachment, base64
+	// included.
+	flatPlans = incoming{From: "Agence immobilière <dossier@agence-immo.fr>", Subject: "Les plans de l'appartement",
+		Attachment: &attachedFile{Name: "plans.pdf", Type: "application/pdf", Size: 6 << 20}}
+	hdPhotos = incoming{From: "Studio photo <envoi@studio-photo.fr>", Subject: "Vos photos en haute définition",
+		Attachment: &attachedFile{Name: "photos.zip", Type: "application/zip", Size: 6 << 20}}
+	// townHallForm weighs about 4.1 MB with its attachment, base64 included:
+	// under 5 on either reading.
+	townHallForm = incoming{From: "Mairie <etat-civil@mairie.fr>", Subject: "Le dossier à compléter",
+		Attachment: &attachedFile{Name: "dossier.pdf", Type: "application/pdf", Size: 3_000_000}}
+)
+
+// "5 Mo" read either way: 5 000 000 bytes, or 5 x 1024 x 1024. The sentence
+// about "Volumineux" holds on both readings, so its mails weigh clear of both:
+// over overFiveMB, or under underFiveMB.
+const (
+	overFiveMB  = 5 << 20
+	underFiveMB = 5_000_000
+)
+
+func TestScenarios_IMAPFavoritesAndFilters(t *testing.T) {
+	playScenarios(t, "Favoris et filtres sur une boîte IMAP", []scenario{
+		{
+			phrase: "Sur une boîte IMAP, un mail que tu mets en favori apparaît en favori dans ta boîte de réception tout de suite, et il l'est aussi sur le serveur.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				// Where the sentence starts: neither row shows the star. A
+				// star already there proves nothing once "added".
+				for i, uid := range uids {
+					if row, _ := moi.shownRow(uid); row.starred() {
+						app.fatalf("après la synchronisation, la boîte de réception de %s montre déjà en favori le mail n°%s %q, que personne n'a mis en favori : le scénario ne prouve rien", moi.email, uid, []incoming{bankStatement, shopOrder}[i].Subject)
+					}
+				}
+
+				// "Mettre en favori" in the reader (or the S key) on the
+				// second mail: over IMAP, the single-message action with
+				// "star" (flagAction in Inbox.js). act expects it to answer
+				// 200.
+				moi.act(uids[1], "star")
+
+				// What the inbox loads next, with no "Synchroniser" between.
+				switch row, ok := moi.shownRow(uids[1]); {
+				case !ok:
+					app.failf("la boîte de réception de %s devrait montrer en favori le mail n°%s %q, que tu viens de mettre en favori, elle ne le montre plus", moi.email, uids[1], shopOrder.Subject)
+				case !row.starred():
+					app.failf("la boîte de réception de %s devrait montrer en favori le mail n°%s %q, que tu viens de mettre en favori, elle le montre sans étoile", moi.email, uids[1], shopOrder.Subject)
+				}
+				// On the server too, as another mail program shows it: a
+				// star kept in Mailsorter alone would pass the lines above.
+				if !moi.flaggedOnServer(serverInbox, shopOrder.Subject) {
+					app.failf("le mail %q, que tu viens de mettre en favori, devrait l'être aussi sur le serveur IMAP de %s (drapeau \\Flagged), il ne l'est pas", shopOrder.Subject, moi.email)
+				}
+				// The control: the mail nobody touched shows no star, here or
+				// there. Every mail shown starred would pass the lines above.
+				if row, ok := moi.shownRow(uids[0]); !ok || row.starred() {
+					app.failf("la boîte de réception de %s devrait montrer sans étoile le mail n°%s %q, que personne n'a mis en favori (affiché : %v, en favori : %v)", moi.email, uids[0], bankStatement.Subject, ok, row.starred())
+				}
+				if moi.flaggedOnServer(serverInbox, bankStatement.Subject) {
+					app.failf("le mail %q, que personne n'a mis en favori, ne devrait pas l'être sur le serveur IMAP de %s, il l'est", bankStatement.Subject, moi.email)
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, le filtre « Favoris » ne montre que les mails en favori de ta boîte de réception, et un mail que tu retires des favoris n'y est plus tout de suite.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer, shopInvoice)
+
+				// Three mails put in the favorites, the last of them then
+				// archived: still a favorite, no longer in the inbox. The
+				// third mail is never starred.
+				moi.act(uids[0], "star")
+				moi.act(uids[1], "star")
+				moi.act(uids[3], "star")
+				moi.act(uids[3], "archive")
+				moi.requireOnServer(serverArchive, shopInvoice.Subject, "tu viens de l'archiver")
+
+				moi.expectFilterShows(favoritesFilter, "une fois trois mails mis en favori et l'un d'eux archivé",
+					[]string{bankStatement.Subject, shopOrder.Subject},
+					map[string]string{
+						travelOffer.Subject: "personne ne l'a mis en favori",
+						shopInvoice.Subject: "tu l'as archivé, il n'est plus dans ta boîte de réception",
+					})
+
+				// "Retirer des favoris" on the second mail, then the filter
+				// as it loads again, with no "Synchroniser" between.
+				moi.act(uids[1], "unstar")
+
+				moi.expectFilterShows(favoritesFilter, "juste après avoir retiré un mail des favoris",
+					[]string{bankStatement.Subject},
+					map[string]string{
+						shopOrder.Subject:   "tu viens de le retirer des favoris",
+						travelOffer.Subject: "personne ne l'a mis en favori",
+						shopInvoice.Subject: "tu l'as archivé, il n'est plus dans ta boîte de réception",
+					})
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un mail mis en favori depuis un autre logiciel apparaît dans le filtre « Favoris » après la synchronisation suivante, même s'il n'est pas parmi les 100 plus récents.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, mails, uids := syncedFullIMAPInbox(app)
+
+				// The phone stars two mails: an old one, among the 10 a sync
+				// no longer reads, and a recent one.
+				old, recent, untouched := 2, 104, 3
+				moi.flaggedElsewhere(uids[old])
+				moi.flaggedElsewhere(uids[recent])
+
+				moi.sync()
+
+				moi.expectFilterShows(favoritesFilter, "après la synchronisation qui suit",
+					[]string{mails[old].Subject, mails[recent].Subject},
+					map[string]string{mails[untouched].Subject: "personne ne l'a mis en favori"})
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP de plus de 100 mails, un ancien mail en favori apparaît dans le filtre « Favoris » dès la première synchronisation, même s'il n'a jamais été parmi les 100 plus récents.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapInboxOwner)
+				// 150 mails, oldest first: a sync lists the 100 most recent
+				// (n°51 to n°150), so the first 50 have never been among them.
+				letters := numberedMails("Lettre n°%d", 150)
+				uids := moi.receive(letters...)
+
+				// Two old ones already in the favorites before Mailsorter
+				// ever looks at the mailbox, starred on the phone, and an old
+				// one nobody starred, the control.
+				starred1, starred2, untouched := 2, 19, 9
+				moi.expectNumbered(uids[starred1], "3")
+				moi.expectNumbered(uids[starred2], "20")
+				moi.expectNumbered(uids[untouched], "10")
+				moi.flaggedElsewhere(uids[starred1])
+				moi.flaggedElsewhere(uids[starred2])
+
+				// The very first "Synchroniser", and no other.
+				moi.sync()
+
+				moi.expectFilterShows(favoritesFilter, "après la toute première synchronisation",
+					[]string{letters[starred1].Subject, letters[starred2].Subject},
+					map[string]string{letters[untouched].Subject: "personne ne l'a mis en favori"})
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un ancien mail lu depuis un autre logiciel apparaît lu après la synchronisation suivante, même s'il n'est pas parmi les 100 plus récents.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, mails, uids := syncedFullIMAPInbox(app)
+				old, recent, untouched := 2, 104, 3
+
+				// Where the sentence starts: those mails shown unread, as they
+				// arrived. A mail already shown read proves nothing once read.
+				shown := moi.wholeInbox()
+				for _, i := range []int{old, recent, untouched} {
+					if row, ok := rowBySubject(shown, mails[i].Subject); !ok || row.IsRead {
+						app.fatalf("après les deux synchronisations, la boîte de réception de %s devrait montrer non lu le mail n°%s %q (affiché : %v, lu : %v) : le scénario ne prouve rien", moi.email, uids[i], mails[i].Subject, ok, row.IsRead)
+					}
+				}
+
+				// The phone reads two mails: an old one, among the 10 a sync
+				// no longer reads, and a recent one.
+				moi.readElsewhere(uids[old])
+				moi.readElsewhere(uids[recent])
+
+				moi.sync()
+
+				// The whole screen, every page: the first alone does not
+				// reach the oldest mails.
+				shown = moi.wholeInbox()
+				for _, i := range []int{old, recent} {
+					switch row, ok := rowBySubject(shown, mails[i].Subject); {
+					case !ok:
+						app.failf("après la synchronisation, la boîte de réception de %s devrait montrer lu le mail n°%s %q, qu'un autre logiciel a lu avant cette synchronisation, elle ne le montre plus", moi.email, uids[i], mails[i].Subject)
+					case !row.IsRead:
+						app.failf("après la synchronisation, la boîte de réception de %s devrait montrer lu le mail n°%s %q, qu'un autre logiciel a lu avant cette synchronisation, elle le montre encore non lu", moi.email, uids[i], mails[i].Subject)
+					}
+				}
+				// The control: an old mail nobody read stays unread. A sync
+				// that marks every old mail read would pass the lines above.
+				if row, ok := rowBySubject(shown, mails[untouched].Subject); !ok || row.IsRead {
+					app.failf("après la synchronisation, la boîte de réception de %s devrait montrer toujours non lu le mail n°%s %q, que personne n'a lu (affiché : %v, lu : %v)", moi.email, uids[untouched], mails[untouched].Subject, ok, row.IsRead)
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, le filtre « Pièces jointes » ne montre que les mails de ta boîte de réception qui ont une pièce jointe.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, invoiceWithPDF, weeklyLetter, contractWithPDF)
+
+				// The contract leaves the inbox: it still has its
+				// attachment, it is no longer in the inbox.
+				moi.act(uids[3], "archive")
+				moi.requireOnServer(serverArchive, contractWithPDF.Subject, "tu viens de l'archiver")
+
+				moi.expectFilterShows(attachmentsFilter, "une fois ta boîte synchronisée et un des mails archivé",
+					[]string{invoiceWithPDF.Subject},
+					map[string]string{
+						bankStatement.Subject:   "il n'a pas de pièce jointe",
+						weeklyLetter.Subject:    "il a une version HTML et aucune pièce jointe",
+						contractWithPDF.Subject: "tu l'as archivé, il n'est plus dans ta boîte de réception",
+					})
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, le filtre « Volumineux » ne montre que les mails de ta boîte de réception de plus de 5 Mo.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, invoiceWithPDF, townHallForm, flatPlans, hdPhotos)
+
+				// Where the sentence starts: the size of each mail on the
+				// server, as another mail program reads it. A "large" mail
+				// under 5 Mo, or a "small" one over, proves nothing.
+				for _, m := range []incoming{flatPlans, hdPhotos} {
+					if size := moi.sizeOnServer(serverInbox, m.Subject); size <= overFiveMB {
+						app.fatalf("le mail %q fait %d octets sur le serveur IMAP de %s, pas plus de 5 Mo : le scénario ne prouve rien", m.Subject, size, moi.email)
+					}
+				}
+				for _, m := range []incoming{bankStatement, invoiceWithPDF, townHallForm} {
+					if size := moi.sizeOnServer(serverInbox, m.Subject); size >= underFiveMB {
+						app.fatalf("le mail %q fait %d octets sur le serveur IMAP de %s, pas moins de 5 Mo : le scénario ne prouve rien", m.Subject, size, moi.email)
+					}
+				}
+
+				// The photos leave the inbox: still over 5 Mo, no longer in
+				// the inbox.
+				moi.act(uids[4], "archive")
+				moi.requireOnServer(serverArchive, hdPhotos.Subject, "tu viens de l'archiver")
+
+				moi.expectFilterShows(largeMailFilter, "une fois ta boîte synchronisée et un des mails archivé",
+					[]string{flatPlans.Subject},
+					map[string]string{
+						bankStatement.Subject:  "il fait moins de 5 Mo",
+						invoiceWithPDF.Subject: "il a une pièce jointe, mais fait moins de 5 Mo",
+						townHallForm.Subject:   "il fait environ 4 Mo, moins de 5 Mo",
+						hdPhotos.Subject:       "tu l'as archivé, il n'est plus dans ta boîte de réception",
+					})
+			},
+		},
+	})
+}
+
+// syncedFullIMAPInbox brings a person to where the sentences about a mailbox
+// fuller than one sync reads start: 100 letters, synced, then 10 more,
+// synced, and every one of the 110 on the inbox screen, scrolled to the end.
+// It returns the person, the mails oldest first and their numbers: the first
+// 10 are the ones a sync no longer reads (it reads the 100 most recent).
+func syncedFullIMAPInbox(app *testApp) (*imapPerson, []incoming, []string) {
+	app.t.Helper()
+	moi := app.imapPerson(imapInboxOwner)
+	letters := numberedMails("Lettre n°%d", 100)
+	uids := moi.receive(letters...)
+	moi.sync()
+	later := numberedMails("Nouvelle lettre n°%d", 10)
+	uids = append(uids, moi.receive(later...)...)
+	moi.sync()
+	all := append(append([]incoming{}, letters...), later...)
+
+	// An old mail never shown proves nothing about what a sync makes of it.
+	shown := moi.wholeInbox()
+	for i, m := range all {
+		if _, ok := rowBySubject(shown, m.Subject); !ok {
+			app.fatalf("après les deux synchronisations, la boîte de réception de %s devrait montrer le mail n°%s %q parmi ses %d mails, elle ne le montre pas : le scénario ne prouve rien", moi.email, uids[i], m.Subject, len(all))
+		}
+	}
+	return moi, all, uids
+}
+
+// rowBySubject returns the row of a listing for the mail with this subject,
+// and whether the listing has one.
+func rowBySubject(mails []shownMail, subject string) (shownMail, bool) {
+	for _, m := range mails {
+		if m.Subject == subject {
+			return m, true
+		}
+	}
+	return shownMail{}, false
 }
