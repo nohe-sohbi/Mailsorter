@@ -54,10 +54,6 @@ func (h *Handler) runAnalysis(
 	// is matched with the user's own here, after the fact (mailbox.MatchLabel):
 	// the Gmail labels Mailsorter made, or over IMAP the user's folders
 	// (fileVerdict).
-	knownLabels, lErr := h.getSmartLabelNames(ctx, userEmail)
-	if lErr != nil {
-		log.Printf("runAnalysis: the labels of %s: %v", userEmail, lErr)
-	}
 	protectedList := h.protectedValues(ctx, userEmail)
 
 	session, serr := h.openSession(ctx, userEmail)
@@ -67,6 +63,17 @@ func (h *Handler) runAnalysis(
 		log.Printf("runAnalysis: openSession for %s: %v", userEmail, serr)
 	}
 	transport := h.analysisTransport(ctx, userEmail, session)
+	// The Gmail labels Mailsorter made are matched over the Gmail API only.
+	// Over IMAP only the folders count (fileVerdict): an account that came
+	// from Gmail keeps its smart labels, and matching "Facture" with one of
+	// them would leave the proposal beside the folder "Factures".
+	var knownLabels []string
+	if transport != provider.TransportIMAP {
+		var lErr error
+		if knownLabels, lErr = h.getSmartLabelNames(ctx, userEmail); lErr != nil {
+			log.Printf("runAnalysis: the labels of %s: %v", userEmail, lErr)
+		}
+	}
 
 	emails := make([]models.Email, 0, len(emailIDs))
 	for _, id := range emailIDs {
@@ -179,7 +186,7 @@ func (h *Handler) runAnalysis(
 		key := analysisCacheKey(email.From, email.Subject)
 		if cached, ok := h.cacheLookup(ctx, key); ok {
 			cached = fileVerdict(protectAnalysis(cached, email.From, protectedList, transport), session)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, email, cached, knownLabels); inserted {
+			if s, inserted := h.persistSuggestion(ctx, userEmail, email, cached, knownLabels, transport); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -223,7 +230,7 @@ func (h *Handler) runAnalysis(
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(chunk[0].From, chunk[0].Subject), *single)
 			verdict := fileVerdict(protectAnalysis(*single, chunk[0].From, protectedList, transport), session)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, chunk[0], verdict, knownLabels); inserted {
+			if s, inserted := h.persistSuggestion(ctx, userEmail, chunk[0], verdict, knownLabels, transport); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -259,7 +266,7 @@ func (h *Handler) runAnalysis(
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(email.From, email.Subject), a)
 			a = fileVerdict(protectAnalysis(a, email.From, protectedList, transport), session)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, knownLabels); inserted {
+			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, knownLabels, transport); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -343,13 +350,18 @@ func fileVerdict(a ai.EmailAnalysis, session *mailSession) ai.EmailAnalysis {
 	return a
 }
 
-// persistSuggestion resolves the label, inserts a pending suggestion and returns it.
+// persistSuggestion resolves the label, inserts a pending suggestion and
+// returns it. Over the Gmail API the label is matched with the ones Mailsorter
+// made (knownLabels) and takes its Gmail id. Over IMAP it was settled already,
+// against the folders (fileVerdict): neither the Gmail labels nor their ids
+// have a say there.
 func (h *Handler) persistSuggestion(
 	ctx context.Context,
 	userEmail string,
 	email models.Email,
 	a ai.EmailAnalysis,
 	knownLabels []string,
+	transport provider.Transport,
 ) (models.AISuggestion, bool) {
 	suggestion := models.AISuggestion{
 		UserID:     userEmail,
@@ -362,7 +374,7 @@ func (h *Handler) persistSuggestion(
 		CreatedAt:  time.Now(),
 	}
 
-	if a.Action == "label" && a.LabelName != "" {
+	if a.Action == "label" && a.LabelName != "" && transport != provider.TransportIMAP {
 		matched := localMatchLabel(a.LabelName, knownLabels)
 		suggestion.LabelName = matched
 		var sl models.SmartLabel
@@ -395,8 +407,15 @@ func localMatchLabel(suggested string, existing []string) string {
 	return suggested
 }
 
+// analysisCacheVersion starts every cache key. It changes when what a verdict
+// was produced from changes, so verdicts written before are never served
+// again: v2 is the prompt that lists no label of the user. A verdict from the
+// prompt before could hold the name of one account's label or folder, and the
+// cache is shared by every account and never expires.
+const analysisCacheVersion = "v2"
+
 func analysisCacheKey(from, subject string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(from)) + "|" + strings.ToLower(strings.TrimSpace(subject))))
+	sum := sha256.Sum256([]byte(analysisCacheVersion + "|" + strings.ToLower(strings.TrimSpace(from)) + "|" + strings.ToLower(strings.TrimSpace(subject))))
 	return hex.EncodeToString(sum[:])
 }
 

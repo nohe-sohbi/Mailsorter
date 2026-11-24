@@ -28,6 +28,7 @@ import (
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // filingOwner is the person whose IMAP mailbox these tests run on.
@@ -276,6 +277,138 @@ func TestAcceptance_IMAPFilingDirectLabelWithoutAFolderIsRefused(t *testing.T) {
 	}
 	if msg, _ := got.body["error"].(string); msg != labelRequiredMessage {
 		t.Errorf("label without a folder said %q, want %q", msg, labelRequiredMessage)
+	}
+	moi.expectOnServer(serverInbox, electricityBill.Subject)
+}
+
+// storedProposal is a pending label proposal written straight into the
+// database, as an analysis that could not open the mailbox stored it: with
+// the model's own name, neither matched nor cleaned. It returns its id.
+func storedProposal(app *testApp, owner, uid, labelName string) string {
+	app.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := app.h.db.AISuggestions().InsertOne(ctx, models.AISuggestion{
+		UserID: owner, EmailID: uid, Action: "label", LabelName: labelName,
+		Confidence: 0.95, Status: "pending", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		app.t.Fatalf("storing a proposal: %v", err)
+	}
+	return res.InsertedID.(primitive.ObjectID).Hex()
+}
+
+// An account that came from Gmail keeps the labels Mailsorter made there.
+// Over IMAP they have no say: the model's "Facture" goes into the folder
+// "Factures", not into a second folder named after the old Gmail label.
+func TestAcceptance_IMAPFilingIgnoresGmailLabelsLeftOnTheAccount(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{theme: "hors rapport"})
+	moi := app.imapPerson(filingOwner)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.SmartLabels().InsertOne(ctx, models.SmartLabel{UserID: moi.email, Name: "Facture", GmailLabelID: "Label_42", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("storing a Gmail label left on the account: %v", err)
+	}
+	moi.newFolderElsewhere("Factures")
+	uids := moi.receive(electricityBill)
+	moi.sync()
+
+	app.ai.willLabel("Facture", 0.95)
+	moi.analyze(uids[0])
+	s := moi.proposalFor(uids[0])
+	if s.Action != "label" || s.LabelName != "Factures" || s.LabelID == "Label_42" {
+		t.Fatalf("the proposal is %q in %q (label id %q), want label in the folder \"Factures\", no Gmail id", s.Action, s.LabelName, s.LabelID)
+	}
+	if got := moi.applyProposal(s.ID); got.code != http.StatusOK {
+		t.Fatalf("Appliquer answered %s", got)
+	}
+	moi.expectOnServer("Factures", electricityBill.Subject)
+	if moi.hasFolder("Facture") {
+		t.Error("Appliquer made a second folder \"Facture\" beside \"Factures\"")
+	}
+}
+
+// The shared cache keeps the model's own verdict. The first person's
+// "Dossiers secrets" is matched with their folder "Dossier secret"; the
+// second, same sender and same subject, gets the verdict from the cache, and
+// their plan never names the first person's folder.
+func TestAcceptance_IMAPFilingSharedCacheKeepsTheRawVerdict(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{theme: "hors rapport"})
+	first := app.imapPerson("premier@exemple.fr")
+	first.newFolderElsewhere("Dossier secret")
+	firstUIDs := first.receive(electricityBill)
+	first.sync()
+	app.ai.willLabel("Dossiers secrets", 0.95)
+	first.analyze(firstUIDs[0])
+	if s := first.proposalFor(firstUIDs[0]); s.LabelName != "Dossier secret" {
+		t.Fatalf("the first person's proposal is in %q, want their folder \"Dossier secret\": the test proves nothing", s.LabelName)
+	}
+	calls := app.ai.callCount()
+
+	second := app.imapPerson("second@exemple.fr")
+	secondUIDs := second.receive(electricityBill)
+	second.sync()
+	second.analyze(secondUIDs[0])
+	if app.ai.callCount() != calls {
+		t.Fatalf("the second analysis called the model: the cache was not used, the test proves nothing")
+	}
+	s := second.proposalFor(secondUIDs[0])
+	if s.LabelName == "Dossier secret" || strings.Contains(s.Reasoning, "Dossier secret") {
+		t.Errorf("the second person's plan names the first person's folder: %q (%q)", s.LabelName, s.Reasoning)
+	}
+	if s.LabelName != "Dossiers secrets" {
+		t.Errorf("the second person's proposal is in %q, want the model's own \"Dossiers secrets\"", s.LabelName)
+	}
+}
+
+// A proposal stored with the model's own name (the mailbox could not be opened
+// at the analysis) is settled when it is applied: "Facture" goes into the
+// existing "Factures", and the history records the folder it went into.
+func TestAcceptance_IMAPFilingSettlesTheNameWhenApplying(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{theme: "hors rapport"})
+	moi := app.imapPerson(filingOwner)
+	moi.newFolderElsewhere("Factures")
+	uids := moi.receive(electricityBill)
+	moi.sync()
+	id := storedProposal(app, moi.email, uids[0], "Facture")
+
+	if got := moi.applyProposal(id); got.code != http.StatusOK {
+		t.Fatalf("Appliquer answered %s", got)
+	}
+	moi.expectOnServer("Factures", electricityBill.Subject)
+	if moi.hasFolder("Facture") {
+		t.Error("Appliquer made a folder \"Facture\" beside \"Factures\"")
+	}
+	line := moi.historyLineFor(uids[0], "label")
+	if name, _ := moi.historyLineSent(line.ID)["labelName"].(string); name != "Factures" {
+		t.Errorf("the history records the filing under %q, want the folder \"Factures\"", name)
+	}
+}
+
+// "Tout ranger" gives the same reason as "Appliquer" for a filing it refuses:
+// a proposal stored with the name of a special folder stays pending, counted
+// as failed, and the answer says why.
+func TestAcceptance_IMAPFilingTidyAllSaysWhyItRefused(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{theme: "hors rapport"})
+	moi := app.imapPerson(filingOwner)
+	uids := moi.receive(electricityBill)
+	moi.sync()
+	id := storedProposal(app, moi.email, uids[0], serverTrash)
+
+	got := moi.tidyAll(id)
+	if got.code != http.StatusOK {
+		t.Fatalf("Tout ranger answered %s", got)
+	}
+	if n := app.number(got.body, "failed"); n != 1 {
+		t.Errorf("Tout ranger counts %d failed, want the refused filing", n)
+	}
+	if msg, _ := got.body["message"].(string); msg != notOwnFolderMessage {
+		t.Errorf("Tout ranger says %q, want %q", msg, notOwnFolderMessage)
+	}
+	if one := moi.applyProposal(id); one.code != http.StatusUnprocessableEntity {
+		t.Errorf("Appliquer on the same proposal answered %s, want 422", one)
+	} else if msg, _ := one.body["error"].(string); msg != notOwnFolderMessage {
+		t.Errorf("Appliquer says %q, want the same reason %q", msg, notOwnFolderMessage)
 	}
 	moi.expectOnServer(serverInbox, electricityBill.Subject)
 }

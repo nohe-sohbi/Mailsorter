@@ -788,7 +788,10 @@ Do not duplicate these into this file. Point at them.
   its verdict would carry one person's folder name into another's plan, and the
   public pages say it sees the sender, the subject and 200 characters. What it
   proposes is matched with the user's labels afterwards, per account
-  (`mailbox.MatchLabel`, `imap.Client.FilingName`).
+  (`mailbox.MatchLabel`; over IMAP `imap.Client.FilingName`, against the folders
+  only, at the analysis and again when the filing is applied), and the cache keeps
+  the model's own verdict. Its key starts with `analysisCacheVersion`: change it
+  whenever what a verdict is made from changes, since the collection never expires.
 - **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so
   the deployment file binds nothing to the host. Local runs need `compose.local.yml` on
   top, which is what `make up` does. It is deliberately NOT named

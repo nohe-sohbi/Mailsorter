@@ -1494,9 +1494,11 @@ protected sender is downgraded to `keep`, and so is, over IMAP, a `label`
 verdict, which files the mail out of the inbox there. The model is told
 nothing of the user's labels or folders: the prompt carries the sender, the
 subject and an excerpt cut at 200 characters, and the verdict goes into the
-cache every account shares. The label it proposes is matched afterwards, for
-this account only, with the labels Mailsorter made over the Gmail API or the
-user's own folders over IMAP: the same name once case, accents and a plural
+cache every account shares, as the model gave it (its key is versioned, so a
+verdict cached when the prompt still listed the user's labels is never served
+again). The label it proposes is matched afterwards, for this account only,
+with the labels Mailsorter made over the Gmail API, or over IMAP with the
+user's own folders and nothing else: the same name once case, accents and a plural
 mark are set aside, never a part of a name ("Facture" is stored as the
 existing "Factures", "Pro" does not take "Promotions"). Over IMAP the name
 stored is the folder's real one, cleaned as `POST /api/ai/apply` would make
@@ -1609,9 +1611,13 @@ folder that is not the user's own (the inbox, the archive, the trash, sent
 mail, drafts, junk) answers `422` "Mailsorter ne classe pas de mail dans ce
 dossier : c'est un dossier spécial de votre boîte." and nothing moves; a name
 no folder is made under answers `422` "Mailsorter ne crée pas de dossier sous
-ce nom : il est trop long ou contient un caractère réservé.". The analysis
-turns both into `keep` beforehand, so only a proposal stored before that
-reaches them.
+ce nom : il est trop long ou contient un caractère réservé.", and a label
+proposal with no name `422` "Cette proposition ne nomme aucun dossier où
+classer le mail.". The analysis turns these into `keep` beforehand, so only a
+proposal it could not settle (the mailbox did not open then) reaches them.
+The name is settled again here as the analysis does: the user's folder named
+alike, or the cleaned name, so a proposal stored with the model's "Facture"
+goes into "Factures", and the history records the folder the mail went into.
 
 **Request body:** `{ "suggestionId": "662..." }`
 
@@ -1637,7 +1643,10 @@ protected sender's mail is not filed. One request makes at most 10 new
 folders over IMAP: a filing that would make one more counts in `failed`, the
 mail stays in the inbox, and the answer carries `message` "Mailsorter crée au
 plus 10 nouveaux dossiers à la fois : relancez le tri pour ranger les mails
-suivants.". A suggestion whose mail already left the
+suivants.". A filing refused for its folder (special, a name no folder is made
+under, no name) counts in `failed` too, with the sentence `POST /api/ai/apply`
+answers in `message`; several reasons are joined, each once. Each filing
+settles its folder's name as `apply` does. A suggestion whose mail already left the
 inbox (tidied by hand, from a screen loaded before) is counted neither in
 `applied` nor in `failed`, and becomes `moot`; nor is a suggestion already
 `moot`.
@@ -2218,9 +2227,13 @@ empty), and a folder that cannot hold mail.
 
 ## Smart Labels Endpoints
 
-The labels the AI is told about, so its `label` verdicts reuse a stable set
-instead of inventing a new name each time. No screen of the SPA calls these two
-routes.
+The labels Mailsorter made in the user's Gmail (one is stored each time a
+`label` verdict creates a Gmail label), with their Gmail ids. The model is told
+none of them: a `label` verdict is matched with them afterwards, for this
+account only and over the Gmail API only (the same name once case, accents and
+a plural mark are set aside), so it reuses a stable set instead of a new name
+each time. Over IMAP they play no part: only the user's folders count. No
+screen of the SPA calls these two routes.
 
 ### List smart labels
 

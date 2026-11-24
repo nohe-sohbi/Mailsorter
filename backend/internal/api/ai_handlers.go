@@ -240,12 +240,8 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 
 	labelID, err := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 	suggestion.LabelID = labelID
-	if errors.Is(err, imap.ErrNotOwnFolder) {
-		writeError(w, http.StatusUnprocessableEntity, notOwnFolderMessage)
-		return
-	}
-	if errors.Is(err, imap.ErrBadFolderName) {
-		writeError(w, http.StatusUnprocessableEntity, badFolderNameMessage)
+	if why, ok := filingRefusal(err); ok {
+		writeError(w, http.StatusUnprocessableEntity, why)
 		return
 	}
 	if errors.Is(err, errAlreadyOut) {
@@ -263,14 +259,10 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	// Update suggestion status
 	h.db.AISuggestions().UpdateOne(ctx,
 		bson.M{"_id": objectID},
-		bson.M{"$set": bson.M{
-			"status":    "applied",
-			"appliedAt": time.Now(),
-			"labelId":   suggestion.LabelID,
-		}},
+		bson.M{"$set": appliedFields(suggestion, session.Transport)},
 	)
 	meta := h.identityIn(ctx, session, userEmail, suggestion.EmailID)
-	h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion))
+	h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion, session.Transport))
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
@@ -313,8 +305,9 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
 	failed := 0
 	protectedSkipped := 0
-	// Why some failed, when the user can do something about it.
-	reason := ""
+	// Why some failed, when the user can do something about it: each
+	// sentence once, in the order met.
+	var reasons []string
 
 	// Resolve every suggested email's identity once, up front, so each ledger
 	// entry can name the message it acted on without a lookup inside the loop.
@@ -359,8 +352,8 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			h.dropMootProposal(ctx, objectID)
 			continue
 		}
-		if errors.Is(applyErr, imap.ErrTooManyNewFolders) {
-			reason = tooManyNewFoldersMessage
+		if why, ok := filingRefusal(applyErr); ok && !containsString(reasons, why) {
+			reasons = append(reasons, why)
 		}
 		if applyErr != nil {
 			failed++
@@ -369,14 +362,10 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 
 		h.db.AISuggestions().UpdateOne(ctx,
 			bson.M{"_id": objectID},
-			bson.M{"$set": bson.M{
-				"status":    "applied",
-				"appliedAt": time.Now(),
-				"labelId":   suggestion.LabelID,
-			}},
+			bson.M{"$set": appliedFields(suggestion, session.Transport)},
 		)
 		meta := identities[suggestion.EmailID]
-		h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion))
+		h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion, session.Transport))
 		applied++
 		appliedIDs = append(appliedIDs, id)
 	}
@@ -391,8 +380,8 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		// batch-action already says so for a selection.
 		"reversible": batchUndoReaches(session.Transport),
 	}
-	if reason != "" {
-		answer["message"] = reason
+	if len(reasons) > 0 {
+		answer["message"] = strings.Join(reasons, " ")
 	}
 	writeJSON(w, http.StatusOK, answer)
 }
@@ -896,13 +885,63 @@ const badFolderNameMessage = "Mailsorter ne crée pas de dossier sous ce nom : i
 // made imap.maxNewFolders new folders in one go.
 const tooManyNewFoldersMessage = "Mailsorter crée au plus 10 nouveaux dossiers à la fois : relancez le tri pour ranger les mails suivants."
 
-// filedUnder is the label a proposal filed its mail under, for the history:
-// its name on a "label", nothing otherwise.
-func filedUnder(s models.AISuggestion) string {
-	if s.Action == "label" {
-		return s.LabelName
+// labelRequiredOnIMAPMessage is what the user reads for a label proposal that
+// names no folder (mailbox.ErrLabelRequired, over IMAP).
+const labelRequiredOnIMAPMessage = "Cette proposition ne nomme aucun dossier où classer le mail."
+
+// filingRefusal is the sentence for a filing refused over IMAP, and whether
+// err is one: a folder that is not the user's, a name no folder is made
+// under, no name at all, or one new folder too many for this request.
+// "Appliquer" answers it with a 422, "Tout ranger" in its message.
+func filingRefusal(err error) (string, bool) {
+	switch {
+	case err == nil:
+		return "", false
+	case errors.Is(err, imap.ErrNotOwnFolder):
+		return notOwnFolderMessage, true
+	case errors.Is(err, imap.ErrBadFolderName):
+		return badFolderNameMessage, true
+	case errors.Is(err, imap.ErrTooManyNewFolders):
+		return tooManyNewFoldersMessage, true
+	case errors.Is(err, mailbox.ErrLabelRequired):
+		return labelRequiredOnIMAPMessage, true
 	}
-	return ""
+	return "", false
+}
+
+// containsString reports whether list holds s.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// filedUnder is the label a proposal filed its mail under, for the history:
+// over IMAP the folder the filing resolved to (applySessionVerdict hands it
+// back as the label id: "Amazon-fr" for a proposal saying "Amazon.fr"), over
+// the Gmail API the label's name; nothing for another verdict.
+func filedUnder(s models.AISuggestion, transport provider.Transport) string {
+	if s.Action != "label" {
+		return ""
+	}
+	if transport == provider.TransportIMAP && s.LabelID != "" {
+		return s.LabelID
+	}
+	return s.LabelName
+}
+
+// appliedFields is what an applied proposal stores: its status, when, and the
+// label id it was applied with; over IMAP that id is the folder it filed into,
+// which is also its name there.
+func appliedFields(s models.AISuggestion, transport provider.Transport) bson.M {
+	fields := bson.M{"status": "applied", "appliedAt": time.Now(), "labelId": s.LabelID}
+	if s.Action == "label" && transport == provider.TransportIMAP && s.LabelID != "" {
+		fields["labelName"] = s.LabelID
+	}
+	return fields
 }
 
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
@@ -919,7 +958,15 @@ func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession,
 			// A message sits in one folder over IMAP, and the folder named
 			// like the label stands for it: the name is what the mutation
 			// carries (mailbox.IMAPOpFor), and the folder is made if missing.
-			return labelName, h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), action, labelName)
+			// Settled again here, as the analysis does (FilingName): a
+			// proposal stored while the mailbox could not be opened carries
+			// the model's own name, and "Facture" must go into "Factures",
+			// "Amazon.fr" into "Amazon-fr". The name returned is the folder's.
+			folder, err := session.imapc.FilingName(labelName)
+			if err != nil {
+				return "", err
+			}
+			return folder, h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), action, folder)
 		}
 		if labelID == "" && session.gmail != nil {
 			resolved, err := h.ensureLabel(ctx, session.gmail, userEmail, labelName)
