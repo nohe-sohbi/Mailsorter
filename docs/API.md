@@ -819,11 +819,9 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep) | a `label` suggestion: `apply` answers 501, `apply-batch` leaves it pending |
 | Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
-| | `GET /api/labels`, `POST /api/smart-labels` |
+| `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `GET /api/labels`, `POST /api/smart-labels` |
 
-Two more are Gmail-only without answering 501: `POST /api/account/digest/test`
-answers `502` (see there), and the daily digest loop logs the failure and sends
-nothing. A rule can be created on an IMAP account, but nothing runs it there.
+A rule can be created on an IMAP account, but nothing runs it there.
 
 ### The listing is served from the stored mailbox on IMAP
 
@@ -889,11 +887,21 @@ a normal state rather than an error.
     "host": "imap.orange.fr",
     "port": 993,
     "tls": "implicit",
+    "smtpHost": "smtp.orange.fr",
+    "smtpPort": 465,
+    "smtpTls": "implicit",
     "createdAt": "2026-09-17T19:00:00Z",
     "updatedAt": "2026-09-17T19:00:00Z"
   }
 }
 ```
+
+`smtpHost`, `smtpPort` and `smtpTls` are the mailbox's sending server, which
+the daily recap leaves from: written at connect time from the same catalog
+route as `host`, `port` and `tls` (`tls` and `smtpTls` take `implicit` or
+`starttls`). A mailbox connected before they were recorded has none of them,
+and the recap falls back on the catalog, by the row's `provider` and the
+running edition (`provider.SendingServer`).
 
 A mailbox reached through Google answers with `provider: "google"` and
 `transport: "gmail"`. Its `host`, `port` and `tls` (`imap.gmail.com`, `993`,
@@ -1198,13 +1206,15 @@ fields present in the body are updated, so one screen can toggle its setting
 without clobbering the others. `digestHourUTC` takes `0` to `23`, `0` being
 midnight; a value outside that range stores the server default
 (`DIGEST_HOUR_UTC`). When `digestEnabled` is true, a background scheduler emails
-the 7-day recap once a day at `digestHourUTC` (UTC), through the Gmail API.
+the 7-day recap once a day at `digestHourUTC` (UTC), from the user's own
+mailbox: through the Gmail API, or through the sending server of a mailbox
+connected over IMAP (see `POST /api/account/digest/test`).
 When `autoSyncEnabled` is true, a background scheduler syncs the inbox at most
 every 30 minutes with no manual click, and applies rules when `autoApplyRules`
 is on (Gmail API only). Returns the full, merged settings.
 
-> Accounts connected before the digest feature must **reconnect Gmail** to grant
-> the `gmail.send` scope before delivery can succeed.
+> On the Gmail API, accounts connected before the digest feature must
+> **reconnect Gmail** to grant the `gmail.send` scope before delivery can succeed.
 
 **Request Body (all optional):** `{ "autoApplyRules": bool, "autoSyncEnabled": bool, "digestEnabled": bool, "digestHourUTC": int }`
 
@@ -1268,16 +1278,28 @@ Returns per-dataset deletion counts. The shared analysis cache is not per-user
 
 #### POST /api/account/digest/test
 
-Email the caller their 7-day recap immediately, through their own Gmail, using
-the same rendering and the same delivery path as the scheduler. Gmail API only:
-on a mailbox reached over IMAP this answers `502` with the "Reconnectez Gmail"
-message below, not `501`.
+Email the caller their 7-day recap immediately, from their own mailbox, using
+the same rendering and the same delivery path as the scheduler:
+
+- on the Gmail API, through their Gmail;
+- on IMAP, through the mailbox's sending server (SMTP): implicit TLS or
+  STARTTLS, never in the clear, certificate verified, logged in with the
+  mailbox's address and its stored app password (AUTH PLAIN), from that address
+  to that address. The server is the one recorded with the mailbox
+  (`smtpHost`, `smtpPort`, `smtpTls`, see `GET /api/mailbox`), or, for a
+  mailbox connected before it was recorded, the catalog's for its provider in
+  the running edition.
 
 The digest was the one feature nobody could verify: you turned it on and waited a
-day to learn whether your Gmail grant still carried the send scope. This closes
+day to learn whether delivery worked (whether your Gmail grant still carried the
+send scope, or whether your sending server takes your app password). This closes
 that loop. It deliberately does **not** stamp `digestLastSentAt`, so a test never
 consumes the day's real digest, and it sends even when the week is empty (unlike
 the scheduler, which has no reason to mail "0 emails triés" unprompted).
+
+One test per account per minute, a failed one included: each opens an
+authenticated session with the sending server, and a burst of refused
+passwords is what gets the instance's address throttled by a provider.
 
 **Response:** `200 OK`
 ```json
@@ -1286,11 +1308,26 @@ the scheduler, which has no reason to mail "0 emails triés" unprompted).
 
 **Error Responses:**
 - `401 Unauthorized`: Missing session, or a dead Google grant (the SPA offers
-  "Reconnecter Gmail")
+  "Reconnecter Gmail"). Never on IMAP: the SPA signs out on a 401 before the
+  reason shows.
+- `422 Unprocessable Entity` (IMAP): Mailsorter does not know the mailbox's
+  sending server: none on its row, none in the catalog for its provider
+  ("Mailsorter ne connaît pas le serveur d'envoi de cette boîte : le récap ne
+  peut pas en partir.")
+- `429 Too Many Requests`: a test was asked less than a minute ago for this
+  account ("Vous venez de demander un test. Attendez une minute avant d'en
+  envoyer un autre."), with `Retry-After: 60`. Nothing is tried.
 - `500 Internal Server Error`: the ledger could not be read
-- `502 Bad Gateway`: the send failed: Gmail refused it (typically a missing
-  `gmail.send` scope on an older authorization), the mailbox is on IMAP, or no
-  mailbox is connected
+- `502 Bad Gateway`: the send failed. On the Gmail API, Gmail refused it
+  (typically a missing `gmail.send` scope on an older authorization), or no
+  mailbox is connected ("Reconnectez Gmail"). On IMAP, the sending server
+  refused the app password ("Le serveur d'envoi de votre boîte a refusé le mot
+  de passe d'application.": a 535, or Gmail's 534 5.7.9), blocked the sign-in
+  for where it came from, the password being right ("Votre fournisseur a
+  bloqué la connexion venant du serveur de Mailsorter. Autorisez-la depuis la
+  sécurité de votre compte, puis réessayez.": Gmail's 534 5.7.14), could not
+  be reached, or did not take the message; each has its own sentence, none of
+  them about Gmail.
 
 The matching preview, without sending anything, is `GET /api/stats/digest`.
 
@@ -2242,8 +2279,8 @@ screen must not promise settings it does not have.
 `capabilities` describe what the provider offers on that route, not what
 Mailsorter does with it today. Gmail over IMAP declares labels, provider
 search, stable ids, threads and sending (through Gmail's IMAP extensions and
-SMTP); the IMAP transport uses none of them yet. What actually works per
-transport is in "Transports and what works on each".
+SMTP); of those, the IMAP transport uses only the sending, for the daily recap.
+What actually works per transport is in "Transports and what works on each".
 
 `blockers` are why this route can fail for this particular user, and the screen
 shows them BEFORE the attempt: every one of them otherwise surfaces as an

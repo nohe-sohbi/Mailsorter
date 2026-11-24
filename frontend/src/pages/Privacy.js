@@ -69,7 +69,9 @@ function Privacy() {
           Par IMAP (Orange, iCloud, Gmail sans API, etc.), Mailsorter se connecte avec un mot de
           passe d'application que vous générez chez votre fournisseur et pouvez révoquer à tout
           moment ; il est stocké chiffré. Il sert à lire votre boîte et à y ranger ce que vous
-          validez.
+          validez, et, si vous activez le récap quotidien, à vous l'envoyer à vous-même par le
+          serveur d'envoi de votre boîte. Mailsorter n'écrit jamais à personne d'autre, et
+          n'envoie rien si le récap est désactivé.
         </p>
         <p>
           Par l'API Gmail, Google vous présente à la connexion les autorisations demandées. Elles

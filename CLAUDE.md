@@ -21,6 +21,7 @@ the README. The last audit closed every item it opened (`BACKLOG.md`).
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
 | Google | `golang.org/x/oauth2` 0.38.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
 | IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned, plus its companion `go-message` v0.18.2 (already in the graph, promoted to direct for MIME body parsing) | `backend/go.mod` |
+| SMTP | the standard library's `net/smtp`, no dependency: the recap of an IMAP mailbox leaves through its sending server | `backend/internal/smtpsend` |
 | Passwords | `golang.org/x/crypto` v0.58.0, for bcrypt on account passwords | `backend/go.mod` |
 | AI | Mistral, OpenAI-compatible, Anthropic and Ollama (local), hand-rolled HTTP clients behind a fallback registry | `backend/internal/ai/registry.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
@@ -105,7 +106,8 @@ backend/
   internal/{account,activity,digest,egress,mailbox,mailer,metrics,mirror,
             protect,provider,rules,schedule,search,snooze,unsubscribe}/
                          pure logic, no I/O, heavily unit-tested
-  internal/{ai,billing,gmail,imap}/  outbound clients (AI providers, Stripe, Gmail, IMAP)
+  internal/{ai,billing,gmail,imap,smtpsend}/  outbound clients (AI providers, Stripe,
+                         Gmail, IMAP, and SMTP for the recap of an IMAP mailbox)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
   scripts/scenarios.sh   runs the acceptance scenarios against a throwaway MongoDB
 frontend/
@@ -204,10 +206,10 @@ in its package doc:
 | `mirror` | What the local copy of an IMAP inbox should hold, given every UID the inbox holds now: what goes, what Mailsorter keeps hidden for "Annuler", what is back, and what a sync must leave alone (a move in flight, a row flagged after the listing started) | `Judge`, `Row`, `Rules`, `Verdict` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML, the HTML in the instance's look (classic or Grand Hotel, email-safe) | `Digest`, `Render`, `RenderStyle`, `Style*` |
-| `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
+| `mailer` | The recap as an RFC 5322 multipart message (bodies in quoted-printable, so no line a sending server may refuse; a `Message-ID` on the domain of the sending address, its unique part drawn by the caller), its base64url encoding for Gmail's send API, and daily-due arithmetic | `Message`, `Build`, `MessageID`, `ForGmail`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
-| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
+| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses. `SendingServer` is where a connected IMAP mailbox sends from: the server recorded on its row, or that route's in the catalog for a row from before | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `SendingServer`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 | `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
@@ -219,6 +221,7 @@ The outbound clients and primitives:
 | `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
 | `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline |
+| `smtpsend` | Hands one message to the sending server of an IMAP mailbox: the daily recap on that transport. Implicit TLS (465) or STARTTLS (587), never cleartext (a STARTTLS route whose server does not offer it is refused before the password is sent), certificate verified against the system roots, AUTH PLAIN, 30 s bound. `ErrAuth` (credentials refused: 535, or 534 5.7.9), `ErrBlocked` (sign-in blocked for where it came from, the password being right: 534 5.7.14) and `ErrUnreachable` are typed; any other 534 is none of them |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
 | `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (Google tokens and IMAP passwords), `api/ai_settings.go` (BYOK provider keys) and the legacy `gmail_config` read at boot |
@@ -256,12 +259,12 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
-| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap to the mailbox's sending server: the only two readers of the sealed app password |
 | `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
 | `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`) |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
-| `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail, `digestHourOf` (a stored hour, 0 = midnight, or `DIGEST_HOUR_UTC` when none was picked; the settings screen and the scheduler both read it), `POST /api/account/digest/test`, and `digestStyle()`, the UI theme as a digest style |
+| `digest_scheduler.go` | 15 min ticker sending the daily digest from the user's own mailbox (`deliverDigest`: the Gmail API, or the IMAP mailbox's sending server through `sendThroughBox`; `digestMessage` gives it its `Message-ID`), paced by `dailyDigestPace` (4 accounts at once, 30 s each, the stamp under its own 10 s), `digestHourOf` (a stored hour, 0 = midnight, or `DIGEST_HOUR_UTC` when none was picked; the settings screen and the scheduler both read it), `POST /api/account/digest/test` (one per account per minute, `digestTestLimiter`, a 429 in words beyond; `writeDigestSendError` says why a test did not leave, never with the Gmail sentence on IMAP, never with a 401), and `digestStyle()`, the UI theme as a digest style |
 | `auto_sync.go` | 30 min per-user background inbox sync |
 
 ### Request pipeline
@@ -321,7 +324,7 @@ not cron; a redeploy restarts them.
 |---|---|---|
 | Analysis worker pool (3 workers) | drains `jobQueue` (cap 256) | `jobs.go` |
 | Snooze wake sweep | 1 min | `snooze.go` |
-| Daily digest | 15 min tick, at most one send per user per day, Gmail API only | `digest_scheduler.go` |
+| Daily digest | 15 min tick, at most one send per user per day, through the Gmail API or the IMAP mailbox's sending server (SMTP); 4 accounts at once, each with its own 30 s, so a sending server that does not answer holds only its own | `digest_scheduler.go` |
 | Auto-sync | 5 min tick, but min 30 min between two syncs of the same user | `auto_sync.go` |
 
 ## Frontend Architecture
@@ -536,7 +539,8 @@ as a side effect of another change.
 - Acceptance scenarios (build tag `acceptance`) are the one place the `api` package
   runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), or a
   real in-memory IMAP server over TLS trusted through `SSL_CERT_FILE`, with the
-  database prepared as the production volume is (`acceptance_imap_test.go`), and
+  database prepared as the production volume is (`acceptance_imap_test.go`), plus
+  a fake SMTP sending server next to it, over the same TLS (`acceptance_smtp_test.go`), and
   the only tests that say which messages a handler actually moved. One scenario is
   one French sentence (`phrase`) Nohé can answer yes or no to: `observed` until he
   answers, `validated` on a yes, `rejected` on a no. A rejected scenario still pins
@@ -833,8 +837,9 @@ Do not duplicate these into this file. Point at them.
   `errNoLabelsOnIMAP` (501 on a single apply, left pending in a batch), never
   reported as applied. Everything else (rules apply and preview, snooze and its wake
   sweeper, unsubscribe, attachments, labels, smart labels, undo, batch action and
-  undo, bulk by sender, digest) refuses: 15 call sites left. The digest test does
-  not map the refusal to 501: `SendTestDigest` answers 502.
+  undo, bulk by sender) refuses: 14 call sites left. A 15th, in `deliverDigest`, is
+  the recap's Gmail API branch, which an IMAP mailbox never reaches: its recap
+  leaves through the mailbox's sending server (`sendThroughBox`, `internal/smtpsend`).
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
   `GMAIL_ONLY` (`frontend/src/components/landing/features.js`) lists what the

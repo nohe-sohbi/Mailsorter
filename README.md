@@ -68,7 +68,7 @@ Free, SFR, Yahoo et AOL, Zoho, OVH, Google Workspace par IMAP et tout autre serv
 
 Par l'API Gmail, tout est branché.
 
-Sur une boîte IMAP, Mailsorter synchronise la boîte de réception, l'affiche, analyse les emails avec l'IA et range : archiver, supprimer, marquer comme lu, mettre en favori, appliquer ou ignorer une proposition de l'IA (archiver, supprimer, garder), et annuler (juste après, après un rangement ou depuis l'historique : le mail revient de là où Mailsorter l'avait mis). Le reste passe encore par l'API Gmail et répond `501` sur une boîte IMAP : les étiquettes, les règles, le report, le désabonnement, les actions sur une sélection et sur tout un expéditeur, les pièces jointes. Le récap quotidien part par l'API Gmail du compte : il n'est pas envoyé depuis une boîte IMAP. Une proposition "étiqueter" de l'IA reste en attente sur une boîte IMAP : l'appliquer répond "Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP."
+Sur une boîte IMAP, Mailsorter synchronise la boîte de réception, l'affiche, analyse les emails avec l'IA et range : archiver, supprimer, marquer comme lu, mettre en favori, appliquer ou ignorer une proposition de l'IA (archiver, supprimer, garder), et annuler (juste après, après un rangement ou depuis l'historique : le mail revient de là où Mailsorter l'avait mis). Le récap quotidien part aussi : par le serveur d'envoi de la boîte (SMTP, celui du fournisseur au catalogue), connecté avec l'adresse et le mot de passe d'application de la boîte, de votre adresse à votre adresse. Le reste passe encore par l'API Gmail et répond `501` sur une boîte IMAP : les étiquettes, les règles, le report, le désabonnement, les actions sur une sélection et sur tout un expéditeur, les pièces jointes. Une proposition "étiqueter" de l'IA reste en attente sur une boîte IMAP : l'appliquer répond "Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP."
 
 ## Ce qu'elle fait
 
@@ -80,7 +80,7 @@ Sur une boîte IMAP, Mailsorter synchronise la boîte de réception, l'affiche, 
 
 **Couper le robinet.** Détection des newsletters via les en-têtes `List-Unsubscribe` (RFC 2369) et `List-Unsubscribe-Post` (RFC 8058), désabonnement exécuté côté serveur quand l'expéditeur le permet, puis archivage du backlog de l'expéditeur dans le même geste. Le désabonnement passe par l'API Gmail.
 
-**Tourner sans vous.** Synchronisation de fond, au plus toutes les 30 minutes, si vous l'activez. Sur l'API Gmail, en plus : application des règles à chaque synchronisation, report d'emails qui reviennent tout seuls au moment choisi, et récap quotidien des sept derniers jours envoyé depuis votre propre boîte.
+**Tourner sans vous.** Synchronisation de fond, au plus toutes les 30 minutes, et récap quotidien des sept derniers jours envoyé depuis votre propre boîte, si vous les activez. Sur l'API Gmail, en plus : application des règles à chaque synchronisation, et report d'emails qui reviennent tout seuls au moment choisi.
 
 **Ne rien casser.** Une liste d'expéditeurs protégés qu'aucune passe automatisée (IA, règle, pilote automatique, action groupée) ne peut archiver ni supprimer, un journal de toutes les actions avec un bouton Annuler qui rejoue l'action inverse (API Gmail), et un export ou une suppression RGPD complète en un clic.
 
@@ -230,7 +230,7 @@ Les décisions d'ingénierie qui valent le détour, avec leur point d'entrée da
 | **Des sessions sans bibliothèque** | Le jeton de session est un HMAC-SHA256 maison, expirant, signé avec une clé dérivée du secret maître par un label distinct de celle du `state` OAuth : un jeton de session ne peut pas être rejoué comme state. Le middleware supprime systématiquement l'en-tête `X-User-Email` fourni par le client avant de le reposer lui-même. |
 | **Les identifiants ne dorment pas en clair** | Jetons Google, mots de passe des boîtes et clés d'IA personnelles sont chiffrés en AES-256-GCM avant d'atteindre la base. Les anciens jetons Google en clair sont rescellés à la première lecture, et un jeton illisible devient un 401 qui relance la connexion, jamais un 500. |
 | **Un seul catalogue de données** | [`internal/account`](backend/internal/account/account.go) déclare une fois la liste des collections détenues par un utilisateur, et cette liste pilote **à la fois** l'export et la suppression RGPD. Impossible d'exporter une donnée qu'on ne sait pas effacer, ou d'effacer une donnée qu'on n'a jamais divulguée. |
-| **Le récap part de votre compte** | Aucun SMTP tiers : le récap quotidien est envoyé par l'API Gmail du compte de l'utilisateur lui-même. |
+| **Le récap part de votre compte** | Aucun SMTP tiers : le récap quotidien part de la boîte de l'utilisateur lui-même, par l'API Gmail, ou par le serveur d'envoi de sa boîte IMAP avec son propre mot de passe d'application ([`internal/smtpsend`](backend/internal/smtpsend/smtpsend.go) : TLS obligatoire, certificat vérifié). |
 
 ## Architecture
 

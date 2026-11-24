@@ -281,6 +281,11 @@ type Snooze struct {
 // Its `json:"-"` is load-bearing: this struct is returned by GET /api/mailbox,
 // and a tag change would put a credential on the wire. The tag is enforced by a
 // test, not by attention.
+//
+// SMTPHost, SMTPPort and SMTPTLS are the mailbox's sending server, where the
+// daily recap leaves from, recorded at connect time from the same catalog
+// route as Host, Port and TLS. A row connected before they were recorded has
+// none of them, and the catalog answers for it (provider.SendingServer).
 type MailAccount struct {
 	ID        string    `json:"id,omitempty" bson:"_id,omitempty"`
 	UserID    string    `json:"-" bson:"userId"`
@@ -291,6 +296,9 @@ type MailAccount struct {
 	Host      string    `json:"host" bson:"host"`
 	Port      int       `json:"port" bson:"port"`
 	TLS       string    `json:"tls" bson:"tls"`
+	SMTPHost  string    `json:"smtpHost,omitempty" bson:"smtpHost,omitempty"`
+	SMTPPort  int       `json:"smtpPort,omitempty" bson:"smtpPort,omitempty"`
+	SMTPTLS   string    `json:"smtpTls,omitempty" bson:"smtpTls,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
 }

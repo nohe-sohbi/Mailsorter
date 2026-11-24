@@ -35,6 +35,9 @@ var (
 	// bug: Gmail's API route in the hosted edition and Proton anywhere but
 	// self-hosted both land here, and the UI must say why rather than fail.
 	ErrNotInEdition = errors.New("provider: no route available in this edition")
+	// ErrNoSendingServer is returned when neither a connected mailbox nor the
+	// catalog says where that mailbox sends from: nothing can leave it.
+	ErrNoSendingServer = errors.New("provider: no known sending server for this mailbox")
 )
 
 // bothEditions is the common case and is written once so a reader can see at a
@@ -468,4 +471,23 @@ func PickIMAP(key string, e Edition) (Route, error) {
 		}
 	}
 	return Route{}, ErrNotInEdition
+}
+
+// SendingServer is where a mailbox connected over IMAP sends from: the
+// sending server recorded with the mailbox when there is one, or else the one
+// of the route connecting that provider's mailboxes in this edition
+// (PickIMAP). The fallback is for the mailboxes connected before the sending
+// server was recorded with them, and it reads the same catalog their IMAP
+// server came from. A recorded server counts only when it is whole (a host, a
+// port and a TLS mode): a part of one is nothing anyone can dial.
+func SendingServer(recorded Endpoint, key string, e Edition) (Endpoint, error) {
+	if recorded.Host != "" && recorded.Port > 0 &&
+		(recorded.TLS == TLSImplicit || recorded.TLS == TLSSTARTTLS) {
+		return recorded, nil
+	}
+	route, err := PickIMAP(key, e)
+	if err != nil || route.SMTP == nil {
+		return Endpoint{}, ErrNoSendingServer
+	}
+	return *route.SMTP, nil
 }

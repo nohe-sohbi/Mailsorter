@@ -110,6 +110,10 @@ type Handler struct {
 	// unauthenticated caller and somebody else's mail provider.
 	signInOnce sync.Once
 	signIn     *rateLimiter
+	// The test-send limiter (digestTestLimiter), built on first use for the
+	// same reason.
+	digestTestOnce sync.Once
+	digestTest     *rateLimiter
 }
 
 // signInLimiter is the throttle on the public mailbox sign-in. See signInLimit

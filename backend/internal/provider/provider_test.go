@@ -364,3 +364,45 @@ func TestPickIMAPFindsTheRouteAPasswordCanUse(t *testing.T) {
 		}
 	}
 }
+
+func TestSendingServerOfAConnectedMailbox(t *testing.T) {
+	recorded := Endpoint{Host: "smtp.example.net", Port: 465, TLS: TLSImplicit}
+	orange := Endpoint{Host: "smtp.orange.fr", Port: 465, TLS: TLSImplicit}
+	gmail := Endpoint{Host: "smtp.gmail.com", Port: 587, TLS: TLSSTARTTLS}
+	bridge := Endpoint{Host: "127.0.0.1", Port: 1025, TLS: TLSSTARTTLS}
+
+	cases := []struct {
+		name     string
+		recorded Endpoint
+		key      string
+		edition  Edition
+		want     Endpoint
+		wantErr  bool
+	}{
+		{"the recorded server wins over the catalog", recorded, KeyOrange, EditionHosted, recorded, false},
+		{"the recorded server, for a provider the catalog has none for", recorded, KeyGeneric, EditionHosted, recorded, false},
+		{"a row from before: the catalog, by provider", Endpoint{}, KeyOrange, EditionHosted, orange, false},
+		{"a row from before: Gmail installed at home sends from its IMAP route", Endpoint{}, KeyGmail, EditionSelfHosted, gmail, false},
+		{"a row from before: Proton through Bridge, at home", Endpoint{}, KeyProton, EditionSelfHosted, bridge, false},
+		{"a row from before: Proton is not offered by the hosted edition", Endpoint{}, KeyProton, EditionHosted, Endpoint{}, true},
+		{"a row from before: the generic entry has no server", Endpoint{}, KeyGeneric, EditionHosted, Endpoint{}, true},
+		{"a row from before: an unknown provider", Endpoint{}, "nope", EditionHosted, Endpoint{}, true},
+		{"a recorded server without a port is no server", Endpoint{Host: "smtp.example.net", TLS: TLSImplicit}, KeyOrange, EditionHosted, orange, false},
+		{"a recorded server without a TLS mode is no server", Endpoint{Host: "smtp.example.net", Port: 465}, KeyGeneric, EditionHosted, Endpoint{}, true},
+		{"a recorded server with an unknown TLS mode is no server", Endpoint{Host: "smtp.example.net", Port: 25, TLS: "none"}, KeyGeneric, EditionHosted, Endpoint{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SendingServer(tc.recorded, tc.key, tc.edition)
+			if tc.wantErr {
+				if !errors.Is(err, ErrNoSendingServer) {
+					t.Errorf("SendingServer(%+v, %q, %s) = %+v, %v, want ErrNoSendingServer", tc.recorded, tc.key, tc.edition, got, err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("SendingServer(%+v, %q, %s) = %+v, %v, want %+v", tc.recorded, tc.key, tc.edition, got, err, tc.want)
+			}
+		})
+	}
+}
