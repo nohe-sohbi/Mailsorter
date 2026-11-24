@@ -145,6 +145,8 @@ type testServer struct {
 	offerSTARTTLS bool
 	// silent is a server that accepts the connection and never says a word.
 	silent bool
+	// refusal is the reply to a refused login, one line per element.
+	refusal []string
 
 	mu          sync.Mutex
 	connections int
@@ -170,10 +172,11 @@ type serverOption func(*testServer)
 func withCertificate(cfg *tls.Config) serverOption { return func(s *testServer) { s.tls = cfg } }
 func withoutSTARTTLS() serverOption                { return func(s *testServer) { s.offerSTARTTLS = false } }
 func silent() serverOption                         { return func(s *testServer) { s.silent = true } }
+func refusingWith(lines ...string) serverOption    { return func(s *testServer) { s.refusal = lines } }
 
 func startServer(t *testing.T, mode provider.TLSMode, opts ...serverOption) *testServer {
 	t.Helper()
-	s := &testServer{tls: trustedTLS, offerSTARTTLS: true}
+	s := &testServer{tls: trustedTLS, offerSTARTTLS: true, refusal: []string{"535 5.7.8 Authentication credentials invalid"}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -281,7 +284,9 @@ func (s *testServer) serve(c net.Conn) {
 			s.logins = append(s.logins, testLogin{user: parts[1], accepted: ok, overTLS: overTLS})
 			s.mu.Unlock()
 			if !ok {
-				say("535 5.7.8 Authentication credentials invalid")
+				for _, line := range s.refusal {
+					say(line)
+				}
 				continue
 			}
 			loggedIn = true
@@ -421,6 +426,55 @@ func TestSendReportsRefusedCredentials(t *testing.T) {
 	}
 	if _, logins, received := s.seen(); len(logins) != 1 || logins[0].accepted || len(received) > 0 {
 		t.Errorf("the server saw logins %+v and messages %+v, want one refused login and no message", logins, received)
+	}
+}
+
+// What a refused login means depends on the reply, not only on its code.
+// Gmail answers 534 both for a password that is not an app password (5.7.9,
+// the user's to fix) and for a sign-in it blocked because of where it came
+// from (5.7.14, where the password is right): calling the second a refused
+// password sends the person to replace one that works. The replies are
+// Gmail's own, multi-line as it sends them.
+func TestSendTellsARefusedPasswordFromABlockedSignIn(t *testing.T) {
+	cases := []struct {
+		name  string
+		reply []string
+		want  error
+	}{
+		{"535, wrong credentials", []string{
+			"535-5.7.8 Username and Password not accepted. For more information, go to",
+			"535 5.7.8  https://support.google.com/mail/?p=BadCredentials - gsmtp",
+		}, ErrAuth},
+		{"534 5.7.9, an app password is needed", []string{
+			"534-5.7.9 Application-specific password required. Learn more at",
+			"534 5.7.9  https://support.google.com/mail/?p=InvalidSecondFactor - gsmtp",
+		}, ErrAuth},
+		{"534 5.7.14, the sign-in was blocked", []string{
+			"534-5.7.14 <https://accounts.google.com/signin/continue?sarp=1&scc=1>",
+			"534-5.7.14 Please log in via your web browser and then try again.",
+			"534-5.7.14  Learn more at",
+			"534 5.7.14  https://support.google.com/mail/answer/78754 - gsmtp",
+		}, ErrBlocked},
+		{"534 without an enhanced code", []string{"534 Authentication mechanism is too weak"}, nil},
+		{"534 5.7.11, something else", []string{"534 5.7.11 Encryption required for requested authentication mechanism"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := startServer(t, provider.TLSImplicit, refusingWith(tc.reply...))
+
+			err := Send(context.Background(), creds(s.endpoint, "not-the-password"), testUser, []string{testUser}, []byte(testMessageBody))
+			if err == nil {
+				t.Fatal("Send with a refused login = nil, want an error")
+			}
+			for _, sentinel := range []error{ErrAuth, ErrBlocked, ErrUnreachable} {
+				if got := errors.Is(err, sentinel); got != (sentinel == tc.want) {
+					t.Errorf("Send answered %q: errors.Is(%v, %v) = %v, want %v", tc.reply[0], err, sentinel, got, !got)
+				}
+			}
+			if _, _, received := s.seen(); len(received) > 0 {
+				t.Errorf("the server received %+v after refusing the login, want nothing", received)
+			}
+		})
 	}
 }
 

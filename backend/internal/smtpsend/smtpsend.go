@@ -25,6 +25,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -35,13 +36,20 @@ import (
 // which is a different answer from a server that is down.
 var ErrAuth = errors.New("smtpsend: the server refused the credentials")
 
+// ErrBlocked means the provider refused the sign-in for where it came from,
+// not for the password: Gmail answers "534 5.7.14" when a connection from a
+// hosting provider looks unusual to it. Typed apart from ErrAuth because a
+// new app password does not fix it: the person allows the sign-in from their
+// account's security page, and the password they have is still the right one.
+var ErrBlocked = errors.New("smtpsend: the provider blocked the sign-in from this server")
+
 // ErrUnreachable means no connection could be opened to the server. Typed
 // because it is nobody's mistake: the answer is to try again later.
 var ErrUnreachable = errors.New("smtpsend: the server could not be reached")
 
 // timeout bounds one send, connection included, whatever the caller's
 // context allows. A sending server that stops answering must not hold the
-// recap loop, which sends one user after the other.
+// recap loop, which sends a few users at a time.
 const timeout = 30 * time.Second
 
 // Credentials is what it takes to send as the user: where their sending
@@ -112,8 +120,8 @@ func Send(ctx context.Context, creds Credentials, from string, to []string, mess
 	}
 
 	if err := c.Auth(smtp.PlainAuth("", creds.Username, creds.Password, host)); err != nil {
-		if refusedCredentials(err) {
-			return fmt.Errorf("%w: %s: %v", ErrAuth, addr, err)
+		if refusal := authRefusal(err); refusal != nil {
+			return fmt.Errorf("%w: %s: %v", refusal, addr, err)
 		}
 		return fmt.Errorf("smtpsend: AUTH on %s: %w", addr, err)
 	}
@@ -142,11 +150,27 @@ func Send(ctx context.Context, creds Credentials, from string, to []string, mess
 	return nil
 }
 
-// refusedCredentials reports whether an AUTH failure is the server refusing
-// the credentials (RFC 4954: 535, and the 534 Gmail answers when an account
-// password is given where an app password is needed), rather than a server
-// that failed to answer.
-func refusedCredentials(err error) bool {
+// authRefusal names an AUTH failure the user can act on: ErrAuth when the
+// server refused the credentials (RFC 4954: 535, and the "534 5.7.9" Gmail
+// answers when an account password is given where an app password is
+// needed), ErrBlocked when it refused where the sign-in came from (Gmail's
+// "534 5.7.14"). Anything else, another 534 included, is nil: calling it a
+// refused password would send the person to replace one that is right.
+func authRefusal(err error) error {
 	var reply *textproto.Error
-	return errors.As(err, &reply) && (reply.Code == 535 || reply.Code == 534)
+	if !errors.As(err, &reply) {
+		return nil
+	}
+	// The enhanced status code (RFC 3463) opens the reply's text.
+	enhanced := ""
+	if fields := strings.Fields(reply.Msg); len(fields) > 0 {
+		enhanced = fields[0]
+	}
+	switch {
+	case reply.Code == 535, reply.Code == 534 && enhanced == "5.7.9":
+		return ErrAuth
+	case reply.Code == 534 && enhanced == "5.7.14":
+		return ErrBlocked
+	}
+	return nil
 }
