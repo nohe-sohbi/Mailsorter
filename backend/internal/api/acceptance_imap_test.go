@@ -1453,17 +1453,6 @@ func (p *imapPerson) folderOnServer(name string) (string, bool) {
 // "Reporter", and the Reporté screen ("Plus tard" in the hotel theme)
 // ---------------------------------------------------------------------------
 
-// protect adds an address or a domain to this person's protected senders,
-// through the API, as the Protégés screen does.
-func (p *imapPerson) protect(value string) {
-	a := p.app
-	a.t.Helper()
-	code, out := a.callAs(p.token, http.MethodPost, "/api/protected", map[string]string{"value": value})
-	if code != http.StatusCreated && code != http.StatusOK {
-		a.fatalf("protéger %q pour %s a répondu %d (attendu 201 ou 200) : %v", value, p.email, code, out)
-	}
-}
-
 // snoozeAnswer is "Reporter" on one mail, as this person, to tomorrow morning
 // (handleSnooze in Inbox.js, "Demain matin" in SnoozeMenu.js), on the number the
 // row holds. It returns the answer, whatever it is.
