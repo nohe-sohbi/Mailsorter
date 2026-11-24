@@ -40,6 +40,12 @@ const FLAG_PATCH = {
 };
 const FLAG_INVERSE = { read: 'unread', unread: 'read', star: 'unstar', unstar: 'star' };
 
+// Whether a flag change takes the mail out of the list on screen: "Retirer
+// des favoris" under the filter "Favoris" (is:starred) does, the way
+// archiving takes a mail out of the inbox. Left in place, the row would stay
+// in a list of favorites until the next load.
+const leavesList = (action, query) => action === 'unstar' && /(^|\s)is:starred(\s|$)/i.test(query || '');
+
 // Mirrors maxBatchActionSize in backend/internal/api/batch.go.
 const BATCH_LIMIT = 200;
 
@@ -950,6 +956,14 @@ function Inbox() {
     const optimistic = FLAG_PATCH[action];
     const rollback = FLAG_PATCH[FLAG_INVERSE[action]];
     if (optimistic) patchEmail(email.messageId, optimistic);
+    // Once the server agreed. The reader, if open on it, stays open: it reads
+    // the mail it was opened on once the row is gone, so that one is patched.
+    const settle = () => {
+      toast.success(actionMeta(action).past, { duration: 1800 });
+      if (!leavesList(action, activeQuery)) return;
+      removeEmails(email.messageId);
+      setSelectedEmail((prev) => (prev && prev.messageId === email.messageId ? { ...prev, ...optimistic } : prev));
+    };
     // Over IMAP the batch route does not exist yet (501), while the single
     // action does read, unread and the star: that one is used there, and
     // whenever the mailbox is not known, since it works on both transports.
@@ -958,7 +972,7 @@ function Inbox() {
     if (!fullFeatures) {
       try {
         await emailService.action(email.messageId, action);
-        toast.success(actionMeta(action).past, { duration: 1800 });
+        settle();
       } catch (err) {
         if (rollback) patchEmail(email.messageId, rollback);
         toast.error(apiError(err, "L'action a échoué"));
@@ -979,7 +993,7 @@ function Inbox() {
         toast.error(data.protectedSkipped ? 'Expéditeur protégé : action ignorée.' : "L'action a échoué");
         return;
       }
-      toast.success(actionMeta(action).past, { duration: 1800 });
+      settle();
     } catch {
       if (rollback) patchEmail(email.messageId, rollback);
       toast.error("L'action a échoué");
