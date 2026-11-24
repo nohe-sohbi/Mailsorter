@@ -264,7 +264,8 @@ function DigestSettings({ settings, onSaved, gmailCard }) {
         {/* Deux questions que le réglage seul ne répondait pas : à quoi
             ressemble ce mail, et l'envoi fonctionne-t-il vraiment ? La seconde
             demandait d'attendre un jour pour découvrir que l'autorisation Gmail
-            n'avait plus le scope d'envoi. */}
+            n'avait plus le scope d'envoi, ou que le serveur d'envoi d'une boîte
+            IMAP refusait le mot de passe d'application. */}
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-hairline pt-4">
           <button onClick={openPreview} disabled={loadingPreview} className="btn-secondary btn-sm">
             {loadingPreview ? <Spinner size={15} /> : <Search size={15} />} Voir un aperçu
@@ -951,12 +952,15 @@ function AISettingsCard() {
 
 function Settings() {
   const hotel = useHotel();
-  // Over IMAP the daily recap and the rules at sync are not available yet:
-  // the recap card is hidden, and the sync card does not promise the rules.
-  // The Gmail card is for a mailbox connected through the Gmail API only.
+  // Over IMAP the rules at sync are not available yet: the sync card does not
+  // promise them. The recap leaves from either transport (the Gmail API, or
+  // the sending server of an IMAP mailbox), so its card waits only for the
+  // answer about the mailbox. The Gmail card is for a mailbox connected
+  // through the Gmail API only.
   const { mailbox, known, failed, isGmail, fullFeatures } = useMailbox();
   const { isConfigured } = useInstance();
   const gmailCard = isGmail && isConfigured;
+  const recapCard = known;
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -998,7 +1002,9 @@ function Settings() {
           sub={
             fullFeatures
               ? "Le tri en arrière-plan, le récap du matin, votre boîte et les expéditeurs qu'on ne touche pas."
-              : "La synchronisation en arrière-plan, l'IA, votre boîte et les expéditeurs qu'on ne touche pas."
+              : recapCard
+                ? "La synchronisation en arrière-plan, le récap du matin, votre boîte et les expéditeurs qu'on ne touche pas."
+                : "La synchronisation en arrière-plan, l'IA, votre boîte et les expéditeurs qu'on ne touche pas."
           }
         />
       ) : (
@@ -1009,7 +1015,7 @@ function Settings() {
           <div>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
             <p className="text-sm text-muted">
-              {fullFeatures
+              {recapCard
                 ? 'Synchronisation automatique, récap quotidien, boîte mail et expéditeurs protégés.'
                 : 'Synchronisation automatique, IA, boîte mail et expéditeurs protégés.'}
             </p>
@@ -1029,7 +1035,7 @@ function Settings() {
         settings && (
           <>
             <AutoSyncSettings settings={settings} onSaved={applySaved} rulesRun={fullFeatures} />
-            {fullFeatures && <DigestSettings settings={settings} onSaved={applySaved} gmailCard={gmailCard} />}
+            {recapCard && <DigestSettings settings={settings} onSaved={applySaved} gmailCard={gmailCard} />}
           </>
         )
       )}

@@ -16,7 +16,6 @@ export const GMAIL_ONLY = {
   rules: 'les règles',
   snooze: 'le report',
   unsubscribe: 'le désabonnement',
-  digest: 'le récap',
   sender: 'les actions par expéditeur',
 };
 
