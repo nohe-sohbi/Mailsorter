@@ -82,7 +82,7 @@ Sur une boîte IMAP, Mailsorter synchronise la boîte de réception, l'affiche a
 
 **Tourner sans vous.** Synchronisation de fond, au plus toutes les 30 minutes, application des règles à chaque synchronisation, et récap quotidien des sept derniers jours envoyé depuis votre propre boîte, si vous les activez. Sur l'API Gmail, en plus : report d'emails qui reviennent tout seuls au moment choisi.
 
-**Ne rien casser.** Une liste d'expéditeurs protégés qu'aucune passe automatisée (IA, règle, pilote automatique, action groupée) ne peut archiver ni supprimer, un journal de toutes les actions avec un bouton Annuler qui rejoue l'action inverse (API Gmail), et un export ou une suppression RGPD complète en un clic.
+**Ne rien casser.** Une liste d'expéditeurs protégés qu'aucune passe automatisée (IA, règle, pilote automatique, action groupée) ne peut archiver ni supprimer, un journal de toutes les actions avec un bouton Annuler qui rejoue l'action inverse, sur l'API Gmail comme sur une boîte IMAP, et un export ou une suppression RGPD complète en un clic.
 
 ## Installation
 

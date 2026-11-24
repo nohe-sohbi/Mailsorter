@@ -279,8 +279,11 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold text-ink-700">Actions</span>
+          {/* Not the order written: the engine marks read, stars and labels
+              before it moves the mail (rules.ApplyOrder in the backend). */}
           <span className="text-xs text-muted">
-            Exécutées dans l'ordre, ex. <em>{labelsOk ? 'Étiqueter' : 'Marquer comme lu'}</em> puis <em>Archiver</em>
+            {labelsOk ? 'Lu, favori et étiquette' : 'Lu et favori'} d'abord, puis le rangement (<em>Archiver</em> ou{' '}
+            <em>Supprimer</em>)
           </span>
         </div>
         <div className="space-y-2">

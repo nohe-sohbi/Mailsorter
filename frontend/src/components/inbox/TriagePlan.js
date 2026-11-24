@@ -69,11 +69,13 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   const toast = useToast();
   const confirm = useConfirm();
   const { suggestions, removeSuggestions, restoreSuggestions, removeEmails, fetchData } = useEmails();
-  // Over IMAP a label verdict does nothing on the server, and rules are never
-  // applied: neither is offered as an action there (landing/features.js).
-  // The same rule as the other screens: a mailbox not known yet, or whose
-  // answer failed, is treated as one that cannot (`fullFeatures`).
-  const { fullFeatures, failed: mailboxFailed } = useMailbox();
+  // Over IMAP a label verdict does nothing on the server: it is not offered as
+  // an action there (landing/features.js), nor as a rule. Rules run on both
+  // transports, so a sender becomes a rule on either once the mailbox is
+  // known. The same rule as the other screens: a mailbox not known yet, or
+  // whose answer failed, is treated as one that cannot (`known`,
+  // `fullFeatures`).
+  const { known, fullFeatures, failed: mailboxFailed } = useMailbox();
   const canApply = useCallback((g) => canApplyVerdict(g.action, !fullFeatures), [fullFeatures]);
   const [applyingAll, setApplyingAll] = useState(false);
   const [ruling, setRuling] = useState(null);
@@ -286,7 +288,10 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
     groups,
     totals,
     canApply,
-    rulesAvailable: fullFeatures,
+    rulesAvailable: known,
+    // A rule labels on the Gmail API only (a message sits in one folder over
+    // IMAP).
+    labelRulesAvailable: fullFeatures,
     // The mailbox could not be asked what it is: an action held back is then
     // "unavailable for now", not "not possible on this mailbox".
     mailboxFailed,
@@ -333,7 +338,10 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
   const where = group.action === 'label' && group.labelName ? ` dans « ${group.labelName} »` : '';
   const ruleAction = RULE_ACTION[group.action];
   const canRule = Boolean(
-    plan.rulesAvailable && ruleAction && group.address && (group.action !== 'label' || group.labelName)
+    plan.rulesAvailable &&
+      ruleAction &&
+      group.address &&
+      (group.action !== 'label' || (plan.labelRulesAvailable && group.labelName))
   );
   const ruled = plan.ruled.has(group.key);
 
