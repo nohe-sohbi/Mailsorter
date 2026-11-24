@@ -13,6 +13,8 @@ import { useHotel } from '../ui/hotel/HotelTheme';
 import Vault from '../ui/hotel/Vault';
 import PageHead from '../components/hotel/PageHead';
 import { initials } from '../components/hotel/avatar';
+import { useInstance } from '../contexts/InstanceContext';
+import { AI_READS } from '../components/landing/features';
 
 // Go zero-value dates come back as year 1, which would render as "1 janvier 1".
 // Treat anything before Mailsorter existed as "unknown" rather than printing it.
@@ -88,8 +90,8 @@ function PrivacyData() {
         </div>
       ) : (
         <p className="mb-5 text-sm text-ink-500">
-          Vos emails ne quittent jamais votre contrôle. Récupérez tout ce que Mailsorter stocke à votre sujet,
-          ou effacez définitivement votre compte.
+          {AI_READS} Récupérez tout ce que Mailsorter stocke à votre sujet, ou effacez définitivement votre
+          compte.
         </p>
       )}
 
@@ -97,7 +99,7 @@ function PrivacyData() {
         <button onClick={exportData} disabled={exporting} className="btn-secondary">
           {exporting ? <Spinner size={16} /> : <Shield size={16} />} Exporter mes données
         </button>
-        <span className="text-xs text-muted">Un fichier JSON : règles, expéditeurs protégés, historique, réglages…</span>
+        <span className="text-xs text-muted">Un fichier JSON : règles, expéditeurs protégés, historique, réglages...</span>
       </div>
 
       <div className="mt-6 rounded-xl border border-danger-100 bg-danger-50/60 p-5">
@@ -107,7 +109,7 @@ function PrivacyData() {
         </div>
         <p className="mb-4 text-sm text-danger-600/90">
           La suppression efface définitivement votre compte et toutes vos données Mailsorter (règles, protections,
-          reports, historique). Action <span className="font-semibold">irréversible</span>. Votre boîte Gmail n'est pas affectée.
+          reports, historique). Action <span className="font-semibold">irréversible</span>. Votre boîte mail n'est pas affectée.
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <input
@@ -136,6 +138,10 @@ function PrivacyData() {
 function Account() {
   const navigate = useNavigate();
   const hotel = useHotel();
+  // Installed at home there is no plan, no price and no Pro: the plan badge and
+  // the way to the pricing page (which redirects away there) are the online
+  // service's only.
+  const { selfHosted } = useInstance();
   const [profile, setProfile] = useState(null);
   const [usage, setUsage] = useState(null);
   const [activity, setActivity] = useState(null);
@@ -212,16 +218,18 @@ function Account() {
 
       <div className="card animate-fade-up p-7">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-ink-900">Votre plan</h2>
-          <span className={cn('chip', isPro ? 'bg-brand-fill text-white' : 'bg-ink-100 text-ink-600')}>
-            {isPro ? (
-              <>
-                <Bolt size={13} /> Pro
-              </>
-            ) : (
-              'Free'
-            )}
-          </span>
+          <h2 className="text-lg font-bold text-ink-900">{selfHosted ? 'Vos analyses' : 'Votre plan'}</h2>
+          {!selfHosted && (
+            <span className={cn('chip', isPro ? 'bg-brand-fill text-white' : 'bg-ink-100 text-ink-600')}>
+              {isPro ? (
+                <>
+                  <Bolt size={13} /> Pro
+                </>
+              ) : (
+                'Gratuit'
+              )}
+            </span>
+          )}
         </div>
 
         <div className="mb-2 flex items-baseline gap-1.5">
@@ -251,9 +259,11 @@ function Account() {
         </p>
 
         <div className="mt-5 flex flex-wrap gap-3">
-          <button onClick={() => navigate('/pricing')} className="btn-secondary">
-            {isPro ? <Check size={16} /> : <Bolt size={16} />} {isPro ? 'Voir les tarifs' : 'Découvrir Pro'}
-          </button>
+          {!selfHosted && (
+            <button onClick={() => navigate('/pricing')} className="btn-secondary">
+              {isPro ? <Check size={16} /> : <Bolt size={16} />} {isPro ? 'Voir les tarifs' : 'Découvrir Pro'}
+            </button>
+          )}
           <button onClick={() => navigate('/settings')} className="btn-ghost">
             <SettingsIcon size={16} /> Réglages
           </button>

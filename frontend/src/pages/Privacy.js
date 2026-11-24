@@ -1,13 +1,14 @@
 import React from 'react';
 import LegalLayout, { LegalSection, LegalList } from '../components/LegalLayout';
 import { CONTACT_EMAIL, SOURCE_URL } from '../components/PublicFooter';
+import { useInstance } from '../contexts/InstanceContext';
 
 // La politique de confidentialite, ecrite depuis ce que le code fait vraiment
 // plutot que depuis un modele. Chaque affirmation est verifiable dans ce depot :
 //
 //   scopes ............. backend/internal/gmail/gmail.go (NewService)
 //   ce qui est stocke .. backend/internal/models/models.go (Email, User)
-//   envoi a Mistral .... backend/internal/ai/mistral.go (From, Subject, Snippet tronque)
+//   envoi a l'IA ....... backend/internal/ai/prompts.go (From, Subject, Snippet tronque)
 //   cache partage ...... backend/internal/api/analysis.go, cle sha256(from|subject)
 //   chiffrement ........ backend/internal/crypto, backend/internal/api/tokens.go
 //   export/effacement .. backend/internal/account/account.go (Datasets)
@@ -19,7 +20,13 @@ import { CONTACT_EMAIL, SOURCE_URL } from '../components/PublicFooter';
 // Note pour l'exploitant : ce texte decrit fidelement le comportement du
 // logiciel, il ne remplace pas la relecture d'un juriste avant une exploitation
 // commerciale.
+//
+// Installee chez soi, l'instance est exploitee par celui qui l'a installee :
+// c'est lui le responsable, et l'auteur de Mailsorter n'en sait rien. Les
+// demandes vont donc a l'administrateur de l'instance, pas a l'adresse de
+// l'auteur, qui n'est donnee que pour le service en ligne.
 function Privacy() {
+  const { selfHosted } = useInstance();
   return (
     <LegalLayout
       title="Politique de confidentialité"
@@ -27,20 +34,31 @@ function Privacy() {
       intro="Mailsorter lit votre boîte mail pour la trier. C'est un accès sensible, et cette page dit exactement ce qui est demandé à Google, ce qui est conservé, ce qui est envoyé à un tiers, et comment tout effacer."
     >
       <LegalSection n="1" title="Qui traite vos données">
-        <p>
-          Mailsorter est un logiciel auto-hébergeable. Le responsable du traitement est l'exploitant de
-          l'instance sur laquelle vous vous connectez. Pour l'instance publique hébergée sur{' '}
-          <span className="font-mono text-xs text-ink-900">mailsorter.sohbi.dev</span>, il est joignable
-          à{' '}
-          <a className="font-semibold text-brand-600 hover:underline" href={`mailto:${CONTACT_EMAIL}`}>
-            {CONTACT_EMAIL}
-          </a>
-          .
-        </p>
-        <p>
-          Si vous hébergez Mailsorter vous-même, aucune donnée ne transite par nous : vos données
-          restent sur votre serveur, et c'est vous le responsable du traitement.
-        </p>
+        {selfHosted ? (
+          <p>
+            Mailsorter est un logiciel auto-hébergeable, et cette instance est installée par la personne
+            qui l'administre. C'est elle le responsable du traitement, et c'est à elle qu'il faut adresser
+            vos demandes. L'auteur de Mailsorter n'exploite pas cette instance : aucune de ses données ne
+            transite par lui.
+          </p>
+        ) : (
+          <>
+            <p>
+              Mailsorter est un logiciel auto-hébergeable. Le responsable du traitement est l'exploitant de
+              l'instance sur laquelle vous vous connectez. Pour l'instance publique hébergée sur{' '}
+              <span className="font-mono text-xs text-ink-900">mailsorter.sohbi.dev</span>, il est joignable
+              à{' '}
+              <a className="font-semibold text-brand-600 hover:underline" href={`mailto:${CONTACT_EMAIL}`}>
+                {CONTACT_EMAIL}
+              </a>
+              .
+            </p>
+            <p>
+              Si vous hébergez Mailsorter vous-même, aucune donnée ne transite par nous : vos données
+              restent sur votre serveur, et c'est vous le responsable du traitement.
+            </p>
+          </>
+        )}
       </LegalSection>
 
       <LegalSection n="2" title="Ce que Mailsorter demande à Google">
@@ -71,14 +89,15 @@ function Privacy() {
           ]}
         />
         <p>
-          Mailsorter ne supprime jamais définitivement un message : une suppression est un envoi à la
-          corbeille Gmail, d'où le message reste récupérable pendant trente jours.
+          Mailsorter ne supprime jamais définitivement un message : une suppression est un envoi dans la
+          corbeille de votre fournisseur, d'où le message reste récupérable tant que celui-ci l'y garde
+          (30 jours chez Gmail).
         </p>
       </LegalSection>
 
       <LegalSection n="3" title="Ce qui est conservé, et où">
         <p>
-          Pour afficher votre boîte sans rappeler Google à chaque clic, Mailsorter conserve une copie
+          Pour afficher votre boîte sans rappeler votre fournisseur à chaque clic, Mailsorter conserve une copie
           locale des messages synchronisés dans la base de données de l'instance :{' '}
           <strong className="text-ink-900">expéditeur, destinataires, sujet, extrait, contenu, libellés
           et date</strong>. Les pièces jointes ne sont pas stockées : elles sont récupérées chez Google
@@ -94,18 +113,21 @@ function Privacy() {
           ]}
         />
         <p>
-          Votre jeton d'accès Google est <strong className="text-ink-900">chiffré en AES-256-GCM</strong>{' '}
-          avant d'atteindre la base. Il n'est jamais inclus dans un export, ni affiché nulle part dans
-          l'application.
+          Votre jeton d'accès Google, ou le mot de passe d'application de votre boîte IMAP, est{' '}
+          <strong className="text-ink-900">chiffré en AES-256-GCM</strong> avant d'atteindre la base. Il
+          n'est jamais inclus dans un export, ni affiché nulle part dans l'application. Le mot de passe
+          de votre compte Mailsorter, lui, n'est conservé que sous forme hachée (bcrypt) : personne ne
+          peut le relire.
         </p>
       </LegalSection>
 
       <LegalSection n="4" title="Ce qui est envoyé à l'intelligence artificielle">
         <p>
-          Quand vous lancez un tri par IA, Mailsorter envoie à Mistral, pour chaque email analysé,{' '}
+          Quand vous lancez un tri par IA, Mailsorter envoie au fournisseur d'IA configuré sur l'instance
+          (qui peut être un modèle local), pour chaque email analysé,{' '}
           <strong className="text-ink-900">l'expéditeur, le sujet et un extrait tronqué à 200
           caractères</strong>. Le contenu complet du message n'est jamais transmis, et les pièces
-          jointes non plus.
+          jointes non plus. Avec un modèle local, rien ne sort de l'instance.
         </p>
         <p>
           Rien n'est envoyé sans votre geste : l'analyse se déclenche quand vous cliquez. Les règles de
@@ -121,9 +143,11 @@ function Privacy() {
           n'a pas besoin de repasser par le modèle.
         </p>
         <p>
-          Ce cache est indexé sur une empreinte cryptographique (SHA-256) de l'expéditeur et du sujet, et
-          il ne contient que la décision (archiver, étiqueter, garder) : ni votre adresse, ni le contenu
-          du message, ni rien qui permette de savoir qui a reçu quoi.
+          Ce cache est indexé sur une empreinte cryptographique (SHA-256) de l'expéditeur et du sujet. Il
+          contient la décision (archiver, étiqueter, supprimer ou garder), l'étiquette proposée, le degré
+          de confiance et l'explication écrite par l'IA, qui peut reprendre des mots de l'expéditeur ou du
+          sujet. Il ne contient ni votre adresse, ni le contenu du message, ni rien qui permette de savoir
+          qui a reçu quoi.
         </p>
       </LegalSection>
 
@@ -167,7 +191,7 @@ function Privacy() {
             </>,
             <>
               <strong className="text-ink-900">Supprimer</strong> : votre compte et l'intégralité des
-              données dérivées sont effacés. Votre boîte Gmail n'est pas touchée : Mailsorter n'efface
+              données dérivées sont effacés. Votre boîte mail n'est pas touchée : Mailsorter n'efface
               que ce qu'il a lui-même créé.
             </>,
           ]}
@@ -176,11 +200,18 @@ function Privacy() {
           L'export et l'effacement sont pilotés par la même liste de catégories dans le code, ce qui
           garantit qu'aucune donnée ne peut être conservée sans être exportable, ni exportée sans être
           effaçable. Vous disposez par ailleurs des droits d'accès, de rectification, d'opposition et de
-          limitation : écrivez à{' '}
-          <a className="font-semibold text-brand-600 hover:underline" href={`mailto:${CONTACT_EMAIL}`}>
-            {CONTACT_EMAIL}
-          </a>
-          .
+          limitation :{' '}
+          {selfHosted ? (
+            "adressez-vous à l'administrateur de cette instance."
+          ) : (
+            <>
+              écrivez à{' '}
+              <a className="font-semibold text-brand-600 hover:underline" href={`mailto:${CONTACT_EMAIL}`}>
+                {CONTACT_EMAIL}
+              </a>
+              .
+            </>
+          )}
         </p>
       </LegalSection>
 
@@ -191,8 +222,8 @@ function Privacy() {
         </p>
         <LegalList
           items={[
-            'Google, dont provient votre courrier et à qui sont adressées les actions de tri,',
-            'Mistral AI, pour la seule analyse décrite en section 4,',
+            'votre fournisseur de messagerie (Google pour une boîte Gmail), dont provient votre courrier et à qui sont adressées les actions de tri,',
+            "le fournisseur d'IA configuré sur l'instance, pour la seule analyse décrite en section 4 (aucun tiers si c'est un modèle local),",
             'Stripe, uniquement si vous souscrivez un abonnement,',
             "l'hébergeur de l'instance, qui héberge la base de données.",
           ]}

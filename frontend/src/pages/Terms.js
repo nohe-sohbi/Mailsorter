@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import LegalLayout, { LegalSection, LegalList } from '../components/LegalLayout';
 import { CONTACT_EMAIL, SOURCE_URL } from '../components/PublicFooter';
+import { useInstance } from '../contexts/InstanceContext';
 
 // Conditions d'utilisation. Meme discipline que Privacy.js : chaque affirmation
 // correspond a un comportement reel du logiciel (quota mensuel de 200 analyses,
@@ -10,7 +11,11 @@ import { CONTACT_EMAIL, SOURCE_URL } from '../components/PublicFooter';
 //
 // Note pour l'exploitant : a faire relire par un juriste avant toute
 // exploitation commerciale, en particulier les sections 6 et 9.
+//
+// Installee chez soi, l'instance est exploitee par celui qui l'a installee : le
+// contact de la section 10 est alors son administrateur, pas l'auteur.
 function Terms() {
+  const { selfHosted } = useInstance();
   return (
     <LegalLayout
       title="Conditions d'utilisation"
@@ -35,13 +40,20 @@ function Terms() {
 
       <LegalSection n="2" title="Compte et accès">
         <p>
-          L'accès se fait par votre compte Google. Il n'y a pas de mot de passe Mailsorter : aucun mot de
-          passe n'est demandé, ni stocké. Vous êtes responsable de la sécurité du compte Google avec
-          lequel vous vous connectez.
+          Vous accédez à Mailsorter avec une adresse e-mail et un mot de passe, ou avec votre compte
+          Google quand l'instance le propose. Le mot de passe de votre compte Mailsorter n'est conservé
+          que sous forme hachée (bcrypt) : personne ne peut le relire.
         </p>
         <p>
-          Vous pouvez retirer l'accès à tout moment, depuis les autorisations de votre compte Google ou
-          en supprimant votre compte Mailsorter.
+          Pour brancher une boîte autrement que par Google, vous donnez un mot de passe d'application
+          créé chez votre fournisseur de messagerie. Il est conservé chiffré (AES-256-GCM) et ne sert
+          qu'à lire et ranger cette boîte. Vous êtes responsable de la sécurité des identifiants que vous
+          utilisez.
+        </p>
+        <p>
+          Vous pouvez retirer l'accès à tout moment : chez votre fournisseur (autorisations du compte
+          Google, ou révocation du mot de passe d'application), en déconnectant la boîte depuis
+          Mailsorter, ou en supprimant votre compte Mailsorter.
         </p>
       </LegalSection>
 
@@ -54,8 +66,8 @@ function Terms() {
           items={[
             "aucune action n'est appliquée sans votre validation, sauf celles que vous avez explicitement automatisées (règles de tri, auto-pilote par expéditeur, synchronisation automatique),",
             "chaque action est inscrite dans un journal consultable, avec son origine : vous, une règle, l'IA ou l'auto-pilote,",
-            'les actions réversibles peuvent être annulées depuis ce journal,',
-            'une suppression est un envoi à la corbeille Gmail, jamais un effacement définitif,',
+            'sur une boîte Gmail, les actions réversibles peuvent être annulées depuis ce journal,',
+            'une suppression est un envoi dans la corbeille de votre fournisseur (30 jours chez Gmail), jamais un effacement définitif,',
             'les expéditeurs que vous protégez ne sont jamais archivés ni supprimés automatiquement.',
           ]}
         />
@@ -63,10 +75,11 @@ function Terms() {
 
       <LegalSection n="4" title="Plans, quota et facturation">
         <p>
-          Le plan gratuit donne droit à{' '}
+          Sur le service en ligne, le plan gratuit donne droit à{' '}
           <strong className="text-ink-900">200 emails analysés par mois</strong>. Les analyses servies
           depuis le cache et celles déclenchées par l'auto-pilote ne sont pas décomptées. Les règles de
-          tri ne consomment aucun quota : elles ne font appel à aucune IA.
+          tri ne consomment aucun quota : elles ne font appel à aucune IA. Une instance installée chez
+          soi n'applique aucun quota.
         </p>
         <p>
           Le plan Pro, quand il est ouvert sur l'instance, est un abonnement mensuel sans engagement,
@@ -95,8 +108,9 @@ function Terms() {
 
       <LegalSection n="6" title="Disponibilité">
         <p>
-          Le service est fourni en l'état, sans garantie de disponibilité. Il dépend de tiers (Google,
-          Mistral, l'hébergeur) dont les interruptions échappent à l'exploitant. Des interruptions pour
+          Le service est fourni en l'état, sans garantie de disponibilité. Il dépend de tiers (votre
+          fournisseur de messagerie, le fournisseur d'IA configuré sur l'instance, qui peut être un modèle
+          local, et l'hébergeur) dont les interruptions échappent à l'exploitant. Des interruptions pour
           maintenance ou mise à jour peuvent survenir sans préavis.
         </p>
         <p>
@@ -108,7 +122,7 @@ function Terms() {
       <LegalSection n="7" title="Résiliation">
         <p>
           Vous pouvez supprimer votre compte à tout moment depuis la page Compte. La suppression efface
-          l'intégralité des données Mailsorter vous concernant, et est irréversible. Votre boîte Gmail
+          l'intégralité des données Mailsorter vous concernant, et est irréversible. Votre boîte mail
           n'est pas affectée.
         </p>
         <p>
@@ -154,10 +168,16 @@ function Terms() {
         <p>
           Les présentes conditions sont soumises au droit français. Pour toute question, réclamation ou
           demande relative à vos données :{' '}
-          <a className="font-semibold text-brand-600 hover:underline" href={`mailto:${CONTACT_EMAIL}`}>
-            {CONTACT_EMAIL}
-          </a>
-          .
+          {selfHosted ? (
+            "adressez-vous à l'administrateur de cette instance, qui l'exploite."
+          ) : (
+            <>
+              <a className="font-semibold text-brand-600 hover:underline" href={`mailto:${CONTACT_EMAIL}`}>
+                {CONTACT_EMAIL}
+              </a>
+              .
+            </>
+          )}
         </p>
       </LegalSection>
     </LegalLayout>

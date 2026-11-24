@@ -13,7 +13,7 @@ import { actionMeta } from '../ui/actions';
 
 const PLANS = [
   {
-    name: 'Free',
+    name: 'Gratuit',
     price: '0€',
     cadence: '/ mois',
     tagline: 'Pour reprendre le contrôle.',
@@ -183,7 +183,7 @@ function Pricing() {
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="font-bold text-ink-900">Usage du mois</h3>
                 <span className={cn('chip', isPro ? 'bg-brand-fill text-white' : 'bg-ink-100 text-ink-600')}>
-                  {isPro ? <><Bolt size={13} /> Plan Pro</> : 'Plan Free'}
+                  {isPro ? <><Bolt size={13} /> Plan Pro</> : 'Plan gratuit'}
                 </span>
               </div>
               <div className="mb-2 flex items-baseline gap-1.5">

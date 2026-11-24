@@ -344,6 +344,9 @@ function App() {
     );
   }
 
+  // Seen by anyone, visitors of the online service included, and the edition
+  // is not known here (the probe that would say it is the one that failed): so
+  // the visitor first, the administrator in a second sentence.
   if (error && !isUsable) {
     return (
       <BootScreen>
@@ -351,8 +354,11 @@ function App() {
           <Alert size={28} />
         </span>
         <div className="max-w-sm space-y-2">
-          <h1 className="text-xl font-bold text-ink-900">Le moteur ne répond pas</h1>
-          <p className="text-sm text-muted">{error} Vérifiez que le backend tourne, puis réessayez.</p>
+          <h1 className="text-xl font-bold text-ink-900">Mailsorter ne répond pas</h1>
+          <p className="text-sm text-muted">
+            {error} Réessayez dans un instant. Si vous administrez cette instance, vérifiez que son serveur
+            tourne.
+          </p>
         </div>
         <button onClick={reload} className="btn-primary">
           Réessayer
