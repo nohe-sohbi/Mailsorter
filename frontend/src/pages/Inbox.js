@@ -497,8 +497,14 @@ function Inbox() {
     track('inbox_sync');
     // Success only on success. A failed sync used to be swallowed and
     // announced as done; a failed listing is already on screen as an error.
+    // The list of an IMAP mailbox is the stored copy, so it is the last sync's.
+    // Over the Gmail API the list is read live, and saying so would be false.
     if (result?.syncError) {
-      toast.error(`La synchronisation a échoué. ${result.syncError} Les emails affichés sont ceux de la dernière synchronisation réussie.`);
+      toast.error(
+        `La synchronisation a échoué. ${result.syncError}${
+          isImap ? ' Les emails affichés sont ceux de la dernière synchronisation réussie.' : ''
+        }`
+      );
     } else if (!result?.listError) {
       toast.success('Boîte synchronisée');
     }

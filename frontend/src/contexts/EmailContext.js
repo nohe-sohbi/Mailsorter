@@ -88,7 +88,7 @@ export function EmailProvider({ children }) {
             lastSyncRef.current = now;
           } catch (syncErr) {
             console.warn('Sync failed:', syncErr);
-            syncError = errorMessage(syncErr);
+            syncError = errorMessage(syncErr, { sync: true });
           }
         }
 
@@ -294,7 +294,18 @@ export function EmailProvider({ children }) {
 
 // The API returns plain-text errors for most failures; surface something a
 // French-speaking user can act on rather than a raw googleapi string.
-function errorMessage(err) {
+//
+// Only the listing, the sync and the counters come through here, and the
+// server never answers them 502, 503 or 504: a mail provider that does not
+// answer fails them with a 500 (handlers.go). So a gateway status on these
+// routes is the proxy in front of Mailsorter, with Mailsorter itself down or
+// too slow, and naming the mail provider for it sent people to check the wrong
+// service. Neither message names the provider.
+//
+// `sync` words the failure of a sync, which the inbox says after "La
+// synchronisation a échoué." while the list stays on screen: "Votre boîte n'a
+// pas pu être chargée" contradicted the emails right under it.
+function errorMessage(err, { sync = false } = {}) {
   const status = err?.response?.status;
   const raw = err?.response?.data;
   // writeError sends { error, status }; older routes send a bare string.
@@ -310,12 +321,10 @@ function errorMessage(err) {
   if (status === 501) {
     return serverSaid || "Cette action n'est pas encore disponible sur cette boîte.";
   }
-  // A gateway error is the mail provider not answering; any other 5xx is
-  // Mailsorter's own failure, and blaming the provider for it would be wrong.
   if (status === 502 || status === 503 || status === 504) {
-    return "Votre fournisseur de messagerie ne répond pas pour l'instant. Réessayez.";
+    return "Le serveur ne répond pas pour le moment. Réessayez dans un instant.";
   }
-  if (status >= 500) return "Votre boîte n'a pas pu être chargée. Réessayez.";
+  if (status >= 500) return sync ? 'Réessayez dans un instant.' : "Votre boîte n'a pas pu être chargée. Réessayez.";
   if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
   if (serverSaid) return serverSaid;
   // axios's own message is English and technical ("Request failed with status
