@@ -1405,6 +1405,154 @@ func (p *imapPerson) expectBackInInbox(subject, when string) {
 	}
 }
 
+// folderOnServer says whether the person's server has a folder by this name,
+// as another mail program lists them (LIST "" "*"). For the sentences about a
+// folder Mailsorter creates: expectOnServer stops the scenario on a folder
+// that does not open, and a folder that was never created is then the very
+// thing the sentence is about.
+func (p *imapPerson) folderOnServer(name string) bool {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	folders, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		a.fatalf("lecture des dossiers du serveur IMAP de %s : %v", p.email, err)
+	}
+	for _, f := range folders {
+		if f.Mailbox == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// "Reporter", and the Reporté screen ("Plus tard" in the hotel theme)
+// ---------------------------------------------------------------------------
+
+// protect adds an address or a domain to this person's protected senders,
+// through the API, as the Protégés screen does.
+func (p *imapPerson) protect(value string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/protected", map[string]string{"value": value})
+	if code != http.StatusCreated && code != http.StatusOK {
+		a.fatalf("protéger %q pour %s a répondu %d (attendu 201 ou 200) : %v", value, p.email, code, out)
+	}
+}
+
+// snoozeAnswer is "Reporter" on one mail, as this person, to tomorrow morning
+// (handleSnooze in Inbox.js, "Demain matin" in SnoozeMenu.js), on the number the
+// row holds. It returns the answer, whatever it is.
+func (p *imapPerson) snoozeAnswer(uid string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/snooze",
+		map[string]string{"messageId": uid, "preset": "tomorrow"})
+	return answer{code: code, body: out}
+}
+
+// snoozeSelectionAnswer is "Reporter" on a selection of mails, as this person,
+// to tomorrow morning (runBulkSnooze in Inbox.js). It returns the answer,
+// whatever it is.
+func (p *imapPerson) snoozeSelectionAnswer(uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-snooze",
+		map[string]interface{}{"messageIds": uids, "preset": "tomorrow"})
+	return answer{code: code, body: out}
+}
+
+// reportedMail is one row of the "Prévus" tab of the Reporté screen
+// (Snoozed.js): the subject and the sender it shows, and the id its
+// "Réactiver" sends back.
+type reportedMail struct {
+	ID        string `json:"id"`
+	MessageID string `json:"messageId"`
+	From      string `json:"from"`
+	Subject   string `json:"subject"`
+}
+
+// reported is this person's mails reported and not back yet: the "Prévus" tab
+// of the Reporté screen, as it loads it (GET /api/snoozes?status=scheduled).
+func (p *imapPerson) reported() []reportedMail {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	if code != http.StatusOK {
+		a.fatalf("les mails reportés de %s ne s'affichent pas : GET /api/snoozes a répondu %d : %v", p.email, code, out)
+	}
+	raw, err := json.Marshal(out["snoozes"])
+	if err != nil {
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", p.email, err)
+	}
+	var rows []reportedMail
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", p.email, err)
+	}
+	return rows
+}
+
+// reportedRow returns the row of the "Prévus" tab for the mail with this
+// subject, and whether the tab shows one. By its subject, which is what the
+// row shows: the number of a reported mail is the one it had in the inbox.
+func (p *imapPerson) reportedRow(subject string) (reportedMail, bool) {
+	p.app.t.Helper()
+	for _, r := range p.reported() {
+		if r.Subject == subject {
+			return r, true
+		}
+	}
+	return reportedMail{}, false
+}
+
+// describeReported is the "Prévus" tab in a failure message.
+func describeReported(rows []reportedMail) string {
+	if len(rows) == 0 {
+		return "aucun mail"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, fmt.Sprintf("%q de %q", r.Subject, r.From))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// wakeNowAnswer is "Réactiver" on a row of the "Prévus" tab, once its
+// confirmation "Ramener maintenant" is accepted (handleWake in Snoozed.js): what
+// the sentences call "Réveiller maintenant". It returns the answer, whatever
+// it is.
+func (p *imapPerson) wakeNowAnswer(row reportedMail) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/snoozes/"+url.PathEscape(row.ID)+"/wake", nil)
+	return answer{code: code, body: out}
+}
+
+// timeComesForSnoozes is the hour of this person's reports coming: every wake
+// time of theirs still scheduled moved into the past, then the background
+// sweep run once, as its 1 minute loop does (wakeDueSnoozes, snooze.go). The
+// app reads no clock a scenario can turn, so the wake time is moved in the
+// database, as timeComesForSnoozes does for the Gmail user; the harness builds
+// the Handler without NewHandler, so no loop runs on its own.
+//
+// A person with no report scheduled stops the scenario: a sweep with nothing
+// due proves nothing about what it brings back.
+func (p *imapPerson) timeComesForSnoozes() {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := a.h.db.Snoozes().UpdateMany(ctx,
+		bson.M{"userId": p.email, "status": "scheduled"},
+		bson.M{"$set": bson.M{"wakeAt": time.Now().Add(-time.Minute)}})
+	if err != nil {
+		a.fatalf("avance de l'heure des reports de %s : %v", p.email, err)
+	}
+	if res.MatchedCount == 0 {
+		a.fatalf("aucun report de %s n'est prévu dans la base au moment de l'heure du réveil : le scénario ne prouve rien", p.email)
+	}
+	a.h.wakeDueSnoozes()
+}
+
 // ---------------------------------------------------------------------------
 // The AI's triage plan, and the history, as this person sees them
 // ---------------------------------------------------------------------------
