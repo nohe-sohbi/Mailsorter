@@ -69,7 +69,9 @@ export default function SignupCard({ auth, isConfigured }) {
         </button>
       </p>
       <p className="hl-fiche__fine">
-        {selfHosted ? 'Votre instance : sans limite de tris, rien à payer.' : "Gratuit jusqu'à 200 tris par mois. Sans carte bancaire."}
+        {selfHosted
+          ? 'Votre instance : sans limite de tris, et Mailsorter ne vous facture rien.'
+          : "Gratuit jusqu'à 200 tris par mois. Sans carte bancaire."}
       </p>
     </form>
   );

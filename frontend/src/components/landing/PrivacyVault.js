@@ -2,7 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import Vault from '../../ui/hotel/Vault';
 import FloorHeading from './FloorHeading';
-import { canPromise } from './features';
+import { AI_EGRESS, AI_READS, canPromise } from './features';
 import './PrivacyVault.css';
 
 // Three facts, each checked against the code: the model only sees the sender,
@@ -27,7 +27,9 @@ export default function PrivacyVault({ floorNo, isConfigured }) {
             <div className="hl-vplq">
               <b aria-hidden="true">I</b>
               <h3>On lit</h3>
-              <p>L'IA ne voit que l'expéditeur, l'objet et au plus 200 caractères du message. Jamais le message entier, jamais les pièces jointes.</p>
+              <p>
+                {AI_READS} Jamais le message entier, jamais les pièces jointes. {AI_EGRESS}
+              </p>
             </div>
             <div className="hl-vplq">
               <b aria-hidden="true">II</b>

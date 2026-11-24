@@ -27,20 +27,61 @@ export function canPromise(feature, isConfigured) {
   return Boolean(isConfigured) || !isGmailOnly(feature);
 }
 
-// The transports this server can actually connect a mailbox over. The catalog
-// (GET /api/providers) also lists providers reached another way: Outlook.com
-// and Microsoft 365 route through Microsoft Graph, which no code implements
-// yet, so connecting one fails. Porting Graph is adding 'graph' here.
-export const IMPLEMENTED_TRANSPORTS = ['imap', 'gmail-api'];
+// The one sentence a screen shows where a Gmail-only control would have been,
+// for a mailbox connected over IMAP. The control itself is hidden, never shown
+// disabled: one rule everywhere, and this sentence only where a whole card or
+// a proposal would otherwise be left unexplained.
+export const IMAP_UNAVAILABLE = 'Pas encore disponible sur les boîtes IMAP.';
 
-// Whether a provider of GET /api/providers ({ key, name, routes: [{ transport }] })
-// can be connected on this instance: over IMAP always, over the Gmail API only
-// when the instance holds Google credentials.
-export function canConnect(provider, isConfigured) {
-  return ((provider && provider.routes) || []).some(
-    (r) => IMPLEMENTED_TRANSPORTS.includes(r.transport) && (r.transport !== 'gmail-api' || Boolean(isConfigured))
-  );
+// Whether one route of GET /api/providers
+// ({ transport, autodiscover, imap: { host, port } | null }) can be connected
+// on this instance. The single rule every list of providers follows:
+// - an IMAP route only when the catalog gives its server. A route left to
+//   autodiscovery cannot connect: autodiscovery is not written yet, and the
+//   server refuses the address (422);
+// - a Gmail API route only when the instance holds Google credentials;
+// - anything else (Microsoft Graph, for Outlook.com and Microsoft 365) is not
+//   implemented, so connecting one fails.
+export function canConnectRoute(route, isConfigured) {
+  if (!route) return false;
+  if (route.transport === 'imap') return Boolean(route.imap && route.imap.host);
+  if (route.transport === 'gmail-api') return Boolean(isConfigured);
+  return false;
 }
+
+// Whether a provider of GET /api/providers ({ key, name, routes }) can be
+// connected on this instance by at least one of its routes.
+export function canConnect(provider, isConfigured) {
+  return ((provider && provider.routes) || []).some((r) => canConnectRoute(r, isConfigured));
+}
+
+// The provider's IMAP route, the one an address and an app password go
+// through, or null.
+export function imapRouteOf(provider) {
+  return ((provider && provider.routes) || []).find((r) => r.transport === 'imap') || null;
+}
+
+// Whether the address-and-password form can connect this provider: its IMAP
+// route, with its server known.
+export function canConnectByPassword(provider) {
+  return canConnectRoute(imapRouteOf(provider), false);
+}
+
+// Whether a verdict of the AI can be applied to this mailbox. Over IMAP a
+// "label" verdict has nothing to land on (a message sits in one folder) and
+// the server does nothing with it, so it is not offered as an action.
+export function canApplyVerdict(action, isImap) {
+  return !(isImap && action === 'label');
+}
+
+// What the model reads and where it goes, in the privacy vault's words, for
+// every screen that sums it up in a line. Checked against the code: the prompt
+// carries the sender, the subject and a snippet cut at 200 characters
+// (backend/internal/ai/prompts.go), sent to whichever provider the instance
+// runs, which can be a model on the same machine.
+export const AI_READS = "L'IA ne voit que l'expéditeur, l'objet et au plus 200 caractères du message.";
+export const AI_EGRESS =
+  "Avec un modèle local, rien ne sort de l'instance. Avec une IA en ligne, cet extrait part chez son fournisseur.";
 
 // "a", "a et b", "a, b et c".
 export function joinFr(items) {

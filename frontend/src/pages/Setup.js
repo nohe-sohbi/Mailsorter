@@ -4,6 +4,7 @@ import { configService } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { Logo, Shield, Refresh, Check } from '../ui/icons';
 import Spinner from '../ui/Spinner';
+import { canConnect } from '../components/landing/features';
 
 // The steps for someone creating THEIR OWN Google Cloud project, which is what
 // the self-hosted edition asks for. Step 3 is the one that looks optional and
@@ -43,7 +44,7 @@ const OPERATOR_GUIDE = [
 // explains how to supply them.
 function Setup({ onComplete }) {
   const toast = useToast();
-  const { selfHosted } = useInstance();
+  const { selfHosted, isConfigured } = useInstance();
   const [checking, setChecking] = useState(false);
   const [providers, setProviders] = useState([]);
   const redirectUri = `${window.location.origin}/auth/callback`;
@@ -65,6 +66,11 @@ function Setup({ onComplete }) {
     };
   }, []);
 
+  // The one rule every list of providers follows (landing/features.js):
+  // a provider no route can connect yet is listed apart, as "bientôt".
+  const reachable = providers.filter((p) => canConnect(p, isConfigured));
+  const soon = providers.filter((p) => !canConnect(p, isConfigured));
+
   const envVars = [
     { name: 'GMAIL_CLIENT_ID', value: '123456789-abc.apps.googleusercontent.com' },
     { name: 'GMAIL_CLIENT_SECRET', value: 'GOCSPX-••••••••••••••••' },
@@ -76,7 +82,7 @@ function Setup({ onComplete }) {
     try {
       const { data } = await configService.getStatus();
       if (data.isConfigured) {
-        toast.success('Identifiants détectés. C’est parti !');
+        toast.success("Identifiants détectés. C'est parti !");
         if (onComplete) onComplete();
       } else {
         toast.info('Toujours rien côté serveur. Redémarrez le service après avoir renseigné les variables.');
@@ -101,7 +107,7 @@ function Setup({ onComplete }) {
               </h1>
               <p className="text-sm text-ink-500">
                 {selfHosted
-                  ? "Votre instance, votre projet Google, vos identifiants. Rien ne sort d'ici."
+                  ? 'Votre instance, votre projet Google, vos identifiants.'
                   : "Une configuration unique, valable pour toute l'instance."}
               </p>
             </div>
@@ -130,7 +136,7 @@ function Setup({ onComplete }) {
           <button onClick={handleRecheck} disabled={checking} className="btn-primary mt-6 w-full">
             {checking ? (
               <>
-                <Spinner size={18} /> Vérification…
+                <Spinner size={18} /> Vérification...
               </>
             ) : (
               <>
@@ -194,15 +200,27 @@ function Setup({ onComplete }) {
                 Joignables par cette instance
               </p>
               <ul className="mt-3 flex flex-wrap gap-1.5">
-                {providers.map((p) => (
-                  <li key={p.key} className="chip bg-ink-100 text-ink-700" title={p.routes[0]?.note || ''}>
+                {reachable.map((p) => (
+                  <li key={p.key} className="chip bg-ink-100 text-ink-700">
                     {p.name}
                   </li>
                 ))}
               </ul>
+              {soon.length > 0 && (
+                <>
+                  <p className="mt-4 text-xs font-semibold uppercase tracking-wider text-ink-500">Bientôt</p>
+                  <ul className="mt-2 flex flex-wrap gap-1.5">
+                    {soon.map((p) => (
+                      <li key={p.key} className="chip bg-ink-50 text-ink-400">
+                        {p.name}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
               <p className="mt-3 text-xs leading-relaxed text-ink-500">
                 {selfHosted
-                  ? "Cette liste vient de votre serveur. En auto-hébergé elle contient Gmail par l'API complète et Proton, que le service en ligne ne peut pas atteindre."
+                  ? "Cette liste vient de votre serveur. Une fois ces identifiants renseignés, Gmail passe aussi par l'API de Google, qui donne accès à toutes les fonctions."
                   : 'Cette liste vient du serveur : elle ne contient que ce que cette édition sait réellement joindre.'}
               </p>
             </div>

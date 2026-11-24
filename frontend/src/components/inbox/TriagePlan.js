@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useEmails } from '../../contexts/EmailContext';
+import { useEmails, useMailbox } from '../../contexts/EmailContext';
+import { useInstance } from '../../contexts/InstanceContext';
+import { IMAP_UNAVAILABLE, canApplyVerdict } from '../landing/features';
 import { aiService, emailService, senderService, apiError } from '../../services/api';
 import { useToast } from '../../ui/Toast';
 import { useConfirm } from '../../ui/Confirm';
@@ -67,6 +69,10 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   const toast = useToast();
   const confirm = useConfirm();
   const { suggestions, removeSuggestions, restoreSuggestions, removeEmails, fetchData } = useEmails();
+  // Over IMAP a label verdict does nothing on the server, and rules are never
+  // applied: neither is offered as an action there (landing/features.js).
+  const { isImap } = useMailbox();
+  const canApply = useCallback((g) => canApplyVerdict(g.action, isImap), [isImap]);
   const [applyingAll, setApplyingAll] = useState(false);
   const [ruling, setRuling] = useState(null);
   // Group keys a rule was created from in this visit, so the button says it is
@@ -85,7 +91,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   useEffect(() => {
     shown.current = { moves: groups.moves.map((g) => g.key), keeps: groups.keeps.map((g) => g.key) };
   }, [groups]);
-  const totals = useMemo(() => planTotals(groups), [groups]);
+  const totals = useMemo(() => planTotals(groups, canApply), [groups, canApply]);
 
   // `settle` is called from handlers the Inbox memoizes, so it reads the list
   // through a ref: a closure would settle against the list as it was when that
@@ -184,7 +190,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       const ok = await confirm({
         title: `Ranger ${emailsCount(n)} ?`,
         message: `Dont ${d} suppression${plural(d)} : ${names}${more}.`,
-        detail: 'Les suppressions partent à la corbeille et y restent récupérables 30 jours.',
+        detail: 'Les suppressions partent dans la corbeille de votre fournisseur (30 jours chez Gmail).',
         confirmLabel: `Ranger ${emailsCount(n)}`,
         danger: true,
       });
@@ -261,6 +267,8 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   return {
     groups,
     totals,
+    canApply,
+    rulesAvailable: !isImap,
     applyingAll,
     ruling,
     ruled,
@@ -293,7 +301,9 @@ function Avatar({ group }) {
 }
 
 function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
+  const { selfHosted } = useInstance();
   const meta = actionMeta(group.action);
+  const applicable = plan.canApply(group);
   const n = group.items.length;
   const single = n === 1;
   const isKeep = group.action === 'keep';
@@ -301,7 +311,9 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
   const verb = single ? meta.label : `${meta.label} les ${n}`;
   const where = group.action === 'label' && group.labelName ? ` dans « ${group.labelName} »` : '';
   const ruleAction = RULE_ACTION[group.action];
-  const canRule = Boolean(ruleAction && group.address && (group.action !== 'label' || group.labelName));
+  const canRule = Boolean(
+    plan.rulesAvailable && ruleAction && group.address && (group.action !== 'label' || group.labelName)
+  );
   const ruled = plan.ruled.has(group.key);
 
   return (
@@ -332,14 +344,15 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
               <span className="mt-0.5 block truncate text-sm text-ink-800">{group.items[0].subject || '(Sans sujet)'}</span>
             )}
             {group.reasoning && <span className="mt-0.5 block text-sm text-muted line-clamp-2">{group.reasoning}</span>}
-            {(where || !group.sure) && (
+            {(where || !group.sure || !applicable) && (
               <span className="mt-1.5 flex flex-wrap gap-1.5">
                 {where && (
                   <span className={cn('chip py-0.5', meta.chip)}>
                     <Tag size={12} /> {group.labelName}
                   </span>
                 )}
-                {!group.sure && (
+                {!applicable && <span className="chip bg-ink-100 py-0.5 text-ink-600">{IMAP_UNAVAILABLE}</span>}
+                {applicable && !group.sure && (
                   <span className="chip bg-caution-50 py-0.5 text-caution-700" title="L'IA n'est pas sûre d'elle sur au moins un de ces emails">
                     <Alert size={12} /> À vérifier
                   </span>
@@ -363,16 +376,18 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
               Ignorer
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => plan.applyGroup(group)}
-            disabled={plan.applyingAll}
-            className={cn('btn h-10 rounded-lg px-3 sm:h-9', meta.quiet || 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
-            aria-label={`${meta.label} ${single ? "l'email" : `les ${n} emails`} de ${group.name}${where}`}
-          >
-            <meta.Icon size={15} />
-            {verb}
-          </button>
+          {applicable && (
+            <button
+              type="button"
+              onClick={() => plan.applyGroup(group)}
+              disabled={plan.applyingAll}
+              className={cn('btn h-10 rounded-lg px-3 sm:h-9', meta.quiet || 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
+              aria-label={`${meta.label} ${single ? "l'email" : `les ${n} emails`} de ${group.name}${where}`}
+            >
+              <meta.Icon size={15} />
+              {verb}
+            </button>
+          )}
         </div>
         {expanded && (
           <div id={bodyId} className="order-2 pl-12 sm:order-3 sm:basis-full">
@@ -417,7 +432,7 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
                   onClick={() => plan.createRule(group)}
                   disabled={plan.ruling === group.key}
                   className="mt-2 inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-50 disabled:opacity-50"
-                  title="Les règles trient sans IA ni quota"
+                  title={selfHosted ? 'Les règles trient sans IA' : 'Les règles trient sans IA ni quota'}
                 >
                   {plan.ruling === group.key ? <Spinner size={14} /> : <Bolt size={14} />}
                   Toujours {meta.label.toLowerCase()} ses emails{where ? ` « ${group.labelName} »` : ''}

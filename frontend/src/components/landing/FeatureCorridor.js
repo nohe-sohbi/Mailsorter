@@ -1,6 +1,7 @@
 import React from 'react';
 import Door from '../../ui/hotel/Door';
 import FloorHeading from './FloorHeading';
+import { useInstance } from '../../contexts/InstanceContext';
 import { canPromise, isGmailOnly } from './features';
 import './FeatureCorridor.css';
 
@@ -14,7 +15,9 @@ const ROOMS = [
     number: '301',
     prop: 'signpost',
     title: "Les évidences n'ont pas besoin d'IA.",
-    text: 'Vos règles passent avant le modèle. Plus rapide, et ça ne touche pas à votre quota.',
+    text: 'Vos règles trient sans le modèle. Plus rapide.',
+    // Said only where there is a quota: an instance installed at home has none.
+    quotaText: 'Vos règles trient sans le modèle. Plus rapide, et ça ne touche pas à votre quota.',
   },
   {
     feature: 'snooze',
@@ -22,7 +25,7 @@ const ROOMS = [
     number: '302',
     prop: 'alarm',
     title: 'Pas maintenant.',
-    text: "Un e-mail disparaît et revient ce soir, demain ou ce week-end. Comme si vous l'aviez reçu à ce moment-là.",
+    text: 'Un e-mail disparaît et revient ce soir, demain ou ce week-end. Il revient non lu dans votre boîte.',
   },
   {
     feature: 'protected',
@@ -59,6 +62,7 @@ const ROOMS = [
 ];
 
 export default function FeatureCorridor({ isConfigured }) {
+  const { selfHosted } = useInstance();
   const rooms = ROOMS.filter((r) => canPromise(r.feature, isConfigured));
   // A partial last row reads as a broken layout, so the desktop column count
   // follows the room count instead of a fixed 3: 6 rooms give 3x2, 4 give 2x2,
@@ -79,7 +83,7 @@ export default function FeatureCorridor({ isConfigured }) {
               <div className="hl-room__floor" aria-hidden="true" />
               <div className="hl-room__txt">
                 <h3>{r.title}</h3>
-                <p>{r.text}</p>
+                <p>{!selfHosted && r.quotaText ? r.quotaText : r.text}</p>
                 {isGmailOnly(r.feature) && <span className="ht-tag is-gold">Gmail</span>}
               </div>
             </article>

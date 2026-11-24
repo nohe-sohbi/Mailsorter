@@ -1,13 +1,14 @@
 # Build stage
-FROM node:18-alpine AS build
+# Same Node major as CI (.github/workflows/ci.yml).
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install --silent
+# Install exactly what package-lock.json pins
+RUN npm ci --silent
 
 # Copy source code
 COPY . .

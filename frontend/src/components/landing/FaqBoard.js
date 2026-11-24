@@ -32,7 +32,7 @@ export default function FaqBoard({ floorNo, isConfigured, selfHosted, billingOn,
     [
       "Pourquoi c'est gratuit ?",
       selfHosted
-        ? "Parce que c'est votre instance : vous l'hébergez, personne ne vous facture."
+        ? "Parce que c'est votre instance : vous l'hébergez, et Mailsorter ne vous facture rien. Seule une IA en ligne, si l'instance en utilise une, se paie chez son fournisseur."
         : `Jusqu'à 200 tris par mois, ça nous coûte peu. ${rules ? 'Les règles et les tris' : 'Les tris'} déjà connus ne comptent même pas. ${billingOn ? 'Au-delà, il y a Pro.' : 'Au-delà, il y aura Pro.'}`,
     ],
   ];
