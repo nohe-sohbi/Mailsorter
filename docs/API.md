@@ -483,9 +483,15 @@ entirely.
 On a mailbox reached over IMAP the fetch PEEKS: it downloads the body without
 setting `\Seen`, so opening a message stays distinct from reading it and only
 `markRead=1` changes the flag. The star comes as `isStarred`, read off the
-server. `attachments` and `labelIds` come back empty
-there: the download route has not been ported, and a chip that answers 501 when
-clicked is worse than no chip.
+server. `labelIds` comes back empty there. `attachments`
+is read out of the message's MIME tree: every leaf part with a file name
+(`filename` of `Content-Disposition`, else `name` of `Content-Type`, decoded
+from RFC 2047 or RFC 2231), except a part the HTML shows (a `Content-ID`
+without `Content-Disposition: attachment`). `attachmentId` is the part's IMAP
+number (`"2"`, `"1.3"`), `mimeType` the declared type without its parameters,
+and `size` the size of the decoded file, as on Gmail, not of its base64. A
+file whose transfer encoding does not decode is left out of the list and
+logged.
 
 **Error Responses:**
 - `400 Bad Request`: Missing id
@@ -499,8 +505,6 @@ clicked is worse than no chip.
 
 #### GET /api/emails/{id}/attachments/{attachmentId}
 
-Gmail API only: `501` over IMAP.
-
 Stream one attachment of one message. Gmail never ships attachment data with the
 message, so this resolves the message first (to learn the part's real filename
 and MIME type, and to prove the message actually carries that id) and then
@@ -508,6 +512,15 @@ fetches the bytes.
 
 Only a part of the named message may be served: an attachment id the message
 does not carry is a 404, never a passthrough to Gmail.
+
+Over IMAP the file is inside the message. The route fetches the whole message
+with `BODY.PEEK[]` (saving a file does not mark the mail read), walks it the
+way the reader does, and serves the part only when that walk lists a file
+under `attachmentId`. Any other id, the text of the mail (`"1"`), a section
+name (`"TEXT"`), a part past the last one or a file of another mail, is a
+404 `{"error": "Cette pièce jointe est introuvable dans ce mail."}` and
+nothing else. The bytes are the file as sent: the transfer encoding (base64,
+quoted-printable) is undone, the charset of a text file is left as it is.
 
 **Response:** `200 OK`, the raw file, with:
 - `Content-Type`: the part's MIME type when it parses, `application/octet-stream` otherwise
@@ -522,9 +535,13 @@ SPA downloads through the API client and hands the browser an object URL.
 **Error Responses:**
 - `400 Bad Request`: Missing message or attachment id
 - `401 Unauthorized`: Missing or expired session
-- `404 Not Found`: This message carries no such attachment
+- `404 Not Found`: This message carries no such attachment ("Pièce jointe
+  introuvable" over the Gmail API, "Cette pièce jointe est introuvable dans ce
+  mail." over IMAP)
 - `413 Payload Too Large`: Over 30 MiB
-- `502 Bad Gateway`: Gmail could not return the message or the bytes
+- `428 Precondition Required`: no mailbox is connected to this account yet
+- `502 Bad Gateway`: the mailbox could not return the message or the bytes,
+  or, over IMAP, the file's transfer encoding does not decode
 
 ---
 

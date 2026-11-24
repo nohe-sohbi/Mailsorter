@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -28,10 +29,11 @@ type messageView struct {
 	Attachments []attachmentView `json:"attachments,omitempty"`
 }
 
-// attachmentView describes a file carried by the message. AttachmentID is the
-// handle Gmail hands out for the bytes themselves (they never travel with the
-// message payload), so it is what the download route needs; a part with no id
-// carries its data inline and is not downloadable through that route.
+// attachmentView describes a file carried by the message. AttachmentID is what
+// the download route needs: over the Gmail API the handle Gmail hands out for
+// the bytes themselves (they never travel with the message payload), over IMAP
+// the file's part number in the message. A Gmail part with no id carries its
+// data inline and is not downloadable through that route.
 type attachmentView struct {
 	Filename     string `json:"filename"`
 	MimeType     string `json:"mimeType"`
@@ -199,10 +201,9 @@ func listAttachments(msg *gmailapi.Message) []attachmentView {
 //
 // The two halves differ in more than their transport. Over the Gmail API the
 // message carries its labels and its attachment parts, and the reader renders
-// both. Over IMAP there are no labels, and the attachment list is left empty
-// rather than filled from the MIME tree: the download route has not been
-// ported, so a chip here would be a button that answers 501 when clicked, which
-// is worse than not offering it.
+// both. Over IMAP there are no labels. The files are walked out of the MIME
+// tree by the client (imap.Attachments), each under its part number, which is
+// the id the download route takes back.
 func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, session *mailSession, userEmail, messageID string, markRead bool) {
 	ref := session.RefFor(ctx, messageID)
 
@@ -228,7 +229,22 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 	)
 
 	writeJSON(w, http.StatusOK, messageView{
-		Email:    msg.Email,
-		BodyHTML: msg.HTML,
+		Email:       msg.Email,
+		BodyHTML:    msg.HTML,
+		Attachments: imapAttachmentViews(msg.Attachments),
 	})
+}
+
+// imapAttachmentViews describes the files of an IMAP message for the reader.
+func imapAttachmentViews(list []imap.Attachment) []attachmentView {
+	out := make([]attachmentView, 0, len(list))
+	for _, a := range list {
+		out = append(out, attachmentView{
+			Filename:     a.Filename,
+			MimeType:     a.MimeType,
+			Size:         a.Size,
+			AttachmentID: a.Part,
+		})
+	}
+	return out
 }

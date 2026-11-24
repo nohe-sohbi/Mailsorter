@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
 	imapv2 "github.com/emersion/go-imap/v2"
@@ -17,8 +18,9 @@ import (
 //
 // This is the other half of the payload discipline in list.go. The listing
 // deliberately downloads no body; this is what runs when a reader actually
-// opens a message, and it is the only place in the IMAP transport that pays
-// for the full MIME payload.
+// opens a message, and, with the download of one of its files
+// (attachments.go), the only place in the IMAP transport that pays for the
+// full MIME payload.
 
 // maxBodyBytes caps what a single message may cost. Mail has no size limit that
 // anyone respects, and the whole payload is read into memory to be parsed, so a
@@ -28,10 +30,12 @@ const maxBodyBytes = 5 << 20 // 5 MiB
 
 // Message is one message with both renderings of its body. It mirrors what the
 // reader screen needs: the plain text is what the app stores and searches, the
-// HTML is what the user sees when the sender provided one.
+// HTML is what the user sees when the sender provided one, and the files are
+// what it offers to save.
 type Message struct {
 	models.Email
-	HTML string
+	HTML        string
+	Attachments []Attachment
 }
 
 // Fetch returns one message, bodies included.
@@ -44,32 +48,21 @@ type Message struct {
 func (c *Client) Fetch(ctx context.Context, folder, uid string) (Message, error) {
 	_ = ctx // see List on why the IMAP client takes no context
 
-	num, err := parseUID(uid)
-	if err != nil {
-		return Message{}, err
-	}
-	if err := c.selectFolder(folder); err != nil {
-		return Message{}, err
-	}
-
-	msgs, err := c.c.Fetch(imapv2.UIDSetNum(num), &imapv2.FetchOptions{
+	msg, err := c.fetchOne(folder, uid, &imapv2.FetchOptions{
 		UID:          true,
 		Flags:        true,
 		Envelope:     true,
 		InternalDate: true,
 		BodySection:  []*imapv2.FetchItemBodySection{{Peek: true}},
-	}).Collect()
+	})
 	if err != nil {
-		return Message{}, fmt.Errorf("imap: fetch message %s in %q: %w", uid, folder, err)
-	}
-	if len(msgs) == 0 {
-		return Message{}, fmt.Errorf("imap: no message with uid %s in %q", uid, folder)
+		return Message{}, err
 	}
 
-	out := Message{Email: emailFrom(msgs[0])}
+	out := Message{Email: emailFrom(msg)}
 	out.Folder = folder
 
-	raw := wholeMessage(msgs[0])
+	raw := wholeMessage(msg)
 	if len(raw) == 0 {
 		return out, nil
 	}
@@ -80,7 +73,35 @@ func (c *Client) Fetch(ctx context.Context, folder, uid string) (Message, error)
 	// hands one over; IMAP does not, so it is taken from the text here rather
 	// than left empty.
 	out.Snippet = snippet(plain, html)
+
+	// One file that does not decode must not keep the person from reading
+	// the mail, or from saving the others: it is left out, and said here.
+	attachments, err := Attachments(raw)
+	if err != nil {
+		log.Printf("imap: message uid %s in %q: %v", uid, folder, err)
+	}
+	out.Attachments = attachments
 	return out, nil
+}
+
+// fetchOne fetches the message uid in folder with these options, and fails
+// when the folder holds no message under that number.
+func (c *Client) fetchOne(folder, uid string, options *imapv2.FetchOptions) (*imapclient.FetchMessageBuffer, error) {
+	num, err := parseUID(uid)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.selectFolder(folder); err != nil {
+		return nil, err
+	}
+	msgs, err := c.c.Fetch(imapv2.UIDSetNum(num), options).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetch message %s in %q: %w", uid, folder, err)
+	}
+	if len(msgs) == 0 {
+		return nil, fmt.Errorf("imap: no message with uid %s in %q", uid, folder)
+	}
+	return msgs[0], nil
 }
 
 // wholeMessage picks the section that holds the entire message. The fetch asks

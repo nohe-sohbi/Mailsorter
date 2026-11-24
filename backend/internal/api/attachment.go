@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
 // maxAttachmentBytes bounds what the download route will buffer and stream.
@@ -24,6 +27,10 @@ const maxAttachmentBytes = 30 << 20 // 30 MiB
 // away to nothing. A download must always land with a usable name.
 const fallbackAttachmentName = "piece-jointe"
 
+// attachmentNotInMailIMAP is the answer to a download of a file the mail on
+// an IMAP mailbox does not have.
+const attachmentNotInMailIMAP = "Cette pièce jointe est introuvable dans ce mail."
+
 // DownloadAttachment streams one attachment of one message back to the caller.
 //
 // The reader could already name what was attached but not open it, which is the
@@ -32,6 +39,7 @@ const fallbackAttachmentName = "piece-jointe"
 // bytes behind a separate call keyed by an attachment id, so this resolves the
 // message first (to learn the part's real filename and MIME type, and to prove
 // the caller's message actually carries that id) and then fetches the data.
+// Over IMAP the bytes are inside the message: see downloadAttachmentIMAP.
 func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -49,11 +57,18 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
+	defer session.Close()
+
+	if session.Transport == provider.TransportIMAP {
+		h.downloadAttachmentIMAP(ctx, w, session, messageID, attachmentID)
+		return
+	}
+	gmailClient := session.gmail
 
 	msg, err := h.gmailService.GetMessage(gmailClient, messageID)
 	if err != nil {
@@ -84,10 +99,39 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "Pièce jointe trop volumineuse")
 		return
 	}
+	writeAttachment(w, att.Filename, att.MimeType, data)
+}
 
-	w.Header().Set("Content-Type", attachmentContentType(att.MimeType))
+// downloadAttachmentIMAP is the IMAP half of DownloadAttachment.
+//
+// The id is the part number the reader listed (getEmailIMAP), and the client
+// serves it only when the walk of this same message lists a file under it. A
+// part number is easy to guess ("1" is the text of almost every mail), so
+// without that check the route would hand out the text of a mail, or any part
+// of it, as a file.
+func (h *Handler) downloadAttachmentIMAP(ctx context.Context, w http.ResponseWriter, session *mailSession, messageID, attachmentID string) {
+	ref := session.RefFor(ctx, messageID)
+	att, data, err := session.imapc.Attachment(ctx, ref.Folder, ref.ID, attachmentID)
+	if errors.Is(err, imap.ErrNoSuchAttachment) {
+		writeError(w, http.StatusNotFound, attachmentNotInMailIMAP)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Téléchargement impossible : "+err.Error())
+		return
+	}
+	if len(data) > maxAttachmentBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "Pièce jointe trop volumineuse")
+		return
+	}
+	writeAttachment(w, att.Filename, att.MimeType, data)
+}
+
+// writeAttachment sends a file as a download, on either transport.
+func writeAttachment(w http.ResponseWriter, filename, mimeType string, data []byte) {
+	w.Header().Set("Content-Type", attachmentContentType(mimeType))
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Content-Disposition", contentDisposition(att.Filename))
+	w.Header().Set("Content-Disposition", contentDisposition(filename))
 	// The bytes come from a third party, so the browser must never be allowed to
 	// sniff them into something executable in our origin.
 	w.Header().Set("X-Content-Type-Options", "nosniff")

@@ -281,7 +281,7 @@ La carte du dépôt, les conventions et les pièges connus : [`CLAUDE.md`](CLAUD
 | `GET` | `/api/providers` | Les fournisseurs joignables par cette édition |
 | `POST` | `/api/mailbox/connect` | Branche une boîte par IMAP, après avoir essayé la connexion |
 | `GET` | `/api/emails` | Liste paginée de la boîte (sans les corps) |
-| `GET` | `/api/emails/{id}` | Un message avec son corps décodé et, sur l'API Gmail, ses pièces jointes |
+| `GET` | `/api/emails/{id}` | Un message avec son corps décodé et ses pièces jointes |
 | `POST` | `/api/emails/action` | Action directe sur un message |
 | `POST` | `/api/emails/batch-action`, `/batch-undo` | Une action sur toute une sélection, et sa réversion |
 | `POST` | `/api/emails/snooze` | Reporte un email, qui revient tout seul |

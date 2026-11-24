@@ -238,7 +238,7 @@ The outbound clients and primitives:
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501), `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
-| `message.go` | `GET /api/emails/{id}`: one message with its body, on both transports (no attachment list over IMAP) |
+| `message.go` | `GET /api/emails/{id}`: one message with its body and its attachment list, on both transports |
 | `batch.go` | `POST /api/emails/batch-action` (Gmail only) and `/batch-undo` (Gmail and IMAP), plus the identity lookups the ledger uses |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
 | `ai_handlers.go` | Eight of the `/api/ai/*` endpoints (analyze, analyze-sender, apply, apply-batch, apply-bulk, suggestions, reject, reject-batch), `GET /api/senders`, the sender preferences and `/api/smart-labels`. `analyze-async` and `jobs/{id}` are in `jobs.go` |
@@ -247,7 +247,7 @@ The outbound clients and primitives:
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
 | `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
-| `attachment.go` | Attachment download: the one route that streams bytes rather than JSON |
+| `attachment.go` | Attachment download, on both transports: the one route that streams bytes rather than JSON. Over IMAP the id is a part number, served only when the walk of that message lists a file under it |
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
 | `protected.go` | VIP list CRUD and `protectedValues` lookup |
