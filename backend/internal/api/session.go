@@ -291,9 +291,7 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 	// A message kept hidden for "Annuler" is out of the inbox all the same:
 	// a pending AI proposal about it would invite tidying it a second time.
 	if len(hidden) > 0 {
-		if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": hidden}}); err != nil {
-			log.Printf("imap sync: drop proposals about messages moved out of the inbox of %s: %v", userEmail, err)
-		}
+		h.markProposalsMoot(ctx, userEmail, hidden)
 	}
 	gone = append(gone, mirror.StaleUIDs(stored, seen, complete)...)
 	if len(back) > 0 {
@@ -311,8 +309,23 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 		log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(gone), userEmail, err)
 		return
 	}
-	if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": gone}}); err != nil {
-		log.Printf("imap sync: drop proposals about messages that left the inbox of %s: %v", userEmail, err)
+	h.markProposalsMoot(ctx, userEmail, gone)
+}
+
+// proposalMoot is the status of an AI proposal about a mail that left the
+// inbox some other way. It is not deleted: a screen loaded before still holds
+// its id, and "Tout ranger" sent from there must skip it, neither applied nor
+// failed. The plan only lists pending proposals, so it leaves the plan.
+const proposalMoot = "moot"
+
+// markProposalsMoot sets the pending proposals about these messages moot.
+// Best effort: a failure is logged.
+func (h *Handler) markProposalsMoot(ctx context.Context, userEmail string, messageIDs []string) {
+	if _, err := h.db.AISuggestions().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": messageIDs}},
+		bson.M{"$set": bson.M{"status": proposalMoot}},
+	); err != nil {
+		log.Printf("imap sync: set moot the proposals about %d messages of %s: %v", len(messageIDs), userEmail, err)
 	}
 }
 
@@ -366,11 +379,7 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 		return m.putBack(ctx, ref, row, findErr)
 	}
 	if findErr == nil && row.LeftInbox {
-		// Already moved out by Mailsorter (a second click from a stale tab, a
-		// proposal still pending): nothing to do, and above all nothing to
-		// overwrite, or "Annuler" would forget where the message is. Said so,
-		// so the caller neither counts nor records an action nothing did.
-		return errAlreadyOut
+		return m.moveAgain(ctx, ref, row, op.To)
 	}
 
 	landed, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
@@ -392,6 +401,46 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 		); err != nil {
 			log.Printf("imap: message %s left the inbox of %s but stays in its copy: %v", ref.ID, m.userEmail, err)
 		}
+	}
+	return nil
+}
+
+// moveAgain is moving out of the inbox a message Mailsorter already moved out
+// (a click from a screen left open). Toward where it already is, nothing
+// happens (errAlreadyOut: neither counted nor recorded). Toward elsewhere, a
+// "Supprimer" on a mail already archived for instance, it moves from where it
+// is, and the row records the new place, so "Annuler" still finds it.
+func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedRow, to mailbox.Folder) error {
+	dest, ok := m.client.FolderName(to)
+	if !ok {
+		return fmt.Errorf("%w: %s", imap.ErrNoSuchFolder, to)
+	}
+	if row.MovedTo.Folder == dest {
+		return errAlreadyOut
+	}
+	uid := row.MovedTo.UID
+	if uid == "" && row.MovedTo.Folder != "" && row.HeaderMessageID != "" {
+		found, err := m.client.FindByMessageID(row.MovedTo.Folder, row.HeaderMessageID)
+		if err != nil {
+			return err
+		}
+		uid = found
+	}
+	if row.MovedTo.Folder == "" || uid == "" {
+		return errNotWhereLeft
+	}
+	landed, err := m.client.MoveTo(ctx, mailbox.InFolder(row.MovedTo.Folder, uid), to, row.HeaderMessageID)
+	if errors.Is(err, imap.ErrMessageGone) {
+		return errNotWhereLeft
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := m.h.db.Emails().UpdateOne(ctx,
+		bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID},
+		bson.M{"$set": bson.M{"leftAt": time.Now(), "movedTo": bson.M{"folder": landed.Folder, "uid": landed.ID}}},
+	); err != nil {
+		log.Printf("imap: message %s of %s moved to %s, copy not updated: %v", ref.ID, m.userEmail, landed.Folder, err)
 	}
 	return nil
 }

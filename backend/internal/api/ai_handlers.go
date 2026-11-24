@@ -219,6 +219,11 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Suggestion not found")
 		return
 	}
+	if suggestion.Status == proposalMoot {
+		// Its mail left the inbox some other way: nothing to apply.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already"})
+		return
+	}
 
 	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
@@ -317,6 +322,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			"userId": userEmail,
 		}).Decode(&suggestion); err != nil {
 			failed++
+			continue
+		}
+		if suggestion.Status == proposalMoot {
+			// Its mail left the inbox some other way (a screen loaded before
+			// still sends its id): neither applied nor failed.
 			continue
 		}
 
@@ -831,12 +841,25 @@ func (h *Handler) getSmartLabelNames(ctx context.Context, userEmail string) ([]s
 	return names, nil
 }
 
-// dropMootProposal removes a pending proposal about a mail that already left
-// the inbox. Best effort: a failure is logged, and the next sync drops it.
+// dropMootProposal sets moot a pending proposal about a mail that already
+// left the inbox, so it leaves the plan (see proposalMoot). Best effort: a
+// failure is logged, and the next sync does it.
 func (h *Handler) dropMootProposal(ctx context.Context, id primitive.ObjectID) {
-	if _, err := h.db.AISuggestions().DeleteOne(ctx, bson.M{"_id": id, "status": "pending"}); err != nil {
-		log.Printf("ai: drop the moot proposal %s: %v", id.Hex(), err)
+	if _, err := h.db.AISuggestions().UpdateOne(ctx,
+		bson.M{"_id": id, "status": "pending"},
+		bson.M{"$set": bson.M{"status": proposalMoot}},
+	); err != nil {
+		log.Printf("ai: set moot the proposal %s: %v", id.Hex(), err)
 	}
+}
+
+// leftInbox reports whether Mailsorter already moved this IMAP message out of
+// the inbox (mirroredIMAP flagged its stored copy).
+func (h *Handler) leftInbox(ctx context.Context, userEmail, messageID string) bool {
+	n, err := h.db.Emails().CountDocuments(ctx, bson.M{
+		"userId": userEmail, "folder": string(mailbox.FolderInbox), "messageId": messageID, "leftInbox": true,
+	})
+	return err == nil && n > 0
 }
 
 // errNoLabelsOnIMAP is what applying a "label" verdict to an IMAP mailbox
@@ -849,6 +872,11 @@ const noLabelsOnIMAPMessage = "Les étiquettes ne sont pas encore disponibles su
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
 	if action == "keep" {
 		return "", nil
+	}
+	if session.Transport == provider.TransportIMAP && h.leftInbox(ctx, userEmail, messageID) {
+		// The user already tidied this mail by hand: the proposal is moot,
+		// whatever it proposed. Nothing moves, nothing is counted or recorded.
+		return "", errAlreadyOut
 	}
 	if action == "label" {
 		if session.Transport == provider.TransportIMAP {

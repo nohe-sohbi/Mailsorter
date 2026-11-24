@@ -392,7 +392,11 @@ archive and trash folders and read and star are flags.
 ```
 `action` is one of `archive`, `delete` (alias `trash`), `unarchive`, `untrash`,
 `read`, `unread`, `star`, `unstar`. Forward triage actions
-(`archive`/`delete`/`read`/`star`) are recorded in the action ledger. `unarchive`
+(`archive`/`delete`/`read`/`star`) are recorded in the action ledger, except,
+over IMAP, a move toward where Mailsorter already put the message (a second
+click from a screen left open): it answers `200` and records nothing. A move
+elsewhere (`delete` on a mail Mailsorter archived) moves it from where it is,
+and "Annuler" still finds it. `unarchive`
 and `untrash` are what "Annuler" sends right after an action: they mark the
 most recent matching forward entry `undone` and record the reversal (source
 `undo`), as `POST /api/activity/undo` does.
@@ -826,10 +830,13 @@ Two consequences worth knowing:
   runs at most every 30 minutes, so the window is the one the inbox already had.
 - The mirror holds what the syncs stored: the 100 most recent inbox messages at
   each sync, plus older ones earlier syncs kept. A message Mailsorter archives
-  or deletes leaves the listing at once. Each sync also drops the messages that
-  are no longer in the inbox, whoever moved them, along with the pending AI
-  proposals about them; when the inbox holds more than 100 messages, only the
-  range the listing covered can be judged.
+  or deletes leaves the listing at once; it stays stored, hidden from every
+  inbox read, for 30 days, which is how long "Annuler" can bring it back. Each
+  sync drops the messages that are no longer in the inbox for another reason,
+  whoever moved them; when the inbox holds more than 100 messages, only the
+  range the listing covered can be judged. The pending AI proposals about a
+  message that left, either way, become `moot`: they leave the plan, and
+  applying one from a screen loaded before does nothing.
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 A query term the mirror cannot answer is **refused with 501, naming the term**,
@@ -1460,7 +1467,10 @@ suggestion stays pending, out of the history.
 
 **Request body:** `{ "suggestionId": "662..." }`
 
-**Response:** `200 OK` -> `{ "status": "applied" }`
+**Response:** `200 OK` -> `{ "status": "applied" }`, or, over IMAP,
+`{ "status": "already" }` when the mail already left the inbox (the user
+tidied it by hand): nothing moves, nothing is recorded, and the proposal
+becomes `moot`.
 
 **Error Responses:** `400` invalid id; `404` no such suggestion for this caller;
 `428` no mailbox connected; `501` a label on IMAP; `500` the mailbox refused
@@ -1473,7 +1483,9 @@ the action.
 Apply a list of suggestions in one request (one session, looped server-side),
 at most 200. Suggestions whose sender is protected are skipped for destructive
 actions and stay pending. Over IMAP, a `label` suggestion stays pending and is
-counted neither in `applied` nor in `failed`.
+counted neither in `applied` nor in `failed`; neither is a suggestion whose mail
+already left the inbox (tidied by hand, from a screen loaded before), which
+becomes `moot`, nor a suggestion already `moot`.
 
 **Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
 

@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"mime"
 	"net"
 	"strconv"
@@ -239,6 +240,12 @@ func (c *Client) Apply(ctx context.Context, ref mailbox.Ref, m mailbox.Mutation)
 	return fmt.Errorf("imap: unsupported operation kind %v", op.Kind)
 }
 
+// FolderName is the server's name for a special folder, as resolved at login.
+func (c *Client) FolderName(role mailbox.Folder) (string, bool) {
+	name, ok := c.folders[role]
+	return name, ok
+}
+
 // MoveTo moves one message into the special folder `to` and says where it
 // landed: the server's name for that folder, and the message's new UID there.
 //
@@ -292,7 +299,11 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 	if landed.ID == "" && headerMessageID != "" {
 		// The move happened either way; a failed lookup only means the new
 		// UID stays unknown, which the caller handles.
-		landed.ID, _ = c.FindByMessageID(dest, headerMessageID)
+		id, err := c.FindByMessageID(dest, headerMessageID)
+		if err != nil {
+			log.Printf("imap: moved to %q, but could not find %s there again: %v", dest, headerMessageID, err)
+		}
+		landed.ID = id
 	}
 	return landed, nil
 }
