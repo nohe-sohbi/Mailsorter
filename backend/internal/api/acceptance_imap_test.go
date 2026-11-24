@@ -234,10 +234,20 @@ type imapPerson struct {
 
 // imapPerson signs a person up the way POST /api/auth/mailbox leaves them: a
 // users row, a mail_accounts row with the app password sealed by the handler's
-// own sealSecret, and a session. The row is written here rather than through
-// the connect route because that route only accepts the hosts of the provider
-// catalog, and this person's provider is a server on 127.0.0.1.
+// own sealSecret, and a session. That is imapAccount, then connectMailbox at
+// once.
 func (a *testApp) imapPerson(email string) *imapPerson {
+	a.t.Helper()
+	p := a.imapAccount(email)
+	p.connectMailbox()
+	return p
+}
+
+// imapAccount signs a person up with their mailbox on a server of its own, not
+// yet connected to Mailsorter: a users row and a session, no mail_accounts
+// row. connectMailbox connects it, at the moment the scenario chooses: what a
+// mailbox held before it was connected is not what arrives in it afterwards.
+func (a *testApp) imapAccount(email string) *imapPerson {
 	a.t.Helper()
 	if imapTLSErr != nil || imapServerTLS == nil {
 		a.fatalf("pas de serveur IMAP de test possible : %v", imapTLSErr)
@@ -245,27 +255,9 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 	p := &imapPerson{app: a, email: email}
 	p.startServer()
 
-	sealed, err := a.h.sealSecret(imapTestPassword)
-	if err != nil {
-		a.fatalf("chiffrement du mot de passe d'application de %s : %v", email, err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	now := time.Now()
-	if _, err := a.h.db.MailAccounts().InsertOne(ctx, models.MailAccount{
-		UserID:    email,
-		Provider:  provider.Detect(email).Key,
-		Transport: string(provider.TransportIMAP),
-		Username:  email,
-		Secret:    sealed,
-		Host:      "127.0.0.1",
-		Port:      p.port,
-		TLS:       string(provider.TLSImplicit),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		a.fatalf("enregistrement de la boîte IMAP de %s : %v", email, err)
-	}
 	if _, err := a.h.db.Users().InsertOne(ctx, bson.M{
 		"email": email, "createdAt": now, "updatedAt": now,
 	}); err != nil {
@@ -273,6 +265,38 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 	}
 	p.token = a.h.auth.IssueSession(email)
 	return p
+}
+
+// connectMailbox connects this person's mailbox to Mailsorter now: the
+// mail_accounts row with the app password sealed by the handler's own
+// sealSecret, created at this instant, which is when the mailbox was
+// connected. The row is written here rather than through the connect route
+// because that route only accepts the hosts of the provider catalog, and this
+// person's provider is a server on 127.0.0.1.
+func (p *imapPerson) connectMailbox() {
+	a := p.app
+	a.t.Helper()
+	sealed, err := a.h.sealSecret(imapTestPassword)
+	if err != nil {
+		a.fatalf("chiffrement du mot de passe d'application de %s : %v", p.email, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.MailAccounts().InsertOne(ctx, models.MailAccount{
+		UserID:    p.email,
+		Provider:  provider.Detect(p.email).Key,
+		Transport: string(provider.TransportIMAP),
+		Username:  p.email,
+		Secret:    sealed,
+		Host:      "127.0.0.1",
+		Port:      p.port,
+		TLS:       string(provider.TLSImplicit),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		a.fatalf("enregistrement de la boîte IMAP de %s : %v", p.email, err)
+	}
 }
 
 // The folders every person's server has, by the names a mail program shows.
@@ -322,12 +346,48 @@ func (p *imapPerson) startServer() {
 
 // receive delivers mails to this person's IMAP inbox, unread, oldest first,
 // and returns the UIDs their server gave them: the numbers Mailsorter knows
-// them by. It does not sync.
+// them by. Their server dated them a few minutes ago, one minute apart: the
+// order of several mails is what it gives, never their being newer than
+// anything the scenario did (see arrive). It does not sync.
 func (p *imapPerson) receive(mails ...incoming) []string {
+	p.app.t.Helper()
+	base := time.Now().Add(-time.Duration(len(mails)+1) * time.Minute)
+	dates := make([]time.Time, len(mails))
+	for i := range dates {
+		dates[i] = base.Add(time.Duration(i) * time.Minute)
+	}
+	return p.deliver(mails, dates)
+}
+
+// arrive delivers mails to this person's IMAP inbox now, unread, and returns
+// their numbers: their server receives them after everything the scenario did
+// before the call, and before everything it does after. That date is the one
+// the server keeps (INTERNALDATE), and over IMAP it is what makes a mail one
+// that ARRIVES, after the option "appliquer mes règles automatiquement" was
+// turned on and after the mailbox was connected; receive dates its mails
+// minutes back, before both. The server's date has whole seconds, so arrive
+// waits for the next one, dates the mails with it, and returns only once
+// another second has begun: no mail is dated in the future, and nothing
+// before or after shares its second. It does not sync.
+func (p *imapPerson) arrive(mails ...incoming) []string {
+	p.app.t.Helper()
+	at := time.Now().Truncate(time.Second).Add(time.Second)
+	time.Sleep(time.Until(at))
+	dates := make([]time.Time, len(mails))
+	for i := range dates {
+		dates[i] = at
+	}
+	uids := p.deliver(mails, dates)
+	time.Sleep(time.Until(at.Add(time.Second)))
+	return uids
+}
+
+// deliver writes each mail into this person's IMAP inbox, unread, received by
+// their server at its date, and returns their numbers.
+func (p *imapPerson) deliver(mails []incoming, dates []time.Time) []string {
 	a := p.app
 	a.t.Helper()
 	uids := make([]string, 0, len(mails))
-	base := time.Now().Add(-time.Duration(len(mails)+1) * time.Minute)
 	for i, m := range mails {
 		subject := m.Subject
 		if subject == "" {
@@ -337,7 +397,7 @@ func (p *imapPerson) receive(mails ...incoming) []string {
 		if body == "" {
 			body = "Bonjour, ceci est le message " + subject + "."
 		}
-		date := base.Add(time.Duration(i) * time.Minute)
+		date := dates[i]
 
 		from := m.From
 		if addr, err := mail.ParseAddress(m.From); err == nil {

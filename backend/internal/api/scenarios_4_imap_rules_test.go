@@ -25,6 +25,13 @@ package api
 // the inbox takes a new number in its new folder, so a rule that ranges and
 // stars a mail must do both whichever comes first.
 //
+// A mail ARRIVES when its server received it (INTERNALDATE) after the later
+// of two moments: the option turned on, the mailbox connected. receive dates
+// its mails minutes back, before both; a sentence about mails the option
+// ranges has them arrive (arrive), and one about mails it leaves alone has
+// them arrive between the two moments where it can, so that only the moment
+// the sentence names keeps them in the inbox.
+//
 // Filing a mail into a folder by a rule ("Étiqueter Factures" over IMAP) is
 // not here: it comes with the filing of a mail into a folder.
 
@@ -241,9 +248,10 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				first := moi.receive(bankStatement)
 				moi.sync()
 
-				// Two mails arrive, each concerned by a rule, then
+				// Two mails arrive, after the option is on and after the
+				// mailbox was connected, each concerned by a rule, then
 				// "Synchroniser".
-				arrived := moi.receive(shopOrder, travelOffer)
+				arrived := moi.arrive(shopOrder, travelOffer)
 				moi.sync()
 
 				// Right after that sync: on the server, and on the screen.
@@ -286,8 +294,10 @@ func TestScenarios_IMAPRules(t *testing.T) {
 					app.fatalf("l'option « appliquer mes règles automatiquement » de %s devrait être coupée tant que personne ne l'a activée, l'écran Règles la montre activée : le scénario ne prouve rien", moi.email)
 				}
 
+				// They arrive after the mailbox was connected: only the
+				// option being off keeps the rules from ranging them.
 				mails := []incoming{bankStatement, shopOrder, travelOffer}
-				uids := moi.receive(mails...)
+				uids := moi.arrive(mails...)
 				moi.sync()
 
 				for i, m := range mails {
@@ -353,8 +363,9 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				moi.setAutoApplyRules(true)
 
 				// Both ways a rule runs: at the sync that receives the mails,
-				// then "Appliquer mes règles".
-				uids := moi.receive(bankStatement, bankOffer, shopPoints, travelOffer)
+				// which arrive after the option is on, then "Appliquer mes
+				// règles".
+				uids := moi.arrive(bankStatement, bankOffer, shopPoints, travelOffer)
 				moi.sync()
 				if got := moi.applyRules(); got.code != http.StatusOK {
 					app.failf("« Appliquer mes règles » sur la boîte IMAP de %s devrait répondre 200 et appliquer ses règles, le serveur a répondu %s", moi.email, got)
@@ -412,6 +423,16 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				moi, uids := syncedIMAPInbox(app, shopOrder, refundDone)
 				moi.rule("Remboursements", 1, rules.FieldBody, rules.OpContains, "remboursement", toArchive)
 
+				// Reading a mail's text for a rule must not mark it read:
+				// each mail stays unread on the server, as another mail
+				// program shows it, whether the rule acts on it or not.
+				unread := func(folder, subject, after string) {
+					app.t.Helper()
+					if heldOnServer(moi, folder, subject) && moi.seenOnServer(folder, subject) {
+						app.failf("%s, le mail %q devrait rester non lu dans le dossier %s du serveur IMAP de %s : lire son texte pour la règle « Remboursements » ne doit pas le marquer lu ; il est marqué lu", after, subject, folder, moi.email)
+					}
+				}
+
 				// "Aperçu": the mails the rule finds.
 				got := moi.previewRules()
 				if got.code != http.StatusOK {
@@ -419,6 +440,8 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				} else if subjects, announced := previewedMails(app, got); len(subjects) != 1 || subjects[0] != refundDone.Subject || announced != 1 {
 					app.failf("l'aperçu de la règle « Remboursements » devrait trouver le seul mail dont le contenu contient « remboursement », %q : il montre %s, et en annonce %d", refundDone.Subject, quotedList(subjects), announced)
 				}
+				unread(serverInbox, refundDone.Subject, "après l'aperçu")
+				unread(serverInbox, shopOrder.Subject, "après l'aperçu")
 
 				// "Appliquer mes règles": the mail it finds is ranged.
 				if got := moi.applyRules(); got.code != http.StatusOK {
@@ -427,14 +450,18 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				moi.expectOnServer(serverArchive, refundDone.Subject)
 				moi.expectNotOnServer(serverInbox, refundDone.Subject, "son contenu contient « remboursement », la règle « Remboursements » l'archive")
 				moi.expectDoesNotShow(refundDone.Subject, "son contenu contient « remboursement », la règle « Remboursements » l'archive")
+				unread(serverArchive, refundDone.Subject, "après « Appliquer mes règles »")
+				unread(serverInbox, shopOrder.Subject, "après « Appliquer mes règles »")
 
-				// At the sync that receives a mail, with the option on.
+				// At the sync that receives a mail arriving after the option
+				// is on.
 				moi.setAutoApplyRules(true)
-				moi.receive(refundLater)
+				moi.arrive(refundLater)
 				moi.sync()
 				moi.expectOnServer(serverArchive, refundLater.Subject)
 				moi.expectNotOnServer(serverInbox, refundLater.Subject, "son contenu contient « remboursement », la règle « Remboursements » l'archive à la synchronisation qui le reçoit")
 				moi.expectDoesNotShow(refundLater.Subject, "son contenu contient « remboursement », la règle « Remboursements » l'archive à la synchronisation qui le reçoit")
+				unread(serverArchive, refundLater.Subject, "après la synchronisation qui l'a reçu")
 
 				// The control: the mail whose text does not say it stays.
 				moi.expectOnServer(serverInbox, shopOrder.Subject)
@@ -499,9 +526,9 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				moi.rule("Jeter les offres de voyage", 2, rules.FieldFrom, rules.OpContains, "voyages.fr", toTrash)
 				moi.setAutoApplyRules(true)
 
-				// Two mails arrive and the rules range them at the sync that
-				// receives them.
-				arrived := moi.receive(shopOrder, travelOffer)
+				// Two mails arrive, after the option is on, and the rules
+				// range them at the sync that receives them.
+				arrived := moi.arrive(shopOrder, travelOffer)
 				moi.sync()
 				moi.requireOnServer(serverArchive, shopOrder.Subject, "une règle vient de l'archiver à la synchronisation qui l'a reçu")
 				moi.requireOnServer(serverTrash, travelOffer.Subject, "une règle vient de le mettre à la corbeille à la synchronisation qui l'a reçu")
@@ -534,7 +561,7 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				// what arrives, so it is not their being off that leaves the
 				// two mails in the inbox.
 				moi.sync()
-				moi.receive(shopSale)
+				moi.arrive(shopSale)
 				moi.sync()
 
 				for _, c := range cases {
@@ -587,8 +614,12 @@ func TestScenarios_IMAPRules(t *testing.T) {
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				// Two mails the rules concern, already in the inbox and
-				// synced while the option was off.
-				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+				// synced while the option was off. They arrived after the
+				// mailbox was connected: only the option being turned on
+				// after them keeps the rules from ranging them.
+				moi := app.imapPerson(imapInboxOwner)
+				uids := moi.arrive(bankStatement, shopOrder, travelOffer)
+				moi.sync()
 				moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", toArchive)
 				moi.rule("Jeter les offres de voyage", 2, rules.FieldFrom, rules.OpContains, "voyages.fr", toTrash)
 				moi.setAutoApplyRules(true)
@@ -616,7 +647,7 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				stayed("à la synchronisation qui suit")
 
 				// A mail arrives, then "Synchroniser": that one is ranged.
-				moi.receive(shopSale)
+				moi.arrive(shopSale)
 				moi.sync()
 				moi.expectOnServer(serverArchive, shopSale.Subject)
 				moi.expectNotOnServer(serverInbox, shopSale.Subject, "il est arrivé après que tu as activé l'option, la règle « Archiver la boutique » l'archive à la synchronisation qui le reçoit")
@@ -636,6 +667,61 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				// The control: the mail no rule concerns stays where it was.
 				moi.expectOnServer(serverInbox, bankStatement.Subject)
 				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP branchée alors que l'option « appliquer mes règles automatiquement » est déjà activée, les mails déjà dans la boîte ne sont pas rangés à la première synchronisation : seuls ceux qui arrivent ensuite le sont.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				// The account, its rules and the option on, before its
+				// mailbox is connected to Mailsorter.
+				moi := app.imapAccount(imapInboxOwner)
+				moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", toArchive)
+				moi.rule("Jeter les offres de voyage", 2, rules.FieldFrom, rules.OpContains, "voyages.fr", toTrash)
+				moi.setAutoApplyRules(true)
+
+				// What the mailbox holds when it is connected: a mail from
+				// before the option was turned on, and two that came after
+				// it but before the mailbox was connected. Those two tell
+				// the date of the connection from that of the option.
+				before := moi.receive(shopInvoice)
+				between := moi.arrive(shopOrder, travelOffer)
+				moi.connectMailbox()
+
+				already := []struct {
+					uid    string
+					mail   incoming
+					folder string
+					when   string
+				}{
+					{before[0], shopInvoice, serverArchive, "avant que tu actives l'option"},
+					{between[0], shopOrder, serverArchive, "après que tu as activé l'option, mais avant que tu branches ta boîte"},
+					{between[1], travelOffer, serverTrash, "après que tu as activé l'option, mais avant que tu branches ta boîte"},
+				}
+				stayed := func(at string) {
+					app.t.Helper()
+					for _, c := range already {
+						why := "il était déjà dans ta boîte quand tu l'as branchée, reçu " + c.when
+						moi.expectOnServer(serverInbox, c.mail.Subject)
+						moi.expectNotOnServer(c.folder, c.mail.Subject, why+", "+at)
+						moi.expectShows(c.uid, c.mail.Subject)
+						if lines := moi.historyLinesOf(c.uid); len(lines) > 0 {
+							app.failf("%s, l'historique de %s ne devrait rien montrer pour le mail n°%s %q, %s : il montre %d ligne(s) (%s)", at, moi.email, c.uid, c.mail.Subject, why, len(lines), describeHistory(lines))
+						}
+					}
+				}
+
+				// The first sync.
+				moi.sync()
+				stayed("à la première synchronisation")
+
+				// A mail arrives, then "Synchroniser": that one is ranged.
+				moi.arrive(shopSale)
+				moi.sync()
+				moi.expectOnServer(serverArchive, shopSale.Subject)
+				moi.expectNotOnServer(serverInbox, shopSale.Subject, "il est arrivé après que tu as branché ta boîte, l'option activée, la règle « Archiver la boutique » l'archive à la synchronisation qui le reçoit")
+				moi.expectDoesNotShow(shopSale.Subject, "il est arrivé après que tu as branché ta boîte, l'option activée, la règle « Archiver la boutique » l'archive à la synchronisation qui le reçoit")
+				stayed("même à la synchronisation qui a rangé un mail arrivé ensuite")
 			},
 		},
 	})
