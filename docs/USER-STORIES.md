@@ -15,9 +15,12 @@ Fichiers lus : `pages/Login.js`, `pages/Pricing.js`, `pages/AuthCallback.js`,
 
 Chiffres a l'ouverture de l'audit : 20 US existantes, 12 manquantes, 7 en trop.
 
-**Etat au 19 septembre 2026** : 16 des 19 points ouverts sont corriges. Les trois
-qui restent sont nommes en section 4, avec ce qui les bloque. Chaque point corrige
-porte la mention **[Corrige]** et dit ou.
+**Etat au 19 septembre 2026, recompte le 24 novembre 2026** : sur les 19 points
+ouverts, 17 sont corriges, M-09 l'est en partie et M-05 ne l'est pas. Ces deux
+restes sont nommes en section 4, avec ce qui les bloque. Chaque point corrige
+porte la mention **[Corrige]** et dit ou. Les corrections decrivent la page telle
+qu'elle a ete livree en septembre ; les faits qui ont change depuis sont signales
+sur place.
 
 ---
 
@@ -96,6 +99,11 @@ le produit demande a l'exploitant de franchir.
 > modele, et chaque affirmation cite son fichier source en commentaire. **A faire relire
 > par un juriste avant exploitation commerciale** : le texte est fidele au logiciel, ce
 > qui n'est pas la meme chose qu'un document valide.
+>
+> Depuis, l'IA peut etre un autre fournisseur que Mistral (OpenAI, Anthropic, ou un
+> modele local), les comptes ont un mot de passe et une boite peut etre branchee par
+> IMAP : `pages/Privacy.js`, qui ne nomme que Mistral et ne parle ni de mot de passe
+> ni d'IMAP, est a remettre a jour.
 
 **M-02. Savoir ce qu'il advient de mes emails avant de cliquer.** **[Corrige]**
 La seule reponse publique est une puce ("OAuth Google securise") et une phrase de
@@ -135,9 +143,11 @@ l'afficher, elle ne l'appelle pas.
 
 > Bande "Boites joignables par cette instance" sur la landing, alimentee par
 > `GET /api/providers`, donc par le meme catalogue que celui avec lequel le serveur se
-> connecte. Un echec de la requete coute la bande, pas la page. La bande dit l'ordre
-> reel : on ouvre son compte avec Google, puis on branche la boite de son choix
-> depuis l'application, sur l'ecran `/connect` livre par la PR #31.
+> connecte. Un echec de la requete coute la bande, pas la page. La bande disait l'ordre
+> reel de septembre : on ouvrait son compte avec Google, puis on branchait la boite de
+> son choix depuis l'application, sur l'ecran `/connect` livre par la PR #31. Depuis,
+> on ouvre son compte avec une adresse et un mot de passe (ou avec Google quand
+> l'instance a ses identifiants Google), puis on branche sa boite sur `/connect`.
 
 **M-05. Voir le vrai produit.** **[Non corrige]** Voir section 4.
 La maquette du hero est un faux ecran dessine en HTML, avec des donnees
@@ -162,24 +172,24 @@ dit pas un mot. C'est un argument de confiance gratuit qui n'est pas utilise.
 > vers le depot.
 
 **M-08. Partager un lien qui affiche un visuel.** **[Corrige]**
-`og:locale`, le lien canonique et les balises Twitter `summary_large_image`. L'image est
-generee depuis `docs/assets/og-image.source.html` en Chromium headless, donc
-reproductible plutot que binaire opaque.
-`og:image` est absent de `public/index.html`, ainsi que `og:url`, le lien
-canonique et les balises Twitter. Tout partage social sort sans vignette.
+`og:image` etait absent de `public/index.html`, ainsi que `og:url`, le lien
+canonique et les balises Twitter. Tout partage social sortait sans vignette.
 
 > `og:image` (1200x630), `og:image:width/height/alt`, `og:url`, `og:site_name`,
+> `og:locale`, le lien canonique et les balises Twitter `summary_large_image`. L'image est
+> generee depuis `docs/assets/og-image.source.html` en Chromium headless, donc
+> reproductible plutot que binaire opaque.
 
 **M-09. Etre trouve par un moteur.** **[Partiellement corrige]**
-`robots.txt` etendu (les ecrans applicatifs en `Disallow`, le sitemap declare) et des
-donnees structurees JSON-LD `SoftwareApplication`, limitees a ce qui est vrai : le
-prix du palier gratuit et la nature du logiciel, pas de note moyenne inventee. La
-version anglaise reste a faire (voir section 4).
 Pas de `sitemap.xml`, pas de donnees structurees, et une seule langue
 (`lang="fr"`, tout le contenu en francais) pour un produit dont l'interface
 parle deja a un public technique international.
 
 > `public/sitemap.xml` (les quatre adresses publiques, pas les ecrans derriere session),
+> `robots.txt` etendu (les ecrans applicatifs en `Disallow`, le sitemap declare) et des
+> donnees structurees JSON-LD `SoftwareApplication`, limitees a ce qui est vrai : le
+> prix du palier gratuit et la nature du logiciel, pas de note moyenne inventee. La
+> version anglaise reste a faire (voir section 4).
 
 ### Secondaires
 
@@ -208,9 +218,9 @@ reste affiche (voir T-05).
 
 **T-01. Vendre "Plusieurs comptes Gmail" dans le plan Pro.** **[Corrige, decision produit]**
 La ligne est dans `PLANS` sur `/pricing`. Or `docs/ROADMAP.md` classe le
-multi-comptes dans "Reste a brancher" : il demande un modele `account` distinct
-du `userId`, qui n'existe pas. On fait donc payer, ou attendre, pour une
-fonctionnalite qui n'est pas livree. C'est le plus serieux des points de cette
+multi-comptes parmi ce qui est reste en attente apres la phase 12 : il demande un
+modele `account` distinct du `userId`, qui n'existe pas. On fait donc payer, ou
+attendre, pour une fonctionnalite qui n'est pas livree. C'est le plus serieux des points de cette
 section : les quatre autres lignes du plan Pro sont reelles, celle-ci ne l'est
 pas.
 
@@ -229,6 +239,13 @@ affirmations voisines qui, elles, sont vraies.
 > `AES-256` pour les jetons au repos (`internal/crypto`), `200` analyses offertes par mois
 > (`FreeMonthlyLimit`), `1 clic` pour annuler (le ledger et son inverse). Chacun porte en
 > infobulle la raison pour laquelle il est vrai.
+>
+> Deux de ces faits ne tiennent plus. Depuis les comptes par mot de passe et la
+> connexion par IMAP, Mailsorter stocke un mot de passe de compte (hache par bcrypt) et
+> l'identifiant de la boite (chiffre) : le `0` que `pages/Login.js` affiche encore (theme
+> classic) est faux et a corriger. Les 200 analyses ne valent que pour le service gere
+> (une instance auto-hebergee n'a pas de plafond), et l'annulation en un clic que pour
+> une boite branchee par l'API Gmail.
 
 **T-03. La carte "Libelles intelligents".** **[Corrige, decision produit]**
 Elle promet "des etiquettes precises et coherentes, creees et appliquees
@@ -272,7 +289,7 @@ l'exploitant ; en edition `hosted`, un visiteur ne devrait jamais le voir.
 `Login.js` lit lui aussi `?code=` et appelle `authService.handleCallback`, en
 doublon de `AuthCallback`. Or `GMAIL_REDIRECT_URL` ne designe qu'une seule
 adresse (`/auth/callback`, cf. `.env.example` et `README.md`). Ce chemin est donc
-mort, et il a deja divergé : `AuthCallback` gere le parametre `error` renvoye par
+mort, et il a deja diverge : `AuthCallback` gere le parametre `error` renvoye par
 Google, `Login` ne le lit pas.
 
 > Le traitement de `?code=` est retire de `Login.js`. `AuthCallback` est desormais le seul
@@ -282,7 +299,7 @@ Google, `Login` ne le lit pas.
 
 ## 4. Ce qui reste ouvert
 
-Trois points sur dix-neuf, et aucun n'est un oubli.
+Deux points sur dix-neuf, et aucun n'est un oubli.
 
 **M-05. Voir le vrai produit.** La maquette du hero reste une illustration dessinee en
 HTML. Elle est desormais annoncee comme telle ("Illustration de l'ecran de
@@ -298,11 +315,12 @@ a maintenir, plus un choix de routage (`/en/`, un sous-domaine, ou la negociatio
 langue). La convention du depot veut que l'UI soit en francais ; changer cela est une
 decision produit, pas une correction d'audit.
 
-**M-14 a M-17** etaient deja classes secondaires et le restent : repondre ou transferer
-depuis le lecteur (choix produit assume, hors du perimetre de triage), le multi-comptes
-(bloque par `X-User-Email` qui sert a la fois d'identite et de `userId`), tester une
-regle seule, et l'absence des donnees `localStorage` dans l'export RGPD. Ces quatre-la
-concernent l'application connectee, pas la surface publique auditee ici.
+**M-14 a M-17**, hors des dix-neuf, etaient deja classes secondaires et le restent :
+repondre ou transferer depuis le lecteur (choix produit assume, hors du perimetre de
+triage), le multi-comptes (bloque par `X-User-Email` qui sert a la fois d'identite et
+de `userId`), tester une regle seule, et l'absence des donnees `localStorage` dans
+l'export RGPD. Ces quatre-la concernent l'application connectee, pas la surface
+publique auditee ici.
 
 ## 5. Ce qu'il faut en retenir
 
