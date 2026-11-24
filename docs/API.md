@@ -1053,7 +1053,8 @@ source `undo`) both appear.
 Returns the caller's most recent ledger entries, newest first. Each entry is
 flagged `undoable` (it has a clean inverse and has not been undone yet). On
 IMAP an archive or a delete is `undoable` only while Mailsorter knows where it
-put the message: 30 days, and never for a move made before it recorded that.
+put the message (30 days, and never for a move made before it recorded that),
+and a read change only while the message is still in the inbox.
 
 **Query parameters:**
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
@@ -1100,7 +1101,12 @@ still render, but cannot be searched.
 Gmail API and IMAP. On IMAP a moved message is fetched back from where
 Mailsorter put it, and a read change is reversed only while the message is
 still in the inbox (`404` "Ce mail n'est plus dans votre boîte de réception."
-otherwise).
+otherwise). Two "Annuler" of one move at once (here or through
+`POST /api/emails/action`) bring the message back once: the second waits for
+the first and answers like it, recording nothing more. A message another
+mail client already moved, back to the inbox or elsewhere, answers `404` "Ce
+mail n'est plus là où Mailsorter l'avait rangé.": Mailsorter did not bring
+it back.
 
 Reverses one recorded action by replaying its inverse Gmail mutation
 (`archive` -> `unarchive`, `delete` / `trash` -> `untrash`, `read` -> `unread`).

@@ -258,7 +258,6 @@ func (c *Client) FolderName(role mailbox.Folder) (string, bool) {
 // A message no longer in ref's folder answers ErrMessageGone, checked BEFORE
 // moving: a MOVE on a UID that does not exist answers OK and does nothing,
 // which is how undo used to "succeed" without anything coming back.
-// With a headerMessageID, the UID must also still carry that Message-ID.
 func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
 	if !ref.Scoped() {
 		return mailbox.Ref{}, fmt.Errorf("%w: an imap uid needs its folder, got %s", mailbox.ErrWrongRefKind, ref)
@@ -275,13 +274,7 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 		return mailbox.Ref{}, err
 	}
 	set := imapv2.UIDSetNum(num)
-	criteria := &imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}
-	if headerMessageID != "" {
-		// The number must still name THIS mail: after a server renumbered
-		// its folders, it may name another one.
-		criteria.Header = []imapv2.SearchCriteriaHeaderField{{Key: "Message-ID", Value: headerMessageID}}
-	}
-	found, err := c.c.UIDSearch(criteria, nil).Wait()
+	found, err := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}, nil).Wait()
 	if err != nil {
 		return mailbox.Ref{}, fmt.Errorf("imap: look for uid %s in %q: %w", ref.ID, ref.Folder, err)
 	}
@@ -340,6 +333,33 @@ func (c *Client) UIDs(folder string) (map[string]bool, error) {
 		out[strconv.FormatUint(uint64(u), 10)] = true
 	}
 	return out, nil
+}
+
+// IDAt returns the Message-ID of the message numbered uid in folder, as the
+// listing stores it (the envelope's, parsed by the same code), and whether
+// that number names a message at all.
+func (c *Client) IDAt(folder, uid string) (string, bool, error) {
+	num, err := parseUID(uid)
+	if err != nil {
+		return "", false, err
+	}
+	c.selected = ""
+	if err := c.selectFolder(folder); err != nil {
+		return "", false, err
+	}
+	msgs, err := c.c.Fetch(imapv2.UIDSetNum(num), &imapv2.FetchOptions{UID: true, Envelope: true}).Collect()
+	if err != nil {
+		return "", false, fmt.Errorf("imap: read uid %s in %q: %w", uid, folder, err)
+	}
+	for _, m := range msgs {
+		if m.UID == num {
+			if m.Envelope == nil {
+				return "", true, nil
+			}
+			return m.Envelope.MessageID, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // Has says whether the message ref names is in its folder now.

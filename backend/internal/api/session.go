@@ -256,6 +256,8 @@ type movedRow struct {
 		Folder string `bson:"folder"`
 		UID    string `bson:"uid"`
 	} `bson:"movedTo"`
+	// RestoringAt is set while an "Annuler" brings the message back.
+	RestoringAt time.Time `bson:"restoringAt"`
 }
 
 // moveInFlight is how long a row claimed for a move (flagged, no movedTo
@@ -579,45 +581,87 @@ func (m mirroredIMAP) recordedIn(ctx context.Context, ref mailbox.Ref, folder st
 	return err == nil && now.MovedTo.Folder == folder
 }
 
-// moveFrom moves the message stored as uid in folder. The number is checked
-// against the Message-ID when one is known (MoveTo): a server that renumbered
-// its folders (a migration, a rebuilt index) would otherwise hand back another
-// mail. When the number no longer names it, it is looked for by that
-// Message-ID once.
+// moveFrom moves the message Mailsorter recorded as uid in folder. When its
+// Message-ID is known, the number is checked first against the Message-ID the
+// server reports for it (the envelope, parsed as the listing parsed it): a
+// server that renumbered its folders (a migration, a rebuilt index) would
+// otherwise hand back another mail. When the number no longer names it, it
+// is looked for by that Message-ID once.
 func (m mirroredIMAP) moveFrom(ctx context.Context, folder, uid string, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
-	landed, err := m.client.MoveTo(ctx, mailbox.InFolder(folder, uid), to, headerMessageID)
-	if !errors.Is(err, imap.ErrMessageGone) || headerMessageID == "" {
-		return landed, err
+	if headerMessageID != "" {
+		id, exists, err := m.client.IDAt(folder, uid)
+		if err != nil {
+			return mailbox.Ref{}, err
+		}
+		if !exists || id != headerMessageID {
+			found, err := m.client.FindByMessageID(folder, headerMessageID)
+			if err != nil {
+				return mailbox.Ref{}, err
+			}
+			if found == "" {
+				return mailbox.Ref{}, imap.ErrMessageGone
+			}
+			uid = found
+		}
 	}
-	found, fErr := m.client.FindByMessageID(folder, headerMessageID)
-	if fErr != nil {
-		return mailbox.Ref{}, fErr
-	}
-	if found == "" || found == uid {
-		return mailbox.Ref{}, imap.ErrMessageGone
-	}
-	return m.client.MoveTo(ctx, mailbox.InFolder(folder, found), to, headerMessageID)
-}
-
-// backInInbox says whether the stored copy shows the message with this
-// Message-ID in the inbox again: another "Annuler" brought it back.
-func (m mirroredIMAP) backInInbox(ctx context.Context, headerMessageID string) bool {
-	if headerMessageID == "" {
-		return false
-	}
-	n, err := m.h.db.Emails().CountDocuments(ctx, bson.M{
-		"userId": m.userEmail, "folder": string(mailbox.FolderInbox),
-		"headerMessageId": headerMessageID, "leftInbox": notLeftInbox,
-	})
-	if err != nil {
-		log.Printf("imap: is %s of %s back in the inbox: %v", headerMessageID, m.userEmail, err)
-		return false
-	}
-	return n > 0
+	return m.client.MoveTo(ctx, mailbox.InFolder(folder, uid), to, headerMessageID)
 }
 
 // putBack is "Annuler" for a message Mailsorter moved out of the inbox.
 func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow, findErr error) error {
+	return m.putBackOnce(ctx, ref, row, findErr, false)
+}
+
+// errRetryReturn is another "Annuler" that ended without bringing the
+// message back: this one may try itself.
+var errRetryReturn = errors.New("api: the other return did not complete")
+
+// awaitOtherReturn waits, a few seconds at most, for the "Annuler" that holds
+// the message: errAlreadyBack once it is back, errRetryReturn if that one
+// gave up.
+func (m mirroredIMAP) awaitOtherReturn(ctx context.Context, ref mailbox.Ref) error {
+	inbox := string(mailbox.FolderInbox)
+	for i := 0; i < 24; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+		n, err := m.h.db.Emails().CountDocuments(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "restoredFrom": ref.ID})
+		if err != nil {
+			return fmt.Errorf("look for message %s put back: %w", ref.ID, err)
+		}
+		if n > 0 {
+			return errAlreadyBack
+		}
+		var r movedRow
+		err = m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}).Decode(&r)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			// Gone with no forwarding number: put back by the other one with
+			// its new number unknown (the next sync lists it).
+			return errAlreadyBack
+		}
+		if err != nil {
+			return fmt.Errorf("read the stored copy of message %s: %w", ref.ID, err)
+		}
+		if r.RestoringAt.IsZero() {
+			return errRetryReturn
+		}
+	}
+	return fmt.Errorf("another \"Annuler\" of message %s is still running", ref.ID)
+}
+
+// retryPutBack runs putBack once more, on the row as it is now.
+func (m mirroredIMAP) retryPutBack(ctx context.Context, ref mailbox.Ref) error {
+	var row movedRow
+	findErr := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID}).Decode(&row)
+	if findErr != nil && !errors.Is(findErr, mongo.ErrNoDocuments) {
+		return fmt.Errorf("read the stored copy of message %s: %w", ref.ID, findErr)
+	}
+	return m.putBackOnce(ctx, ref, row, findErr, true)
+}
+
+func (m mirroredIMAP) putBackOnce(ctx context.Context, ref mailbox.Ref, row movedRow, findErr error, retried bool) error {
 	inbox := string(mailbox.FolderInbox)
 	if errors.Is(findErr, mongo.ErrNoDocuments) {
 		// Another "Annuler" may have brought it back a moment ago: the row
@@ -681,7 +725,12 @@ func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow
 		return fmt.Errorf("claim message %s for its return: %w", ref.ID, err)
 	}
 	if res.MatchedCount == 0 {
-		return errAlreadyBack
+		// Another "Annuler" holds it: answer what that one achieves.
+		err := m.awaitOtherReturn(ctx, ref)
+		if errors.Is(err, errRetryReturn) && !retried {
+			return m.retryPutBack(ctx, ref)
+		}
+		return err
 	}
 	release := func() {
 		if _, err := m.h.db.Emails().UpdateOne(ctx, filter, bson.M{"$unset": bson.M{"restoringAt": ""}}); err != nil {
@@ -691,10 +740,10 @@ func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow
 
 	landed, err := m.moveFrom(ctx, row.MovedTo.Folder, uid, mailbox.FolderInbox, row.HeaderMessageID)
 	if errors.Is(err, imap.ErrMessageGone) {
+		// Not where Mailsorter put it: another mail client moved it, back to
+		// the inbox or elsewhere. Mailsorter did not bring it back, so it
+		// does not say so.
 		release()
-		if m.backInInbox(ctx, row.HeaderMessageID) {
-			return errAlreadyBack
-		}
 		return errNotWhereLeft
 	}
 	if err != nil {

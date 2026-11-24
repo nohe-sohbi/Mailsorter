@@ -576,9 +576,9 @@ func TestHasSaysWhetherTheMessageIsStillThere(t *testing.T) {
 	}
 }
 
-// After a server renumbers a folder, a stored number may name another mail:
-// with a Message-ID, MoveTo moves only the mail that carries it.
-func TestMoveToChecksTheMessageID(t *testing.T) {
+// IDAt reads the Message-ID a number carries, the check that keeps a stored
+// number from moving another mail after a server renumbered its folders.
+func TestIDAtReadsTheMessageIDOfANumber(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	raw := "From: a@example.com\r\nSubject: Tagged\r\nMessage-ID: <tagged@example.com>\r\n\r\nBody.\r\n"
 	cmd := c.c.Append("INBOX", int64(len(raw)), nil)
@@ -593,19 +593,20 @@ func TestMoveToChecksTheMessageID(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.selected = ""
-	tagged := mailbox.InFolder("INBOX", fmtUID(data.UID))
-	other := mailbox.InFolder("INBOX", appendMessage(t, c, "INBOX"))
+	tagged := fmtUID(data.UID)
+	other := appendMessage(t, c, "INBOX")
 
-	if _, err := c.MoveTo(context.Background(), other, mailbox.FolderArchive, "<tagged@example.com>"); !errors.Is(err, ErrMessageGone) {
-		t.Fatalf("MoveTo of another mail's number with this Message-ID = %v, want ErrMessageGone", err)
+	id, exists, err := c.IDAt("INBOX", tagged)
+	if err != nil || !exists || !strings.Contains(id, "tagged@example.com") {
+		t.Fatalf("IDAt(tagged) = %q, %v, %v; want its Message-ID", id, exists, err)
 	}
-	if n := countIn(t, c, "Archive"); n != 0 {
-		t.Fatalf("Archive holds %d mails, want 0: the wrong mail moved", n)
+	if otherID, _, _ := c.IDAt("INBOX", other); otherID == id {
+		t.Errorf("IDAt(other) = %q, the same as the tagged mail's", otherID)
 	}
-	if _, err := c.MoveTo(context.Background(), tagged, mailbox.FolderArchive, "<tagged@example.com>"); err != nil {
-		t.Fatalf("MoveTo of the right mail = %v", err)
+	if _, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", tagged), mailbox.FolderArchive, ""); err != nil {
+		t.Fatal(err)
 	}
-	if n := countIn(t, c, "Archive"); n != 1 {
-		t.Errorf("Archive holds %d mails, want 1", n)
+	if _, exists, err := c.IDAt("INBOX", tagged); err != nil || exists {
+		t.Errorf("IDAt after the move: exists=%v, %v; want a number that names nothing", exists, err)
 	}
 }

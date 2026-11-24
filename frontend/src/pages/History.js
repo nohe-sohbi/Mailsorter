@@ -100,6 +100,19 @@ function byDay(entries) {
   return days;
 }
 
+// Actions that have an inverse. When the server still says one of these
+// cannot be undone, it is because it no longer can (on IMAP: past 30 days,
+// a move Mailsorter cannot trace, a read change on a mail that left the
+// inbox), not because the action has no inverse.
+const HAS_INVERSE = new Set(['archive', 'delete', 'trash', 'read', 'markRead']);
+
+const finalLabel = (e, none = 'Définitif') => (HAS_INVERSE.has(e.action) ? 'Plus annulable' : none);
+
+const finalHint = (e) =>
+  HAS_INVERSE.has(e.action)
+    ? "Mailsorter ne peut plus annuler cette action d'ici : le mail a changé de place depuis, ou elle est trop ancienne."
+    : "Cette action n'a pas d'inverse automatique.";
+
 // What the right-hand side of a row says. `undoOk` waits for the mailbox to be
 // known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
 // moved remembering where it went.
@@ -134,8 +147,8 @@ function HotelRegister({ entries, undoing, onUndo, undoOk }) {
                       {undoing === e.id ? <Spinner size={13} /> : 'Annuler'}
                     </button>
                   ) : e.undone || !e.undoable ? (
-                    <span className="text-xs text-muted" title={e.undone ? undefined : "Cette action n'a pas d'inverse automatique."}>
-                      {e.undone ? 'Annulé' : 'Définitif'}
+                    <span className="text-xs text-muted" title={e.undone ? undefined : finalHint(e)}>
+                      {e.undone ? 'Annulé' : finalLabel(e)}
                     </span>
                   ) : (
                     <span />
@@ -219,7 +232,7 @@ function History() {
     // happened. Changing source or search while it is in flight would otherwise
     // graft the tail of the old filter onto the new list, and overwrite the
     // cursor with one that no longer describes what is on screen.
-    const filterAtCall = `${source} ${query}`;
+    const filterAtCall = `${source}\u0000${query}`;
     setLoadingMore(true);
     try {
       const { data } = await accountService.getActionLog({
@@ -228,7 +241,7 @@ function History() {
         limit: PAGE_SIZE,
         before: nextBefore,
       });
-      if (filterAtCall !== `${sourceRef.current} ${queryRef.current}`) return;
+      if (filterAtCall !== `${sourceRef.current}\u0000${queryRef.current}`) return;
       const page = data.entries || [];
       // Le curseur est temporel : une action enregistrée entre deux pages peut
       // décaler la fenêtre, on dédoublonne sur l'id plutôt que d'afficher deux
@@ -485,11 +498,8 @@ function History() {
                     ) : (
                       !e.undone &&
                       !e.undoable && (
-                        <span
-                          className="shrink-0 text-xs text-muted"
-                          title="Cette action n'a pas d'inverse automatique."
-                        >
-                          Non réversible
+                        <span className="shrink-0 text-xs text-muted" title={finalHint(e)}>
+                          {finalLabel(e, 'Non réversible')}
                         </span>
                       )
                     )}

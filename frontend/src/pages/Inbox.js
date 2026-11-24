@@ -959,6 +959,9 @@ function Inbox() {
       } catch (err) {
         if (rollback) patchEmail(email.messageId, rollback);
         toast.error(apiError(err, "L'action a échoué"));
+        // 404: it is no longer in the inbox (moved from another device):
+        // the row goes, as it would at the next sync.
+        if (err?.response?.status === 404) removeEmails(email.messageId);
       }
       return;
     }
