@@ -8,6 +8,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -39,6 +40,16 @@ func (h *Handler) protectedValues(ctx context.Context, userEmail string) []strin
 // allows reports whether action may be applied to an email from `from` given the
 // user's protected list. A small wrapper so callers read naturally.
 func allows(action, from string, protectedList []string) bool {
+	return protect.Allowed(action, from, protectedList)
+}
+
+// allowsOn is allows for a mailbox on this transport. Over IMAP a label is a
+// folder, and filing a mail there takes it out of the inbox the way an
+// archive does, so the shield reads it as one (protect.AllowedOnFolders).
+func allowsOn(transport provider.Transport, action, from string, protectedList []string) bool {
+	if transport == provider.TransportIMAP {
+		return protect.AllowedOnFolders(action, from, protectedList)
+	}
 	return protect.Allowed(action, from, protectedList)
 }
 

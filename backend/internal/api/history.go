@@ -115,9 +115,12 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	views := make([]actionLogView, 0, len(logs))
 	for _, l := range logs {
 		inverse, reversible := activity.Inverse(l.Action)
+		if imapState != nil {
+			inverse, reversible = activity.InverseOnFolders(l.Action)
+		}
 		if imapState != nil && reversible {
 			switch inverse {
-			case "unarchive", "untrash":
+			case "unarchive", "untrash", "unlabel":
 				reversible = imapState.canBringBack[l.MessageID]
 			default:
 				// A flag change can only be reversed on a mail still in the
@@ -326,13 +329,21 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Action déjà annulée")
 		return
 	}
+	// A transport that cannot be resolved goes the Gmail way, whose client
+	// lookup answers for it (writeAuthError).
+	transport, _, tErr := h.transportFor(ctx, userEmail)
+	onIMAP := tErr == nil && transport == provider.TransportIMAP
 	inverse, ok := activity.Inverse(entry.Action)
+	if onIMAP {
+		// Filing into a folder is undone there like an archive.
+		inverse, ok = activity.InverseOnFolders(entry.Action)
+	}
 	if !ok {
 		writeError(w, http.StatusBadRequest, "Cette action n'est pas réversible")
 		return
 	}
 
-	if transport, _, err := h.transportFor(ctx, userEmail); err == nil && transport == provider.TransportIMAP {
+	if onIMAP {
 		// On IMAP the inverse goes through the session: a moved message is
 		// fetched back from where Mailsorter put it (mirroredIMAP), by the
 		// number it had in the inbox, which is what the entry recorded.
@@ -361,9 +372,6 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 			// entry: nothing more to do or to record.
 			writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
 			return
-		case errors.Is(err, mailbox.ErrNoIMAPEquivalent):
-			writeTransportError(w)
-			return
 		case err != nil:
 			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
 			return
@@ -387,7 +395,7 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		log.Printf("history: entry %s of %s undone but not marked: %v", oid.Hex(), userEmail, err)
 	}
 	// Record the reversal itself so the audit trail stays truthful.
-	h.logActionMeta(ctx, userEmail, entry.MessageID, inverse, SourceUndo, entry.Subject, entry.From)
+	h.logActionFiled(ctx, userEmail, entry.MessageID, inverse, SourceUndo, entry.Subject, entry.From, entry.LabelName)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
 }

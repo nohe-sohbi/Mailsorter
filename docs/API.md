@@ -413,11 +413,15 @@ a mail Mailsorter archived) moves it from where it is, and "Annuler" still
 finds it. `read`, `unread`, `star` and `unstar` over IMAP also change the
 stored copy, so the list and its filters (`is:unread`, `is:starred`) show them
 at once. `unarchive`
-and `untrash` are what "Annuler" sends right after an action: they mark the
-most recent matching forward entry `undone` and record the reversal (source
-`undo`), as `POST /api/activity/undo` does.
+and `untrash` are what "Annuler" sends right after an action, and over IMAP
+`unlabel` after an AI proposal filed the mail in a folder: they mark the most
+recent matching forward entry (`archive`, `delete`, `label`) `undone` and record
+the reversal (source `undo`), as `POST /api/activity/undo` does. This route
+carries no folder or label name, so `label` answers `400` "Cette action demande
+le nom d'un dossier ou d'une étiquette, que cette route ne reçoit pas.", and so
+does `unlabel` over the Gmail API.
 
-Over IMAP, `unarchive` / `untrash` take the number the message had in the inbox
+Over IMAP, `unarchive` / `untrash` / `unlabel` take the number the message had in the inbox
 (the one the client holds) and fetch it back from where Mailsorter moved it;
 the list shows it again at once, under the inbox's new number. A message another
 mail client moved or deleted since answers `404` "Ce mail n'est plus là où
@@ -430,7 +434,7 @@ and the shortcuts can express the same things one message at a time.
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Missing `messageId` or unsupported `action`
+- `400 Bad Request`: Missing `messageId`, unsupported `action`, or `label` (and over the Gmail API `unlabel`), which need a name this route does not carry
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
 - `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: the mailbox refused the action
@@ -566,7 +570,7 @@ exist. At most 200 ids per request.
 
 #### POST /api/emails/batch-undo
 
-Works on the Gmail API and over IMAP (where a label has no inverse).
+Works on the Gmail API and over IMAP.
 
 Reverse a batch the client just applied. Separate from the per-entry history undo
 because the client already holds the exact ids, which is what makes undoing a
@@ -578,13 +582,15 @@ because the client already holds the exact ids, which is what makes undoing a
 ```
 `archive`, `delete` and `label` are reversible. `labelName` is required when
 undoing a `label` and is the name the client just applied: the server resolves it
-to a Gmail label id, which the client does not have. Marking as read stays
-one-way on purpose.
+to a Gmail label id, which the client does not have. Over IMAP a label is the
+folder of that name, and undoing it brings the mail back to the inbox from the
+folder it was filed in. Marking as read stays one-way on purpose.
 
 The matching ledger entries are marked undone so the history does not offer a
-second "Annuler" on the same work. Note that the per-entry history undo
-(`POST /api/activity/undo`) still cannot reverse a labelling: the action log
-stores no label name, so it would have nothing to remove.
+second "Annuler" on the same work. Note that on the Gmail API the per-entry
+history undo (`POST /api/activity/undo`) still cannot reverse a labelling: most
+action log lines name no label, so it would have nothing to remove. Over IMAP
+it can (see there).
 
 **Response:** `200 OK`
 ```json
@@ -687,8 +693,9 @@ Brings the email back to the inbox immediately, marked unread.
 
 A per-user safety net: while a sender (full address or whole domain, subdomains
 included) is protected, no automated pass (AI suggestion, deterministic rule,
-sender auto-pilot or bulk action) may archive, trash or delete their mail.
-Non-destructive actions (label, star, mark read) are unaffected.
+sender auto-pilot or bulk action) may archive, trash or delete their mail, nor,
+over IMAP where a label is a folder, file it into one. Actions that leave the
+mail in the inbox (a Gmail label, star, mark read) are unaffected.
 
 ### List protected senders
 
@@ -820,13 +827,14 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
 | `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
-| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
+| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message, archived, deleted or filed in a folder, is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
 | `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
-| `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep) | a `label` suggestion: `apply` answers 501, `apply-batch` leaves it pending |
+| `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep, and label, which files the mail in the folder of that name) | |
 | Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
-| `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `GET /api/labels`, `POST /api/smart-labels` |
+| `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `POST /api/smart-labels` |
+| `GET /api/labels` (the user's own folders) | |
 
 A rule can be created on an IMAP account, but nothing runs it there.
 
@@ -1099,9 +1107,10 @@ source `undo`) both appear.
 
 Returns the caller's most recent ledger entries, newest first. Each entry is
 flagged `undoable` (it has a clean inverse and has not been undone yet). On
-IMAP an archive or a delete is `undoable` only while Mailsorter knows where it
-put the message (30 days, and never for a move made before it recorded that),
-and a read change only while the message is still in the inbox.
+IMAP an archive, a delete or a label (a filing into a folder) is `undoable`
+only while Mailsorter knows where it put the message (30 days, and never for a
+move made before it recorded that), and a read change only while the message
+is still in the inbox.
 
 **Query parameters:**
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
@@ -1113,6 +1122,9 @@ and a read change only while the message is still in the inbox.
   at the top and does not skip entries written in the same millisecond. A
   cursor that does not parse is ignored (first page)
 - `q`: free-text search over the acted-on message's subject and sender
+
+An entry of an applied AI `label` proposal, and its reversal, also carry
+`labelName`: the label it filed the mail under, over IMAP the folder.
 
 Entries carry `subject`/`from` so the history can say *which* email it is talking
 about. They are captured when the action is logged, and resolved from the stored
@@ -1156,9 +1168,11 @@ mail n'est plus là où Mailsorter l'avait rangé.": Mailsorter did not bring
 it back.
 
 Reverses one recorded action by replaying its inverse Gmail mutation
-(`archive` -> `unarchive`, `delete` / `trash` -> `untrash`, `read` -> `unread`).
-The entry is marked `undone` and the reversal is itself appended to the ledger
-(source `undo`). Only these actions are reversible; others return `400`.
+(`archive` -> `unarchive`, `delete` / `trash` -> `untrash`, `read` -> `unread`,
+and over IMAP `label` -> `unlabel`, which brings the mail back to the inbox
+from the folder it was filed in). The entry is marked `undone` and the reversal
+is itself appended to the ledger (source `undo`). Only these actions are
+reversible; others return `400`.
 
 **Request Body:** `{ "id": "665..." }`
 
@@ -1476,9 +1490,23 @@ knows, and the rest goes to the configured AI provider in batches of 8, falling
 back to one email at a time when a batch answer does not line up. The caller's
 own provider is tried first when they set one, then the instance's, in
 priority order, the next one on a transient error. A destructive verdict on a
-protected sender is downgraded to `keep`. One pending suggestion is stored per
-email, replacing a pending one for the same email; only model calls count
-toward the quota.
+protected sender is downgraded to `keep`, and so is, over IMAP, a `label`
+verdict, which files the mail out of the inbox there. The model is told
+nothing of the user's labels or folders: the prompt carries the sender, the
+subject and an excerpt cut at 200 characters, and the verdict goes into the
+cache every account shares, as the model gave it (each entry carries a
+version, which also starts its key, so a verdict cached when the prompt still
+listed the user's labels is never served again, and is deleted at the next
+boot). The label it proposes is matched afterwards, for this account only,
+with the labels Mailsorter made over the Gmail API, or over IMAP with the
+user's own folders and nothing else: the same name once case, accents and a plural
+mark are set aside, never a part of a name ("Facture" is stored as the
+existing "Factures", "Pro" does not take "Promotions"). Over IMAP the name
+stored is the folder's real one, cleaned as `POST /api/ai/apply` would make
+it, and a `label` naming the inbox, a special folder, a folder outside the
+user's namespace or a name no folder is made under becomes `keep`. One pending
+suggestion is stored per email, replacing a pending one for the same email;
+only model calls count toward the quota.
 
 **Request body:**
 ```json
@@ -1546,6 +1574,8 @@ Poll an analysis job.
 Analyze up to 20 stored emails whose From contains the sender, and persist a
 `SenderPreference` (default action, auto-apply off). Reads the stored mailbox
 only, so it answers on both transports; `404` when no stored email matches.
+The model is told none of the user's labels; the label it proposes is matched
+afterwards with the user's, as `POST /api/ai/analyze` does.
 
 **Request body:** `{ "senderEmail": "news@acme.com" }`
 
@@ -1560,13 +1590,35 @@ only, so it answers on both transports; `404` when no stored email matches.
 
 Apply a single suggestion to the mailbox, through the caller's transport, mark
 it `applied`, and log it (source `ai`). A `keep` verdict moves nothing. A
-destructive verdict on a protected sender was already downgraded to `keep` when
-the suggestion was created; this route does not check the list again
-(`apply-batch` does).
+destructive verdict on a protected sender (over IMAP, a `label` too) was
+already downgraded to `keep` when the suggestion was created; this route does
+not check the list again (`apply-batch` does).
 
-Over IMAP, `archive`, `delete` and `keep` apply. A `label` verdict answers `501`
-"Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP." and the
-suggestion stays pending, out of the history.
+Over IMAP, `archive`, `delete`, `keep` and `label` apply. A label is a folder
+there: a `label` verdict moves the mail out of the inbox into the folder named
+like the label (`labelName`), made (and subscribed) when the mailbox does not
+have it, under the personal namespace prefix when the server has one
+(`INBOX.Factures` on Courier), found whatever its case when it does, and
+undoable like an archive: right after, `POST /api/emails/action` with
+`unlabel` brings it back. A folder is made only under a name that holds no
+control character, no `*` or `%`, no empty level and no `.` or `..` level, at
+most 100 characters a level and 200 in all, whose first level is neither the
+inbox, nor a special folder, nor outside the user's namespace; the server's
+delimiter inside a level becomes `-` (`Amazon.fr` is `Amazon-fr` on a server
+whose delimiter is `.`), and that cleaned name is the folder's name, shown and
+recorded.
+The history line carries the folder's name (`labelName`). A label that names a
+folder that is not the user's own (the inbox, the archive, the trash, sent
+mail, drafts, junk) answers `422` "Mailsorter ne classe pas de mail dans ce
+dossier : c'est un dossier spécial de votre boîte." and nothing moves; a name
+no folder is made under answers `422` "Mailsorter ne crée pas de dossier sous
+ce nom : il est trop long ou contient un caractère réservé.", and a label
+proposal with no name `422` "Cette proposition ne nomme aucun dossier où
+classer le mail.". The analysis turns these into `keep` beforehand, so only a
+proposal it could not settle (the mailbox did not open then) reaches them.
+The name is settled again here as the analysis does: the user's folder named
+alike, or the cleaned name, so a proposal stored with the model's "Facture"
+goes into "Factures", and the history records the folder the mail went into.
 
 **Request body:** `{ "suggestionId": "662..." }`
 
@@ -1576,8 +1628,9 @@ tidied it by hand): nothing moves, nothing is recorded, and the proposal
 becomes `moot`.
 
 **Error Responses:** `400` invalid id; `404` no such suggestion for this caller;
-`428` no mailbox connected; `501` a label on IMAP; `500` the mailbox refused
-the action.
+`422` over IMAP, a label naming a special folder or a name no folder is made
+under; `428` no mailbox connected;
+`500` the mailbox refused the action.
 
 ### Apply many suggestions
 
@@ -1585,10 +1638,19 @@ the action.
 
 Apply a list of suggestions in one request (one session, looped server-side),
 at most 200. Suggestions whose sender is protected are skipped for destructive
-actions and stay pending. Over IMAP, a `label` suggestion stays pending and is
-counted neither in `applied` nor in `failed`; neither is a suggestion whose mail
-already left the inbox (tidied by hand, from a screen loaded before), which
-becomes `moot`, nor a suggestion already `moot`.
+actions and stay pending, counted in `protectedSkipped`. Over IMAP a `label`
+files the mail in a folder, out of the inbox, so it is one of them there: a
+protected sender's mail is not filed. One request makes at most 10 new
+folders over IMAP: a filing that would make one more counts in `failed`, the
+mail stays in the inbox, and the answer carries `message` "Mailsorter crée au
+plus 10 nouveaux dossiers à la fois : relancez le tri pour ranger les mails
+suivants.". A filing refused for its folder (special, a name no folder is made
+under, no name) counts in `failed` too, with the sentence `POST /api/ai/apply`
+answers in `message`; several reasons are joined, each once. Each filing
+settles its folder's name as `apply` does. A suggestion whose mail already left the
+inbox (tidied by hand, from a screen loaded before) is counted neither in
+`applied` nor in `failed`, and becomes `moot`; nor is a suggestion already
+`moot`.
 
 **Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
 
@@ -2113,7 +2175,22 @@ point of view: a failed increment must never cost the user their search.
 
 #### GET /api/labels
 
-Get all Gmail labels for a user. Gmail API only: `501` over IMAP.
+Get the labels a mail can be filed under: all Gmail labels, or, over IMAP, the
+user's own folders.
+
+Over IMAP a folder stands for a label, so the answer lists the folders in the
+same shape, `{ "id", "name", "type": "user" }`, with the folder's full name as
+both id and name (`"Projets/Maison"` for a folder inside another), sorted. The
+name is the one the user reads: without the personal namespace prefix the
+server announces (NAMESPACE: `INBOX.` on Courier and some Cyrus servers), with
+`/` between levels whatever the server's delimiter (`INBOX.Projets.Maison`
+reads `Projets/Maison`). Not listed: the inbox, the special folders (archive,
+trash, sent mail, drafts, junk, and Gmail's All Mail, Starred and Important),
+known by their special-use attribute or, when the server marks none for that
+kind, by their usual names (under the prefix too: `INBOX.Sent`), a folder
+outside the personal namespace (under the prefix of another user's or of a
+shared namespace, `Other Users/`, `Public/`, even when the personal prefix is
+empty), and a folder that cannot hold mail.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -2146,15 +2223,18 @@ Get all Gmail labels for a user. Gmail API only: `501` over IMAP.
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
 - `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: Failed to fetch labels
-- `501 Not Implemented`: the mailbox is on IMAP
 
 ---
 
 ## Smart Labels Endpoints
 
-The labels the AI is told about, so its `label` verdicts reuse a stable set
-instead of inventing a new name each time. No screen of the SPA calls these two
-routes.
+The labels Mailsorter made in the user's Gmail (one is stored each time a
+`label` verdict creates a Gmail label), with their Gmail ids. The model is told
+none of them: a `label` verdict is matched with them afterwards, for this
+account only and over the Gmail API only (the same name once case, accents and
+a plural mark are set aside), so it reuses a stable set instead of a new name
+each time. Over IMAP they play no part: only the user's folders count. No
+screen of the SPA calls these two routes.
 
 ### List smart labels
 

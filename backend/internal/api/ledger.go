@@ -34,6 +34,13 @@ func (h *Handler) logAction(ctx context.Context, userEmail, messageID, action, s
 // subject/from are stored as absent (omitempty) and resolved at read time by
 // GetActionLog, so entries written before this existed still render.
 func (h *Handler) logActionMeta(ctx context.Context, userEmail, messageID, action, source, subject, from string) {
+	h.logActionFiled(ctx, userEmail, messageID, action, source, subject, from, "")
+}
+
+// logActionFiled is logActionMeta that also names where a "label" filed the
+// mail (the label, or over IMAP its folder), which the history shows. Empty
+// is stored as absent.
+func (h *Handler) logActionFiled(ctx context.Context, userEmail, messageID, action, source, subject, from, labelName string) {
 	if action == "" || action == "keep" {
 		return // nothing was mutated in Gmail
 	}
@@ -44,6 +51,7 @@ func (h *Handler) logActionMeta(ctx context.Context, userEmail, messageID, actio
 		Source:    source,
 		Subject:   subject,
 		From:      from,
+		LabelName: labelName,
 		CreatedAt: time.Now(),
 	})
 }

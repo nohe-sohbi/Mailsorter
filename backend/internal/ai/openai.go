@@ -61,8 +61,8 @@ func (c *OpenAIClient) SetMaxRetries(n int) {
 
 func (c *OpenAIClient) ProviderName() string { return "openai" }
 
-func (c *OpenAIClient) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
-	prompt := buildAnalyzeEmailPrompt(email, existingLabels)
+func (c *OpenAIClient) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
+	prompt := buildAnalyzeEmailPrompt(email)
 	response, err := c.chat(prompt, 500)
 	if err != nil {
 		return nil, fmt.Errorf("openai API error: %w", err)
@@ -70,11 +70,11 @@ func (c *OpenAIClient) AnalyzeEmail(email models.Email, existingLabels []string)
 	return parseEmailAnalysis(response)
 }
 
-func (c *OpenAIClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (c *OpenAIClient) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	if len(emails) == 0 {
 		return nil, nil
 	}
-	prompt := buildBatchPrompt(emails, existingLabels)
+	prompt := buildBatchPrompt(emails)
 	maxTokens := 120*len(emails) + 200
 	if maxTokens > 4000 {
 		maxTokens = 4000
@@ -86,8 +86,8 @@ func (c *OpenAIClient) AnalyzeBatch(emails []models.Email, existingLabels []stri
 	return parseBatchAnalysis(response, len(emails))
 }
 
-func (c *OpenAIClient) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
-	prompt := buildSenderPrompt(senderEmail, emails, existingLabels)
+func (c *OpenAIClient) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
+	prompt := buildSenderPrompt(senderEmail, emails)
 	response, err := c.chat(prompt, 500)
 	if err != nil {
 		return nil, fmt.Errorf("openai API error: %w", err)

@@ -113,10 +113,10 @@ const count = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
 
 // The numbers the header and the bulk button state. `sure` is what "Ranger"
 // applies, `unsure` is what it leaves out and says so. `canApply` says whether
-// a group's verdict can be applied to this mailbox at all (a label cannot over
-// IMAP): such a group is never in the bulk, nor counted as "à vérifier", nor
-// in `byAction`, the "N à étiqueter" chips, which would announce a task the
-// mailbox cannot do. It is counted apart, as `held`.
+// a group's verdict can be applied now (a label waits until the mailbox is
+// known, canApplyVerdict in landing/features.js): such a group is never in the
+// bulk, nor counted as "à vérifier", nor in `byAction`, the "N à classer"
+// chips. It is counted apart, as `held`.
 export function planTotals({ moves, keeps }, canApply = () => true) {
   const applicable = moves.filter(canApply);
   const byAction = {};
@@ -124,8 +124,8 @@ export function planTotals({ moves, keeps }, canApply = () => true) {
   const sureGroups = applicable.filter((g) => g.sure);
   return {
     moves: count(moves),
-    // What can actually be tidied here: the "à ranger" the header and the
-    // list announce, so they never promise more than "Ranger N" applies.
+    // What can be tidied now: the "à ranger" the header and the list
+    // announce, so they never promise more than "Ranger N" applies.
     toTidy: count(applicable),
     held: count(moves) - count(applicable),
     keeps: count(keeps),

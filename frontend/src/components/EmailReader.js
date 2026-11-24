@@ -5,7 +5,7 @@ import { X, Archive, Trash, Mail, BellOff, Shield, Paperclip, Star, Download, Ch
 import Spinner from '../ui/Spinner';
 import { ErrorState } from '../ui/primitives';
 import { isSure } from './inbox/planGroups';
-import { actionMeta } from '../ui/actions';
+import { actionMeta, labelPlace } from '../ui/actions';
 import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
@@ -13,7 +13,6 @@ import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
 import { proposalText } from './hotel/InboxBits';
-import { IMAP_UNAVAILABLE } from './landing/features';
 
 function extractEmail(from) {
   const match = from?.match(/<(.+)>/);
@@ -84,7 +83,8 @@ function EmailReader({
   // known.
   canStar = false,
   // Whether this mailbox has labels to name: the Gmail API's. An IMAP message
-  // sits in one folder, and GET /api/labels answers 501 there.
+  // sits in one folder and carries no label id, so there is nothing to name
+  // (GET /api/labels lists its folders, to file into).
   hasLabels = false,
   unsubscribing,
   onRead,
@@ -94,9 +94,12 @@ function EmailReader({
   aiAnalyzing,
   onApplySuggestion,
   onRejectSuggestion,
-  // True when the verdict cannot be applied to this mailbox (a label over
-  // IMAP): the card says so, and the Inbox passes no onApplySuggestion.
-  suggestionUnavailable = false,
+  // True on a mailbox connected over IMAP, where a label is a folder: the
+  // verdict then reads "Classer dans « Factures »".
+  folders = false,
+  // True while the verdict waits for the mailbox to be known (a label): the
+  // card says so, and the Inbox passes no onApplySuggestion.
+  suggestionHeld = false,
 }) {
   const toast = useToast();
   const hotel = useHotel();
@@ -461,7 +464,7 @@ function EmailReader({
           </div>
         )}
         {hotel && !aiAnalyzing && aiSuggestion && (() => {
-          const meta = actionMeta(aiSuggestion.action);
+          const meta = actionMeta(aiSuggestion.action, { folders });
           return (
             <div className="hd-reader-prop">
               <div className={cn('ht-prop', aiSuggestion.action === 'keep' && 'is-safe')}>
@@ -475,7 +478,7 @@ function EmailReader({
                     </span>
                   )}
                   {aiSuggestion.reasoning && <p>{aiSuggestion.reasoning}</p>}
-                  {suggestionUnavailable && <p>{IMAP_UNAVAILABLE}</p>}
+                  {suggestionHeld && <p>Indisponible pour le moment.</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (
@@ -521,11 +524,9 @@ function EmailReader({
             white middle band glared in the dark theme), and accents that had
             been saved as literal "?" bytes. */}
         {!hotel && !aiAnalyzing && aiSuggestion && (() => {
-          const meta = actionMeta(aiSuggestion.action);
+          const meta = actionMeta(aiSuggestion.action, { folders });
           const verdict =
-            aiSuggestion.action === 'label' && aiSuggestion.labelName
-              ? `${meta.label} « ${aiSuggestion.labelName} »`
-              : meta.label;
+            aiSuggestion.action === 'label' ? `${meta.label}${labelPlace(aiSuggestion.labelName, { folders })}` : meta.label;
           return (
             <div className="mt-4 rounded-xl border border-brand-200/80 bg-brand-50/60 p-4">
               <div className="flex items-start gap-3">
@@ -547,7 +548,7 @@ function EmailReader({
                   {aiSuggestion.reasoning && (
                     <p className="mt-0.5 text-sm leading-relaxed text-ink-700">{aiSuggestion.reasoning}</p>
                   )}
-                  {suggestionUnavailable && <p className="mt-1 text-xs text-muted">{IMAP_UNAVAILABLE}</p>}
+                  {suggestionHeld && <p className="mt-1 text-xs text-muted">Indisponible pour le moment.</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (

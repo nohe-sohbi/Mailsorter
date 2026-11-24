@@ -274,9 +274,9 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 
 // batchUndoIMAP is BatchUndo on an IMAP mailbox: each message is fetched back
 // from where Mailsorter moved it (mirroredIMAP), by the number it had in the
-// inbox, which is the number the client holds. One that is no longer there,
-// or a reversal IMAP cannot express (taking off a label), is not restored and
-// not counted.
+// inbox, which is the number the client holds. Taking a label off is the same
+// return, from the folder the mail was filed in. One that is no longer there
+// is not restored and not counted.
 func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, userEmail string, req BatchActionRequest, inverse string) {
 	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
@@ -334,7 +334,7 @@ func (h *Handler) recordUndo(ctx context.Context, userEmail, id, action, inverse
 		options.FindOneAndUpdate().SetSort(bson.M{"createdAt": -1}),
 	).Decode(&entry)
 	if err == nil {
-		h.logActionMeta(ctx, userEmail, id, inverse, SourceUndo, entry.Subject, entry.From)
+		h.logActionFiled(ctx, userEmail, id, inverse, SourceUndo, entry.Subject, entry.From, entry.LabelName)
 	} else {
 		h.logAction(ctx, userEmail, id, inverse, SourceUndo)
 	}

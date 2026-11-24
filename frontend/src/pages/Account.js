@@ -144,8 +144,9 @@ function Account() {
   // service's only.
   const { selfHosted } = useInstance();
   // The auto-pilot runs on a mailbox reached through the Gmail API only (the
-  // IMAP analysis skips it), so it is named only there.
-  const { fullFeatures: autopilot } = useMailbox();
+  // IMAP analysis skips it), so it is named only there. Over IMAP a label is a
+  // folder: the week's filings read "Classé".
+  const { fullFeatures: autopilot, isImap } = useMailbox();
   const [profile, setProfile] = useState(null);
   const [usage, setUsage] = useState(null);
   const [activity, setActivity] = useState(null);
@@ -304,7 +305,7 @@ function Account() {
             {Object.entries(activity.byAction).map(([action, count]) => (
               <span key={action} className="flex items-center gap-2 text-sm text-ink-600">
                 <span className={cn('h-2.5 w-2.5 rounded-full', actionMeta(action).solid)} />
-                {actionMeta(action).past}
+                {actionMeta(action, { folders: isImap }).past}
                 <span className="font-semibold text-ink-900">{count}</span>
               </span>
             ))}

@@ -152,12 +152,14 @@ func TestBatchInverseIsReplayable(t *testing.T) {
 // history undo and the batch undo reverse the same ledger entries.
 //
 // They do NOT overlap everywhere, and that is deliberate. The batch can reverse
-// a labelling because the client still holds the label name it just applied; the
-// ledger stores no label name, so the history genuinely cannot, and claiming
-// otherwise would put a dead "Annuler" on every label row.
+// a Gmail labelling because the client still holds the label name it just
+// applied; most ledger lines do not (only an applied AI proposal records it),
+// so the history cannot, and claiming otherwise would put a dead "Annuler" on
+// every label row. Over IMAP it can (activity.InverseOnFolders): a label is a
+// folder there, and the mail comes back from where Mailsorter put it.
 func TestBatchInverseAgreesWithLedgerWhereBothKnowTheAction(t *testing.T) {
 	ledgerCannotReverse := map[string]string{
-		"label": "the action log stores no label name, so a per-entry undo has nothing to remove",
+		"label": "over the Gmail API most action log lines name no label, so a per-entry undo has nothing to remove",
 	}
 
 	for action, inverse := range batchInverse {
