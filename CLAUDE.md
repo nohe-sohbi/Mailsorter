@@ -236,7 +236,7 @@ The outbound clients and primitives:
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
 | `message.go` | `GET /api/emails/{id}`: one message with its body, on both transports (no attachment list over IMAP) |
-| `batch.go` | `POST /api/emails/batch-action` and `/batch-undo` (Gmail only), plus the identity lookups the ledger uses |
+| `batch.go` | `POST /api/emails/batch-action` (Gmail only) and `/batch-undo` (Gmail and IMAP), plus the identity lookups the ledger uses |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
 | `ai_handlers.go` | Eight of the `/api/ai/*` endpoints (analyze, analyze-sender, apply, apply-batch, apply-bulk, suggestions, reject, reject-batch), `GET /api/senders`, the sender preferences and `/api/smart-labels`. `analyze-async` and `jobs/{id}` are in `jobs.go` |
 | `ai_settings.go` | The BYOK routes (`/api/ai/providers`, `/api/ai/settings`, `/api/ai/settings/test`) and `resolveAnalyzer`, which puts the account's own provider first |

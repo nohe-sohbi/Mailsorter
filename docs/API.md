@@ -392,8 +392,16 @@ archive and trash folders and read and star are flags.
 ```
 `action` is one of `archive`, `delete` (alias `trash`), `unarchive`, `untrash`,
 `read`, `unread`, `star`, `unstar`. Forward triage actions
-(`archive`/`delete`/`read`/`star`) are recorded in the action ledger; the inverse
-actions are not. The vocabulary matches `/api/emails/batch-action`, so the reader
+(`archive`/`delete`/`read`/`star`) are recorded in the action ledger. `unarchive`
+and `untrash` are what "Annuler" sends right after an action: they mark the
+most recent matching forward entry `undone` and record the reversal (source
+`undo`), as `POST /api/activity/undo` does.
+
+Over IMAP, `unarchive` / `untrash` take the number the message had in the inbox
+(the one the client holds) and fetch it back from where Mailsorter moved it;
+the list shows it again at once, under the inbox's new number. A message another
+mail client moved or deleted since answers `404` "Ce mail n'est plus là où
+Mailsorter l'avait rangé.". The vocabulary matches `/api/emails/batch-action`, so the reader
 and the shortcuts can express the same things one message at a time.
 
 **Response:** `200 OK`
@@ -783,13 +791,13 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `has:`, `larger:`, `smaller:`, `label:`, `filename:`, `category:` terms, `is:` other than `read` / `unread`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` |
 | `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
-| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar) | `POST /api/emails/batch-action`, `POST /api/emails/batch-undo` |
+| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
 | `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
 | `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep) | a `label` suggestion: `apply` answers 501, `apply-batch` leaves it pending |
 | Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
-| | `POST /api/activity/undo`, `GET /api/labels`, `POST /api/smart-labels` |
+| | `GET /api/labels`, `POST /api/smart-labels` |
 
 Two more are Gmail-only without answering 501: `POST /api/account/digest/test`
 answers `502` (see there), and the daily digest loop logs the failure and sends
@@ -1072,8 +1080,11 @@ The entry is marked `undone` and the reversal is itself appended to the ledger
 **Request Body:** `{ "id": "665..." }`
 
 **Responses:** `200 { "status": "undone", "action": "unarchive" }`; `400` not
-reversible or an invalid id; `404` not found; `409` already undone; `501` the
-mailbox is on IMAP; `502` Gmail refused the reversal.
+reversible or an invalid id; `404` not found, or, on IMAP, "Ce mail n'est plus là
+où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
+entry stays not undone); `409` already undone; `502` the provider refused the
+reversal. On IMAP a moved message stays recorded for 30 days after it left the
+inbox, which is how long the history can bring it back.
 
 ---
 
@@ -1465,7 +1476,7 @@ counted neither in `applied` nor in `failed`.
 
 `reversible` says whether `POST /api/emails/batch-undo` can reverse what this
 batch moved, so the client offers "Annuler" only when it would work. It is true
-on the Gmail API and false over IMAP, where batch-undo is not ported yet. A
+on the Gmail API and over IMAP. A
 `keep` suggestion moves nothing and has nothing to undo either way.
 
 ### Apply in bulk for a sender
