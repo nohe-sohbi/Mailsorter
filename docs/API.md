@@ -920,7 +920,7 @@ mailbox is on IMAP, rather than acting on the wrong message.
 |---|---|
 | `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
-| `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
+| `GET /api/emails/{id}` (body and attachment list included), `GET /api/emails/{id}/attachments/{attachmentId}` | |
 | `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message, archived, deleted or filed in a folder, is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
 | `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
