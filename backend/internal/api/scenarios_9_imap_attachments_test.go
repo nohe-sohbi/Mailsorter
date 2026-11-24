@@ -439,7 +439,7 @@ func TestScenarios_IMAPAttachments(t *testing.T) {
 			},
 		},
 		{
-			phrase: "Sur une boîte IMAP, le lecteur d'un mail HTML montre à leur place les images que le mail intègre, sans en faire des pièces jointes.",
+			phrase: "Sur une boîte IMAP, le lecteur d'un mail HTML montre à leur place les images que le mail intègre, sans en faire des pièces jointes ; une image SVG n'est ni montrée ni téléchargeable.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				moi := app.imapPerson(imapInboxOwner)
