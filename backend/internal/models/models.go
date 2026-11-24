@@ -28,10 +28,11 @@ type User struct {
 	AutoSyncEnabled bool      `json:"autoSyncEnabled" bson:"autoSyncEnabled,omitempty"`
 	LastAutoSyncAt  time.Time `json:"-" bson:"lastAutoSyncAt,omitempty"`
 	// Daily digest. When DigestEnabled is true, a background scheduler emails a
-	// recap of the last 7 days once a day at DigestHourUTC (0-23, UTC).
+	// recap of the last 7 days once a day at DigestHourUTC (0-23, UTC; nil
+	// when the user never picked one, which means the server default).
 	// DigestLastSentAt stamps the last attempt so we send at most once per day.
 	DigestEnabled    bool      `json:"digestEnabled" bson:"digestEnabled,omitempty"`
-	DigestHourUTC    int       `json:"digestHourUTC" bson:"digestHourUTC,omitempty"`
+	DigestHourUTC    *int      `json:"digestHourUTC,omitempty" bson:"digestHourUTC,omitempty"`
 	DigestLastSentAt time.Time `json:"-" bson:"digestLastSentAt,omitempty"`
 	CreatedAt        time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt" bson:"updatedAt"`
@@ -81,15 +82,6 @@ type Email struct {
 	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`
 	UnsubOneClick bool      `json:"unsubOneClick,omitempty" bson:"unsubOneClick,omitempty"`
 	CreatedAt     time.Time `json:"createdAt" bson:"createdAt"`
-}
-
-type Label struct {
-	ID        string    `json:"id" bson:"_id,omitempty"`
-	UserID    string    `json:"userId" bson:"userId"`
-	GmailID   string    `json:"gmailId" bson:"gmailId"`
-	Name      string    `json:"name" bson:"name"`
-	Color     string    `json:"color" bson:"color"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 }
 
 // RegisterRequest is the body for POST /api/auth/register.
@@ -568,8 +560,8 @@ type WaitlistInput struct {
 // The APIKey is encrypted at rest via the instance's Encryptor.
 type AIProviderSettings struct {
 	UserID    string    `json:"userId" bson:"userId"`
-	Provider  string    `json:"provider" bson:"provider"`     // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
-	APIKey    string    `json:"-" bson:"apiKey"`               // encrypted, never in JSON responses
+	Provider  string    `json:"provider" bson:"provider"` // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
+	APIKey    string    `json:"-" bson:"apiKey"`          // encrypted, never in JSON responses
 	Model     string    `json:"model" bson:"model"`
 	BaseURL   string    `json:"baseUrl" bson:"baseUrl"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`

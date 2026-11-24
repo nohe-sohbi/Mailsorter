@@ -213,8 +213,10 @@ func TestConnectMailboxRefusesAnOversizedPassword(t *testing.T) {
 
 // A provider the running edition does not reach over IMAP has to be refused
 // before any connection is attempted, and with a status that says "this cannot
-// work here" rather than "your password is wrong". In self-hosted, Gmail is the
-// API route, so it has no IMAP endpoint to pick.
+// work here" rather than "your password is wrong". Outlook.com only routes
+// through Microsoft Graph, so there is no IMAP endpoint to pick. (Gmail is not
+// such a provider: its catalog entry offers IMAP in both editions, see
+// provider.PickIMAP.)
 func TestConnectMailboxRefusesAProviderTheEditionReachesAnotherWay(t *testing.T) {
 	previous := Edition
 	Edition = provider.EditionSelfHosted
@@ -223,7 +225,7 @@ func TestConnectMailboxRefusesAProviderTheEditionReachesAnotherWay(t *testing.T)
 	srv := newRoutedTestServer(t)
 	token := newTestAuth(t).IssueSession("someone@example.com")
 
-	body, err := json.Marshal(models.ConnectMailboxRequest{Address: "someone@gmail.com", Password: "app-password"})
+	body, err := json.Marshal(models.ConnectMailboxRequest{Address: "someone@outlook.com", Password: "app-password"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -240,6 +242,6 @@ func TestConnectMailboxRefusesAProviderTheEditionReachesAnotherWay(t *testing.T)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Errorf("connecting Gmail over IMAP on a self-hosted instance = %d, want 422", resp.StatusCode)
+		t.Errorf("connecting Outlook.com over IMAP = %d, want 422", resp.StatusCode)
 	}
 }

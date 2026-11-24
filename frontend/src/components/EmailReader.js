@@ -13,6 +13,7 @@ import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
 import { proposalText } from './hotel/InboxBits';
+import { IMAP_UNAVAILABLE } from './landing/features';
 
 function extractEmail(from) {
   const match = from?.match(/<(.+)>/);
@@ -78,6 +79,10 @@ function EmailReader({
   onSnooze,
   onProtect,
   onFlag,
+  // Whether this mailbox keeps a star. Over IMAP the stored copy does not, so
+  // a star set from here came back empty at the next listing and the toggle
+  // could only ever say "Mettre en favori": the button is not drawn there.
+  canStar = false,
   unsubscribing,
   onRead,
   triage,
@@ -86,6 +91,9 @@ function EmailReader({
   aiAnalyzing,
   onApplySuggestion,
   onRejectSuggestion,
+  // True when the verdict cannot be applied to this mailbox (a label over
+  // IMAP): the card says so, and the Inbox passes no onApplySuggestion.
+  suggestionUnavailable = false,
 }) {
   const toast = useToast();
   const hotel = useHotel();
@@ -148,7 +156,9 @@ function EmailReader({
   }, [messageId, loadMessage]);
 
   // Label names are per-account and rarely change; fetch once for the session.
+  // A mailbox without a star has no labels either (IMAP): nothing to ask.
   useEffect(() => {
+    if (!canStar) return undefined;
     let cancelled = false;
     labelService
       .list()
@@ -164,7 +174,7 @@ function EmailReader({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canStar]);
 
   if (!email) return null;
 
@@ -268,7 +278,7 @@ function EmailReader({
                 onClick={triage.onNext}
                 disabled={!triage.hasNext}
                 className="btn-ghost btn-xs flex items-center gap-1 disabled:opacity-30"
-                title="Passer a l'email suivant sans modifier (Flèche droite ou J)"
+                title="Passer à l'email suivant sans modifier (Flèche droite ou J)"
               >
                 <span className="hidden sm:inline">Passer</span>
                 <ChevronRight size={13} />
@@ -289,8 +299,8 @@ function EmailReader({
           ref={closeRef}
           onClick={onClose}
           className="btn-ghost btn-sm btn-icon"
-          aria-label={triage ? 'Quitter le tri pas-a-pas' : 'Fermer le lecteur'}
-          title={triage ? 'Quitter le tri pas-a-pas (Échap)' : 'Fermer le lecteur (Échap)'}
+          aria-label={triage ? 'Quitter le tri pas-à-pas' : 'Fermer le lecteur'}
+          title={triage ? 'Quitter le tri pas-à-pas (Échap)' : 'Fermer le lecteur (Échap)'}
         >
           <X size={18} />
         </button>
@@ -340,18 +350,20 @@ function EmailReader({
                   besides getting rid of mail: flagging what matters and putting
                   back what you opened by mistake. Both were reachable only from
                   the list's keyboard shortcuts, i.e. not while reading. */}
-              <button
-                onClick={() => onFlag(starred ? 'unstar' : 'star')}
-                className={cn(
-                  'btn-ghost btn-sm btn-icon',
-                  starred ? 'text-caution-600 hover:bg-caution-50' : 'hover:bg-ink-100'
-                )}
-                aria-pressed={starred}
-                aria-label={starred ? 'Retirer des favoris' : 'Mettre en favori'}
-                title={starred ? 'Retirer des favoris' : 'Mettre en favori'}
-              >
-                <Star size={18} className={starred ? 'fill-current' : undefined} />
-              </button>
+              {canStar && (
+                <button
+                  onClick={() => onFlag(starred ? 'unstar' : 'star')}
+                  className={cn(
+                    'btn-ghost btn-sm btn-icon',
+                    starred ? 'text-caution-600 hover:bg-caution-50' : 'hover:bg-ink-100'
+                  )}
+                  aria-pressed={starred}
+                  aria-label={starred ? 'Retirer des favoris' : 'Mettre en favori'}
+                  title={starred ? 'Retirer des favoris' : 'Mettre en favori'}
+                >
+                  <Star size={18} className={starred ? 'fill-current' : undefined} />
+                </button>
+              )}
               <button
                 onClick={() => onFlag('unread')}
                 className="btn-ghost btn-sm btn-icon"
@@ -457,6 +469,7 @@ function EmailReader({
                     </span>
                   )}
                   {aiSuggestion.reasoning && <p>{aiSuggestion.reasoning}</p>}
+                  {suggestionUnavailable && <p>{IMAP_UNAVAILABLE}</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (
@@ -528,6 +541,7 @@ function EmailReader({
                   {aiSuggestion.reasoning && (
                     <p className="mt-0.5 text-sm leading-relaxed text-ink-700">{aiSuggestion.reasoning}</p>
                   )}
+                  {suggestionUnavailable && <p className="mt-1 text-xs text-muted">{IMAP_UNAVAILABLE}</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (

@@ -68,7 +68,7 @@ func newTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) *Cli
 		ln.Close()
 	})
 
-	raw, err := imapclient.DialInsecure(ln.Addr().String(), nil)
+	raw, err := imapclient.DialInsecure(ln.Addr().String(), clientOptions("127.0.0.1"))
 	if err != nil {
 		t.Fatalf("dial test server: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestConnectReportsABadPasswordAsAnAuthFailure(t *testing.T) {
 	go srv.Serve(ln)
 	defer func() { srv.Close(); ln.Close() }()
 
-	raw, err := imapclient.DialInsecure(ln.Addr().String(), nil)
+	raw, err := imapclient.DialInsecure(ln.Addr().String(), clientOptions("127.0.0.1"))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

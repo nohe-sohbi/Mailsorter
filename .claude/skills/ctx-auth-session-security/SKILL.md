@@ -15,7 +15,6 @@ paths:
   - backend/internal/api/routes.go
   - backend/internal/api/routes_integration_test.go
   - backend/cmd/server/main.go
-  - backend/cmd/test_decrypt/main.go
   - frontend/src/services/api.js
   - frontend/src/pages/Login.js
   - frontend/src/pages/AuthCallback.js
@@ -41,7 +40,6 @@ Google OAuth login, stateless HMAC session tokens and OAuth state, the X-User-Em
 - `backend/internal/api/routes.go`
 - `backend/internal/api/routes_integration_test.go`
 - `backend/cmd/server/main.go`
-- `backend/cmd/test_decrypt/main.go`
 - `frontend/src/services/api.js`
 - `frontend/src/pages/Login.js`
 - `frontend/src/pages/AuthCallback.js`

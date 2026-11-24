@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 
 	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message/charset"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
@@ -82,12 +84,21 @@ type Client struct {
 // catalog carries the mode per route rather than leaving it to be sniffed here.
 // There is no third branch: an unencrypted connection would send the user's app
 // password in the clear and is not offered at all.
+// clientOptions are the connection options for a server named host.
+func clientOptions(host string) *imapclient.Options {
+	return &imapclient.Options{
+		Dialer:    &net.Dialer{Timeout: dialTimeout},
+		TLSConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
+		// Without it go-imap decodes only UTF-8, ISO-8859-1 and US-ASCII
+		// encoded words, and leaves a windows-1252 or ISO-8859-15 sender
+		// name or subject (common in French mail) as raw RFC 2047.
+		WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader},
+	}
+}
+
 func Connect(ctx context.Context, creds Credentials) (*Client, error) {
 	addr := net.JoinHostPort(creds.Endpoint.Host, fmt.Sprint(creds.Endpoint.Port))
-	options := &imapclient.Options{
-		Dialer:    &net.Dialer{Timeout: dialTimeout},
-		TLSConfig: &tls.Config{ServerName: creds.Endpoint.Host, MinVersion: tls.VersionTLS12},
-	}
+	options := clientOptions(creds.Endpoint.Host)
 
 	var (
 		raw *imapclient.Client

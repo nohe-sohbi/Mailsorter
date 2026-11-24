@@ -9,6 +9,8 @@ import { actionMeta } from '../ui/actions';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
+import { useMailbox } from '../contexts/EmailContext';
+import { useInstance } from '../contexts/InstanceContext';
 import { Bolt, Trash, Tag, Check, X, Refresh, Search, ChevronDown, Copy, Download, Upload } from '../ui/icons';
 
 const FIELDS = [
@@ -57,7 +59,7 @@ const operatorLabel = (v) => OPERATORS.find((o) => o.value === v)?.label || v;
 // normalised before any string work.
 const conditionValue = (v) => String(v ?? '');
 
-// Concrete examples beat an abstract "Valeur…": most people write their first
+// Concrete examples beat an abstract "Valeur...": most people write their first
 // rule by imitating the placeholder.
 const valuePlaceholder = (c) => {
   if (isTemporalOperator(c.operator)) return 'Ex. 30';
@@ -74,7 +76,7 @@ const valuePlaceholder = (c) => {
     case 'body':
       return 'Ex. numéro de commande';
     default:
-      return 'Valeur…';
+      return 'Valeur...';
   }
 };
 
@@ -101,7 +103,7 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
       <input
         className="input"
         list={listId}
-        placeholder={labels.length ? 'Choisissez ou créez un libellé…' : 'Ex. Factures'}
+        placeholder={labels.length ? 'Choisissez ou créez un libellé...' : 'Ex. Factures'}
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
         aria-label="Libellé à appliquer"
@@ -110,14 +112,18 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
       />
       {isNew && (
         <span id={hintId} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-caution-700">
-          <Tag size={12} /> Nouveau libellé : il sera créé dans Gmail.
+          <Tag size={12} /> Nouveau libellé : il sera créé dans votre boîte.
         </span>
       )}
     </div>
   );
 }
 
-function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) {
+// `labelsOk` is false on a mailbox with no labels (IMAP, or not known yet):
+// "Étiqueter" and "Mettre en favori" are then not offered for a new action.
+// An action that already does one (an imported rule) keeps its choice, so the
+// list can still show it.
+function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, labelsOk }) {
   const [rule, setRule] = useState(initial);
   const toast = useToast();
   const uid = useId();
@@ -143,8 +149,20 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
         idx === i ? { ...a, type, labelName: type === 'label' ? a.labelName || '' : a.labelName } : a
       ),
     }));
+  // Actions already chosen can't be picked again (except "label", which can
+  // repeat with different names), which keeps the combo meaningful.
+  const usedTypes = new Set(rule.actions.map((a) => a.type));
+  // The star is as Gmail-only as the label: an IMAP mailbox keeps none.
+  const gmailOnly = (type) => type === 'label' || type === 'star';
+  const offered = (type, current) => {
+    if (gmailOnly(type) && !labelsOk && current !== type) return false;
+    return type === 'label' || type === current || !usedTypes.has(type);
+  };
+  // What "+ Ajouter une action" adds: a label, which can repeat, or else the
+  // first action not chosen yet.
+  const nextType = labelsOk ? 'label' : ACTION_TYPES.find((type) => !gmailOnly(type) && !usedTypes.has(type));
   const addAction = () =>
-    setRule((r) => ({ ...r, actions: [...r.actions, { type: 'label', labelName: '' }] }));
+    setRule((r) => ({ ...r, actions: [...r.actions, { type: nextType, labelName: '' }] }));
   const removeAction = (i) =>
     setRule((r) => ({ ...r, actions: r.actions.filter((_, idx) => idx !== i) }));
 
@@ -157,10 +175,6 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
       return toast.error('Chaque condition doit avoir une valeur.');
     onSave(rule);
   };
-
-  // Actions already chosen can't be picked again (except "label", which can
-  // repeat with different names), which keeps the combo meaningful.
-  const usedTypes = new Set(rule.actions.map((a) => a.type));
 
   return (
     <div className="card space-y-5 p-6">
@@ -184,7 +198,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
             onChange={(e) => set({ priority: parseInt(e.target.value, 10) || 0 })}
           />
           <span className="mt-1 block text-xs text-muted">
-            Un email n’est traité que par <strong className="font-semibold text-ink-700">une seule règle</strong> : la
+            Un email n'est traité que par <strong className="font-semibold text-ink-700">une seule règle</strong> : la
             première qui correspond gagne, les suivantes sont ignorées. Plus le nombre est petit, plus la règle passe tôt.
           </span>
         </label>
@@ -234,7 +248,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
                   className="input min-w-[140px] flex-1"
                   type={isTemporalOperator(c.operator) ? 'number' : 'text'}
                   min={isTemporalOperator(c.operator) ? 0 : undefined}
-                  placeholder={isTemporalOperator(c.operator) ? 'Nombre de jours… (ex. 30)' : valuePlaceholder(c)}
+                  placeholder={isTemporalOperator(c.operator) ? 'Nombre de jours... (ex. 30)' : valuePlaceholder(c)}
                   value={c.value}
                   onChange={(e) => setCondition(i, { value: e.target.value })}
                 />
@@ -265,14 +279,16 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold text-ink-700">Actions</span>
-          <span className="text-xs text-muted">Exécutées dans l’ordre, ex. <em>Étiqueter</em> puis <em>Archiver</em></span>
+          <span className="text-xs text-muted">
+            Exécutées dans l'ordre, ex. <em>{labelsOk ? 'Étiqueter' : 'Marquer comme lu'}</em> puis <em>Archiver</em>
+          </span>
         </div>
         <div className="space-y-2">
           {rule.actions.map((a, i) => (
             <div key={i} className="flex flex-wrap items-start gap-2">
               <select className="select w-auto flex-none" value={a.type} onChange={(e) => setActionType(i, e.target.value)}>
-                {ACTION_TYPES.map((type) => (
-                  <option key={type} value={type} disabled={type !== 'label' && type !== a.type && usedTypes.has(type)}>
+                {ACTION_TYPES.filter((type) => !gmailOnly(type) || offered(type, a.type)).map((type) => (
+                  <option key={type} value={type} disabled={!offered(type, a.type)}>
                     {actionMeta(type).label}
                   </option>
                 ))}
@@ -288,14 +304,14 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
                 />
               )}
               {rule.actions.length > 1 && (
-                <button onClick={() => removeAction(i)} className="btn-ghost btn-icon text-muted" aria-label="Retirer l’action">
+                <button onClick={() => removeAction(i)} className="btn-ghost btn-icon text-muted" aria-label="Retirer l'action">
                   <X size={16} />
                 </button>
               )}
             </div>
           ))}
         </div>
-        {rule.actions.length < ACTION_TYPES.length && (
+        {rule.actions.length < ACTION_TYPES.length && nextType && (
           <button onClick={addAction} className="mt-2 text-sm font-semibold text-brand-600 hover:text-brand-700">
             + Ajouter une action
           </button>
@@ -431,6 +447,15 @@ function Rules() {
   // Distinct from `labels.length`: tant que l'appel n'a pas abouti, on ne peut
   // pas affirmer qu'un libellé saisi n'existe pas.
   const [labelsKnown, setLabelsKnown] = useState(false);
+  // Rules run through the Gmail API only: over IMAP the preview, "Appliquer
+  // maintenant" and the run at each sync answer 501, so they are hidden and the
+  // page says so once. Writing rules still works, so the page then describes
+  // what a rule says, never that it sorts by itself, and offers no label (a
+  // message sits in one folder). The quota is mentioned only where there is
+  // one. `rulesRun` is false too while the mailbox is not known.
+  const { isImap, fullFeatures } = useMailbox();
+  const rulesRun = fullFeatures;
+  const { selfHosted } = useInstance();
 
   const load = () => {
     ruleService
@@ -440,7 +465,7 @@ function Rules() {
         setError(null);
       })
       .catch((err) =>
-        setError(err.response?.data?.trim?.() || 'Vos règles n’ont pas pu être récupérées.')
+        setError(err.response?.data?.trim?.() || "Vos règles n'ont pas pu être récupérées.")
       );
   };
 
@@ -450,8 +475,14 @@ function Rules() {
       .getSettings()
       .then((r) => setAutoApply(!!r.data.autoApplyRules))
       .catch(() => {});
-    // Les libellés sont chargés une fois pour toute la page. Un échec est
-    // silencieux : l'éditeur retombe alors sur la saisie libre.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Les libellés sont chargés une fois pour toute la page, et seulement là où
+  // la boîte en a (pas en IMAP). Un échec est silencieux : l'éditeur retombe
+  // alors sur la saisie libre.
+  useEffect(() => {
+    if (!fullFeatures) return;
     labelService
       .list()
       .then((r) => {
@@ -465,8 +496,7 @@ function Rules() {
         setLabelsKnown(true);
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fullFeatures]);
 
   const save = async (rule) => {
     setSaving(true);
@@ -480,7 +510,7 @@ function Rules() {
       setEditing(null);
       load();
     } catch (err) {
-      toast.error(apiError(err, 'Échec de l’enregistrement.'));
+      toast.error(apiError(err, "Échec de l'enregistrement."));
     } finally {
       setSaving(false);
     }
@@ -499,7 +529,7 @@ function Rules() {
     if (
       !(await confirm({
         title: 'Supprimer cette règle ?',
-        message: `« ${rule.name} » sera définitivement supprimée. Les emails qu’elle a déjà triés ne changent pas.`,
+        message: `« ${rule.name} » sera définitivement supprimée. Les emails qu'elle a déjà triés ne changent pas.`,
         confirmLabel: 'Supprimer la règle',
         danger: true,
       }))
@@ -606,7 +636,7 @@ function Rules() {
       setPreview(null);
       load();
     } catch {
-      toast.error('Impossible d’appliquer les règles.');
+      toast.error("Impossible d'appliquer les règles.");
     } finally {
       setApplying(false);
     }
@@ -629,7 +659,11 @@ function Rules() {
     setAutoApply(next); // optimistic
     try {
       await accountService.updateSettings({ autoApplyRules: next });
-      toast.success(next ? 'Autopilote activé : vos règles s’appliqueront à chaque synchro.' : 'Autopilote désactivé.');
+      toast.success(
+        next
+          ? "Application automatique activée : vos règles s'appliqueront à chaque synchronisation."
+          : 'Application automatique désactivée.'
+      );
     } catch {
       setAutoApply(!next); // revert
       toast.error('Mise à jour impossible.');
@@ -657,20 +691,32 @@ function Rules() {
         <PageHead
           floor="/rules"
           title="Règles de tri"
-          sub="Les évidences n'ont pas besoin d'IA. Vos règles passent avant le modèle, et ne touchent pas à votre quota."
+          sub={
+            !rulesRun
+              ? "Les évidences n'ont pas besoin d'IA. Écrivez-les une fois en règles."
+              : selfHosted
+              ? "Les évidences n'ont pas besoin d'IA. Vos règles trient sans le modèle."
+              : "Les évidences n'ont pas besoin d'IA. Vos règles trient sans le modèle, et ne touchent pas à votre quota."
+          }
         >
-          {hasRules && ruleTools}
+          {hasRules && rulesRun && ruleTools}
         </PageHead>
       ) : (
         <div className="mb-6 flex items-end justify-between gap-4">
           <div>
-            <span className="chip mb-2 bg-brand-50 text-brand-700"><Bolt size={14} /> Tri automatique, sans IA</span>
+            <span className="chip mb-2 bg-brand-50 text-brand-700">
+              <Bolt size={14} /> {rulesRun ? 'Tri automatique, sans IA' : 'Vos évidences, sans IA'}
+            </span>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Règles de tri</h1>
             <p className="mt-1 max-w-lg text-sm text-ink-500">
-              Encodez vos cas évidents une fois : les règles s’appliquent instantanément, gratuitement et sans consommer votre quota IA.
+              {!rulesRun
+                ? 'Encodez vos cas évidents une fois : chaque règle dit quoi faire des emails qui lui correspondent.'
+                : selfHosted
+                ? "Encodez vos cas évidents une fois : les règles s'appliquent instantanément, sans IA."
+                : "Encodez vos cas évidents une fois : les règles s'appliquent instantanément, gratuitement et sans consommer votre quota IA."}
             </p>
           </div>
-          {hasRules && (
+          {hasRules && rulesRun && (
             <div className="flex shrink-0 items-center gap-2">
               {ruleTools}
             </div>
@@ -678,7 +724,19 @@ function Rules() {
         </div>
       )}
 
-      {hasRules && (
+      {isImap && (
+        <div className="card mb-5 flex items-start gap-3 p-4">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-muted">
+            <Bolt size={18} />
+          </span>
+          <p className="text-sm text-ink-600">
+            Les règles ne s'appliquent pas encore sur les boîtes IMAP : vous pouvez les écrire ici, mais ni
+            l'aperçu ni l'application, à la demande ou à chaque synchronisation, ne sont disponibles.
+          </p>
+        </div>
+      )}
+
+      {hasRules && rulesRun && (
         <div className="card mb-5 flex items-center gap-3 p-4">
           <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', autoApply ? 'bg-brand-50 text-brand-600' : 'bg-ink-100 text-muted')}>
             <Bolt size={18} />
@@ -688,8 +746,12 @@ function Rules() {
               id="auto-apply-rules"
               checked={autoApply}
               onChange={toggleAutoApply}
-              label="Autopilote au sync"
-              description="Appliquer automatiquement vos règles à chaque synchronisation de la boîte, sans IA et sans quota."
+              label="Appliquer à chaque synchronisation"
+              description={
+                selfHosted
+                  ? 'Vos règles trient automatiquement les nouveaux emails à chaque synchronisation de la boîte, sans IA.'
+                  : 'Vos règles trient automatiquement les nouveaux emails à chaque synchronisation de la boîte, sans IA et sans quota.'
+              }
             />
           </div>
         </div>
@@ -701,7 +763,7 @@ function Rules() {
             <h3 className="flex items-center gap-2 font-bold text-ink-900">
               <Search size={16} className="text-brand-500" /> Aperçu : {preview.willApply} email{preview.willApply > 1 ? 's' : ''} sur {preview.scanned}
             </h3>
-            <button onClick={() => setPreview(null)} className="btn-ghost btn-sm btn-icon text-muted" aria-label="Fermer l’aperçu">
+            <button onClick={() => setPreview(null)} className="btn-ghost btn-sm btn-icon text-muted" aria-label="Fermer l'aperçu">
               <X size={16} />
             </button>
           </div>
@@ -729,7 +791,7 @@ function Rules() {
                   </li>
                 ))}
               </ul>
-              <p className="mt-3 text-xs text-muted">Aperçu en lecture seule : rien n’a été modifié dans Gmail.</p>
+              <p className="mt-3 text-xs text-muted">Aperçu en lecture seule : rien n'a été modifié dans votre boîte.</p>
             </>
           )}
         </div>
@@ -742,6 +804,7 @@ function Rules() {
             saving={saving}
             labels={labels}
             labelsKnown={labelsKnown}
+            labelsOk={rulesRun}
             onCancel={() => setEditing(null)}
             onSave={save}
           />
@@ -760,9 +823,19 @@ function Rules() {
             Icon={Bolt}
             scene={{ prop: 'signpost', color: '#2F6F73' }}
             hotelTitle="Aucune règle pour l'instant."
-            hotelDescription="Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota."
-            title="Aucune règle pour l’instant"
-            description="Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents."
+            hotelDescription={
+              !rulesRun
+                ? "Une règle dit quoi faire de ce qui revient chaque semaine (l'archiver, le supprimer, le marquer comme lu). Sans IA."
+                : selfHosted
+                ? 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA.'
+                : 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota.'
+            }
+            title="Aucune règle pour l'instant"
+            description={
+              rulesRun
+                ? 'Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents.'
+                : 'Créez votre première règle pour dire quoi faire des emails récurrents : les archiver, les supprimer ou les marquer comme lus.'
+            }
             action={<button onClick={() => setEditing('new')} className="btn-primary">+ Créer une règle</button>}
           />
         </div>
@@ -772,7 +845,7 @@ function Rules() {
               que les règles se cumulent sur un même email. */}
           {rules.length > 1 && (
             <p className="text-xs text-muted">
-              Un email n’est traité que par la première règle qui correspond (priorité la plus petite d’abord).
+              Un email n'est traité que par la première règle qui correspond (priorité la plus petite d'abord).
             </p>
           )}
           {rules.map((rule) =>
@@ -783,6 +856,7 @@ function Rules() {
                 saving={saving}
                 labels={labels}
                 labelsKnown={labelsKnown}
+                labelsOk={rulesRun}
                 onCancel={() => setEditing(null)}
                 onSave={save}
               />

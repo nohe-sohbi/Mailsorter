@@ -5,25 +5,36 @@ Base URL: `http://localhost:8080`
 ## Authentication
 
 Authenticated endpoints require a **session token** in the `Authorization` header.
-The token is issued by `POST /api/auth/register` or `POST /api/auth/login` for
-Mailsorter accounts, by `GET /api/auth/callback` after a Google login, or by
-`POST /api/auth/mailbox`. It is an HMAC-signed, expiring value that identifies the user.
+The token is issued by `POST /api/auth/register` or `POST /api/auth/login`, by
+`GET /api/auth/callback` after a Google consent, or by `POST /api/auth/mailbox`.
+It is an HMAC-signed value that identifies the user and expires after 30 days.
 
 ```
 Authorization: Bearer <session-token>
 ```
+
+The way into the app is an account: the SPA creates one with
+`POST /api/auth/register` (or through Google when the instance has Google
+credentials), signs in with `POST /api/auth/login`, then connects a mailbox
+(see "Mailbox Endpoints"). `POST /api/auth/mailbox` is an alternative the API
+keeps and the SPA does not call.
 
 The server derives the user identity from this token; clients must **not** send a
 raw `X-User-Email` header (any client-supplied value is stripped server-side).
 Requests without a valid token receive `401 Unauthorized`.
 
 Public endpoints (no token needed): `/health`, `/metrics`, `/api/auth/*`,
-`/api/config/status`, `/api/waitlist`, and `/api/billing/webhook` (which
-authenticates via its Stripe signature).
+`/api/config/status`, `/api/providers`, `/api/waitlist`, and
+`/api/billing/webhook` (which authenticates via its Stripe signature). On a
+public route a valid token still identifies the caller; an invalid one is not
+an error.
 
 ## Errors
 
-Every failure, from any layer (middleware, routing, handler), is a JSON envelope:
+Every failure, from any layer (middleware, routing, handler), is a JSON envelope.
+That includes the routing layer itself: an unknown path answers
+`404 { "error": "No such route" }` and a known path with the wrong method
+`405 { "error": "Method not allowed on this route" }`.
 
 ```json
 { "error": "Choisissez une échéance valide", "status": 400 }
@@ -108,10 +119,22 @@ Create a new independent Mailsorter account with email and password.
 }
 ```
 
+The address is trimmed and lowercased; it is the account's identity
+(`userId`) everywhere else. The password is stored as a bcrypt hash. No mailbox
+is connected yet: until one is, mailbox routes answer `428`.
+
+**Throttling.** Register, login and `POST /api/auth/mailbox` share one limiter,
+far below the global one: roughly **one attempt every 3 seconds, burst 5**,
+keyed on the visitor's address and on the email address (each route counts
+the email under its own key). Over it: `429` with `Retry-After: 3`.
+
 **Error Responses:**
-- `400 Bad Request`: Invalid email format or password shorter than 8 characters
+- `400 Bad Request`: Invalid email format, or a password shorter than 8
+  characters or longer than 72 bytes (bcrypt's limit; an accented letter
+  counts twice)
 - `409 Conflict`: An account with this email already exists
-- `429 Too Many Requests`: Rate limit exceeded
+- `429 Too Many Requests`: throttled, see above
+- `500 Internal Server Error`: the datastore could not be read or written
 
 ---
 
@@ -138,19 +161,30 @@ Log in to an existing Mailsorter account with email and password.
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Missing credentials or account linked with Google SSO
-- `401 Unauthorized`: Invalid credentials
-- `429 Too Many Requests`: Rate limit exceeded
+- `400 Bad Request`: Missing credentials, a password longer than 72 bytes, or
+  an account that has no password (created through Google or through
+  `POST /api/auth/mailbox`; the message points to the Google button in both
+  cases)
+- `401 Unauthorized`: Unknown address or wrong password (same answer for both)
+- `429 Too Many Requests`: throttled, shared with register (see above)
+- `500 Internal Server Error`: the datastore could not be read
 
 ---
-
 
 ### Get Authorization URL
 
 #### GET /api/auth/url
 
-Get the Google OAuth authorization URL. The URL embeds a signed, expiring
-`state` parameter used for CSRF protection on the callback.
+Get the Google OAuth authorization URL. The URL embeds a signed `state`
+parameter, valid 10 minutes, used for CSRF protection on the callback. When the
+caller already has a session, the state also carries their address, so the
+callback attaches the Google mailbox to that account rather than to the
+Google address.
+
+**Query Parameters:**
+- `reconnect` (optional): `1` forces Google's consent screen, which is what
+  hands back a refresh token. The settings' "Reconnecter Gmail" uses it to
+  repair a dead grant; a first login does not need it.
 
 **Response:**
 ```json
@@ -164,7 +198,14 @@ Get the Google OAuth authorization URL. The URL embeds a signed, expiring
 #### GET /api/auth/callback
 
 Validate the OAuth `state`, exchange the authorization code, and return a signed
-**session token** (used as `Authorization: Bearer …` on subsequent requests).
+**session token** (used as `Authorization: Bearer ...` on subsequent requests).
+
+The Google tokens are sealed (AES-256-GCM) and stored on the account: the one
+named in the state when the caller was signed in, otherwise the account of
+the Google address, created if needed. A refresh token is never overwritten by
+the empty one Google returns on later consents. The account's mailbox
+connection is set to the Gmail API (`transport: "gmail"`, see
+`GET /api/mailbox`).
 
 **Query Parameters:**
 - `code` (required): Authorization code from Google
@@ -183,29 +224,27 @@ Validate the OAuth `state`, exchange the authorization code, and return a signed
 > token, which never leaves the server.
 
 **Error Responses:**
-- `400 Bad Request`: Missing code parameter
-- `500 Internal Server Error`: Failed to exchange code or get user profile
+- `400 Bad Request`: Missing code parameter, or a missing, forged or expired state
+- `500 Internal Server Error`: Failed to exchange code, get the Google profile,
+  seal the tokens or save the account
 
 ---
 
+### Sign in with a mailbox
+
 #### POST /api/auth/mailbox
 
-Sign in with a mailbox. **This is also how an account is created.**
-
-There is no separate sign-up route because there is nothing to sign up for:
-Mailsorter never invents a password, so it has none to set, confirm or reset.
-The mail server is the authority. If it accepts the address and the app
-password, the caller is who they say they are, and that is a stronger proof of
-identity than a confirmation link. The first request and every one after it are
-the same request.
-
-Without this route the hosted edition has no first door at all: it can never
-reach the Gmail API (see the 100-authorization cap in `internal/provider`), so
-the OAuth callback above is unusable there.
+Sign in with a mailbox: if the provider accepts the address and its
+credential, the caller is who they say they are. The first successful request
+creates the account (the address is its identity), every later one signs into
+it, and each one stores the credential it was given. An alternative way in kept
+in the API: the SPA uses register and login instead (see "Authentication").
 
 Public. The body carries an address and a password and **nothing else**: the
 provider, host, port and TLS mode are resolved from `internal/provider`, so a
-caller cannot name the host the server connects to.
+caller cannot name the host the server connects to. The password is whatever
+the provider's IMAP route asks for: an app password for most, the mailbox
+password itself for the routes the catalog marks `"auth": "password"`.
 
 **Request Body:**
 ```json
@@ -223,24 +262,26 @@ sign-in with a rotated app password stores the new one, which is why losing an
 app password is a trip to the provider rather than a support ticket.
 
 **Throttling.** This is the only public route that makes the server try a
-password against somebody else's mail provider, so it carries a limit far below
-the global one: roughly **one attempt every 3 seconds, burst 5**, keyed on the
-caller **and** on the address, so neither rotating addresses from one machine
-nor hammering one address from many gets a free pass. Over it: `429` with
-`Retry-After`.
+password against somebody else's mail provider. It uses the sign-in limiter it
+shares with register and login: roughly **one attempt every 3 seconds, burst
+5**, keyed on the visitor's address **and** on the email address, so neither
+rotating addresses from one machine nor hammering one address from many gets a
+free pass. Over it: `429` with `Retry-After: 3`.
 
 **Error Responses:**
-- `400 Bad Request`: address or password missing
+- `400 Bad Request`: address or password missing, or a password over 1024 bytes
 - `401 Unauthorized`: the provider refused the credentials. An unknown address
   and a wrong password answer identically: the provider is what refused, and it
   does not say which. Distinguishing them would make this route an address
   oracle
-- `409 Conflict`: this address already signs in through Google. A stored mailbox
-  row takes precedence over a Google token (see "Transports and what works on
-  each"), so accepting here would move the account to IMAP for whoever holds the
-  app password. Switching is still possible from inside the app, where control
-  of the Google account was already proved
-- `422 Unprocessable Entity`: this address has no IMAP route in this edition
+- `409 Conflict`: this address already holds Google credentials. A stored
+  mailbox row takes precedence over a Google token (see "Transports and what
+  works on each"), so accepting here would move the account to IMAP for whoever
+  holds the app password. Switching is still possible from inside the app, with
+  `POST /api/mailbox/connect`, where control of the account was already proved.
+  The check fails closed: a datastore error is a `500`, never "no Google"
+- `422 Unprocessable Entity`: this address has no IMAP route with a known
+  server in this edition (see `POST /api/mailbox/connect`)
 - `429 Too Many Requests`: throttled, see above
 - `502 Bad Gateway`: the provider could not be reached
 
@@ -252,13 +293,14 @@ nor hammering one address from many gets a free pass. Over it: `429` with
 
 #### GET /api/emails
 
-Get a list of emails.
+Get a page of the mailbox, through the caller's transport.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
 
 **Query Parameters:**
-- `q` (optional): Gmail search query (default: "in:inbox")
+- `q` (optional): Gmail search query (default: "in:inbox"). Over IMAP, only
+  part of the syntax is answered, see below
 - `maxResults` (optional): page size, default 50, capped at 500
 - `pageToken` (optional): opaque, echoed back from a previous answer
 
@@ -291,12 +333,12 @@ reader fetches the one it opens (`GET /api/emails/{id}`).
 
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
-set of labels; `folder` carries that folder instead. See "Transports and what
-works on each".
+set of labels; `folder` carries that folder instead, and `messageId` is the
+message's UID in it. See "Transports and what works on each".
 
 **Error Responses:**
-- `401 Unauthorized`: Missing user email
-- `404 Not Found`: User not found
+- `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: Failed to fetch emails
 - `501 Not Implemented`: a query term a stored mailbox cannot answer (IMAP only)
 
@@ -304,7 +346,16 @@ works on each".
 
 #### POST /api/emails/sync
 
-Synchronize emails from Gmail to database.
+Mirror the 100 most recent messages of the inbox into the database, through
+the caller's transport. Over IMAP it also drops from the mirror the messages
+that have left the inbox since the last sync. The background sync
+(`autoSyncEnabled`) runs the same code.
+
+Over the Gmail API, when `autoApplyRules` is on, the deterministic rules run on
+each synced message (protected senders shielded, each action journaled with
+source `rule`), and `rulesApplied` counts the messages a rule acted on. Over
+IMAP rules do not run and `rulesApplied` is `0`; the listing reads the messages
+with PEEK, so syncing never marks them read.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -313,21 +364,24 @@ Synchronize emails from Gmail to database.
 ```json
 {
   "synced": 42,
-  "total": 50
+  "total": 50,
+  "rulesApplied": 3
 }
 ```
 
 **Error Responses:**
-- `401 Unauthorized`: Missing user email
-- `404 Not Found`: User not found
-- `500 Internal Server Error`: Failed to sync emails
+- `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `500 Internal Server Error`: Failed to sync emails. This includes an account
+  with no mailbox connected, which this route does not map to `428`
 
 ### Direct action on a message
 
 #### POST /api/emails/action
 
-Apply a single, direct action to one message via Gmail: no AI, no rule. Used by
-the inbox for one-off triage.
+Apply a single, direct action to one message, through the caller's transport:
+no AI, no rule. Used by the inbox for one-off triage. Works the same over the
+Gmail API and over IMAP, where archive and delete are moves to the server's
+archive and trash folders and read and star are flags.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -349,8 +403,9 @@ and the shortcuts can express the same things one message at a time.
 
 **Error Responses:**
 - `400 Bad Request`: Missing `messageId` or unsupported `action`
-- `401 Unauthorized`: Missing user email
-- `500 Internal Server Error`: Gmail call failed
+- `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `428 Precondition Required`: no mailbox is connected to this account yet
+- `500 Internal Server Error`: the mailbox refused the action
 
 ---
 
@@ -359,14 +414,14 @@ and the shortcuts can express the same things one message at a time.
 #### GET /api/emails/{id}
 
 Return a single message, decoded. `GET /api/emails` deliberately omits bodies
-(it ships up to 100 messages per page), so the reader fetches the one it is
-about to display.
+(a page carries up to 500 messages), so the reader fetches the one it is about
+to display.
 
 **Query parameters:**
 - `markRead` (optional): `1` also marks the message read in the mailbox (the
-  `UNREAD` label goes on Gmail, the `\Seen` flag is set over IMAP) and updates
-  the local cache. Opening an email is user intent rather than automation, so
-  this is **not** written to the action ledger.
+  `UNREAD` label comes off on Gmail, the `\Seen` flag is set over IMAP) and
+  updates the local cache. Opening an email is user intent rather than
+  automation, so this is **not** written to the action ledger.
 
 **Response:** `200 OK`
 ```json
@@ -374,7 +429,7 @@ about to display.
   "messageId": "18c...",
   "from": "Acme <news@acme.com>",
   "subject": "Votre facture",
-  "snippet": "Bonjour…",
+  "snippet": "Bonjour...",
   "body": "version texte",
   "bodyHtml": "<p>version html</p>",
   "attachments": [
@@ -401,7 +456,8 @@ clicked is worse than no chip.
 
 **Error Responses:**
 - `400 Bad Request`: Missing id
-- `401 Unauthorized`: Missing or expired session
+- `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `428 Precondition Required`: no mailbox is connected to this account yet
 - `502 Bad Gateway`: the mailbox could not return the message
 
 ---
@@ -409,6 +465,8 @@ clicked is worse than no chip.
 ### Download an attachment
 
 #### GET /api/emails/{id}/attachments/{attachmentId}
+
+Gmail API only: `501` over IMAP.
 
 Stream one attachment of one message. Gmail never ships attachment data with the
 message, so this resolves the message first (to learn the part's real filename
@@ -440,6 +498,8 @@ SPA downloads through the API client and hands the browser an object URL.
 ### Act on a whole selection
 
 #### POST /api/emails/batch-action
+
+Gmail API only: `501` over IMAP.
 
 Apply one triage action to a list of messages in a single request. Protected
 senders are shielded from destructive actions exactly as in the rules and
@@ -477,6 +537,8 @@ exist. At most 200 ids per request.
 
 #### POST /api/emails/batch-undo
 
+Gmail API only: `501` over IMAP.
+
 Reverse a batch the client just applied. Separate from the per-entry history undo
 because the client already holds the exact ids, which is what makes undoing a
 100-email action one request instead of a hundred.
@@ -510,6 +572,9 @@ stores no label name, so it would have nothing to remove.
 
 Pull a message out of the inbox until a chosen time, then have it return on its
 own (marked unread). Wake time is resolved from a friendly preset server-side.
+The snoozed message is archived and labelled `Mailsorter/Reporté`, so snoozing
+and waking are Gmail API only: `501` over IMAP. Listing snoozes reads the
+datastore and works on both.
 
 ### Snooze an email
 
@@ -571,7 +636,7 @@ possibly protected rather than assumed harmless.
 
 #### GET /api/snoozes?status=scheduled
 
-Returns `{ "snoozes": [ … ] }`, soonest wake first.
+Returns `{ "snoozes": [ ... ] }`, soonest wake first (`status` defaults to `scheduled`).
 
 ### Wake a snooze now
 
@@ -621,8 +686,9 @@ silently server-side (one-click) or by handing back the link to open.
 
 #### GET /api/subscriptions
 
-Aggregates the senders in the user's mailbox that advertise an unsubscribe link,
-ranked by volume.
+Aggregates the senders in the stored mailbox that advertise an unsubscribe link,
+ranked by volume (at most 100). It reads the datastore only, so it answers on
+both transports.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -645,6 +711,8 @@ ranked by volume.
 ### Unsubscribe
 
 #### POST /api/unsubscribe
+
+Gmail API only: `501` over IMAP.
 
 Unsubscribes from the sender of a given message. When the sender supports RFC
 8058 one-click, the POST is performed server-side (`done: true`); otherwise the
@@ -687,7 +755,7 @@ is where a request driven by a stranger belongs.
 ```
 
 **Error Responses:**
-- `401 Unauthorized`: Missing user email
+- `401 Unauthorized`: Missing or expired session
 - `404 Not Found`: Email not found
 - `422 Unprocessable Entity`: Sender exposes no unsubscribe link
 
@@ -695,23 +763,37 @@ is where a request driven by a stranger belongs.
 
 ## Transports and what works on each
 
-A user's mailbox is reached either through the Gmail API (the Google OAuth path,
-and the only one before `mail_accounts` existed) or over IMAP (a mailbox
-connected through the endpoints below). The transport is resolved per request
-from the stored connection, never guessed: a datastore failure fails the request
-rather than resolving to Gmail.
+A user's mailbox is reached either through the Gmail API (the Google OAuth path)
+or over IMAP (a mailbox connected through the endpoints below). The transport is
+resolved per request, never guessed:
 
-Most of the API was written when every user was a Gmail user and has not been
+- a `mail_accounts` row decides: `transport: "imap"` is IMAP, `"gmail"` is the
+  Gmail API;
+- without a row, Google tokens on the account mean the Gmail API;
+- with neither, the route answers **`428 Precondition Required`** ("no mailbox
+  connected"), except `POST /api/emails/sync`, which answers `500`;
+- a datastore failure fails the request rather than resolving to Gmail.
+
+Part of the API was written when every user was a Gmail user and has not been
 ported. Those endpoints answer **`501 Not Implemented`** for a caller whose
-mailbox is on IMAP, rather than acting on the wrong message. Ported so far:
+mailbox is on IMAP, rather than acting on the wrong message.
 
 | Works on IMAP | Answers 501 on IMAP |
 |---|---|
-| `POST /api/emails/sync` (no rules applied) | Rules, AI suggestions, snooze, unsubscribe, attachments, labels |
-| `POST /api/emails/action` (archive, trash, read, unread, star, unstar) | `label` / `unlabel`, which plain IMAP cannot express at all |
-| `GET /api/emails` (served from the stored mailbox, see below) | the `has:`, `larger:`, `smaller:`, `label:`, `filename:`, `is:starred` and non-inbox `in:` query terms |
+| `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
+| `GET /api/emails` (served from the stored mailbox, see below) | the `has:`, `larger:`, `smaller:`, `label:`, `filename:`, `category:` terms, `is:` other than `read` / `unread`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` |
 | `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
-| `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters |
+| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar) | `POST /api/emails/batch-action`, `POST /api/emails/batch-undo` |
+| `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
+| `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
+| `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep) | a `label` suggestion: `apply` answers 501, `apply-batch` leaves it pending |
+| Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
+| `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
+| | `POST /api/activity/undo`, `GET /api/labels`, `POST /api/smart-labels` |
+
+Two more are Gmail-only without answering 501: `POST /api/account/digest/test`
+answers `502` (see there), and the daily digest loop logs the failure and sends
+nothing. A rule can be created on an IMAP account, but nothing runs it there.
 
 ### The listing is served from the stored mailbox on IMAP
 
@@ -724,8 +806,14 @@ mirror that `POST /api/emails/sync` writes.
 Two consequences worth knowing:
 
 - A message that arrived since the last sync is not in the answer. The SPA syncs
-  before it lists, and a background loop syncs every 30 min, so the window is
-  the one the inbox already had.
+  before it lists, and the background sync, for an account that turned it on,
+  runs at most every 30 minutes, so the window is the one the inbox already had.
+- The mirror holds what the syncs stored: the 100 most recent inbox messages at
+  each sync, plus older ones earlier syncs kept. A message Mailsorter archives
+  or deletes leaves the listing at once. Each sync also drops the messages that
+  are no longer in the inbox, whoever moved them, along with the pending AI
+  proposals about them; when the inbox holds more than 100 messages, only the
+  range the listing covered can be judged.
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 A query term the mirror cannot answer is **refused with 501, naming the term**,
@@ -736,15 +824,18 @@ screen would say the filter did nothing.
 ## Mailbox Endpoints
 
 How a user connects a mailbox over IMAP, which is the hosted edition's way in:
-a shared OAuth client can never reach the Gmail API at scale (see the
-100-authorization cap in `internal/provider`), so the hosted service asks for an
-address and an app password instead.
+its catalog carries no Gmail API route (a shared OAuth client is capped by
+Google at 100 authorizations, see `internal/provider`), so the hosted service
+asks for an address and an app password instead. A self-hosted instance offers
+the same IMAP routes, Gmail's included, next to the Gmail API.
 
-The stored app password is sealed with AES-256-GCM, exactly like a Google OAuth
+The stored password is sealed with AES-256-GCM, exactly like a Google OAuth
 token, and it is never returned by any endpoint. It is also stripped from the
 RGPD export: `account.SecretFields` names it, and the export redacts it on the
 way out, because an export leaves the server and ends up in places the
 encryption key's threat model never covered.
+
+One connection per account: connecting again replaces the stored one.
 
 ### Read the connected mailbox
 
@@ -758,6 +849,7 @@ a normal state rather than an error.
 ```json
 {
   "mailbox": {
+    "id": "665...",
     "provider": "orange",
     "transport": "imap",
     "username": "someone@orange.fr",
@@ -769,6 +861,13 @@ a normal state rather than an error.
   }
 }
 ```
+
+A mailbox reached through Google answers with `provider: "google"` and
+`transport: "gmail"`. Its `host`, `port` and `tls` (`imap.gmail.com`, `993`,
+`"tls"`) are fixed values written by the OAuth callback: the Gmail API does not
+use them. An account that holds Google tokens without a stored row (one that
+signed in before the row existed) gets the same shape, built on the fly,
+without `id` or dates.
 
 ### Connect a mailbox
 
@@ -790,33 +889,60 @@ make the server open an authenticated connection wherever they liked.
 }
 ```
 
+The provider is detected from the address's domain, and the route used is the
+first one of that provider that the running edition offers, speaks IMAP and
+names its server in the catalog (`provider.PickIMAP`). A Gmail address
+therefore connects over IMAP in both editions, with no Google Cloud project.
+
+What connects today: Gmail, Orange, La Poste, iCloud Mail, Fastmail and
+Infomaniak in both editions, and Proton Mail through Bridge (`127.0.0.1:1143`)
+in `self-hosted`, which needs the backend running on the Bridge machine rather
+than in a container. Everything else answers `422`: the providers whose server
+must be found by autodiscovery, which is not implemented yet (Free, SFR, Yahoo
+and AOL, Zoho, OVH, and any domain the catalog does not know, Google Workspace
+included), Outlook.com (Microsoft Graph only, not implemented), and Proton in
+`hosted`.
+
+Unlike `POST /api/auth/mailbox`, this route has no throttle of its own (only the
+global limiter) and no Google check: the caller is already signed in, so
+connecting an IMAP mailbox to an account that holds Google tokens is how that
+account switches to IMAP.
+
 **Response:** `200 OK`, the stored mailbox, in the shape `GET /api/mailbox`
 returns under `mailbox`.
 
 **Error Responses:**
-- `400 Bad Request`: missing address or password
+- `400 Bad Request`: missing address or password, or a password over 1024 bytes
 - `401 Unauthorized`: no session, or the provider rejected the credentials
-- `422 Unprocessable Entity`: this provider is not reachable over IMAP in the
-  running edition (Gmail in `self-hosted`, where the API route is used instead)
+- `422 Unprocessable Entity`: this address has no IMAP route with a known
+  server in the running edition (see above)
+- `500 Internal Server Error`: the connection worked but could not be stored
 - `502 Bad Gateway`: the mail server could not be reached
 
 ### Disconnect
 
 #### DELETE /api/mailbox
 
-Forgets the connection, app password included. This is also how a user revokes
+Forgets the connection: deletes the stored mailbox row (app password included)
+and removes the Google tokens from the account. This is also how a user revokes
 Mailsorter's access without going through their provider. The mailbox itself is
-never touched.
+never touched, and the account remains: its mailbox routes answer `428` until a
+mailbox is connected again.
 
-**Response:** `200 OK`, `{ "disconnected": true }`
+**Response:** `200 OK`, `{ "disconnected": true }`, whether or not anything was
+connected.
+
+**Error Responses:**
+- `500 Internal Server Error`: the stored row could not be deleted
 
 ---
 
 ## Stats Endpoints
 
 The recap is computed from the append-only action ledger (`action_log`), so it
-counts every Gmail mutation (direct actions, rules, bulk sweeps, snoozes,
-unsubscribes) over the trailing 7 days, not just applied AI suggestions.
+counts every journaled mutation (direct actions, applied suggestions, rules,
+bulk sweeps, snoozes, unsubscribes) over the trailing 7 days, whatever the
+transport.
 
 ### Get mailbox stats
 
@@ -849,7 +975,7 @@ Returns the 7-day series plus breakdowns by action and by source:
 ```json
 {
   "total": 42,
-  "days": [{ "date": "2026-06-15", "count": 3 }, "…7 entries, oldest first…"],
+  "days": [{ "date": "2026-06-15", "count": 3 }, "... 7 entries, oldest first ..."],
   "byAction": { "archive": 18, "delete": 9, "label": 12, "keep": 3 },
   "bySource": { "direct": 20, "rule": 12, "ai": 10 }
 }
@@ -861,8 +987,10 @@ Returns the 7-day series plus breakdowns by action and by source:
 
 Renders the same 7-day recap into a ready-to-send email digest (subject +
 plain-text body + HTML body). This is the content payload also used by the daily
-digest scheduler (see Account Settings). Delivery uses the `gmail.send` scope; a
-background loop emails opted-in users once a day at their chosen UTC hour.
+digest scheduler (see Account Settings). The preview reads the ledger only and
+answers on both transports; delivery goes through the user's own Gmail API grant
+(`gmail.send` scope), so only a mailbox reached through the Gmail API receives
+it. A background loop emails opted-in users once a day at their chosen UTC hour.
 
 The HTML body is drawn in the instance's look (`UI_THEME`): the plain recap
 under `classic`, the Grand Hotel one under `hotel` (email-safe tables and
@@ -872,8 +1000,8 @@ both. This route returns exactly what the scheduler sends, theme included.
 ```json
 {
   "subject": "Mailsorter : 3 emails triés aujourd'hui",
-  "text": "Votre récap Mailsorter du 21/06/2026\n\nAujourd'hui : 3 emails triés.\n…",
-  "html": "<div style=\"…\"><h2>3 emails triés aujourd'hui</h2>…</div>"
+  "text": "Votre récap Mailsorter du 21/06/2026\n\nAujourd'hui : 3 emails triés.\n...",
+  "html": "<div style=\"...\"><h2>3 emails triés aujourd'hui</h2>...</div>"
 }
 ```
 
@@ -896,9 +1024,11 @@ flagged `undoable` (it has a clean inverse and has not been undone yet).
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
   `snooze`, `unsubscribe`, `undo`)
 - `limit`: defaults to `50`, capped at `200`
-- `before`: RFC 3339 cursor, return entries strictly older than this. Pass the
-  previous page's `nextBefore`. Cursoring on `createdAt` keeps paging stable
-  while new actions land at the top.
+- `before`: an opaque cursor, return entries strictly older than the one it
+  names. Pass the previous page's `nextBefore` back as is. It encodes the
+  entry's `createdAt` and its id, so paging stays stable while new actions land
+  at the top and does not skip entries written in the same millisecond. A
+  cursor that does not parse is ignored (first page)
 - `q`: free-text search over the acted-on message's subject and sender
 
 Entries carry `subject`/`from` so the history can say *which* email it is talking
@@ -913,8 +1043,8 @@ still render, but cannot be searched.
 {
   "entries": [
     {
-      "id": "665…",
-      "messageId": "18f…",
+      "id": "665...",
+      "messageId": "18f...",
       "action": "archive",
       "source": "rule",
       "subject": "Votre relevé de compte",
@@ -924,7 +1054,7 @@ still render, but cannot be searched.
       "undoable": true
     }
   ],
-  "nextBefore": "2026-06-22T09:14:00Z"
+  "nextBefore": "2026-06-22T09:14:00.123Z|665..."
 }
 ```
 
@@ -932,25 +1062,74 @@ still render, but cannot be searched.
 
 #### POST /api/activity/undo
 
+Gmail API only: `501` over IMAP.
+
 Reverses one recorded action by replaying its inverse Gmail mutation
-(`archive`→`unarchive`, `delete`/`trash`→`untrash`, `read`→`unread`). The entry
-is marked `undone` and the reversal is itself appended to the ledger (source
-`undo`). Only stateful triage actions are reversible; others return `400`.
+(`archive` -> `unarchive`, `delete` / `trash` -> `untrash`, `read` -> `unread`).
+The entry is marked `undone` and the reversal is itself appended to the ledger
+(source `undo`). Only these actions are reversible; others return `400`.
 
-**Request Body:** `{ "id": "665…" }`
+**Request Body:** `{ "id": "665..." }`
 
-**Responses:** `200 { "status": "undone", "action": "unarchive" }` ·
-`400` not reversible · `404` not found · `409` already undone.
+**Responses:** `200 { "status": "undone", "action": "unarchive" }`; `400` not
+reversible or an invalid id; `404` not found; `409` already undone; `501` the
+mailbox is on IMAP; `502` Gmail refused the reversal.
 
 ---
 
-## Account Settings
+## Account Endpoints
+
+### Usage this month
+
+#### GET /api/usage
+
+How many emails the AI analyzed for the caller this month, against their cap.
+Only model calls count: cache hits and sender auto-pilot do not.
+
+**Response:** `200 OK`
+```json
+{ "used": 42, "limit": 200, "period": "2026-11", "plan": "free", "billingOn": false }
+```
+
+`limit` is `-1` for no cap: any account of a self-hosted instance
+(`EDITION=self-hosted`), and a Pro account of the hosted service. Only free
+accounts of the hosted service are capped, at 200 (`FreeMonthlyLimit`).
+`period` is the current month in UTC, which is also when the counter resets.
+`billingOn` says whether Pro can be bought on this instance (Stripe configured).
+
+### Profile
+
+#### GET /api/account/profile
+
+The caller's account record, through the same redaction the RGPD export uses
+(`account.RedactUser`): never the password hash, the OAuth tokens or the
+Stripe identifiers.
+
+**Response:** `200 OK`
+```json
+{
+  "email": "you@example.com",
+  "plan": "free",
+  "autoApplyRules": false,
+  "autoSyncEnabled": false,
+  "digestEnabled": true,
+  "digestHourUTC": 7,
+  "createdAt": "2026-11-02T10:00:00Z",
+  "updatedAt": "2026-11-20T08:00:00Z"
+}
+```
+
+`plan` is `free` when none is stored. `digestHourUTC` is omitted when the user
+never picked an hour. An account with no stored record answers with its
+address and zero values.
 
 ### Get Settings
 
 #### GET /api/account/settings
 
-Returns the caller's tunable settings.
+Returns the caller's tunable settings. `digestHourUTC` is always present here:
+the hour the user picked, `0` meaning midnight, or the server default
+(`DIGEST_HOUR_UTC`, 7 when unset) when they never picked one.
 
 ```json
 {
@@ -967,12 +1146,13 @@ Returns the caller's tunable settings.
 
 Persists the settings. **Partial merge:** every field is optional and only the
 fields present in the body are updated, so one screen can toggle its setting
-without clobbering the others. `digestHourUTC` is clamped to `0-23` (out-of-range
-falls back to the server default `DIGEST_HOUR_UTC`). When `digestEnabled` is
-true, a background scheduler emails the 7-day recap once a day at `digestHourUTC`
-(UTC). When `autoSyncEnabled` is true, a background scheduler periodically syncs
-the inbox (and applies rules when `autoApplyRules` is on) with no manual click.
-Returns the full, merged settings.
+without clobbering the others. `digestHourUTC` takes `0` to `23`, `0` being
+midnight; a value outside that range stores the server default
+(`DIGEST_HOUR_UTC`). When `digestEnabled` is true, a background scheduler emails
+the 7-day recap once a day at `digestHourUTC` (UTC), through the Gmail API.
+When `autoSyncEnabled` is true, a background scheduler syncs the inbox at most
+every 30 minutes with no manual click, and applies rules when `autoApplyRules`
+is on (Gmail API only). Returns the full, merged settings.
 
 > Accounts connected before the digest feature must **reconnect Gmail** to grant
 > the `gmail.send` scope before delivery can succeed.
@@ -984,12 +1164,14 @@ Returns the full, merged settings.
 #### GET /api/account/export
 
 Returns a single JSON document with everything Mailsorter stores about the
-caller: a **redacted** account profile (never the OAuth tokens or Stripe IDs)
-plus every user-owned dataset (rules, protected senders, snoozes, suggestions,
-sender preferences, smart labels, unsubscribes, usage, action log, analysis
-jobs, saved searches, the mailbox connection, the AI provider override). Served
-as a downloadable attachment. The user's Gmail mailbox is not included: those
-emails live in Gmail and never leave the user's control.
+caller: a **redacted** account profile (the same one as
+`GET /api/account/profile`), the current settings, plus every user-owned
+dataset (rules, protected senders, snoozes, suggestions, sender preferences,
+smart labels, unsubscribes, usage, action log, analysis jobs, saved searches,
+the mailbox connection, the AI provider override, a Pro waitlist signup made
+while signed in, labels, and `emails`: the local mirror of the synced messages,
+decoded bodies included). Served as a downloadable attachment. The mailbox
+itself, beyond what was synced, stays at the provider and is not included.
 
 Two datasets hold a credential and are the exception: `mailAccounts` has its
 `secret` (the sealed IMAP app password) and `aiSettings` its `apiKey` (the sealed
@@ -1003,13 +1185,20 @@ that does not.
 ```json
 {
   "exportedAt": "2026-06-22T10:00:00Z",
-  "account": { "email": "you@example.com", "plan": "free", "autoApplyRules": false, "digestEnabled": true, "digestHourUTC": 7 },
-  "settings": { "autoApplyRules": false, "digestEnabled": true, "digestHourUTC": 7 },
+  "account": { "email": "you@example.com", "plan": "free", "autoApplyRules": false, "autoSyncEnabled": false, "digestEnabled": true, "digestHourUTC": 7, "createdAt": "...", "updatedAt": "..." },
+  "settings": { "autoApplyRules": false, "autoSyncEnabled": false, "digestEnabled": true, "digestHourUTC": 7 },
   "rules": [ ... ],
   "protectedSenders": [ ... ],
-  "actionLog": [ ... ]
+  "actionLog": [ ... ],
+  "mailAccounts": [ ... ],
+  "emails": [ ... ]
 }
 ```
+
+Every dataset is a key, an empty list when the user has none: `rules`,
+`protectedSenders`, `snoozes`, `suggestions`, `senderPreferences`,
+`smartLabels`, `unsubscribes`, `usage`, `actionLog`, `analysisJobs`,
+`savedSearches`, `mailAccounts`, `aiSettings`, `waitlist`, `labels`, `emails`.
 
 ### Delete account (RGPD / right to erasure)
 
@@ -1018,8 +1207,9 @@ that does not.
 Permanently erases the caller's account record and **all** user-owned datasets
 (the same catalog the export covers, credentials included: the sealed app password
 and the sealed BYOK provider key are deleted, not redacted). Irreversible; the UI
-gates it behind a typed confirmation. Gmail is never touched. Returns per-dataset
-deletion counts.
+gates it behind a typed confirmation. The mailbox itself is never touched.
+Returns per-dataset deletion counts. The shared analysis cache is not per-user
+(it is keyed on a hash of sender and subject) and is not part of this.
 
 ```json
 { "status": "deleted", "deleted": { "rules": 4, "protectedSenders": 2, "actionLog": 137, "account": 1 } }
@@ -1030,7 +1220,9 @@ deletion counts.
 #### POST /api/account/digest/test
 
 Email the caller their 7-day recap immediately, through their own Gmail, using
-the same rendering and the same delivery path as the scheduler.
+the same rendering and the same delivery path as the scheduler. Gmail API only:
+on a mailbox reached over IMAP this answers `502` with the "Reconnectez Gmail"
+message below, not `501`.
 
 The digest was the one feature nobody could verify: you turned it on and waited a
 day to learn whether your Gmail grant still carried the send scope. This closes
@@ -1046,8 +1238,10 @@ the scheduler, which has no reason to mail "0 emails triés" unprompted).
 **Error Responses:**
 - `401 Unauthorized`: Missing session, or a dead Google grant (the SPA offers
   "Reconnecter Gmail")
-- `502 Bad Gateway`: Gmail refused the send, typically a missing `gmail.send`
-  scope on an older authorization
+- `500 Internal Server Error`: the ledger could not be read
+- `502 Bad Gateway`: the send failed: Gmail refused it (typically a missing
+  `gmail.send` scope on an older authorization), the mailbox is on IMAP, or no
+  mailbox is connected
 
 The matching preview, without sending anything, is `GET /api/stats/digest`.
 
@@ -1056,7 +1250,8 @@ The matching preview, without sending anything, is `GET /api/stats/digest`.
 
 ## Billing Endpoints (Stripe)
 
-Pro unlocks unlimited AI analyses. These endpoints are active only when
+Pro lifts the monthly AI cap of the hosted service's free plan (a self-hosted
+instance has none to lift). These endpoints are active only when
 `STRIPE_SECRET_KEY` / `STRIPE_PRICE_ID` are set; otherwise the UI falls back to a
 waitlist and `/api/billing/checkout` returns `503`.
 
@@ -1075,7 +1270,7 @@ Creates a subscription Checkout Session and returns the hosted URL to redirect t
 ```
 
 **Error Responses:**
-- `401 Unauthorized`: Missing user email
+- `401 Unauthorized`: Missing or expired session
 - `409 Conflict`: User is already on Pro
 - `502 Bad Gateway`: Stripe call failed
 - `503 Service Unavailable`: Billing not configured
@@ -1086,17 +1281,15 @@ Creates a subscription Checkout Session and returns the hosted URL to redirect t
 
 Receives Stripe events. The raw body is verified against the `Stripe-Signature`
 header (HMAC-SHA256, 5-minute tolerance) before processing. Keeps the user's
-`plan` in sync: `checkout.session.completed` → pro;
-`customer.subscription.updated/deleted` → pro/free.
+`plan` in sync: `checkout.session.completed` -> pro;
+`customer.subscription.updated/deleted` -> pro/free.
 
 **Headers:**
 - `Stripe-Signature` (required): Stripe webhook signature
 
 **Response:** `200 OK` on success, `400 Bad Request` on signature failure.
 
-> Usage/plan is reported by `GET /api/usage` → `{ used, limit, plan, billingOn }`
-> where `limit: -1` means no cap: a Pro account, or any account of a self-hosted
-> instance (`EDITION=self-hosted`). Only free accounts of the hosted service are capped.
+> Usage and plan are reported by `GET /api/usage` (see "Account Endpoints").
 
 ---
 
@@ -1117,7 +1310,7 @@ the hosted URL to redirect to.
 ```
 
 **Error Responses:**
-- `401 Unauthorized`: Missing user email
+- `401 Unauthorized`: Missing or expired session
 - `404 Not Found`: No subscription / Stripe customer to manage
 - `502 Bad Gateway`: Stripe call failed
 - `503 Service Unavailable`: Billing not configured
@@ -1130,19 +1323,33 @@ The AI triage surface. Every email is classified into an action
 (`archive` / `delete` / `label` / `keep`) with a confidence score and a short
 reasoning, persisted as a pending suggestion the user reviews and applies.
 
-> All endpoints in this section require an AI provider to be configured (a Mistral,
-> OpenAI or Anthropic key, or a local model, see "IA locale" in the README) and
-> answer `503 Service Unavailable` otherwise. On the free plan of the hosted service
-> (`EDITION=hosted`) they answer `402 Payment Required` once the monthly quota is
-> exhausted (see `GET /api/usage`). A self-hosted instance has no monthly cap.
+> The three routes that call the model, `analyze`, `analyze-async` and
+> `analyze-sender`, answer `503 Service Unavailable` when no AI provider is
+> available to the caller: none configured on the instance (a Mistral, OpenAI or
+> Anthropic key, or a local model, see "IA locale" in the README) and no
+> personal one (see "AI Provider Settings"). On the free plan of the hosted
+> service (`EDITION=hosted`), `analyze` and `analyze-async` answer
+> `402 Payment Required` once the monthly quota is spent (see `GET /api/usage`);
+> `analyze-sender` checks no quota and does not count toward it. A self-hosted
+> instance has no monthly cap. The other routes here read or apply stored
+> suggestions and need no AI.
 
 ### Analyze (synchronous)
 
 #### POST /api/ai/analyze
 
-Analyze a set of Gmail message IDs now. Resolves sender auto-pilot and the content
-cache first, batches the rest to Mistral, and stores one pending suggestion per
-email. Auto-applied senders are applied inline.
+Analyze a set of messages now, by the ids `GET /api/emails` returns (Gmail
+message ids, or IMAP UIDs), at most 200. A message missing from the stored
+mailbox is fetched through the caller's session first. Over the Gmail API,
+senders on auto-pilot get their learned action applied inline (source
+`ai-auto`), without the model. Then the shared cache answers what it already
+knows, and the rest goes to the configured AI provider in batches of 8, falling
+back to one email at a time when a batch answer does not line up. The caller's
+own provider is tried first when they set one, then the instance's, in
+priority order, the next one on a transient error. A destructive verdict on a
+protected sender is downgraded to `keep`. One pending suggestion is stored per
+email, replacing a pending one for the same email; only model calls count
+toward the quota.
 
 **Request body:**
 ```json
@@ -1164,12 +1371,19 @@ email. Auto-applied senders are applied inline.
 }
 ```
 
+**Error Responses:**
+- `400 Bad Request`: no ids, or more than 200
+- `402 Payment Required`: the hosted free quota is spent
+- `500 Internal Server Error`: nothing could be analyzed (the message names why)
+- `503 Service Unavailable`: no AI provider
+
 ### Analyze (asynchronous job)
 
 #### POST /api/ai/analyze-async
 
-Enqueue the same analysis as a background job, preferred for large batches. The
-email-ID list is capped server-side.
+Enqueue the same analysis as a background job, preferred for large batches,
+run by a pool of 3 workers. The id list is cut to its first 500 without an
+error.
 
 **Request body:** `{ "emailIds": ["18c...", "18d..."] }`
 
@@ -1177,6 +1391,9 @@ email-ID list is capped server-side.
 ```json
 { "jobId": "662...", "status": "queued" }
 ```
+
+**Error Responses:** `400` no ids; `402` the hosted free quota is spent; `503`
+no AI provider.
 
 ### Job status
 
@@ -1197,8 +1414,9 @@ Poll an analysis job.
 
 #### POST /api/ai/analyze-sender
 
-Analyze a sender's recent emails and persist a `SenderPreference` (default action,
-optional auto-apply).
+Analyze up to 20 stored emails whose From contains the sender, and persist a
+`SenderPreference` (default action, auto-apply off). Reads the stored mailbox
+only, so it answers on both transports; `404` when no stored email matches.
 
 **Request body:** `{ "senderEmail": "news@acme.com" }`
 
@@ -1211,19 +1429,32 @@ optional auto-apply).
 
 #### POST /api/ai/apply
 
-Apply a single pending suggestion to Gmail, mark it `applied`, and log it. A
-protected (VIP) sender is never auto-archived/trashed.
+Apply a single suggestion to the mailbox, through the caller's transport, mark
+it `applied`, and log it (source `ai`). A `keep` verdict moves nothing. A
+destructive verdict on a protected sender was already downgraded to `keep` when
+the suggestion was created; this route does not check the list again
+(`apply-batch` does).
+
+Over IMAP, `archive`, `delete` and `keep` apply. A `label` verdict answers `501`
+"Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP." and the
+suggestion stays pending, out of the history.
 
 **Request body:** `{ "suggestionId": "662..." }`
 
-**Response:** `200 OK` → `{ "status": "applied" }`
+**Response:** `200 OK` -> `{ "status": "applied" }`
+
+**Error Responses:** `400` invalid id; `404` no such suggestion for this caller;
+`428` no mailbox connected; `501` a label on IMAP; `500` the mailbox refused
+the action.
 
 ### Apply many suggestions
 
 #### POST /api/ai/apply-batch
 
-Apply a list of suggestions in one request (token refreshed once, looped
-server-side).
+Apply a list of suggestions in one request (one session, looped server-side),
+at most 200. Suggestions whose sender is protected are skipped for destructive
+actions and stay pending. Over IMAP, a `label` suggestion stays pending and is
+counted neither in `applied` nor in `failed`.
 
 **Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
 
@@ -1240,6 +1471,8 @@ on the Gmail API and false over IMAP, where batch-undo is not ported yet. A
 ### Apply in bulk for a sender
 
 #### POST /api/ai/apply-bulk
+
+Gmail API only: `501` over IMAP.
 
 Apply one action to every stored email from a sender ("learn once, clean up
 everything"). `senderEmail` is the `senderEmail` of a `GET /api/senders` row, a
@@ -1261,14 +1494,15 @@ sender's mail is skipped for `archive`, `trash` and `delete`.
 
 #### GET /api/ai/suggestions?status=pending
 
-List the caller's suggestions, filtered by `status` (default `pending`).
+List the caller's suggestions, filtered by `status` (default `pending`), the
+100 most recent.
 
 **Response:** `200 OK`, an array of `AISuggestion` enriched with the identity of
 the email each one is about: `subject`, `from`, `snippet`, resolved in one
 lookup. Without them the client had to find the message among those currently on
 screen, so any suggestion for an email outside the loaded page asked the user to
-approve an action on "Sans sujet · Expéditeur inconnu". The three fields are
-omitted when the message is no longer in the stored mailbox.
+approve an action on an email shown as "Sans sujet" from "Expéditeur inconnu".
+The three fields are omitted when the message is no longer in the stored mailbox.
 
 ### Reject a suggestion
 
@@ -1303,6 +1537,100 @@ nothing). `500` when the datastore write fails.
 
 ---
 
+## AI Provider Settings (bring your own key)
+
+Each account may set its own AI provider. It is tried first, before the
+instance's providers, which remain the fallback on a transient error. It does
+not lift the hosted free quota.
+
+### Known providers
+
+#### GET /api/ai/providers
+
+The catalog the settings screen offers. Authenticated, and carries no secret.
+
+**Response:** `200 OK`
+```json
+[
+  { "name": "mistral", "displayName": "Mistral AI", "requiresApiKey": true, "requiresUrl": false,
+    "defaultModel": "mistral-small-latest",
+    "models": ["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"] }
+]
+```
+
+The list holds `mistral`, `openai` (default `gpt-6-luna`), `anthropic`
+(default `claude-haiku-5-5`), `ollama` (default `qwen3.5:9b`, `requiresUrl`)
+and `openai-compatible` (no default model, `requiresUrl`).
+
+### Read the caller's setting
+
+#### GET /api/ai/settings
+
+**Response:** `200 OK`. Without a personal setting:
+```json
+{ "configured": false, "provider": "mistral,ollama", "instanceMode": true }
+```
+`provider` is then the instance's active providers in the order they are
+tried, comma-joined, or `none`. With one:
+```json
+{ "configured": true, "provider": "openai", "model": "gpt-6-luna", "baseUrl": "",
+  "apiKeyMasked": "sk-a...9xQ2", "instanceMode": false }
+```
+The key never leaves the server: `apiKeyMasked` shows its first and last four
+characters, or `****` for a key of 8 characters or fewer.
+
+### Save the caller's setting
+
+#### PUT /api/ai/settings
+
+**Request body:**
+```json
+{ "provider": "openai", "apiKey": "sk-...", "model": "gpt-6-luna", "baseUrl": "" }
+```
+
+Replaces the stored setting as a whole: a field left empty is stored empty, the
+key included. The key is sealed (AES-256-GCM) before it is stored, and stripped
+from the RGPD export.
+
+`baseUrl` is checked here, on its shape only: empty, or `https`, with a host
+that is neither `localhost`, a `.localhost` or `.local` name, nor an IP literal
+outside the public internet. A host name is not resolved at this point. A model
+on the operator's network is set in the instance's `.env`, never here.
+
+**Response:** `200 OK` -> `{ "status": "saved" }`
+
+**Error Responses:**
+- `400 Bad Request`: unknown provider, a field over its length limit (key 1024,
+  model 256, address 2048), or a refused address
+- `500 Internal Server Error`: the key could not be sealed or the setting saved
+
+### Test a setting before saving it
+
+#### POST /api/ai/settings/test
+
+Same body as `PUT /api/ai/settings`, with the same checks. Builds that one
+provider alone, with no instance fallback, and asks it to classify a fixed test
+email. Nothing is stored.
+
+**Response:** `200 OK`
+```json
+{ "status": "ok", "provider": "openai", "model": "gpt-6-luna",
+  "test": { "action": "keep", "label_name": "", "confidence": 0.8, "reasoning": "..." } }
+```
+
+**Error Responses:** `400` for every failure, including the provider's own: an
+invalid key, a refused permission, an unreachable address, or the provider's
+error message with the key redacted from it.
+
+### Remove the caller's setting
+
+#### DELETE /api/ai/settings
+
+Back to the instance's providers. **Response:** `200 OK` -> `{ "status": "deleted" }`,
+whether or not a setting existed.
+
+---
+
 ## Senders Endpoints
 
 Learn-once triage keyed by sender.
@@ -1311,7 +1639,8 @@ Learn-once triage keyed by sender.
 
 #### GET /api/senders
 
-Inbox senders aggregated with their email counts and any learned preference.
+Senders of the stored mailbox, the 50 with the most emails, with their counts
+and any learned preference. Reads the datastore only.
 
 **Response:** `200 OK`, an array of `SenderStats`:
 ```json
@@ -1329,8 +1658,10 @@ Inbox senders aggregated with their email counts and any learned preference.
 
 #### POST /api/senders/rule
 
-Turn a sender into a permanent deterministic rule: every future email whose
-`From` contains the sender gets the action.
+Turn a sender into a permanent deterministic rule: every email whose `From`
+contains the sender gets the action whenever the rules run (at sync time with
+`autoApplyRules`, or on `POST /api/rules/apply`; Gmail API only, see "Sorting
+Rules Endpoints").
 
 **Request body:**
 ```json
@@ -1351,7 +1682,7 @@ section for its shape).
 { "autoApply": true, "defaultAction": "archive", "defaultLabel": "" }
 ```
 
-**Response:** `200 OK` → `{ "status": "updated" }`
+**Response:** `200 OK` -> `{ "status": "updated" }`
 
 ---
 
@@ -1360,7 +1691,13 @@ section for its shape).
 Deterministic, **AI-free** triage. A rule pairs conditions with an action; when
 the conditions match an email, the action is applied directly via Gmail: no
 model call, no quota consumed. Rules are the free, predictable complement to the
-AI suggestions.
+AI suggestions, and the AI analysis does not consult them.
+
+Rules run in two places only: at sync time when `autoApplyRules` is on, and on
+`POST /api/rules/apply`. Both are Gmail API only: over IMAP the sync skips them
+and `apply` / `preview` answer `501`. Creating, editing, reordering, exporting
+and importing rules read and write the datastore only and answer on both
+transports.
 
 A rule has the shape:
 
@@ -1427,7 +1764,7 @@ Validates and creates a rule. Returns the created rule. **Status:** `201 Created
 
 ### Update Sorting Rule
 
-#### PUT /api/rules/:id
+#### PUT /api/rules/{id}
 
 Validates and updates an existing rule. **Response:** `{ "status": "updated" }`.
 
@@ -1437,7 +1774,7 @@ Validates and updates an existing rule. **Response:** `{ "status": "updated" }`.
 
 ### Delete Sorting Rule
 
-#### DELETE /api/rules/:id
+#### DELETE /api/rules/{id}
 
 Deletes a rule. **Response:** `{ "status": "deleted" }`.
 
@@ -1467,8 +1804,9 @@ calls the AI, never consumes quota.
 
 #### POST /api/rules/preview
 
-Reports what the rules **would** do over the current inbox without touching Gmail
-This is the safe way to check a ruleset before applying it.
+Reports what the rules **would** do over the first 200 messages of the inbox,
+without touching it. This is the safe way to check a ruleset before applying
+it: it runs the same matching function as `POST /api/rules/apply`.
 
 **Response:** `200 OK`
 ```json
@@ -1480,7 +1818,7 @@ This is the safe way to check a ruleset before applying it.
   ],
   "samples": [
     {
-      "messageId": "18c...", "from": "news@acme.com", "subject": "…",
+      "messageId": "18c...", "from": "news@acme.com", "subject": "...",
       "ruleName": "Archiver les newsletters Acme", "action": "archive"
     }
   ]
@@ -1641,7 +1979,7 @@ point of view: a failed increment must never cost the user their search.
 
 #### GET /api/labels
 
-Get all Gmail labels for a user.
+Get all Gmail labels for a user. Gmail API only: `501` over IMAP.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -1671,9 +2009,70 @@ Get all Gmail labels for a user.
 ```
 
 **Error Responses:**
-- `401 Unauthorized`: Missing user email
-- `404 Not Found`: User not found
+- `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: Failed to fetch labels
+- `501 Not Implemented`: the mailbox is on IMAP
+
+---
+
+## Smart Labels Endpoints
+
+The labels the AI is told about, so its `label` verdicts reuse a stable set
+instead of inventing a new name each time. No screen of the SPA calls these two
+routes.
+
+### List smart labels
+
+#### GET /api/smart-labels
+
+**Response:** `200 OK`, the caller's smart labels:
+```json
+[
+  { "id": "665...", "userId": "you@example.com", "name": "Factures", "gmailLabelId": "Label_12",
+    "description": "", "keywords": [], "emailCount": 0,
+    "createdAt": "2026-11-02T10:00:00Z", "updatedAt": "2026-11-02T10:00:00Z" }
+]
+```
+
+### Create a smart label
+
+#### POST /api/smart-labels
+
+Gmail API only: `501` over IMAP. Creates the label in Gmail, then stores it.
+
+**Request body:** `{ "name": "Factures", "description": "", "keywords": [] }`
+
+**Response:** `201 Created`, the stored smart label.
+
+**Error Responses:**
+- `400 Bad Request`: name missing or over 100 characters
+- `428 Precondition Required`: no mailbox is connected to this account yet
+- `500 Internal Server Error`: Gmail refused the label, or it could not be stored
+- `501 Not Implemented`: the mailbox is on IMAP
+
+---
+
+## Pro Waitlist
+
+#### POST /api/waitlist
+
+Public: it records a visitor's interest in Pro before any account exists. A
+caller who does have a session gets their account attached to the row, which
+puts it in their RGPD export and erasure.
+
+**Request body:** `{ "email": "you@example.com", "source": "landing" }`
+
+The address is trimmed and lowercased (`Name <addr>` is accepted, the address
+is kept). `source` names the surface the signup came from, `pricing` when
+empty. Signing up twice is not an error: the row is upserted on the address.
+
+**Response:** `200 OK` -> `{ "joined": true, "email": "you@example.com" }`
+
+**Error Responses:**
+- `400 Bad Request`: not a usable address (or over 254 characters), or a
+  `source` over 64 characters
+- `500 Internal Server Error`: the row could not be stored
 
 ---
 
@@ -1693,9 +2092,9 @@ is running, and which landing to render. It is the only public route under
 { "isConfigured": true, "mailboxSignIn": true, "billingOn": false, "edition": "self-hosted", "uiTheme": "hotel" }
 ```
 
-`mailboxSignIn` says whether `POST /api/auth/mailbox` can do anything here: it
-is true when the running edition has at least one provider reachable over IMAP.
-It is the **second door**, and the SPA gates its whole boot on
+`mailboxSignIn` says whether a mailbox can be connected over IMAP here: it is
+true when the running edition's catalog carries at least one IMAP route
+(autodiscovery-only routes count too). The SPA gates its whole boot on
 `isConfigured || mailboxSignIn`. Gating on `isConfigured` alone sent every
 visitor of an instance with no Google credentials to a setup screen telling them
 to create a Google Cloud project, which the hosted edition can never use.
@@ -1730,8 +2129,13 @@ Public because the connect screen runs before any account exists, and it carries
 no secret: provider names, hostnames, ports and help text.
 
 The SPA hardcodes no provider. It renders this payload, which is the same table
-`internal/api` connects with, so a provider offered on screen but unreachable by
-the backend is a state that cannot occur.
+`internal/api` connects with. The payload lists every provider of the edition,
+including the ones that cannot connect yet: a route with `transport: "graph"`
+(Microsoft Graph is not implemented) or an IMAP route with `autodiscover: true`
+(no server in the catalog) is not connectable today, and connecting such an
+address answers `422`. Google Workspace's IMAP route does name a server, but
+the provider has no domain to be recognized by: a Workspace address falls to
+the generic entry and gets the same `422`.
 
 **Response:** `200 OK`
 ```json
@@ -1752,7 +2156,7 @@ the backend is a state that cannot occur.
             "threads": true, "send": true, "push": true
           },
           "blockers": ["own-cloud-project"],
-          "note": "Pleine fidelite. L'utilisateur cree son projet Google Cloud..."
+          "note": "Pleine fidélité. L'utilisateur crée son projet Google Cloud, ..."
         },
         {
           "transport": "imap",
@@ -1765,7 +2169,7 @@ the backend is a state that cannot occur.
             "threads": true, "send": true, "push": false
           },
           "blockers": ["two-factor-required", "advanced-protection", "datacenter-ip"],
-          "note": "Aucune surface de conformite..."
+          "note": "Aucune surface de conformité: pas de client OAuth, ..."
         }
       ]
     }
@@ -1774,9 +2178,18 @@ the backend is a state that cannot occur.
 ```
 
 Routes are ordered best first: a revocable token before a pasted full-mailbox
-credential. `autodiscover` means the endpoints are resolved from the domain when
-the user connects rather than carried here, so the screen must not promise
-settings it does not have.
+credential. `auth` is the credential the route asks for: `oauth`,
+`app-password`, or `password`, the mailbox password itself (Proton through
+Bridge, which shows its own, and the autodiscovery routes). `autodiscover` is true for an
+IMAP route whose IMAP or SMTP server the catalog does not carry: its settings
+would have to be found from the domain, which is not implemented yet, so the
+screen must not promise settings it does not have.
+
+`capabilities` describe what the provider offers on that route, not what
+Mailsorter does with it today. Gmail over IMAP declares labels, provider
+search, stable ids, threads and sending (through Gmail's IMAP extensions and
+SMTP); the IMAP transport uses none of them yet. What actually works per
+transport is in "Transports and what works on each".
 
 `blockers` are why this route can fail for this particular user, and the screen
 shows them BEFORE the attempt: every one of them otherwise surfaces as an
@@ -1799,25 +2212,36 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | Status | Means | Typical body |
 |---|---|---|
 | `400` | The request is malformed or rejected on its merits | `{ "error": "Invalid request body", "status": 400 }` |
-| `401` | No session, an expired one, or a dead Google grant | `{ "error": "Authentication required", "status": 401 }` |
-| `402` | Free monthly AI quota exhausted | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
-| `404` | No such resource for this caller | `{ "error": "Rule not found", "status": 404 }` |
-| `409` | Already done (an action undone twice) | `{ "error": "Action déjà annulée", "status": 409 }` |
+| `401` | No session, an expired one, a dead Google grant, wrong sign-in credentials, or credentials the mail provider refused | `{ "error": "Authentication required", "status": 401 }` |
+| `402` | The hosted service's free monthly AI quota is spent (`analyze` and `analyze-async` only) | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
+| `404` | No such resource for this caller, or no such route | `{ "error": "Rule not found", "status": 404 }` |
+| `405` | The route exists, not with this method | `{ "error": "Method not allowed on this route", "status": 405 }` |
+| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro | `{ "error": "Action déjà annulée", "status": 409 }` |
 | `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Request body too large", "status": 413 }` |
-| `429` | Rate limited (20 req/s sustained, burst 40, per client) | `{ "error": "Too many requests", "status": 429 }` |
+| `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
+| `428` | No mailbox is connected to this account yet | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }` |
+| `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter is far lower | `{ "error": "Too many requests", "status": 429 }` |
 | `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
-| `502` | Gmail, Mistral or Stripe failed | `{ "error": "Report impossible : ...", "status": 502 }` |
-| `503` | A dependency is not configured (AI, billing) | `{ "error": "AI service not configured", "status": 503 }` |
+| `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a label on IMAP, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
+| `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe | `{ "error": "Report impossible : ...", "status": 502 }` |
+| `503` | A dependency is not configured (AI, billing), or the datastore is unreachable (`/health`) | `{ "error": "Aucune IA n'est configurée sur cette instance.", "status": 503 }` |
 
 A `401` on a route the SPA considers non-optional clears the session and returns
 the user to the login screen.
 
 ## CORS
 
-The API is configured to accept requests from:
+The allowed origins come from `ALLOWED_ORIGINS` (comma separated, read at
+startup, no rebuild needed). Unset, they are:
 - `http://localhost:3000`
 - `http://localhost`
+- `https://mailsorter.sohbi.dev`
+
+In production the SPA calls the API on its own origin through the nginx proxy,
+so CORS does not come into play.
 
 Allowed methods: GET, POST, PUT, DELETE, OPTIONS
 
-Allowed headers: Content-Type, Authorization, X-User-Email
+Allowed headers: Content-Type, Authorization, X-User-Email (a client-sent
+`X-User-Email` is still stripped by the auth middleware). Credentials are
+allowed.

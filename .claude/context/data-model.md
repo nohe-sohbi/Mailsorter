@@ -37,7 +37,7 @@ file opens a collection by name, so this table is exhaustive.
 | `users` | `db.Users()` | `models.User` | `api`: handlers.go, account.go, billing.go, ai_handlers.go, auto_sync.go, digest_scheduler.go, account_data.go | Account record, OAuth tokens, plan, settings |
 | `emails` | `db.Emails()` | `models.Email` | `api`: handlers.go (sync), analysis.go, ai_handlers.go, unsubscribe.go | Local mirror of the synced inbox |
 | `labels` | `db.Labels()` | `models.Label` | nobody | Declared and indexed, never read or written. See pitfalls |
-| `gmail_config` | `db.GmailConfig()` | `models.GmailConfig` | `cmd/server/main.go`, `cmd/test_decrypt/main.go` | Legacy instance OAuth credentials, read-only fallback |
+| `gmail_config` | `db.GmailConfig()` | `models.GmailConfig` | `cmd/server/main.go` | Legacy instance OAuth credentials, read-only fallback |
 | `sorting_rules` | `db.SortingRules()` | `models.SortingRule` | `api`: rules.go, handlers.go, account_data.go | Deterministic AI-free triage rules |
 | `protected_senders` | `db.ProtectedSenders()` | `models.ProtectedSender` | `api`: protected.go, account_data.go | VIP safety net, blocks destructive automation |
 | `snoozes` | `db.Snoozes()` | `models.Snooze` | `api`: snooze.go, account_data.go | Emails parked until a wake time |
@@ -452,8 +452,8 @@ not:
 reachable from the compose network. Credentials come from `MONGO_ROOT_USERNAME`
 and `MONGO_ROOT_PASSWORD` and are composed into
 `MONGODB_URI=mongodb://user:pass@mongodb:27017/mailsorter?authSource=admin` for
-the backend service. `dev-start.sh` runs a throwaway `mailsorter-mongodb-dev`
-container that DOES publish 27017 with hardcoded `admin` / `password`.
+the backend service. `make up` publishes 27017 on 127.0.0.1 only, for local
+tools (compose.local.yml).
 
 ## GDPR catalog
 

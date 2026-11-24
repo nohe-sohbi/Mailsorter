@@ -1,11 +1,15 @@
 # Mailsorter
 
-AI-assisted email triage: the model reads, understands and sorts an inbox, but every
-action stays a reversible proposal the user validates. Go REST API + React SPA +
-MongoDB, self-hosted end to end on [mailsorter.sohbi.dev](https://mailsorter.sohbi.dev).
+AI-assisted email triage: the model reads, understands and sorts an inbox, and every
+action stays a proposal the user validates (reversible on the Gmail API). Go REST
+API + React SPA + MongoDB, deployed with Docker Compose on a self-hosted Dokploy.
+The public instance, [mailsorter.sohbi.dev](https://mailsorter.sohbi.dev), runs the
+hosted edition (`EDITION=hosted`); anyone can run the self-hosted one.
 
-Solo-developer project. Production is live. The 12 roadmap phases are delivered
-(`docs/ROADMAP.md`), and the last audit closed every item it opened (`BACKLOG.md`).
+Solo-developer project. Production is live. The 13 roadmap phases (0 to 12) are
+delivered (`docs/ROADMAP.md`, now a history); what came after them (IMAP, the two
+editions, multi-provider AI, password accounts) is described in this file and in
+the README. The last audit closed every item it opened (`BACKLOG.md`).
 
 ## Tech Stack
 
@@ -17,6 +21,7 @@ Solo-developer project. Production is live. The 12 roadmap phases are delivered
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
 | Google | `golang.org/x/oauth2` 0.38.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
 | IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned, plus its companion `go-message` v0.18.2 (already in the graph, promoted to direct for MIME body parsing) | `backend/go.mod` |
+| Passwords | `golang.org/x/crypto` v0.58.0, for bcrypt on account passwords | `backend/go.mod` |
 | AI | Mistral, OpenAI-compatible, Anthropic and Ollama (local), hand-rolled HTTP clients behind a fallback registry | `backend/internal/ai/registry.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
 | Frontend | React 18.2, react-router-dom 6.21, axios 1.6, dompurify 3.0 | `frontend/package.json` |
@@ -59,10 +64,12 @@ Rules for the sentences in this project:
 1. **Keep the decision logic pure.** Anything that decides (does this rule match,
    is this snooze due, may this sender be archived, what does the digest say) goes in
    an I/O-free package under `backend/internal/` and is tested exhaustively. Only the
-   `api` package talks to Mongo, Gmail, Mistral or Stripe. Never put a `bson.M` or an
-   `http.Request` in a pure package.
+   `api` package talks to Mongo, the mailboxes (Gmail, IMAP), the AI providers or
+   Stripe. Never put a `bson.M` or an `http.Request` in a pure package.
 2. **Fail closed on security, fail fast on config.** `config.Validate()` refuses to boot
-   on a placeholder `ENCRYPTION_KEY`. The auth middleware strips a client-supplied
+   on a missing, short (under 32 characters) or known example `ENCRYPTION_KEY` (the
+   one an earlier README showed only warns: refusing it would strand instances
+   already running on it), and on an unknown `EDITION` or `UI_THEME`. The auth middleware strips a client-supplied
    `X-User-Email` before re-setting it itself. Preserve that posture in every change.
 3. **Never silently drop an error.** The audit that produced `BACKLOG.md` found two
    P1 bugs that were both a swallowed error (`date, _ = time.Parse(...)`) or a wrong
@@ -79,31 +86,34 @@ Rules for the sentences in this project:
    `session.RefFor(ctx, id)` know the transport, which is the thing a handler holding a
    string from the client does not. On a Gmail-only path, `h.mailboxOf(client)` and
    `mailbox.OnAccount(id)`.
-5. **Cheap paths before expensive ones.** Deterministic rules run before the model; the
-   shared analysis cache runs before an API call; cache hits and auto-pilot do not burn
-   quota. New AI work must justify why it cannot be a rule or a cache hit.
+5. **Cheap paths before expensive ones.** Deterministic rules cost nothing and run
+   without the model (at sync time with `autoApplyRules`, or on `POST /api/rules/apply`;
+   the analysis does not consult them); sender auto-pilot and the shared analysis cache
+   run before any model call; cache hits and auto-pilot do not burn quota. New AI work
+   must justify why it cannot be a rule or a cache hit.
 6. **No em dashes, en dashes, ellipsis characters or curly quotes in anything you write**
-   (code, comments, docs, commit messages, UI copy). Two commits already stripped them
-   repo-wide (`6d44863`, `393ea5d`). Plain ASCII punctuation only.
+   (code, comments, docs, commit messages, UI copy). Plain ASCII punctuation only. The
+   repository carries none outside docs/superpowers and .claude:
+   `git grep -nP '[\x{2014}\x{2013}\x{2026}\x{201C}\x{201D}\x{2018}\x{2019}]'` proves it.
 
 ## Project Structure
 
 ```
 backend/
   cmd/server/            main: config -> db -> indexes -> services -> router -> serve
-  cmd/test_decrypt/      one-off ops tool, reads the legacy gmail_config document
   internal/api/          the ONLY I/O layer: handlers, routes, middleware, schedulers
-  internal/{account,activity,digest,egress,mailbox,mailer,metrics,protect,
-            provider,rules,schedule,snooze,unsubscribe}/
+  internal/{account,activity,digest,egress,mailbox,mailer,metrics,mirror,
+            protect,provider,rules,schedule,search,snooze,unsubscribe}/
                          pure logic, no I/O, heavily unit-tested
-  internal/{ai,billing,gmail,imap}/  outbound clients (Mistral, Stripe, Gmail, IMAP)
+  internal/{ai,billing,gmail,imap}/  outbound clients (AI providers, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
+  scripts/scenarios.sh   runs the acceptance scenarios against a throwaway MongoDB
 frontend/
   src/pages/             one file per route (13 routes)
   src/components/        shared non-route components (Header, EmailReader,
                          PublicFooter and LegalLayout for the logged-out surface,
-                         MailboxBriefing for the two screens that ask for an
-                         address and an app password)
+                         MailboxBriefing for the connect screen, which asks for an
+                         address and a mailbox credential)
   src/contexts/          EmailContext: the shared inbox cache.
                          InstanceContext: what this deployment is (edition, billing, configured)
   src/styles/hotel.css   the Grand Hotel theme (UI_THEME=hotel): tokens under
@@ -127,8 +137,9 @@ frontend/
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
-docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, design/moodboard.html, assets/
-mongo-init/init-db.js    collections + indexes seeded on a fresh Mongo container
+docs/                    ARCHITECTURE.md, API.md, ROADMAP.md, USER-STORIES.md,
+                         design/moodboard.html, assets/, superpowers/ (design plans)
+mongo-init/init-db.js    creates nothing on purpose: EnsureIndexes owns every index
 ```
 
 ## Build, Run, Test
@@ -140,21 +151,21 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 345 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | all green (the acceptance scenarios are separate, see below) |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Acceptance scenarios | `make scenarios` | runs `backend/scripts/scenarios.sh`: the scenarios against a throwaway MongoDB (Docker, or a downloaded `mongod` when there is no Docker), then prints the French report. CI runs it in the `scenarios` job and publishes the report as the job summary |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
-| Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
+| Backend alone | `make backend` (build + run on :8080, exports `.env` first) or `cd backend && go run cmd/server/main.go` with `ENCRYPTION_KEY` exported | needs a reachable Mongo (`make up` publishes it on 127.0.0.1:27017) |
 | Frontend dev server | `make frontend` or `cd frontend && npm install && npm start` | :3000, proxies nothing, hits :8080 directly |
 | Frontend production build | `cd frontend && CI=false npm run build` | verified: "Compiled successfully" |
-| Everything local without Compose | `./dev-start.sh` | starts a throwaway `mailsorter-mongodb-dev` container, backend and frontend; needs `.env` |
 | Health | `curl -w "%{http_code}" http://localhost:8080/health` | 200 healthy, 503 when Mongo is unreachable |
 
 Notes that will bite you:
 
-- `go` is not on the default PATH in this environment. Use `export PATH="$HOME/go/bin:$PATH"`
-  (local toolchain is 1.24.1; `go.mod`, the Dockerfile and CI target 1.26, and with the
-  default `GOTOOLCHAIN=auto` a local 1.24 downloads 1.26 on first use).
+- `go` may not be on the default PATH. On the maintainer's machine the toolchain is in
+  `$HOME/.local/go-sdk/bin` (Go 1.26), so `export PATH="$HOME/.local/go-sdk/bin:$PATH"`.
+  `go.mod`, the Dockerfile and CI target 1.26; with the default `GOTOOLCHAIN=auto` an
+  older local Go downloads 1.26 on first use.
 - **The Dockerfile's Go tag must follow `go.mod`.** The official golang images set
   `GOTOOLCHAIN=local`, so an image older than the `go` line refuses to build while CI,
   which downloads the newer toolchain on its own, stays green. That is how #155 broke
@@ -163,24 +174,25 @@ Notes that will bite you:
   `*.test.js` file does. CI does not run it. Frontend verification is a real build plus
   browser navigation, never a unit test claim.
 - CI (`.github/workflows/ci.yml`) runs, on every push to `main` and every PR: backend
-  `go mod download`, `go vet ./...`, `go build ./...`, `go test -race ./...`; the
-  acceptance scenarios (`scripts/scenarios.sh` against a MongoDB service); frontend
-  `npm install` + `CI=false npm run build`; and `docker build` of both images, as Dokploy
-  builds them. Nothing else. No linter, no formatter gate.
+  `go mod download`, a `gofmt -l .` gate (any listed file fails the job), `go vet ./...`,
+  `go build ./...`, `go test -v -race ./...`; the acceptance scenarios
+  (`go vet -tags acceptance ./internal/api/`, then `scripts/scenarios.sh` against a
+  MongoDB service, report published as the job summary); frontend `npm install` +
+  `CI=false npm run build`; and `docker build` of both images, as Dokploy builds them.
+  Nothing else: no linter beyond `go vet`, nothing on the frontend code itself.
 
 ## Backend Architecture
 
-Read `docs/ARCHITECTURE.md` for the diagrams, the auth flow and the sync flow. Read
-`docs/API.md` for every endpoint payload. This section is the map, not a copy of them.
-
-Caveat on `docs/ARCHITECTURE.md`: its "Composants" section predates most of the app
-(it lists 9 endpoints and 4 collections). Its Security, Observability and Background
-sections are current. When they disagree, the code wins.
+Read `docs/ARCHITECTURE.md` for the overview, the sign-in, sync and analysis flows,
+security and the background loops, in short. Read `docs/API.md` for every endpoint
+payload. This section is the map, not a copy of them. When they disagree, the code
+wins.
 
 ### The pure core rule
 
-`internal/api` is the only package allowed to touch Mongo, Gmail, Mistral or Stripe.
-Everything below is pure by construction, and each one says so in its package doc:
+`internal/api` is the only package allowed to touch Mongo, the mailboxes, the AI
+providers or Stripe. Everything below is pure by construction, and each one says so
+in its package doc:
 
 | Package | Owns | Key entry points |
 |---|---|---|
@@ -189,12 +201,13 @@ Everything below is pure by construction, and each one says so in its package do
 | `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
+| `mirror` | Which messages of the local copy of an IMAP inbox are no longer in it, given what a listing just returned (a capped listing judges only its own range) | `StaleUIDs` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML, the HTML in the instance's look (classic or Grand Hotel, email-safe) | `Digest`, `Render`, `RenderStyle`, `Style*` |
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
-| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it | `All`, `ForEdition`, `Detect`, `Pick`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
+| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*` |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 | `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
@@ -203,12 +216,12 @@ The outbound clients and primitives:
 
 | Package | Responsibility |
 |---|---|
-| `ai` | Mistral client. Batching of 8, exponential backoff with jitter honoring `Retry-After`, fast-fail on 4xx |
+| `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport, for every route the hosted edition uses. Connect (TLS or STARTTLS, never cleartext), resolve the server's special folders, list a page, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline |
+| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
-| `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (per-user Gmail tokens) and the legacy `gmail_config` read at boot |
+| `crypto` | AES-256-GCM at rest, key SHA-256-derived from `ENCRYPTION_KEY`. Its production callers are `api/tokens.go` (Google tokens and IMAP passwords), `api/ai_settings.go` (BYOK provider keys) and the legacy `gmail_config` read at boot |
 | `config` | Env loading + `Validate()` fail-fast |
 | `database` | Mongo client, one accessor per collection, `EnsureIndexes` |
 | `models` | Every BSON/JSON struct. One file, `models.go` |
@@ -218,12 +231,16 @@ The outbound clients and primitives:
 | File | Covers |
 |---|---|
 | `routes.go` | The single route table (79 registrations) and the middleware chain. Source of truth for the API surface |
-| `middleware.go` | `authMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `publicPrefixes` |
-| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError`, `errReauthRequired`, 1 MiB body cap |
-| `handlers.go` | `Handler` struct + constructor (which starts the background loops), health, metrics, auth callback, emails, sync, direct action, labels, config status |
+| `middleware.go` | `authMiddleware`, `securityHeadersMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `clientIP`, `publicPrefixes` |
+| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501), `errReauthRequired`, 1 MiB body cap |
+| `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
+| `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
+| `message.go` | `GET /api/emails/{id}`: one message with its body, on both transports (no attachment list over IMAP) |
+| `batch.go` | `POST /api/emails/batch-action` and `/batch-undo` (Gmail only), plus the identity lookups the ledger uses |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
-| `ai_handlers.go` | The nine `/api/ai/*` endpoints, plus `/api/senders/*` |
-| `tokens.go` | The user's Google credentials: `sealToken` / `openToken` (AES-256-GCM at rest), the legacy-plaintext migration, and `getUserToken` |
+| `ai_handlers.go` | Eight of the `/api/ai/*` endpoints (analyze, analyze-sender, apply, apply-batch, apply-bulk, suggestions, reject, reject-batch), `GET /api/senders`, the sender preferences and `/api/smart-labels`. `analyze-async` and `jobs/{id}` are in `jobs.go` |
+| `ai_settings.go` | The BYOK routes (`/api/ai/providers`, `/api/ai/settings`, `/api/ai/settings/test`) and `resolveAnalyzer`, which puts the account's own provider first |
+| `tokens.go` | Stored credentials: `sealToken` / `openToken` for Google's (with the legacy-plaintext migration), `sealSecret` / `openSecret` for IMAP passwords, all AES-256-GCM behind the `enc:v1:` prefix, and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
 | `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
@@ -234,17 +251,17 @@ The outbound clients and primitives:
 | `unsubscribe.go` | `List-Unsubscribe` (RFC 2369) and one-click POST (RFC 8058) |
 | `history.go` | Action log view and undo |
 | `ledger.go` | `logAction` plus the `Source*` vocabulary. Read this before adding a mutating action |
-| `account.go` | Settings, usage, profile, `FreeMonthlyLimit = 200` |
+| `account.go` | Settings, usage, profile, activity and digest preview, `FreeMonthlyLimit = 200` and `analysisCapFor` (only free accounts of the hosted edition are capped) |
 | `account_data.go` | `datasetCollection`: the one bridge from `account.Dataset` to a Mongo collection. Export and delete both walk it |
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
-| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored), read, disconnect. `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
-| `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which is ALSO how an account is created. The sign-in throttle and the guard against taking over a Google account |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
+| `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
 | `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport` |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
-| `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail, and `digestStyle()`, the UI theme as a digest style |
+| `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail, `digestHourOf` (a stored hour, 0 = midnight, or `DIGEST_HOUR_UTC` when none was picked; the settings screen and the scheduler both read it), `POST /api/account/digest/test`, and `digestStyle()`, the UI theme as a digest style |
 | `auto_sync.go` | 30 min per-user background inbox sync |
 
 ### Request pipeline
@@ -252,8 +269,12 @@ The outbound clients and primitives:
 Declared in `routes.go`, outermost first:
 
 ```
-CORS -> recover -> request-id -> metrics -> logging -> rate-limit (20 r/s, burst 40) -> auth -> handler
+CORS -> security headers -> recover -> request-id -> metrics -> logging -> rate-limit (20 r/s, burst 40) -> auth -> handler
 ```
+
+The rate limit is keyed per account when the bearer is valid, per visitor address
+otherwise. An unknown path or a wrong method never reaches this chain: the router's
+own handlers answer it, in the same JSON envelope (404 "No such route", 405).
 
 `authMiddleware` deletes any inbound `X-User-Email`, verifies the `Authorization: Bearer`
 session token, then sets `X-User-Email` itself. Handlers read that header and can trust it.
@@ -275,8 +296,9 @@ token still identifies the caller; a bad one is not an error.
 ### MongoDB
 
 Database `mailsorter`. One accessor per collection in `database.go`; indexes created
-best-effort at boot by `EnsureIndexes`. `mongo-init/init-db.js` seeds only the four
-original collections on a fresh volume, so `EnsureIndexes` is the real source of truth.
+best-effort at boot by `EnsureIndexes`, the single source of truth (the unique
+`users.email` index included). `mongo-init/init-db.js` creates nothing: it only ever
+ran on a fresh Compose volume, never on CI, the scenarios or an existing database.
 
 `users`, `emails`, `labels`, `gmail_config` (legacy, read-only fallback),
 `ai_suggestions`, `sender_preferences`, `smart_labels`, `analysis_jobs`,
@@ -284,9 +306,11 @@ original collections on a fresh volume, so `EnsureIndexes` is the real source of
 `snoozes`, `action_log`, `saved_searches`, `waitlist`, `mail_accounts`,
 `ai_settings`.
 
-Everything is scoped by `userId` (which is the user's email address) except
+Everything is scoped by `userId` (which is the user's email address) except `users`
+(keyed by `email`), `gmail_config` (one legacy instance-wide document),
 `analysis_cache`, keyed by `sha256(lower(from) + "|" + lower(subject))` and shared
-across all users on purpose, and `waitlist`, keyed by email.
+across all users on purpose, and `waitlist`, keyed by email, whose row carries the
+account's `userId` only when the signup was made while signed in.
 
 ### Background loops
 
@@ -297,7 +321,7 @@ not cron; a redeploy restarts them.
 |---|---|---|
 | Analysis worker pool (3 workers) | drains `jobQueue` (cap 256) | `jobs.go` |
 | Snooze wake sweep | 1 min | `snooze.go` |
-| Daily digest | 15 min tick, at most one send per user per day | `digest_scheduler.go` |
+| Daily digest | 15 min tick, at most one send per user per day, Gmail API only | `digest_scheduler.go` |
 | Auto-sync | 5 min tick, but min 30 min between two syncs of the same user | `auto_sync.go` |
 
 ## Frontend Architecture
@@ -383,15 +407,21 @@ not answer gets the boot-error screen instead, which is a different branch.
   so the header drops its pricing entry and `/pricing` redirects instead of
   rendering a page with no offer. The SPA still hardcodes no provider: the connect
   surfaces render whatever `GET /api/providers` returns.
-- **A `Route.Note` in `internal/provider/catalog.go` is USER-FACING COPY.** It reads
-  like a developer note in the source and it is rendered verbatim on `/connect`, so
-  it follows the UI-string rule: French, accented, ASCII punctuation. The same goes
-  for a new `Blocker`: add its French sentence to `BLOCKER_COPY` in
-  `components/MailboxBriefing.js` or the screen silently drops it, which is worse
-  than showing nothing, because the blocker is the reason the connection is about
-  to fail. That file is shared: `/connect` and the login page both ask for an
-  address and an app password, and two copies of that table would be two copies
-  that drift.
+- **A `Route.Note` in `internal/provider/catalog.go` is never shown to the user.**
+  `GET /api/providers` sends it as `note`, but it is written for whoever maintains
+  the catalog (compliance, bandwidth, a pitch, some of it unaccented), and the SPA
+  does not render it. What a user must know before creating the password is said
+  again, in French, in `PROVIDER_TIPS` in `components/MailboxBriefing.js`, keyed by
+  the provider's key and rendered on `/connect` under the detected provider. When a
+  note says something the user has to act on (Orange's "clé d'accès", iCloud
+  showing the password only once), add or update its tip there, or the screen stays
+  silent about it. A tip only adds a sentence to a provider the server returned; it
+  never makes one appear. The same goes for a new `Blocker`: add its French
+  sentence to `BLOCKER_COPY` in the same file or the screen silently drops it,
+  which is worse than showing nothing, because the blocker is the reason the
+  connection is about to fail. `/connect` is the one screen that renders them (the
+  landing's sign-in asks for an account password, not a mailbox credential): keep
+  both tables in this one file, since two copies would drift.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
   state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`), and so
   does whether the triage plan is folded (`mailsorter_plan_collapsed`), a per-browser
@@ -400,7 +430,7 @@ not answer gets the boot-error screen instead, which is a different branch.
 ### Design system
 
 - Tailwind only, configured in `frontend/tailwind.config.js`: one accent (`brand`, deep
-  ink blue), cool neutrals (`ink`), a three-step shadow scale, five named animations.
+  ink blue), cool neutrals (`ink`), a three-step shadow scale, six named animations.
   No second accent, no gradient, no colored glow.
 - Reusable component classes are declared once in `src/index.css` under
   `@layer components`: `.btn`, `.btn-primary`, `.btn-secondary`, `.btn-ghost`,
@@ -470,6 +500,7 @@ not answer gets the boot-error screen instead, which is a different branch.
 | Go and JS code, identifiers, comments | English |
 | `docs/API.md`, `.env.example`, `CLAUDE.md` | English |
 | `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `BACKLOG.md` | French |
+| `docs/USER-STORIES.md` | French, written without accents |
 | All user-facing UI strings | French |
 
 Keep writing each surface in its existing language. Do not translate an existing file
@@ -556,20 +587,30 @@ as a side effect of another change.
 ## Configuration
 
 `.env.example` is the documented contract; read it before touching any env plumbing.
-`docker-compose.yml` maps the host vars onto container vars (notably `BACKEND_PORT` to
-`PORT`, and `MONGO_ROOT_*` into a composed `MONGODB_URI`).
+`docker-compose.yml` (the deployment) maps the host vars onto container vars:
+`MONGO_ROOT_*` into a composed `MONGODB_URI`, `PORT` fixed to `8080` (the
+healthcheck and the frontend proxy expect it), and of the AI variables
+`MISTRAL_*` only. `compose.local.yml`, stacked on it by `make up`, publishes the
+host ports and forwards `OLLAMA_*`, `OPENAI_*`, `ANTHROPIC_*` and
+`AI_FALLBACK_PROVIDER`. `make backend` exports `.env` before starting the binary,
+which reads none of it by itself.
 
 | Var | Required | Notes |
 |---|---|---|
-| `ENCRYPTION_KEY` | yes | min 32 chars. Boot **refuses** the two known placeholders. Changing it after the fact makes every stored secret unreadable |
-| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REDIRECT_URL` | yes | One OAuth app for the whole instance. Env is the source of truth; the `gmail_config` document is a read-only legacy fallback. Must be a **Web application** client, not Desktop |
-| `MISTRAL_API_KEY`, `MISTRAL_MODEL`, `MISTRAL_MAX_RETRIES` | AI features | defaults `mistral-large-2411`, 2 extra retries |
-| `MONGODB_URI` / `MONGO_ROOT_USERNAME` / `MONGO_ROOT_PASSWORD` / `PORT` / `BACKEND_PORT` | see `.env.example` | direct `go run` reads `MONGODB_URI` and `PORT` |
+| `ENCRYPTION_KEY` | yes | No default. Boot **refuses** it missing, under 32 characters, or set to a known example (the `.env.example` placeholder, the README's placeholder, and the old built-in default; `docker-compose.yml` passes it through with no fallback). The example an earlier README showed (`une-chaine-aleatoire-...`) is accepted with a startup warning: boot took it before, and refusing it would stop an instance whose only way out loses every stored secret. It seals every stored credential and signs the sessions; changing it after the fact logs everyone out and makes every stored secret unreadable |
+| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REDIRECT_URL` | optional | Needed for the Gmail API route and the Google sign-in; without them a Gmail address still connects over IMAP. One OAuth app for the whole instance. Env is the source of truth; the `gmail_config` document is a read-only legacy fallback. Must be a **Web application** client, not Desktop |
+| `MISTRAL_API_KEY`, `MISTRAL_MODEL`, `MISTRAL_MAX_RETRIES` | one AI provider is needed for the AI features | defaults `mistral-small-latest`, 2 extra retries. Mistral is first in the fallback order |
+| `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | optional | default model `gpt-6-luna`. `OPENAI_BASE_URL` is the full chat completions URL, for any OpenAI-compatible server (llama.cpp, LM Studio, vLLM); the key must not be empty even when that server ignores it. Second in the order |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | optional | default model `claude-haiku-5-5`. Third in the order |
+| `OLLAMA_MODEL`, `OLLAMA_BASE_URL` | optional | Ollama joins the registry only when `OLLAMA_MODEL` is set (it is sent `think: false`). Base URL default `http://localhost:11434`, and `http://host.docker.internal:11434` under `make up`. Last in the order |
+| `AI_FALLBACK_PROVIDER` | optional | names a provider (`openai`, `anthropic`, `ollama`) to move right after Mistral in the order |
+| `MONGODB_URI` / `MONGO_ROOT_USERNAME` / `MONGO_ROOT_PASSWORD` / `PORT` | see `.env.example` | direct `go run` reads `MONGODB_URI` and `PORT` (default 8080); in the containers `PORT` is always 8080 |
+| `BACKEND_PORT` / `FRONTEND_PORT` / `MONGO_PORT` | optional | host side only, under `make up` (defaults 8080, 3000, 27017, MongoDB bound to 127.0.0.1) |
 | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `APP_BASE_URL` | optional | empty key keeps the waitlist CTA instead of checkout |
 | `ALLOWED_ORIGINS` | optional | comma separated. Empty falls back to localhost:3000, localhost, mailsorter.sohbi.dev. No rebuild needed |
-| `EDITION` | yes (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers: the Gmail API and Proton exist only in `self-hosted` |
+| `EDITION` | optional (defaults to `self-hosted`) | `self-hosted` or `hosted`. Boot **refuses** anything else. Decides which providers `internal/provider` offers (the Gmail API and Proton exist only in `self-hosted`) and whether free accounts are capped (200 analyses a month, `hosted` only) |
 | `UI_THEME` | optional (defaults to `hotel`) | `hotel` or `classic`: the look of the landing, of every dashboard screen and of the daily digest email, read at runtime from `GET /api/config/status`, so switching is a backend restart, not a rebuild. Boot **refuses** anything else. `?ui=hotel\|classic` previews the other one for one tab (the digest, sent by the server, follows `UI_THEME` only) |
-| `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest default 07:00 UTC |
+| `BUILD_VERSION`, `DIGEST_HOUR_UTC` | optional | reported by `/health` and `/metrics`; digest hour for users who never picked one, default 7 (07:00 UTC). A stored hour wins, 0 meaning midnight |
 | `REACT_APP_API_URL`, `REACT_APP_UMAMI_WEBSITE_ID` | build args | **inlined into the static bundle at image build time.** Leave `REACT_APP_API_URL` unset so it defaults to `/` and the SPA calls the API same-origin through the nginx proxy |
 
 Secrets never go in a versioned file. No credential belongs in this document.
@@ -612,11 +653,12 @@ Do not duplicate these into this file. Point at them.
 
 | Doc | Holds | Trust |
 |---|---|---|
-| `README.md` | Product pitch, the engineering decisions worth reading, quickstart | Current |
-| `docs/API.md` | Every endpoint, payload, error, auth rule | Current, English |
-| `docs/ARCHITECTURE.md` | Diagrams, auth flow, sync flow, security, observability, workers | Security/observability/workers current; the "Composants" endpoint and collection lists are stale |
-| `docs/ROADMAP.md` | The 12 delivered phases and the deploy checklist | Current |
+| `README.md` | Product pitch, editions and providers, what works over IMAP, the engineering decisions worth reading, quickstart | Current |
+| `docs/API.md` | Every endpoint (all 79 registrations), payload, error, auth rule, and what each one does over IMAP | Current, English |
+| `docs/ARCHITECTURE.md` | Overview, sign-in, sync and analysis flows, security, background loops, observability | Current, short; the detail is here |
+| `docs/ROADMAP.md` | The 13 delivered phases (0 to 12), as a history, and the deploy checklist | History; the checklist is current |
 | `BACKLOG.md` | Last audit: every finding, all closed | Historical record, useful for "why is it like this" |
+| `docs/USER-STORIES.md` | Audit of the public front's user stories (September 2026) and what was fixed | Historical record |
 
 ## Known Gotchas
 
@@ -639,6 +681,10 @@ Do not duplicate these into this file. Point at them.
   way that matters: it REFUSES an unsealed value instead of treating it as legacy
   plaintext, because no app password was ever stored in the clear, so an unprefixed
   one is corruption or tampering and handing it back would send it to a mail server.
+  One credential does not follow this yet: the BYOK provider key. `ai_settings.go`
+  encrypts it with the same encryptor directly, without the `enc:v1:` prefix, and
+  `resolveAnalyzer` uses the stored value as is when it does not decrypt. A new
+  credential goes through `sealSecret` / `openSecret`.
 - **Adding a per-user collection means two catalogs, not one.** `account.Datasets()`
   makes erasure reach it (an account deleted while its app password stays on file is
   the exact bug the last audit found), and `account.SecretFields` says which of its
@@ -648,8 +694,9 @@ Do not duplicate these into this file. Point at them.
   its provider key on disk. `TestCatalogCoversEveryUserScopedCollection` closes that:
   it reads the accessors in `internal/database/database.go` and fails on any
   `userId`-scoped collection the catalog does not reach, with an exemption list for
-  the four that are not user-scoped (`users`, `gmail_config`, `analysis_cache`,
-  `waitlist`). A bson tag rename disables redaction silently, so
+  the three that are not user-scoped (`users`, `gmail_config`, `analysis_cache`;
+  `waitlist` left it once a signed-in signup started carrying the `userId`). A bson
+  tag rename disables redaction silently, so
   `TestSecretFieldsNameRealBsonFields` checks each declared name against the struct.
   Run both after adding a collection.
 - **Never write a Gmail token to Mongo directly.** `api/tokens.go` owns both directions:
@@ -698,27 +745,34 @@ Do not duplicate these into this file. Point at them.
   the deployment file binds nothing to the host. Local runs need `compose.local.yml` on
   top, which is what `make up` does. It is deliberately NOT named
   `docker-compose.override.yml`, since Compose would merge that into the deployment too.
-- **No handler knows Gmail's label vocabulary.** `"INBOX"`, `"TRASH"`, `"UNREAD"` and
-  `"STARRED"` appear in exactly two files: `internal/mailbox/mailbox.go` (the translation)
-  and `internal/gmail/gmail.go` (the client). They used to appear 51 times across the tree.
+- **No handler knows Gmail's label vocabulary.** As Gmail label ids, `"INBOX"`,
+  `"TRASH"`, `"UNREAD"` and `"STARRED"` appear in exactly two files:
+  `internal/mailbox/mailbox.go` (the translation) and `internal/gmail/gmail.go` (the
+  client). They used to appear 51 times across the tree. `"INBOX"` also appears in the
+  IMAP code (`internal/imap`, `internal/mailbox/imap.go`), where it is the protocol's
+  own name for the inbox, and in `internal/search`, as the one scope the mirror answers.
   Two traps the table encodes: untrashing must BOTH restore `INBOX` and drop `TRASH`, and
   read state is the ABSENCE of `UNREAD`, so marking read removes rather than adds.
 - **`mailbox.Parse` accepts every spelling already in circulation.** `delete` and `trash`
   are one act, `read` and `markRead` another, and both spellings sit in `action_log` rows
   written over the life of the app. Dropping an alias would silently stop the undo history
   resolving for every entry written the other way.
-- **MailSorter account registration is decoupled from mailbox connection.** Users can
+- **MailSorter account registration is decoupled from mailbox connection.** Users
   register and sign in to their MailSorter account (`POST /api/auth/register`,
   `POST /api/auth/login`) with email and password (bcrypt-hashed), or via Google SSO.
-  Once authenticated, they define the mailbox to sort on `/connect` either via Google
-  OAuth or via IMAP with an app password (`POST /api/mailbox/connect`). Two things hold it
-  safe and neither may be removed: a throttle far below the global limiter
-  (~1 attempt / 3 s, burst 5) keyed on the caller AND on the address, because it
-  is the one route where a stranger makes the server try a password against a
-  real mail provider; and a 409 when the address already has Google credentials,
-  because a stored `mail_accounts` row wins over a Google token in `transportFor`,
-  so accepting would hand the account to whoever holds the app password. That
-  check fails CLOSED: a datastore error is a 500, never "no Google".
+  That is the way in the SPA uses. Once authenticated, they define the mailbox to
+  sort on `/connect` either via Google OAuth or via IMAP (`POST /api/mailbox/connect`,
+  route from `provider.PickIMAP`). Register, login and `POST /api/auth/mailbox` share
+  one sign-in limiter far below the global one (~1 attempt / 3 s, burst 5), keyed on
+  the visitor's address AND on the email address; do not remove it. On
+  `POST /api/auth/mailbox`, an API alternative the SPA does not call and the one
+  public route where a stranger makes the server try a password against a real mail
+  provider, a second guard must stay too: a 409 when the address already has Google
+  credentials, because a stored `mail_accounts` row wins over a Google token in
+  `transportFor`, so accepting would hand the account to whoever holds the app
+  password. That check fails CLOSED: a datastore error is a 500, never "no Google".
+  `POST /api/mailbox/connect` has neither guard: its caller is signed in, and it is
+  how an account deliberately switches from Google to IMAP.
 - **The boot gate is `isConfigured || mailboxSignIn`, never `isConfigured` alone.**
   `GET /api/config/status` reports both doors, and `mailboxSignIn` is computed
   from `provider.ForEdition(Edition)` rather than from the edition name, so the
@@ -731,15 +785,24 @@ Do not duplicate these into this file. Point at them.
   the lifetime of the Cloud project, non-resettable. Hosted reaches Gmail over IMAP with an
   app password instead. `internal/provider` holds that rule as data and a test enforces it,
   so do not special-case a provider in a handler: add or fix its route in the catalog.
+  What the catalog gates is the connect screen and `PickIMAP`. The Google OAuth routes
+  (`/api/auth/url`, `/api/auth/callback`) do not read the edition: an instance with
+  `GMAIL_*` set offers Google sign-in, and with it a Gmail API transport, whatever its
+  `EDITION`.
 - **Any outbound request whose URL is not a constant goes through `internal/egress`.**
-  There is exactly one today: the RFC 8058 one-click unsubscribe, whose address
+  The fully guarded one is the RFC 8058 one-click unsubscribe, whose address
   comes from the `List-Unsubscribe` header of a received email, so a stranger picks
   it. Unguarded, that is a server-side request forgery: the server POSTs to its own
   loopback API, to the datastore on the Docker bridge, or to 169.254.169.254 for the
   host's credentials. The scheme check must be https-only, the address check must
   run from the dialer's `Control` hook (not before the lookup, or DNS rebinding
-  walks past it), and every redirect hop must be re-judged. Mistral and Stripe are
-  safe for one reason only: their base URL is a constant.
+  walks past it), and every redirect hop must be re-judged. The other user-chosen
+  URL is a BYOK provider's base URL (`/api/ai/settings`): it only goes through
+  `egress.Parse` when saved or tested (https, no `localhost` / `.local` name, no
+  private IP literal), and the AI clients dial it without the `Control` hook, so a
+  name that resolves to a private address is not caught. The instance's own base
+  URLs (`OPENAI_BASE_URL`, `OLLAMA_BASE_URL`) are operator configuration, and the
+  default Mistral, OpenAI, Anthropic and Stripe URLs are constants.
 - **An IMAP UID is NOT a message id, and `mailbox.Ref` is how the two stay apart.**
   Over the Gmail API a message id names a message on the account and never
   changes. Over IMAP a UID names a message inside one folder, so a move ends its
@@ -761,12 +824,17 @@ Do not duplicate these into this file. Point at them.
   pointing Mongo at a dead address and asserting an error rather than a transport.
 - **Most of the app is still Gmail-only, and `gmailClientFor` is the guard that
   makes that safe.** It refuses a user whose mailbox is reached another way, so every
-  unported path answers 501 ("pas encore disponible sur une boite IMAP") through
-  `writeAuthError` instead of acting on the wrong message. Ported so far: `syncInbox`,
-  `EmailAction`, `GetEmails`, `GetEmail` and `GetMailboxStats`, which is the set that
-  makes a connected mailbox usable at all. The AI analysis has moved to sessions
-  since. Everything else (rules, snooze, unsubscribe, attachments, labels, undo,
-  batch, digest) refuses: 12 call sites left.
+  unported path answers 501 ("Cette action n'est pas encore disponible sur une boîte
+  branchée en IMAP.") through `writeAuthError` instead of acting on the wrong message.
+  Ported so far: `syncInbox` (without rules), `EmailAction`, `GetEmails`, `GetEmail`
+  and `GetMailboxStats`, which is the set that makes a connected mailbox usable at
+  all, then the AI analysis (`runAnalysis`, without sender auto-pilot),
+  `ApplySuggestion` and `ApplyBatch`. A `label` verdict over IMAP is refused there by
+  `errNoLabelsOnIMAP` (501 on a single apply, left pending in a batch), never
+  reported as applied. Everything else (rules apply and preview, snooze and its wake
+  sweeper, unsubscribe, attachments, labels, smart labels, undo, batch action and
+  undo, bulk by sender, digest) refuses: 15 call sites left. The digest test does
+  not map the refusal to 501: `SendTestDigest` answers 502.
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
   `GMAIL_ONLY` (`frontend/src/components/landing/features.js`) lists what the
@@ -784,10 +852,12 @@ Do not duplicate these into this file. Point at them.
   backend must set `X-Real-IP` too, or the visitor's own value goes through and they
   pick their bucket; and the sign-in limiter is keyed on that address, never on a
   bearer, since a caller signing in has no session and any token it sends is made up.
-- **`X-User-Email` is both the identity header and the `userId`.** There is no account
-  entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
-- **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are
-  deliberately unwired. Do not delete them, do not assume they are reachable from the
+- **`X-User-Email` is both the identity header and the `userId`.** An account is its
+  address: there is no account id apart from it, and one mailbox per account
+  (`mail_accounts` is unique on `userId`), which is exactly what blocks multi-account
+  Gmail (`docs/ROADMAP.md`).
+- **`GET`/`POST /api/smart-labels` have no UI.** They work (the POST's transport guard
+  and input limits are tested); they are deliberately unwired. Do not delete them, do not assume they are reachable from the
   app either. (`GET /api/stats/digest` and `GET /api/labels` used to be in this list;
   both are now wired, to the digest preview in Réglages and to the rules/reader label
   pickers.)

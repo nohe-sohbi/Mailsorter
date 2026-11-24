@@ -18,6 +18,10 @@ func TestValidateEncryptionKey(t *testing.T) {
 		{"empty", "", true},
 		{"compose default", "default-dev-key-change-in-production", true},
 		{"env.example placeholder", "change-this-to-a-secure-random-string-32chars", true},
+		{"README placeholder", "collez-ici-une-cle-aleatoire-de-32-caracteres-minimum", true},
+		// An earlier README showed this one and boot accepted it: an instance
+		// running on it must keep starting (with a warning, below).
+		{"earlier README example", "une-chaine-aleatoire-de-32-caracteres-minimum", false},
 		{"too short", "short-key", true},
 		{"exactly minimum length", "0123456789012345678901234567890a", false},
 		{"strong key", strong, false},
@@ -33,6 +37,15 @@ func TestValidateEncryptionKey(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestWarningsNameThePublishedKey(t *testing.T) {
+	if w := (&Config{EncryptionKey: "une-chaine-aleatoire-de-32-caracteres-minimum"}).Warnings(); len(w) != 1 {
+		t.Errorf("Warnings() = %v, want one warning about the published example", w)
+	}
+	if w := (&Config{EncryptionKey: "this-is-a-sufficiently-long-random-key-123"}).Warnings(); len(w) != 0 {
+		t.Errorf("Warnings() = %v, want none for a random key", w)
 	}
 }
 

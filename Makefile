@@ -57,8 +57,10 @@ scenarios:
 backend:
 	@echo "Building backend..."
 	cd backend && go build -o server ./cmd/server
-	@echo "Starting backend on :8080"
-	cd backend && ./server
+	@echo "Starting backend on :8080 (reads ../.env when present)"
+	@# The binary does not read .env itself: export it first, so ENCRYPTION_KEY
+	@# and the AI settings reach it the way Compose passes them to the container.
+	cd backend && set -a && { [ ! -f ../.env ] || . ../.env; } && set +a && ./server
 
 frontend:
 	@echo "Installing frontend dependencies..."

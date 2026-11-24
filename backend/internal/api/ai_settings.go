@@ -133,7 +133,7 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isValidBaseURL(req.BaseURL) {
-		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
+		writeError(w, http.StatusBadRequest, "Adresse refusée : seule une adresse HTTPS publique est acceptée ici. Un modèle sur votre réseau se règle dans le .env de l'instance.")
 		return
 	}
 
@@ -211,7 +211,7 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isValidBaseURL(req.BaseURL) {
-		writeError(w, http.StatusBadRequest, "URL de base invalide (doit commencer par http:// ou https://)")
+		writeError(w, http.StatusBadRequest, "Adresse refusée : seule une adresse HTTPS publique est acceptée ici. Un modèle sur votre réseau se règle dans le .env de l'instance.")
 		return
 	}
 
@@ -250,11 +250,11 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.Contains(errMsg, "status 403") {
-			writeError(w, http.StatusBadRequest, "Accès refusé — vérifiez votre clé API et vos permissions")
+			writeError(w, http.StatusBadRequest, "Accès refusé : vérifiez votre clé API et ses permissions.")
 			return
 		}
 		if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "no such host") {
-			writeError(w, http.StatusBadRequest, "Impossible de joindre le serveur — vérifiez l'URL")
+			writeError(w, http.StatusBadRequest, "Impossible de joindre le serveur : vérifiez l'adresse.")
 			return
 		}
 		if req.APIKey != "" {
@@ -288,7 +288,6 @@ func (h *Handler) DeleteAISettings(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
-
 
 // resolveAnalyzer returns a Registry configured for the given user:
 // if the user has custom BYOK settings saved, they take precedence over

@@ -11,7 +11,8 @@ import Spinner from '../ui/Spinner';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import KeyTag from '../ui/hotel/KeyTag';
 import PageHead from '../components/hotel/PageHead';
-import { canConnect } from '../components/landing/features';
+import { canConnectByPassword, imapLegend, joinFr } from '../components/landing/features';
+import { useEmails } from '../contexts/EmailContext';
 
 const TILTS = [-3, 2, -1, 3, -2, 2, -3, 1];
 
@@ -28,19 +29,20 @@ function KeyGlyph() {
 }
 
 // The key board of the landing, small: the catalog the server returned, a key
-// per provider, muted when no transport the server knows reaches it yet.
-function HotelKeyBoard({ providers, isConfigured }) {
+// per provider, muted when the address-and-password form beside it cannot
+// connect it yet (the one rule, canConnectRoute in landing/features.js).
+function HotelKeyBoard({ providers }) {
   return (
     <div className="hd-keys-card animate-fade-up">
-      <h3 className="hd-keys-card__t">Ça marche avec votre boîte.</h3>
+      <h3 className="hd-keys-card__t">Les boîtes qu'on branche ici.</h3>
       <p>
-        Saisissez l'adresse : Mailsorter reconnaît le fournisseur et vous dit comment obtenir le mot de passe
-        d'application. Une minute, en général.
+        Saisissez l'adresse : Mailsorter reconnaît le fournisseur, vous dit s'il se branche ici et ce qu'il faut
+        savoir avant de créer le mot de passe d'application.
       </p>
       {providers.length > 0 && (
         <div className="hd-keys">
           {providers.map((p, i) => {
-            const soon = !canConnect(p, isConfigured);
+            const soon = !canConnectByPassword(p);
             return <KeyTag key={p.key} name={p.name} note={soon ? 'bientôt' : 'IMAP'} soon={soon} tilt={TILTS[i % TILTS.length]} />;
           })}
         </div>
@@ -51,6 +53,7 @@ function HotelKeyBoard({ providers, isConfigured }) {
 
 function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
   const isGmail = mailbox.transport === 'gmail' || mailbox.provider === 'google';
+  const isImap = mailbox.transport === 'imap';
 
   return (
     <div className="card animate-fade-up p-8">
@@ -84,6 +87,8 @@ function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
         </div>
       </dl>
 
+      {isImap && <p className="mt-4 text-sm leading-relaxed text-muted">{imapLegend()}</p>}
+
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <Link to="/inbox" className="btn-primary">
           <Inbox size={16} /> Accéder à ma boîte
@@ -106,6 +111,9 @@ function Connect() {
   const confirm = useConfirm();
   const navigate = useNavigate();
   const { isConfigured } = useInstance();
+  // The shared answer to "which mailbox is this", refreshed after a connect or
+  // a disconnect so every screen hides or shows the Gmail-only controls again.
+  const { loadMailbox } = useEmails();
 
   const [loading, setLoading] = useState(true);
   const [mailbox, setMailbox] = useState(null);
@@ -138,6 +146,13 @@ function Connect() {
   }, []);
 
   const detected = useMemo(() => detectProvider(providers, address), [providers, address]);
+  // The examples under the form's title are the providers it can connect,
+  // read from the catalog: a name written here by hand promised Outlook, which
+  // goes through an API Mailsorter does not use yet.
+  const examples = useMemo(
+    () => providers.filter((p) => p.key !== 'imap' && canConnectByPassword(p)).map((p) => p.name),
+    [providers]
+  );
 
   const handleConnectGmail = async () => {
     setGoogleBusy(true);
@@ -159,6 +174,7 @@ function Connect() {
       const { data } = await mailboxService.connect(address.trim(), password);
       setMailbox(data);
       localStorage.setItem('hasMailbox', 'true');
+      loadMailbox({ force: true });
       setPassword('');
       setAddress('');
       track('mailbox_connected', { provider: data.provider });
@@ -196,6 +212,7 @@ function Connect() {
       await mailboxService.disconnect();
       setMailbox(null);
       localStorage.removeItem('hasMailbox');
+      loadMailbox({ force: true });
       track('mailbox_disconnected');
       toast.success('Boîte déconnectée.');
     } catch (err) {
@@ -231,7 +248,7 @@ function Connect() {
             Définir la boîte mail à ranger
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-            Choisissez l'adresse email sur laquelle Mailsorter doit opérer le tri. Vos emails restent hébergés chez votre fournisseur, Mailsorter ne fait que les lire et les ranger selon vos règles.
+            Choisissez l'adresse email sur laquelle Mailsorter doit opérer le tri. Vos emails restent hébergés chez votre fournisseur : Mailsorter les lit, propose un tri, et ne range rien sans votre accord.
           </p>
         </div>
       )}
@@ -299,9 +316,9 @@ function Connect() {
                 <h2 className="text-base font-bold text-ink-900">
                   Connecter une boîte IMAP
                 </h2>
-                <p className="mt-1 text-xs text-muted">
-                  Orange, Outlook, Yahoo, iCloud, Free, messagerie professionnelle...
-                </p>
+                {examples.length > 0 && (
+                  <p className="mt-1 text-xs text-muted">{joinFr(examples)}.</p>
+                )}
               </div>
 
               <label htmlFor="mailbox-address" className="block text-xs font-bold text-ink-700">
@@ -313,7 +330,7 @@ function Connect() {
                 required
                 autoComplete="email"
                 className="input mt-1.5 w-full text-sm"
-                placeholder="vous@orange.fr ou vous@outlook.com"
+                placeholder="vous@exemple.fr"
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 disabled={connecting}
@@ -360,15 +377,15 @@ function Connect() {
             </form>
 
             {detected ? (
-              <ProviderBriefing provider={detected} />
+              <ProviderBriefing provider={detected} googleOn={isConfigured} />
             ) : hotel ? (
-              <HotelKeyBoard providers={providers} isConfigured={isConfigured} />
+              <HotelKeyBoard providers={providers} />
             ) : (
               <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-6">
                 <span className="chip mb-3 bg-brand-50 text-brand-700">Aide fournisseur</span>
                 <h3 className="text-sm font-bold text-ink-900">Assistance en direct</h3>
                 <p className="mt-2 text-xs leading-relaxed text-muted">
-                  Saisissez l'adresse de votre messagerie : Mailsorter identifiera automatiquement votre opérateur (Orange, Microsoft, Yahoo, etc.) et vous indiquera la marche à suivre pour obtenir votre mot de passe d'application en 1 minute.
+                  Saisissez l'adresse de votre messagerie : Mailsorter reconnaît votre fournisseur, vous dit s'il se branche ici et ce qu'il faut savoir avant d'obtenir votre mot de passe d'application.
                 </p>
               </div>
             )}

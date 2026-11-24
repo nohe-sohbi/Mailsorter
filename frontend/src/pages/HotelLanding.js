@@ -84,7 +84,7 @@ export default function HotelLanding() {
         <HallHero count={count} auth={auth} isConfigured={isConfigured} night={isDark} />
         <TriageDemo count={count} isConfigured={isConfigured} floorNo={floorNo.fonctionnement} onStart={() => openAuth('register')} />
         <FeatureCorridor isConfigured={isConfigured} />
-        <PrivacyVault floorNo={floorNo.confidentialite} isConfigured={isConfigured} />
+        <PrivacyVault floorNo={floorNo.confidentialite} isConfigured={isConfigured} selfHosted={selfHosted} />
         <ProviderBoard isConfigured={isConfigured} providers={providers} failed={providersFailed} />
         {!selfHosted && <RateCard floorNo={floorNo.tarifs} billingOn={billingOn} />}
         <FaqBoard floorNo={floorNo.questions} isConfigured={isConfigured} selfHosted={selfHosted} billingOn={billingOn} providers={providers} />

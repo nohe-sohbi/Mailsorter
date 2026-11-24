@@ -1,233 +1,101 @@
-# Architecture Mailsorter
+# Architecture de Mailsorter
+
+Ce document donne la vue d'ensemble et les flux principaux. La carte détaillée du code (paquet par paquet, fichier par fichier), les conventions et les pièges connus sont dans [`CLAUDE.md`](../CLAUDE.md) ; chaque route et sa charge utile, dans [`API.md`](API.md). En cas de désaccord, le code fait foi.
 
 ## Vue d'ensemble
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Utilisateur                              │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTP
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Frontend (React)                             │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  - Interface utilisateur                                   │ │
-│  │  - Authentification Gmail                                  │ │
-│  │  - Gestion des emails                                      │ │
-│  │  - Configuration des règles de tri                        │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                      Port: 3000 (dev) / 80 (prod)               │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ REST API
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Backend (Go)                                │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  API Endpoints:                                            │ │
-│  │  - GET  /api/auth/url          (Get OAuth URL)            │ │
-│  │  - GET  /api/auth/callback     (Handle OAuth)             │ │
-│  │  - GET  /api/emails            (List emails)              │ │
-│  │  - POST /api/emails/sync       (Sync from Gmail)          │ │
-│  │  - GET  /api/rules             (List rules)               │ │
-│  │  - POST /api/rules             (Create rule)              │ │
-│  │  - PUT  /api/rules/:id         (Update rule)              │ │
-│  │  - DELETE /api/rules/:id       (Delete rule)              │ │
-│  │  - GET  /api/labels            (List labels)              │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                          Port: 8080                              │
-└─────────────────────────────────────────────────────────────────┘
-                    │                        │
-                    │                        │
-         ┌──────────▼──────────┐   ┌────────▼─────────┐
-         │   MongoDB           │   │  Gmail API       │
-         │                     │   │                  │
-         │  Collections:       │   │  - OAuth 2.0     │
-         │  - users            │   │  - Messages      │
-         │  - emails           │   │  - Labels        │
-         │  - sorting_rules    │   │  - Threads       │
-         │  - labels           │   │                  │
-         │  Port: 27017        │   │  Google Cloud    │
-         └─────────────────────┘   └──────────────────┘
+```mermaid
+flowchart LR
+  U([Navigateur]) --> N["frontend<br/>nginx : SPA React + proxy /api"]
+  N -->|"/api"| B["backend<br/>Go, net/http + gorilla/mux"]
+  B --> M[("MongoDB 7")]
+  B --> GA([API Gmail])
+  B --> IM([Serveur IMAP])
+  B --> AI([Fournisseur d'IA])
+  B --> ST([Stripe])
+  B --> UN([Lien de désabonnement])
 ```
 
-## Composants
+Trois conteneurs, décrits par `docker-compose.yml` : `mongodb`, `backend` (port 8080) et `frontend` (nginx, port 80). En production, Dokploy route le domaine vers `frontend`, et nginx relaie `/api` vers `backend:8080` : aucun appel inter-origines. Ce fichier ne publie aucun port ; en local, `make up` lui ajoute `compose.local.yml`, qui publie le frontend sur 3000, le backend sur 8080 et MongoDB sur `127.0.0.1:27017`.
 
-### 1. Frontend (React)
+## Briques
 
-**Technologies:**
-- React 18
-- React Router DOM (navigation)
-- Axios (API client)
-- CSS moderne
+**Backend (`backend/`).** `cmd/server` charge et valide la configuration, se connecte à MongoDB, crée les index, construit les clients (chiffrement, Gmail, IA, Stripe), monte les routes et sert, avec un arrêt propre sur SIGTERM. `internal/api` est la seule couche qui fait des entrées-sorties : gestionnaires HTTP, middlewares, boucles de fond. La logique de décision vit dans des paquets purs, sans I/O et testés à part : `rules`, `protect`, `snooze`, `search`, `schedule`, `activity`, `digest`, `mailer`, `account`, `metrics`, `provider`, `mailbox`, `egress`, `unsubscribe`. Les clients sortants sont `gmail`, `imap`, `ai` et `billing`.
 
-**Pages:**
-- `/` - Page de connexion
-- `/emails` - Liste des emails
-- `/rules` - Gestion des règles de tri
+**Frontend (`frontend/`).** Une SPA React 18 (Create React App et Tailwind), servie par nginx. Tous les appels HTTP passent par `src/services/api.js`. L'apparence (`UI_THEME`, "hotel" ou "classic") est lue au démarrage par `GET /api/config/status`.
 
-**Composants:**
-- `EmailList` - Affichage de la liste d'emails
-- `RuleForm` - Formulaire de création/édition de règle
-- `RuleList` - Affichage de la liste des règles
+**Données.** Une base MongoDB `mailsorter`, une collection par usage, toutes déclarées dans `internal/database/database.go`. Les index sont créés au démarrage du backend par `EnsureIndexes`, seule source de vérité ; `mongo-init/` ne crée rien. Tout est rattaché à `userId`, l'adresse du compte, sauf `users` et `waitlist` (indexés sur l'adresse), `gmail_config` (ancienne configuration, en lecture seule) et `analysis_cache`, partagé entre tous les comptes et indexé sur `sha256(expéditeur|sujet)`.
 
-### 2. Backend (Go)
+**Transports.** Une boîte est jointe soit par l'API Gmail (OAuth, avec le client Google de l'instance), soit par IMAP (go-imap v2, TLS ou STARTTLS, jamais en clair). Le serveur IMAP n'est jamais fourni par le client : il est lu dans le catalogue `internal/provider` d'après le domaine de l'adresse. Le transport est résolu à chaque requête (`transportFor`) : une ligne `mail_accounts` décide ; sans ligne, des jetons Google sur le compte veulent dire API Gmail ; sans l'un ni l'autre, la requête répond `428`. Une erreur de base de données fait échouer la requête, elle ne retombe jamais sur Gmail. Microsoft Graph figure au catalogue mais n'est pas implémenté.
 
-**Technologies:**
-- Go 1.26
-- Gorilla Mux (routing)
-- MongoDB Driver
-- Google OAuth2 & Gmail API
-- CORS middleware
+## Entrer dans l'application
 
-**Structure:**
-```
-backend/
-├── cmd/server/          # Point d'entrée
-├── internal/
-│   ├── api/            # Handlers et routes HTTP
-│   ├── config/         # Configuration
-│   ├── database/       # Client MongoDB
-│   ├── gmail/          # Service Gmail API
-│   └── models/         # Structures de données
-└── pkg/                # Packages publics (vide pour l'instant)
-```
+1. **Compte.** `POST /api/auth/register` crée un compte par adresse et mot de passe (bcrypt), `POST /api/auth/login` s'y connecte. Les deux rendent un jeton de session.
+2. **Google.** `GET /api/auth/url` renvoie l'adresse du consentement Google, avec un `state` signé. Au retour, `GET /api/auth/callback` vérifie le `state`, échange le code, scelle les jetons et rend un jeton de session. Si l'appelant était déjà connecté, le `state` porte son adresse et la boîte Google est rattachée à ce compte ; sinon, le compte est celui de l'adresse Google.
+3. **Brancher une boîte.** Depuis l'écran Connecter : par Google (étape 2) quand l'instance a ses identifiants Google, ou par IMAP avec `POST /api/mailbox/connect`, qui essaie la connexion avant d'enregistrer quoi que ce soit.
 
-**Modèles de données:**
-- `User` - Utilisateur avec tokens OAuth
-- `Email` - Email synchronisé depuis Gmail
-- `SortingRule` - Règle de tri automatique
-- `Label` - Libellé Gmail
+L'API offre aussi `POST /api/auth/mailbox`, que l'interface n'utilise pas : une adresse et l'identifiant de la boîte, acceptés par le fournisseur, ouvrent ou créent le compte.
 
-### 3. MongoDB
+## Flux d'une synchronisation
 
-**Collections:**
-- `users` - Stockage des utilisateurs et leurs tokens
-- `emails` - Cache des emails Gmail
-- `sorting_rules` - Règles de tri définies par l'utilisateur
-- `labels` - Libellés Gmail synchronisés
-
-**Index:**
-- `emails.messageId` - Unique
-- `emails.userId + receivedDate` - Performance
-- `sorting_rules.userId + priority` - Tri des règles
-- `users.email` - Unique
-
-## Flux d'authentification
+Déclenchée par `POST /api/emails/sync`, ou par la boucle de synchronisation de fond.
 
 ```
-1. Utilisateur clique sur "Se connecter avec Gmail"
-   ↓
-2. Frontend demande l'URL d'autorisation au Backend
-   GET /api/auth/url
-   ↓
-3. Backend génère l'URL OAuth Google et la retourne
-   ↓
-4. Frontend redirige l'utilisateur vers Google
-   ↓
-5. Utilisateur autorise l'application
-   ↓
-6. Google redirige vers Frontend avec le code
-   callback?code=XXXX
-   ↓
-7. Frontend envoie le code au Backend
-   GET /api/auth/callback?code=XXXX
-   ↓
-8. Backend échange le code contre des tokens
-   ↓
-9. Backend sauvegarde les tokens dans MongoDB
-   ↓
-10. Backend retourne les informations utilisateur
-    ↓
-11. Frontend stocke l'email et redirige vers /emails
+syncInbox(compte)
+  -> openSession : transportFor, puis un client Gmail ou une connexion IMAP
+  -> API Gmail : les 100 messages les plus récents de la boîte de réception, corps compris
+       -> upsert dans emails, clé (userId, messageId)
+       -> si autoApplyRules : première règle qui correspond, expéditeurs protégés épargnés,
+          action par internal/mailbox, entrée au journal (source "rule")
+  -> IMAP : les 100 messages les plus récents de INBOX, lus en PEEK (aucun \Seen posé)
+       -> upsert dans emails avec le dossier, qui fait partie de l'identité d'un UID
+       -> aucune règle : rulesApplied vaut 0
+  -> { synced, total, rulesApplied }
 ```
 
-## Flux de synchronisation des emails
+Sur IMAP, la liste (`GET /api/emails`) et les compteurs (`GET /api/stats`) sont ensuite servis depuis ce miroir, sans rouvrir la boîte.
+
+## Flux d'une analyse
 
 ```
-1. Utilisateur clique sur "Synchroniser"
-   ↓
-2. Frontend envoie la requête
-   POST /api/emails/sync
-   Header: X-User-Email: user@gmail.com
-   ↓
-3. Backend récupère les tokens de l'utilisateur
-   ↓
-4. Backend vérifie et rafraîchit les tokens si nécessaire
-   ↓
-5. Backend appelle Gmail API pour lister les messages
-   ↓
-6. Pour chaque message, Backend :
-   - Récupère les détails complets
-   - Parse les headers
-   - Extrait le corps
-   - Sauvegarde dans MongoDB (upsert)
-   ↓
-7. Backend retourne le nombre d'emails synchronisés
-   ↓
-8. Frontend affiche le résultat et rafraîchit la liste
+POST /api/ai/analyze (200 ids au plus) ou POST /api/ai/analyze-async (500, file de 3 workers)
+  -> 503 si aucun fournisseur d'IA ; 402 si le quota gratuit du service géré est épuisé
+  -> runAnalysis
+       -> chaque message est lu dans le miroir, ou récupéré par la session s'il y manque
+       -> API Gmail : pilote automatique par expéditeur -> action appliquée tout de suite (source "ai-auto")
+       -> cache partagé -> suggestion sans appel au modèle
+       -> le reste par lots de 8 -> registre d'IA : la clé du compte d'abord, puis les fournisseurs
+          de l'instance par priorité ; erreur transitoire -> fournisseur suivant
+       -> un verdict destructeur sur un expéditeur protégé devient "garder"
+       -> une suggestion en attente par message ; le quota ne compte que les appels au modèle
+  -> POST /api/ai/apply ou /api/ai/apply-batch : application par la session, entrée au journal (source "ai")
 ```
 
-## Flux d'application des règles
-
-```
-1. Utilisateur crée une règle de tri
-   - Conditions: from contains "example.com"
-   - Actions: addLabel "Work"
-   ↓
-2. Lors de la synchronisation, Backend :
-   - Récupère toutes les règles actives de l'utilisateur
-   - Trie par priorité
-   - Pour chaque email :
-     a. Évalue toutes les conditions
-     b. Si toutes les conditions sont vraies :
-        - Applique toutes les actions
-        - Met à jour Gmail via API
-        - Met à jour MongoDB
-```
+Les règles déterministes ne font pas partie de ce flux : elles tournent à la synchronisation, ou à la demande par `POST /api/rules/apply`.
 
 ## Sécurité
 
-- **Authentification:** OAuth 2.0 avec Google.
-- **Protection CSRF du login:** le paramètre `state` OAuth est **signé (HMAC-SHA256)** et expirant : la callback rejette tout `state` forgé ou périmé, sans stockage serveur (stateless).
-- **Session signée:** à la connexion, le serveur émet un **token de session HMAC** (porte l'email + une expiration). Le frontend l'envoie via `Authorization: Bearer …`. Le **token d'accès Gmail n'est jamais exposé** au navigateur.
-- **Identité vérifiée:** un middleware valide le token de session et **réinjecte lui-même** `X-User-Email` après avoir supprimé toute valeur fournie par le client, donc il n'est plus possible d'usurper un utilisateur en falsifiant l'en-tête.
-- **Robustesse HTTP:** chaîne de middlewares : *recover* (anti-crash), *request-id* + journalisation structurée, *rate limiting* par client (token bucket). Le serveur applique des timeouts et un arrêt gracieux (SIGTERM).
-- **Tokens Gmail:** stockés (chiffrés) en base, jamais exposés au frontend.
-- **CORS:** origines autorisées explicitement (localhost en dev, domaine de prod).
-- **Secrets:** stockés dans des variables d'environnement; le `ClientSecret` Gmail est chiffré au repos (AES-256-GCM).
+- **Sessions.** Jeton HMAC-SHA256 maison, valable 30 jours, envoyé en `Authorization: Bearer`. Sa clé est dérivée d'`ENCRYPTION_KEY` par un label distinct de celle du `state` OAuth (valable 10 minutes), si bien que l'un ne se rejoue pas comme l'autre. Le middleware supprime tout `X-User-Email` venu du client, vérifie le jeton, puis pose lui-même l'en-tête que lisent les gestionnaires.
+- **Mots de passe des comptes.** bcrypt, entre 8 caractères et 72 octets.
+- **Identifiants stockés.** Chiffrés en AES-256-GCM avec une clé dérivée d'`ENCRYPTION_KEY` : jetons Google et mots de passe des boîtes par `internal/api/tokens.go`, clés d'IA personnelles par `internal/api/ai_settings.go`. Aucune route ne les renvoie, et l'export RGPD les retire.
+- **Tentatives de connexion.** `register`, `login` et `auth/mailbox` partagent un limiteur bien plus strict que le global : environ une tentative toutes les 3 secondes, 5 d'avance, par adresse du visiteur et par adresse email. Le limiteur global est de 20 requêtes par seconde (40 d'avance), par compte ou par adresse du visiteur. Cette adresse vient de `X-Real-IP`, posé par nginx, et n'est crue que d'un pair privé ou local.
+- **Entrées.** Corps JSON plafonnés à 1 Mio, erreurs dans une enveloppe JSON unique, en-têtes de sécurité sur chaque réponse, origines CORS limitées à `ALLOWED_ORIGINS`.
+- **Requêtes sortantes.** Le désabonnement en un clic, dont l'adresse vient d'un email reçu, passe par `internal/egress` : `https` seulement, adresse publique vérifiée au moment de la connexion, chaque redirection rejugée. L'adresse d'un fournisseur d'IA saisie dans les Réglages n'est contrôlée que sur sa forme, à l'enregistrement et au test.
+- **Configuration.** Le serveur refuse de démarrer sans `ENCRYPTION_KEY`, sous 32 caractères ou sur une valeur d'exemple connue (celle d'une ancienne version du README est seulement signalée au démarrage : la refuser bloquerait les instances qui tournent déjà avec), et sur une valeur d'`EDITION` ou d'`UI_THEME` qu'il ne connaît pas.
 
-## Performance
+## Tâches de fond
 
-- **Cache:** Emails stockés dans MongoDB pour éviter les appels répétés à Gmail
-- **Indexes:** Index MongoDB pour des requêtes rapides
-- **Pagination:** Support de la pagination pour grandes listes
-- **Async:** Synchronisation asynchrone des emails
+Quatre boucles, lancées par `NewHandler` : des goroutines avec des tickers, relancées à chaque redéploiement.
+
+| Boucle | Cadence | Rôle |
+| --- | --- | --- |
+| Workers d'analyse | 3 workers, file de 256 jobs | Exécutent `analyze-async` ; une file pleine lance le job à part |
+| Réveil des reports | toutes les minutes | Ramène en boîte les emails reportés arrivés à échéance ; après 5 échecs, le report passe en échec |
+| Récap quotidien | toutes les 15 minutes, au plus un envoi par jour et par compte | Envoie le récap des 7 derniers jours à l'heure choisie (UTC, 0 = minuit ; sans choix, `DIGEST_HOUR_UTC`), par l'API Gmail du compte ; une semaine vide n'envoie rien |
+| Synchronisation de fond | passage toutes les 5 minutes, 30 minutes au moins entre deux synchronisations d'un compte | Synchronise les comptes qui l'ont activée |
 
 ## Observabilité
 
-- **`/health` (readiness):** ping MongoDB + build (`BUILD_VERSION`) + uptime ;
-  `503` si le datastore est injoignable.
-- **`/metrics`:** compteurs en mémoire alimentés par un middleware sur le
-  hot-path (requêtes par méthode et **classe** de statut, latence moyenne/max,
-  uptime). Cardinalité bornée, agrégats seuls, sans dépendance externe
-  (`internal/metrics`).
-
-## Tâches de fond (workers)
-
-- **Analyse asynchrone** : pool de workers drainant la file de jobs IA.
-- **Réveil des snoozes** : ticker 1 min qui ramène les emails reportés échus.
-- **Digest quotidien** : ticker 15 min qui envoie (scope `gmail.send`) le récap
-  des 7 derniers jours aux utilisateurs opté-in, au plus une fois par jour
-  (logique pure `internal/mailer`).
-
-## Extensibilité
-
-L'architecture permet facilement d'ajouter :
-- Support d'autres services email (Outlook, etc.)
-- Intelligence artificielle pour le tri automatique
-- Notifications en temps réel (WebSocket)
-- Analytics et statistiques
-- Export de données
-- Règles plus complexes avec conditions multiples
+- `GET /health` : ping MongoDB, version (`BUILD_VERSION`) et uptime ; `503` si MongoDB ne répond pas.
+- `GET /metrics` : compteurs en mémoire, par méthode et par classe de statut, latence moyenne et maximale, uptime. Cardinalité bornée, aucune donnée d'utilisateur (`internal/metrics`).
+- Journaux : une ligne par requête, avec son identifiant (`X-Request-ID`), sa méthode, son chemin, son statut et sa durée.

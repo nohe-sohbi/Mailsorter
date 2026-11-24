@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -41,7 +42,7 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 
 	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
 	if !aiClient.Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		writeError(w, http.StatusServiceUnavailable, "Aucune IA n'est configurée sur cette instance.")
 		return
 	}
 
@@ -103,7 +104,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 
 	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
 	if !aiClient.Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		writeError(w, http.StatusServiceUnavailable, "Aucune IA n'est configurée sur cette instance.")
 		return
 	}
 	if userEmail == "" {
@@ -184,7 +185,8 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ApplySuggestion applies a single AI suggestion to Gmail
+// ApplySuggestion applies a single AI suggestion to the user's mailbox, over
+// whichever transport it uses.
 func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -226,8 +228,12 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 
 	labelID, err := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 	suggestion.LabelID = labelID
+	if errors.Is(err, errNoLabelsOnIMAP) {
+		writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "L'action n'a pas pu être appliquée : "+err.Error())
 		return
 	}
 
@@ -316,6 +322,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		labelID, applyErr := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 		suggestion.LabelID = labelID
 
+		if errors.Is(applyErr, errNoLabelsOnIMAP) {
+			// Left pending, neither applied nor failed: nothing went wrong,
+			// the mailbox simply has no labels.
+			continue
+		}
 		if applyErr != nil {
 			failed++
 			continue
@@ -805,13 +816,23 @@ func (h *Handler) getSmartLabelNames(ctx context.Context, userEmail string) ([]s
 	return names, nil
 }
 
+// errNoLabelsOnIMAP is what applying a "label" verdict to an IMAP mailbox
+// answers: the transport has no labels (internal/mailbox/imap.go).
+var errNoLabelsOnIMAP = errors.New("labels are not available on an IMAP mailbox")
+
+// noLabelsOnIMAPMessage is the sentence the user reads for errNoLabelsOnIMAP.
+const noLabelsOnIMAPMessage = "Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP."
+
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
 	if action == "keep" {
 		return "", nil
 	}
 	if action == "label" {
 		if session.Transport == provider.TransportIMAP {
-			return "", nil
+			// A message sits in one folder over IMAP: there is no label to
+			// add. Saying so keeps the suggestion pending and out of the
+			// history, instead of reporting an action nothing performed.
+			return "", errNoLabelsOnIMAP
 		}
 		if labelID == "" && session.gmail != nil {
 			resolved, err := h.ensureLabel(ctx, session.gmail, userEmail, labelName)

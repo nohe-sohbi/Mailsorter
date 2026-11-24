@@ -52,7 +52,9 @@ func (e errUnsupportedQuery) Error() string {
 // Anything the query could not express is the caller's problem, not this
 // function's: it is handed a Criteria that is already only the answerable part.
 func mirrorFilter(userEmail string, crit search.Criteria, now time.Time) bson.M {
-	filter := bson.M{"userId": userEmail}
+	// leftInbox: a message an action just moved out of the inbox, kept until
+	// the next sync for the history entry that reads it (mirroredIMAP).
+	filter := bson.M{"userId": userEmail, "leftInbox": bson.M{"$ne": true}}
 
 	if crit.Folder != "" {
 		filter["folder"] = crit.Folder
@@ -188,16 +190,17 @@ func parseOffsetToken(token string) (int64, error) {
 // vocabulary that means nothing on a transport where a message is in one
 // folder. The frontend renders a counter it has no value for as a dash.
 func (h *Handler) statsFromMirror(ctx context.Context, userEmail string) (*gmail.MailboxStats, error) {
-	inbox := bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox)}
+	inbox := bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "leftInbox": bson.M{"$ne": true}}
 
 	total, err := h.db.Emails().CountDocuments(ctx, inbox)
 	if err != nil {
 		return nil, fmt.Errorf("count stored messages: %w", err)
 	}
 	unread, err := h.db.Emails().CountDocuments(ctx, bson.M{
-		"userId": userEmail,
-		"folder": string(mailbox.FolderInbox),
-		"isRead": false,
+		"userId":    userEmail,
+		"folder":    string(mailbox.FolderInbox),
+		"leftInbox": bson.M{"$ne": true},
+		"isRead":    false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("count unread stored messages: %w", err)

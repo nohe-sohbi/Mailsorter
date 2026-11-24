@@ -9,6 +9,7 @@ import (
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mirror"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
@@ -132,7 +133,7 @@ func (s *mailSession) Close() {
 // Mailbox is what mutations go through.
 func (s *mailSession) Mailbox() mailbox.Mailbox {
 	if s.Transport == provider.TransportIMAP {
-		return s.imapc
+		return mirroredIMAP{client: s.imapc, h: s.h, userEmail: s.userEmail}
 	}
 	return gmailMailbox{svc: s.h.gmailService, client: s.gmail}
 }
@@ -181,10 +182,14 @@ func writeTransportError(w http.ResponseWriter) {
 func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *mailSession) (synced, total int, err error) {
 	const folder = string(mailbox.FolderInbox)
 
-	emails, err := session.imapc.List(ctx, folder, 100)
+	emails, err := session.imapc.List(ctx, folder, imapListLimit)
 	if err != nil {
 		return 0, 0, err
 	}
+	// Messages that left the inbox since the last sync (moved by Mailsorter,
+	// by the user's phone, by a filter on the server) must leave the copy the
+	// list is served from, or they show forever.
+	h.dropStaleInbox(ctx, userEmail, emails, len(emails) < imapListLimit)
 
 	// A message that cannot be stored is not on the user's screen, and nothing
 	// else will ever tell them it exists: the listing is served from this
@@ -212,6 +217,102 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 		return synced, len(emails), fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
 	}
 	return synced, len(emails), nil
+}
+
+// imapListLimit is how many of the most recent inbox messages a sync reads.
+const imapListLimit = 100
+
+// dropStaleInbox removes from the local copy of the inbox the messages the
+// listing no longer shows, and the pending AI proposals about them (they would
+// point at a message that is not there). complete says whether the listing
+// covered the whole inbox; see mirror.StaleUIDs for what a partial one can
+// judge. A row an action flagged as gone (mirroredIMAP) goes too, unless the
+// listing still shows it, in which case it is simply unflagged. Best effort:
+// a failure is logged and the list stays as it was.
+func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed []models.Email, complete bool) {
+	folder := string(mailbox.FolderInbox)
+	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder},
+		options.Find().SetProjection(bson.M{"messageId": 1, "leftInbox": 1}))
+	if err != nil {
+		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
+		return
+	}
+	var rows []struct {
+		MessageID string `bson:"messageId"`
+		LeftInbox bool   `bson:"leftInbox"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
+		return
+	}
+	seen := make([]string, 0, len(listed))
+	shown := make(map[string]bool, len(listed))
+	for _, e := range listed {
+		seen = append(seen, e.MessageID)
+		shown[e.MessageID] = true
+	}
+	stored := make([]string, 0, len(rows))
+	var gone, back []string
+	for _, r := range rows {
+		stored = append(stored, r.MessageID)
+		if r.LeftInbox {
+			if shown[r.MessageID] {
+				back = append(back, r.MessageID)
+			} else {
+				gone = append(gone, r.MessageID)
+			}
+		}
+	}
+	gone = append(gone, mirror.StaleUIDs(stored, seen, complete)...)
+	if len(back) > 0 {
+		if _, err := h.db.Emails().UpdateMany(ctx,
+			bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": back}},
+			bson.M{"$unset": bson.M{"leftInbox": ""}},
+		); err != nil {
+			log.Printf("imap sync: unflag messages still in the inbox of %s: %v", userEmail, err)
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": gone}}); err != nil {
+		log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(gone), userEmail, err)
+		return
+	}
+	if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": gone}}); err != nil {
+		log.Printf("imap sync: drop proposals about messages that left the inbox of %s: %v", userEmail, err)
+	}
+}
+
+// mirroredIMAP is the IMAP mailbox as handlers mutate it: a mutation that
+// takes a message out of the inbox also takes it out of the inbox in the
+// local copy the list is served from. Without it, an archived message stayed
+// listed until a sync, and with no sync reconciliation, for good.
+//
+// The row is flagged (leftInbox) rather than deleted or re-foldered: the
+// history entry written right after the action still reads the sender and
+// subject from it, and its (folder, UID) pair keeps naming what it named. The
+// list and the counts skip flagged rows; the next sync deletes them
+// (dropStaleInbox).
+type mirroredIMAP struct {
+	client    *imap.Client
+	h         *Handler
+	userEmail string
+}
+
+func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mutation) error {
+	if err := m.client.Apply(ctx, ref, mut); err != nil {
+		return err
+	}
+	if mailbox.LeavesInbox(mut) && ref.Folder == string(mailbox.FolderInbox) {
+		if _, err := m.h.db.Emails().UpdateOne(ctx,
+			bson.M{"userId": m.userEmail, "folder": ref.Folder, "messageId": ref.ID},
+			bson.M{"$set": bson.M{"leftInbox": true}},
+		); err != nil {
+			log.Printf("imap: message %s left the inbox of %s but stays in its copy: %v", ref.ID, m.userEmail, err)
+		}
+	}
+	return nil
 }
 
 // errMessagesNotStored is a sync that read the mailbox but could not mirror all

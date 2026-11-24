@@ -114,7 +114,7 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 		options.Update().SetUpsert(true),
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to save protected sender")
+		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer l'expéditeur protégé.")
 		return
 	}
 

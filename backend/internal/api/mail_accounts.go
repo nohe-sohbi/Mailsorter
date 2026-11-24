@@ -57,8 +57,8 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 	// generic IMAP entry), so the failure below is about the EDITION rather
 	// than about an unknown provider.
 	p := provider.Detect(address)
-	route, err := provider.Pick(p.Key, Edition)
-	if err != nil || route.IMAP == nil {
+	route, err := provider.PickIMAP(p.Key, Edition)
+	if err != nil {
 		return models.MailAccount{}, errMailboxNoRoute
 	}
 

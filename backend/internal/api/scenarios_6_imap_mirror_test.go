@@ -10,6 +10,11 @@ package api
 // (mirror.go): a mail the sync could not store is a mail the person never
 // sees. Each mailbox here is a real IMAP server over TLS, and the database
 // starts as production's does (acceptance_imap_test.go).
+//
+// The copy must also lose what left the inbox: a mail archived or deleted
+// from Mailsorter, or moved out by another mail program on the same mailbox,
+// is gone from the server's inbox, and a screen that still lists it offers to
+// act on a mail that is no longer there.
 
 import (
 	"net/http"
@@ -19,6 +24,34 @@ import (
 // refusedSubject is the subject of the one mail the database refuses to store
 // in the scenarios about a failed write (see refuseToStore).
 const refusedSubject = "Invitation au salon de l'auto"
+
+// imapInboxOwner is the person whose IMAP mailbox the sentences about a mail
+// leaving the inbox run on.
+const imapInboxOwner = "ma-boite@exemple.fr"
+
+// The mails of those sentences. Their subjects differ because a mail is found
+// by its subject on the server: its number changes when it changes folder.
+var (
+	bankStatement = incoming{From: "Ma Banque <info@banque.fr>", Subject: "Votre relevé de compte"}
+	shopOrder     = incoming{From: "Boutique <info@boutique.com>", Subject: "Votre commande est expédiée"}
+	travelOffer   = incoming{From: "Voyages <promo@voyages.fr>", Subject: "Offre de la semaine"}
+)
+
+// syncedIMAPInbox brings a person to where those sentences start: these mails
+// in their IMAP inbox, synced, and every one of them on the inbox screen. It
+// returns the person and the mails' numbers.
+func syncedIMAPInbox(app *testApp, mails ...incoming) (*imapPerson, []string) {
+	app.t.Helper()
+	moi := app.imapPerson(imapInboxOwner)
+	uids := moi.receive(mails...)
+	moi.sync()
+	for i, uid := range uids {
+		if !moi.shows(mails[i].Subject) {
+			app.fatalf("après la synchronisation, la boîte de réception de %s devrait montrer le mail n°%s %q, elle ne le montre pas : le scénario ne prouve rien", moi.email, uid, mails[i].Subject)
+		}
+	}
+	return moi, uids
+}
 
 func TestScenarios_IMAPMirror(t *testing.T) {
 	playScenarios(t, "Ta boîte IMAP", []scenario{
@@ -105,6 +138,71 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 				}
 				moi.expectShows(uids[0], "Votre relevé de compte")
 				moi.expectShows(uids[2], "Votre rendez-vous")
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un mail que tu archives disparaît de ta boîte de réception, et n'y revient pas après une nouvelle synchronisation.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				// "Archiver" on the row of the second mail.
+				moi.act(uids[1], "archive")
+				// Archived, not lost: a screen that only hid the mail would
+				// pass everything below.
+				moi.expectOnServer(serverArchive, shopOrder.Subject)
+
+				// What the inbox loads once the row has left: on a reload, or
+				// on the next screen that reads the listing.
+				moi.expectDoesNotShow(shopOrder.Subject, "tu viens de l'archiver")
+				// The control: the mail nobody touched is still there. Without
+				// it, an inbox emptied of everything would pass.
+				moi.expectShows(uids[0], bankStatement.Subject)
+
+				moi.sync()
+				moi.expectDoesNotShow(shopOrder.Subject, "tu l'as archivé avant cette synchronisation")
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un mail que tu supprimes disparaît de ta boîte de réception, et n'y revient pas après une nouvelle synchronisation.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				// "Supprimer" on the row of the second mail, which sends
+				// "delete" (Inbox.js, directAction).
+				moi.act(uids[1], "delete")
+				// In the trash, not lost: a screen that only hid the mail
+				// would pass everything below.
+				moi.expectOnServer(serverTrash, shopOrder.Subject)
+
+				moi.expectDoesNotShow(shopOrder.Subject, "tu viens de le supprimer")
+				// The control: the mail nobody touched is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+
+				moi.sync()
+				moi.expectDoesNotShow(shopOrder.Subject, "tu l'as supprimé avant cette synchronisation")
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un mail qu'un autre logiciel a sorti de ta boîte de réception n'y apparaît plus après la synchronisation suivante, et les autres mails y restent.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+
+				// The two ways a mail leaves an inbox from another mail
+				// program: archived (moved to another folder), and deleted
+				// for good (expunged, in no folder at all).
+				moi.movedElsewhere(uids[1], serverArchive)
+				moi.deletedElsewhere(uids[2])
+
+				moi.sync()
+
+				moi.expectDoesNotShow(shopOrder.Subject, "un autre logiciel l'a archivé avant cette synchronisation")
+				moi.expectDoesNotShow(travelOffer.Subject, "un autre logiciel l'a supprimé définitivement avant cette synchronisation")
+				moi.expectShows(uids[0], bankStatement.Subject)
 			},
 		},
 	})

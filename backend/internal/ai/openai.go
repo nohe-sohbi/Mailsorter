@@ -8,6 +8,9 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -17,9 +20,14 @@ import (
 // (Groq, Together, Fireworks, vLLM, LM Studio, etc.). The only difference is
 // the base URL.
 type OpenAIClient struct {
-	apiKey     string
-	model      string
-	baseURL    string
+	apiKey  string
+	model   string
+	baseURL string
+	// official is true when baseURL is OpenAI's own API. Its current models
+	// reason before they answer and want max_completion_tokens; the servers
+	// that copy the format (vLLM, LM Studio, llama.cpp, Groq...) keep the
+	// classic max_tokens.
+	official   bool
 	httpClient *http.Client
 	maxRetries int
 	baseDelay  time.Duration
@@ -35,6 +43,7 @@ func NewOpenAIClient(apiKey, model, baseURL string) *OpenAIClient {
 		apiKey:     apiKey,
 		model:      model,
 		baseURL:    baseURL,
+		official:   isOpenAIHost(baseURL),
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		maxRetries: 2,
 		baseDelay:  500 * time.Millisecond,
@@ -86,6 +95,28 @@ func (c *OpenAIClient) AnalyzeSender(senderEmail string, emails []models.Email, 
 	return parseSenderAnalysis(response)
 }
 
+// isOpenAIHost says whether baseURL is OpenAI's own API: api.openai.com, or
+// one of its regional hosts (eu.api.openai.com, us.api.openai.com...), which
+// data residency uses.
+func isOpenAIHost(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "api.openai.com" || strings.HasSuffix(host, ".api.openai.com")
+}
+
+// openAIReasoningModels names OpenAI's reasoning models (gpt-5 onward, the o
+// series). They spend reasoning tokens inside max_completion_tokens before
+// the answer, default to a medium reasoning effort, and accept no
+// temperature but the default.
+var openAIReasoningModels = regexp.MustCompile(`^(?:gpt-[5-9]|o[1-9])`)
+
+// reasoningRoom is what a reasoning model may spend before its answer, on
+// top of the answer's own budget.
+const reasoningRoom = 2048
+
 // chat sends a message using the OpenAI chat completions format, with retry.
 func (c *OpenAIClient) chat(prompt string, maxTokens int) (string, error) {
 	type msg struct {
@@ -93,16 +124,31 @@ func (c *OpenAIClient) chat(prompt string, maxTokens int) (string, error) {
 		Content string `json:"content"`
 	}
 	type req struct {
-		Model       string  `json:"model"`
-		Messages    []msg   `json:"messages"`
-		Temperature float64 `json:"temperature"`
-		MaxTokens   int     `json:"max_tokens"`
+		Model               string   `json:"model"`
+		Messages            []msg    `json:"messages"`
+		Temperature         *float64 `json:"temperature,omitempty"`
+		MaxTokens           int      `json:"max_tokens,omitempty"`
+		MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
+		ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
 	}
+	low := 0.3 // consistent answers from a model that samples
 	body := req{
-		Model:       c.model,
-		Messages:    []msg{{Role: "user", Content: prompt}},
-		Temperature: 0.3,
-		MaxTokens:   maxTokens,
+		Model:    c.model,
+		Messages: []msg{{Role: "user", Content: prompt}},
+	}
+	switch {
+	case c.official && openAIReasoningModels.MatchString(c.model):
+		// A short classification: the lowest effort keeps the reasoning
+		// small, and the room above keeps the answer whole.
+		body.ReasoningEffort = "low"
+		body.MaxCompletionTokens = maxTokens + reasoningRoom
+	case c.official:
+		// max_tokens is deprecated on OpenAI's API in favour of this one.
+		body.Temperature = &low
+		body.MaxCompletionTokens = maxTokens
+	default:
+		body.Temperature = &low
+		body.MaxTokens = maxTokens
 	}
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -150,6 +196,7 @@ func (c *OpenAIClient) doChat(jsonBody []byte) (string, bool, error) {
 				Message struct {
 					Content string `json:"content"`
 				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
@@ -158,7 +205,13 @@ func (c *OpenAIClient) doChat(jsonBody []byte) (string, bool, error) {
 		if len(result.Choices) == 0 {
 			return "", false, fmt.Errorf("no response from OpenAI")
 		}
-		return result.Choices[0].Message.Content, false, nil
+		choice := result.Choices[0]
+		if choice.FinishReason == "length" {
+			// The JSON answer is cut, or the reasoning used the whole budget
+			// before it: nothing whole to parse.
+			return "", false, fmt.Errorf("openai answer cut off at the token limit")
+		}
+		return choice.Message.Content, false, nil
 	}
 
 	retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500

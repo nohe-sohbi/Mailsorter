@@ -36,16 +36,19 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	imapv2 "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -264,6 +267,14 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 	return p
 }
 
+// The folders every person's server has, by the names a mail program shows.
+// Mailsorter finds the last two by their special use, not by these names.
+const (
+	serverInbox   = "INBOX"
+	serverArchive = "Archive"
+	serverTrash   = "Trash"
+)
+
 // startServer runs this person's own IMAP server, over implicit TLS. Without
 // InsecureAuth, so the server itself refuses a login that did not come over TLS.
 func (p *imapPerson) startServer() {
@@ -271,9 +282,9 @@ func (p *imapPerson) startServer() {
 	a.t.Helper()
 	p.mailbox = imapmemserver.NewUser(p.email, imapTestPassword)
 	for name, use := range map[string][]imapv2.MailboxAttr{
-		"INBOX":   nil,
-		"Archive": {imapv2.MailboxAttrArchive},
-		"Trash":   {imapv2.MailboxAttrTrash},
+		serverInbox:   nil,
+		serverArchive: {imapv2.MailboxAttrArchive},
+		serverTrash:   {imapv2.MailboxAttrTrash},
 	} {
 		var opts *imapv2.CreateOptions
 		if len(use) > 0 {
@@ -447,4 +458,278 @@ func (p *imapPerson) expectDoesNotShow(subject, why string) {
 			a.failf("la boîte de réception de %s ne devrait pas montrer le mail %q (%s), elle le montre sous le n°%s", p.email, subject, why, m.MessageID)
 		}
 	}
+}
+
+// act is a button of an inbox row, as this person: the single-message action
+// (POST /api/emails/action), with the verb the row sends ("archive" for
+// "Archiver", "delete" for "Supprimer"). It expects the action to go through:
+// a sentence about what the screen shows after an archive proves nothing if
+// nothing was archived.
+func (p *imapPerson) act(uid, action string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": uid, "action": action})
+	if code != http.StatusOK {
+		a.fatalf("l'action %q sur le mail n°%s de %s a répondu %d (attendu 200) : %v", action, uid, p.email, code, out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The same mailbox, from another mail program
+// ---------------------------------------------------------------------------
+
+// otherProgram opens this person's mailbox the way another mail program does
+// (the one on their phone, a webmail): its own IMAP connection, over TLS, with
+// the same app password, and nothing of Mailsorter in between. Whatever it
+// changes, Mailsorter can only learn from the server, which is what the
+// sentences about a mailbox used elsewhere are about. The caller closes it.
+func (p *imapPerson) otherProgram() *imapclient.Client {
+	a := p.app
+	a.t.Helper()
+	c, err := imapclient.DialTLS(net.JoinHostPort("127.0.0.1", fmt.Sprint(p.port)), &imapclient.Options{
+		TLSConfig: &tls.Config{ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12},
+	})
+	if err != nil {
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s : %v", p.email, err)
+	}
+	if err := c.Login(p.email, imapTestPassword).Wait(); err != nil {
+		_ = c.Close()
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP de %s : %v", p.email, err)
+	}
+	return c
+}
+
+// serverUID reads back a number receive returned.
+func (p *imapPerson) serverUID(uid string) imapv2.UID {
+	p.app.t.Helper()
+	n, err := strconv.ParseUint(uid, 10, 32)
+	if err != nil || n == 0 {
+		p.app.fatalf("%q n'est pas un numéro de mail IMAP (à corriger dans le scénario)", uid)
+	}
+	return imapv2.UID(n)
+}
+
+// openInboxElsewhere is another mail program with this person's inbox open,
+// ready to change it.
+func (p *imapPerson) openInboxElsewhere() *imapclient.Client {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	if _, err := c.Select(serverInbox, nil).Wait(); err != nil {
+		_ = c.Close()
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte de réception IMAP de %s : %v", p.email, err)
+	}
+	return c
+}
+
+// expectGoneElsewhere checks, on the connection that just acted, that the
+// server's inbox no longer holds this mail. A MOVE or an EXPUNGE of a number
+// the folder does not hold answers OK and does nothing, so without this a
+// scenario built on a wrong number would prove nothing and say nothing.
+func (p *imapPerson) expectGoneElsewhere(c *imapclient.Client, uid, what string) {
+	a := p.app
+	a.t.Helper()
+	found, err := c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{imapv2.UIDSetNum(p.serverUID(uid))}}, nil).Wait()
+	if err != nil {
+		a.fatalf("relecture de la boîte de réception IMAP de %s, une fois qu'%s : %v", p.email, what, err)
+	}
+	if len(found.AllUIDs()) > 0 {
+		a.fatalf("le mail n°%s est encore dans la boîte de réception du serveur IMAP de %s alors qu'%s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", uid, p.email, what)
+	}
+}
+
+// movedElsewhere is another mail program moving this mail out of the inbox
+// into folder: the person archived it on their phone. It does not sync.
+func (p *imapPerson) movedElsewhere(uid, folder string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openInboxElsewhere()
+	defer c.Close()
+	if _, err := c.Move(imapv2.UIDSetNum(p.serverUID(uid)), folder).Wait(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu déplacer le mail n°%s de %s vers %s : %v", uid, p.email, folder, err)
+	}
+	p.expectGoneElsewhere(c, uid, "un autre logiciel l'a déplacé vers "+folder)
+}
+
+// deletedElsewhere is another mail program deleting this mail for good:
+// marked deleted and expunged at once, as a program set to empty the trash as
+// it deletes does. It does not sync.
+func (p *imapPerson) deletedElsewhere(uid string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openInboxElsewhere()
+	defer c.Close()
+	deleted := &imapv2.StoreFlags{Op: imapv2.StoreFlagsAdd, Silent: true, Flags: []imapv2.Flag{imapv2.FlagDeleted}}
+	if err := c.Store(imapv2.UIDSetNum(p.serverUID(uid)), deleted, nil).Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu marquer supprimé le mail n°%s de %s : %v", uid, p.email, err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu effacer le mail n°%s de %s : %v", uid, p.email, err)
+	}
+	p.expectGoneElsewhere(c, uid, "un autre logiciel l'a supprimé définitivement")
+}
+
+// onServer returns the subjects of the mails in this folder of the person's
+// server, as another mail program lists them. Opened read-only and read from
+// the envelopes, so looking marks nothing read.
+func (p *imapPerson) onServer(folder string) []string {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
+	}
+	found, err := c.UIDSearch(&imapv2.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	uids := found.AllUIDs()
+	if len(uids) == 0 {
+		return nil
+	}
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uids...), &imapv2.FetchOptions{Envelope: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	subjects := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Envelope != nil {
+			subjects = append(subjects, m.Envelope.Subject)
+		}
+	}
+	return subjects
+}
+
+// expectOnServer checks that this folder of the person's server holds a mail
+// with this subject: where the mail went, seen from outside Mailsorter.
+func (p *imapPerson) expectOnServer(folder, subject string) {
+	a := p.app
+	a.t.Helper()
+	subjects := p.onServer(folder)
+	for _, s := range subjects {
+		if s == subject {
+			return
+		}
+	}
+	held := "aucun mail"
+	if len(subjects) > 0 {
+		held = fmt.Sprintf("%q", subjects)
+	}
+	a.failf("le mail %q devrait être dans le dossier %s du serveur IMAP de %s, il n'y est pas (le dossier contient : %s)", subject, folder, p.email, held)
+}
+
+// ---------------------------------------------------------------------------
+// The AI's triage plan, and the history, as this person sees them
+// ---------------------------------------------------------------------------
+
+// analyze is "Trier avec l'IA" on these mails, as this person, and expects the
+// analysis to go through: a scenario about what happens to a proposal proves
+// nothing if the AI made none.
+func (p *imapPerson) analyze(uids ...string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": uids})
+	if code != http.StatusOK {
+		a.fatalf("l'analyse par l'IA des mails n°%s de %s a répondu %d (attendu 200) : %v", strings.Join(uids, ", n°"), p.email, code, out)
+	}
+}
+
+// plan is the AI's triage plan as this person's inbox loads it
+// (GET /api/ai/suggestions): the proposals still waiting for an answer. It is
+// what the plan shows again after a refresh, so a proposal missing from it is
+// one the person can no longer apply or ignore.
+func (p *imapPerson) plan() []models.AISuggestion {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/ai/suggestions", nil)
+	if code != http.StatusOK {
+		a.fatalf("le plan de l'IA de %s ne s'affiche pas : GET /api/ai/suggestions a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var plan []models.AISuggestion
+	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+		a.fatalf("réponse de GET /api/ai/suggestions illisible pour %s : %v", p.email, err)
+	}
+	return plan
+}
+
+// inPlan reports whether the plan still shows this proposal.
+func (p *imapPerson) inPlan(id string) bool {
+	p.app.t.Helper()
+	for _, s := range p.plan() {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// proposalFor returns the proposal the plan shows for this mail, and fails
+// the scenario when it shows none.
+func (p *imapPerson) proposalFor(uid string) models.AISuggestion {
+	a := p.app
+	a.t.Helper()
+	for _, s := range p.plan() {
+		if s.EmailID == uid {
+			return s
+		}
+	}
+	a.fatalf("le plan de l'IA de %s ne propose rien pour le mail n°%s : le scénario ne prouve rien", p.email, uid)
+	return models.AISuggestion{}
+}
+
+// proposalStatus is what the database holds for a proposal ("pending",
+// "applied", "rejected"). Only for a failure message: it says why the plan no
+// longer shows a proposal.
+func (p *imapPerson) proposalStatus(id string) string {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Sprintf("identifiant %q illisible", id)
+	}
+	var s models.AISuggestion
+	if err := a.h.db.AISuggestions().FindOne(ctx, bson.M{"userId": p.email, "_id": oid}).Decode(&s); err != nil {
+		return fmt.Sprintf("introuvable (%v)", err)
+	}
+	return s.Status
+}
+
+// applyProposal is "Appliquer" on one proposal of the plan, as this person,
+// and returns the answer, whatever it is.
+func (p *imapPerson) applyProposal(id string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/apply", map[string]string{"suggestionId": id})
+	return answer{code: code, body: out}
+}
+
+// tidyAll is "Tout ranger" on these proposals of the plan, as this person, and
+// returns the answer, whatever it is.
+func (p *imapPerson) tidyAll(ids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/apply-batch", map[string]interface{}{"suggestionIds": ids})
+	return answer{code: code, body: out}
+}
+
+// history returns this person's action log for one mail, oldest first: what
+// their Historique screen lists for it. Scoped to this person, since another
+// person's mail may carry the same number.
+func (p *imapPerson) history(uid string) []models.ActionLog {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cur, err := a.h.db.ActionLog().Find(ctx, bson.M{"userId": p.email, "messageId": uid},
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}))
+	if err != nil {
+		a.fatalf("lecture de l'historique de %s : %v", p.email, err)
+	}
+	var rows []models.ActionLog
+	if err := cur.All(ctx, &rows); err != nil {
+		a.fatalf("lecture de l'historique de %s : %v", p.email, err)
+	}
+	return rows
 }

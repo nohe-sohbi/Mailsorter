@@ -9,6 +9,7 @@ import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
 import { hotelTone, initials } from '../components/hotel/avatar';
+import { useMailbox } from '../contexts/EmailContext';
 
 const AVATAR_GRADIENTS = [
   'bg-brand-fill', 'bg-info-fill',
@@ -39,7 +40,7 @@ const TABS = [
       scene: { prop: 'alarm', color: '#2F6F73' },
       hotelTitle: 'Rien en attente.',
       hotelDescription:
-        "Un e-mail reporté disparaît de la boîte et revient ce soir, demain ou ce week-end, comme si vous l'aviez reçu à ce moment-là.",
+        'Un e-mail reporté quitte votre boîte, puis y revient non lu ce soir, demain ou ce week-end.',
       description:
         "Depuis le lecteur d'email, utilisez « Reporter » pour mettre un email de côté jusqu'au moment qui vous arrange.",
     },
@@ -56,7 +57,7 @@ const TABS = [
       title: 'Aucun report terminé',
       scene: { prop: 'wallclock', color: '#2F6F73' },
       description:
-        'Les emails revenus dans votre boîte, à l’heure prévue ou réactivés à la main, s’afficheront ici.',
+        "Les emails revenus dans votre boîte, à l'heure prévue ou réactivés à la main, s'afficheront ici.",
     },
   },
   {
@@ -148,7 +149,12 @@ function countdown(dateStr, now) {
   return rtf.format(Math.round(days / 30), 'month');
 }
 
+// Over IMAP there is no "Reporter" to point at yet: the empty state says so
+// instead of sending the reader to a button that is not there.
+const IMAP_SNOOZE = "Reporter un email n'est pas encore disponible sur les boîtes IMAP.";
+
 function Snoozed() {
+  const { isImap } = useMailbox();
   const toast = useToast();
   const hotel = useHotel();
   const confirm = useConfirm();
@@ -370,10 +376,10 @@ function Snoozed() {
               Icon={meta.empty.Icon}
               tone={meta.empty.tone}
               title={meta.empty.title}
-              description={meta.empty.description}
+              description={isImap ? IMAP_SNOOZE : meta.empty.description}
               scene={meta.empty.scene}
               hotelTitle={meta.empty.hotelTitle}
-              hotelDescription={meta.empty.hotelDescription}
+              hotelDescription={isImap ? IMAP_SNOOZE : meta.empty.hotelDescription}
             />
           </div>
         ) : (

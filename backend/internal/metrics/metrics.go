@@ -23,8 +23,8 @@ type Registry struct {
 	started time.Time
 
 	total      int64
-	byMethod   map[string]int64 // GET, POST, …
-	byStatus   map[string]int64 // "2xx", "4xx", …
+	byMethod   map[string]int64 // GET, POST, ...
+	byStatus   map[string]int64 // "2xx", "4xx", ...
 	totalNanos int64            // sum of all request durations, for a mean
 	maxNanos   int64            // slowest single request observed
 }
@@ -60,7 +60,7 @@ func (r *Registry) Observe(method string, status int, dur time.Duration) {
 	}
 }
 
-// statusClass folds a status code into its class bucket ("2xx", "5xx", …),
+// statusClass folds a status code into its class bucket ("2xx", "5xx", ...),
 // keeping the status map bounded regardless of how many distinct codes appear.
 func statusClass(status int) string {
 	switch {

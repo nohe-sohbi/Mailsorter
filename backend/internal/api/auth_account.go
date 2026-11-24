@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -53,7 +54,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	// bcrypt truncates input at 72 bytes. Enforce a maximum byte length to prevent
 	// CPU exhaustion DoS attacks and silent password truncation.
 	if len(password) > 72 {
-		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
+		writeError(w, http.StatusBadRequest, "Le mot de passe est trop long : 72 octets au plus (une lettre accentuée en compte deux).")
 		return
 	}
 
@@ -92,7 +93,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.db.Users().InsertOne(ctx, user); err != nil {
-		writeError(w, http.StatusInternalServerError, "Impossible de créer le compte.")
+		status, message := insertUserFailure(err)
+		writeError(w, status, message)
 		return
 	}
 
@@ -101,6 +103,17 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		AccessToken: sessionToken,
 		UserEmail:   email,
 	})
+}
+
+// insertUserFailure answers a sign-up whose insert failed. Two sign-ups with
+// the same address at once both pass the existence check above; the unique
+// index on email stops the second, which is the same answer as that check.
+func insertUserFailure(err error) (int, string) {
+	if mongo.IsDuplicateKeyError(err) {
+		return http.StatusConflict, "Un compte existe déjà avec cette adresse email."
+	}
+	log.Printf("register: insert user: %v", err)
+	return http.StatusInternalServerError, "Impossible de créer le compte."
 }
 
 // Login authenticates a MailSorter user with their email and password.
@@ -118,7 +131,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(password) > 72 {
-		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
+		writeError(w, http.StatusBadRequest, "Le mot de passe est trop long : 72 octets au plus (une lettre accentuée en compte deux).")
 		return
 	}
 

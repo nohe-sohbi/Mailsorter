@@ -257,12 +257,15 @@ var catalog = []Provider{
 		Routes: []Route{
 			{
 				Transport: TransportIMAP,
-				Auth:      AuthPassword,
-				Editions:  bothEditions,
-				IMAP:      &Endpoint{Host: "mail.infomaniak.com", Port: 993, TLS: TLSImplicit},
-				SMTP:      &Endpoint{Host: "mail.infomaniak.com", Port: 587, TLS: TLSSTARTTLS},
-				Caps:      CapServerSend,
-				Note:      "Hebergeur suisse, donnees en Europe: l'argument de confidentialite que les outils americains ne peuvent pas tenir.",
+				// A device password created in the Manager (Mail Service, the
+				// address, Devices tab), shown once: an address has no password
+				// of its own outside Infomaniak's apps (FAQ 1321 and 1344).
+				Auth:     AuthAppPassword,
+				Editions: bothEditions,
+				IMAP:     &Endpoint{Host: "mail.infomaniak.com", Port: 993, TLS: TLSImplicit},
+				SMTP:     &Endpoint{Host: "mail.infomaniak.com", Port: 587, TLS: TLSSTARTTLS},
+				Caps:     CapServerSend,
+				Note:     "Hebergeur suisse, donnees en Europe: l'argument de confidentialite que les outils americains ne peuvent pas tenir.",
 			},
 		},
 	},
@@ -443,19 +446,24 @@ func genericProvider() Provider {
 	return p
 }
 
-// Pick returns the route Mailsorter should use for a provider in an edition:
-// the first one the provider declares, since routes are ordered best first.
+// PickIMAP returns the route an address-and-app-password connection can use:
+// the first route of the provider that this edition offers, speaks IMAP, and
+// names its server. The catalog order answers "what is best here"; this answers "what can
+// a password connect to here" (the best route is simply the first one the
+// edition offers, since routes are ordered best first). They differ for Gmail
+// installed at home, where the best route is the Gmail API (OAuth) but a user
+// who did not create a Google Cloud project still connects over IMAP with an
+// app password.
 //
-// It is the single place that answers "can this edition talk to this provider",
-// so the answer cannot drift between the connect screen, the background loops
-// and the billing page.
-func Pick(key string, e Edition) (Route, error) {
+// A route that only autodiscovers its server has no address to dial yet, so
+// it does not count.
+func PickIMAP(key string, e Edition) (Route, error) {
 	p, err := Lookup(key)
 	if err != nil {
 		return Route{}, err
 	}
 	for _, r := range p.Routes {
-		if r.Offers(e) {
+		if r.Offers(e) && r.Transport == TransportIMAP && r.IMAP != nil {
 			return r, nil
 		}
 	}

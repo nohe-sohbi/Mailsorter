@@ -27,10 +27,12 @@ export function ProposalChip({ suggestion, short = false }) {
   );
 }
 
-// The four counters as one board. Each cell is still the filter it names.
+// The counters as one board. Each cell is still the filter it names. Two of
+// them are left out for a mailbox connected over IMAP, and the board then
+// spans two columns rather than leaving two empty cells.
 export function HotelStats({ stats, cards, activeQuery, onPick, formatNumber }) {
   return (
-    <div className="hd-stats">
+    <div className="hd-stats" style={cards.length < 4 ? { gridTemplateColumns: `repeat(${cards.length}, minmax(0, 1fr))` } : undefined}>
       {cards.map(({ key, label, query }) => (
         <button key={key} onClick={() => onPick(query)} aria-pressed={activeQuery === query}>
           <span className="hd-cap">{label}</span>

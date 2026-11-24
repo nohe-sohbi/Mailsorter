@@ -274,6 +274,9 @@ func TestFormatAddress(t *testing.T) {
 		want string
 	}{
 		{[]imapv2.Address{{Name: "Acme News", Mailbox: "news", Host: "acme.com"}}, `"Acme News" <news@acme.com>`},
+		// An accented name stays readable: no RFC 2047 encoded word.
+		{[]imapv2.Address{{Name: "Réseau social", Mailbox: "notif", Host: "social.example"}}, `"Réseau social" <notif@social.example>`},
+		{[]imapv2.Address{{Name: `Boutique "Le Coin"`, Mailbox: "contact", Host: "boutique.example"}}, `"Boutique \"Le Coin\"" <contact@boutique.example>`},
 		{[]imapv2.Address{{Mailbox: "bare", Host: "acme.com"}}, "bare@acme.com"},
 		{[]imapv2.Address{{Name: "No Address"}}, "No Address"},
 		{nil, ""},

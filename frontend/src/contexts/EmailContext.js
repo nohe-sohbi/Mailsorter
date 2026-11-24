@@ -1,9 +1,12 @@
-import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
-import { emailService, aiService, senderService, subscriptionService } from '../services/api';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { emailService, aiService, senderService, subscriptionService, mailboxService } from '../services/api';
 
 const EmailContext = createContext(null);
 
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+// How long a screen left open waits before asking again which mailbox this is,
+// after GET /api/mailbox failed.
+const MAILBOX_RETRY_MS = 30 * 1000;
 export const DEFAULT_QUERY = 'in:inbox';
 
 export function EmailProvider({ children }) {
@@ -75,6 +78,11 @@ export function EmailProvider({ children }) {
       setError('');
       setErrorRetryable(true);
 
+      // Set when the round-trip to the mailbox failed. The stored mailbox is
+      // still worth showing, so it does not stop the listing below, but it is
+      // handed back to the caller: the "Synchroniser" button used to announce
+      // "Boîte synchronisée" after a sync that had failed.
+      let syncError = '';
       try {
         const now = Date.now();
         if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
@@ -82,9 +90,8 @@ export function EmailProvider({ children }) {
             await emailService.syncEmails();
             lastSyncRef.current = now;
           } catch (syncErr) {
-            // A failed sync is not fatal: the stored mailbox is still worth
-            // showing. It becomes visible only if the listing below also fails.
             console.warn('Sync failed:', syncErr);
+            syncError = errorMessage(syncErr, { sync: true });
           }
         }
 
@@ -107,15 +114,15 @@ export function EmailProvider({ children }) {
           subscriptionService.getSubscriptions(),
         ]);
 
-        if (isStale()) return { emails, senders, suggestions, stats: newStats };
+        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError };
 
         // The listing is the one call whose failure the user must see: without
         // it the screen falls back to an empty list, which the inbox used to
-        // celebrate as "Inbox Zero atteint 🎉", the exact opposite of the truth.
+        // celebrate as an empty inbox, the exact opposite of the truth.
         if (emailsRes.status === 'rejected') {
           reportError(emailsRes.reason);
           setLoading(false);
-          return { emails, senders, suggestions, stats: newStats };
+          return { emails, senders, suggestions, stats: newStats, syncError, listError: true };
         }
 
         let newEmails = [];
@@ -144,10 +151,10 @@ export function EmailProvider({ children }) {
         setSubscriptions(newSubscriptions);
         lastFetchRef.current = Date.now();
 
-        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats };
+        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats, syncError };
       } catch (err) {
         if (!isStale()) reportError(err);
-        return { emails, senders, suggestions, stats };
+        return { emails, senders, suggestions, stats, syncError, listError: true };
       } finally {
         if (!isStale()) setLoading(false);
       }
@@ -193,7 +200,7 @@ export function EmailProvider({ children }) {
   }, [pagination.nextPageToken, loadingMore, reportError]);
 
   // Optimistic removal: a triaged email must leave the list immediately, or
-  // burst keyboard triage (j, e, j, e…) works against a list that never moves.
+  // burst keyboard triage (j, e, j, e...) works against a list that never moves.
   const removeEmails = useCallback((ids) => {
     const set = new Set(Array.isArray(ids) ? ids : [ids]);
     setEmails((prev) => prev.filter((e) => !set.has(e.messageId)));
@@ -230,6 +237,49 @@ export function EmailProvider({ children }) {
     });
   }, []);
 
+  // The mailbox this account reads (GET /api/mailbox), fetched once and only
+  // when a screen asks for it through useMailbox(): this provider also sits
+  // above the public pages, where there is no session to ask with. `undefined`
+  // means not known yet, `null` means no mailbox.
+  //
+  // A failed call is NOT an answer. It used to set `null`, which read as "no
+  // mailbox, so not IMAP" for the rest of the session: one passing outage and
+  // an IMAP user got the Gmail-only controls back until the next reload. So a
+  // failure leaves the mailbox unknown and raises `mailboxFailed`, and the
+  // question is asked again by the next screen that needs it, or after
+  // MAILBOX_RETRY_MS on the one still open.
+  const [mailbox, setMailbox] = useState(undefined);
+  const [mailboxFailed, setMailboxFailed] = useState(false);
+  const mailboxRequestRef = useRef(null);
+  const mailboxRetryRef = useRef(null);
+  // Only the latest request may answer: a forced reload (after a connect or a
+  // disconnect) must not be overwritten by a slower request about the mailbox
+  // as it was before.
+  const mailboxSeqRef = useRef(0);
+  const loadMailbox = useCallback(({ force = false } = {}) => {
+    if (mailboxRequestRef.current && !force) return mailboxRequestRef.current;
+    clearTimeout(mailboxRetryRef.current);
+    // A forced reload follows a change of mailbox: until it answers, what was
+    // known is no longer true.
+    if (force) setMailbox(undefined);
+    const seq = ++mailboxSeqRef.current;
+    mailboxRequestRef.current = mailboxService
+      .get()
+      .then(({ data }) => {
+        if (seq !== mailboxSeqRef.current) return;
+        setMailbox(data?.mailbox || null);
+        setMailboxFailed(false);
+      })
+      .catch(() => {
+        if (seq !== mailboxSeqRef.current) return;
+        mailboxRequestRef.current = null;
+        setMailboxFailed(true);
+        mailboxRetryRef.current = setTimeout(() => loadMailbox(), MAILBOX_RETRY_MS);
+      });
+    return mailboxRequestRef.current;
+  }, []);
+  useEffect(() => () => clearTimeout(mailboxRetryRef.current), []);
+
   const markUnsubscribed = useCallback((senderEmail) => {
     setSubscriptions((prev) =>
       prev.map((s) => (s.senderEmail === senderEmail ? { ...s, unsubscribed: true } : s))
@@ -259,6 +309,9 @@ export function EmailProvider({ children }) {
     restoreSuggestions,
     markUnsubscribed,
     isCacheValid,
+    mailbox,
+    mailboxFailed,
+    loadMailbox,
   };
 
   return <EmailContext.Provider value={value}>{children}</EmailContext.Provider>;
@@ -266,13 +319,24 @@ export function EmailProvider({ children }) {
 
 // The API returns plain-text errors for most failures; surface something a
 // French-speaking user can act on rather than a raw googleapi string.
-function errorMessage(err) {
+//
+// Only the listing, the sync and the counters come through here, and the
+// server never answers them 502, 503 or 504: a mail provider that does not
+// answer fails them with a 500 (handlers.go). So a gateway status on these
+// routes is the proxy in front of Mailsorter, with Mailsorter itself down or
+// too slow, and naming the mail provider for it sent people to check the wrong
+// service. Neither message names the provider.
+//
+// `sync` words the failure of a sync, which the inbox says after "La
+// synchronisation a échoué." while the list stays on screen: "Votre boîte n'a
+// pas pu être chargée" contradicted the emails right under it.
+function errorMessage(err, { sync = false } = {}) {
   const status = err?.response?.status;
   const raw = err?.response?.data;
   // writeError sends { error, status }; older routes send a bare string.
   const serverSaid = (typeof raw === 'string' ? raw : raw?.error)?.trim?.() || '';
 
-  if (status === 429) return 'Trop de requêtes vers Gmail. Patientez quelques instants.';
+  if (status === 429) return 'Trop de requêtes vers votre boîte mail. Patientez quelques instants.';
   if (status === 402) return 'Quota mensuel atteint.';
   if (status === 401) return 'Session expirée. Reconnectez-vous.';
   // 501 is checked BEFORE the 5xx catch-all, and it is the one 5xx whose message
@@ -282,10 +346,15 @@ function errorMessage(err) {
   if (status === 501) {
     return serverSaid || "Cette action n'est pas encore disponible sur cette boîte.";
   }
-  if (status >= 500 || status === 502) return 'Gmail est momentanément injoignable. Réessayez.';
+  if (status === 502 || status === 503 || status === 504) {
+    return "Le serveur ne répond pas pour le moment. Réessayez dans un instant.";
+  }
+  if (status >= 500) return sync ? 'Réessayez dans un instant.' : "Votre boîte n'a pas pu être chargée. Réessayez.";
   if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
   if (serverSaid) return serverSaid;
-  return err?.message || 'Une erreur inattendue est survenue.';
+  // axios's own message is English and technical ("Request failed with status
+  // code 400"): never shown as is.
+  return 'Une erreur inattendue est survenue.';
 }
 
 export function useEmails() {
@@ -294,4 +363,37 @@ export function useEmails() {
     throw new Error('useEmails must be used within an EmailProvider');
   }
   return context;
+}
+
+// The connected mailbox and what it can do, for the signed-in screens. One
+// request per session, shared by every screen that asks.
+//
+// `isImap` is true only once the server has said so: it is what a sentence
+// about IMAP checks ("pas encore disponible sur les boîtes IMAP").
+// `fullFeatures` is what a Gmail-only control checks (see GMAIL_ONLY in
+// components/landing/features.js): true once the answer is in and the mailbox
+// is not IMAP. While the answer is not in, or the request failed, it is false,
+// so a control the server may refuse is never offered on a guess.
+// `known` is the answer being in, `failed` the last request having failed,
+// and `settled` either of the two: what a screen waits for before drawing the
+// controls that depend on it (RequireMailbox in App.js), so they do not appear
+// or vanish under the user's eyes.
+export function useMailbox() {
+  const { mailbox, mailboxFailed, loadMailbox } = useEmails();
+  useEffect(() => {
+    if (mailbox === undefined) loadMailbox();
+  }, [mailbox, loadMailbox]);
+  const known = mailbox !== undefined;
+  const isImap = mailbox?.transport === 'imap';
+  return {
+    mailbox: mailbox || null,
+    known,
+    failed: !known && mailboxFailed,
+    settled: known || mailboxFailed,
+    transport: mailbox?.transport || null,
+    isImap,
+    isGmail: mailbox?.transport === 'gmail',
+    fullFeatures: known && !isImap,
+    reload: () => loadMailbox({ force: true }),
+  };
 }

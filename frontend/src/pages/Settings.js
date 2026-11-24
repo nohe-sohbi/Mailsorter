@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { protectService, accountService, authService, mailboxService, aiService } from '../services/api';
+import { protectService, accountService, authService, aiService, NO_AI_MESSAGE } from '../services/api';
+import { useMailbox } from '../contexts/EmailContext';
+import { useInstance } from '../contexts/InstanceContext';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
@@ -71,7 +73,7 @@ function localZoneName() {
 //
 // The settings come from the parent: this card used to fetch them itself, which
 // meant three identical GETs per visit.
-function AutoSyncSettings({ settings, onSaved }) {
+function AutoSyncSettings({ settings, onSaved, rulesRun }) {
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const enabled = !!settings.autoSyncEnabled;
@@ -97,11 +99,19 @@ function AutoSyncSettings({ settings, onSaved }) {
         </span>
         <h2 className="text-lg font-bold text-ink-900">Synchronisation automatique</h2>
       </div>
+      {/* The rules half of this sentence holds only where rules run at sync,
+          which is the Gmail API: over IMAP the sync fetches the mail and nothing
+          else. */}
       <p className="mb-5 text-sm text-muted">
         Laissez Mailsorter <span className="font-semibold text-ink-700">synchroniser votre boîte en arrière-plan</span>,
-        sans aucun clic. Si l'<span className="font-semibold text-ink-700">application automatique des règles</span> est
-        activée (page Règles), vos règles déterministes trient aussi vos nouveaux emails toutes seules, le chemin
-        mains-libres vers l'Inbox Zero.
+        sans aucun clic.
+        {rulesRun && (
+          <>
+            {' '}
+            Si l'<span className="font-semibold text-ink-700">application automatique des règles</span> est activée
+            (page Règles), vos règles trient aussi vos nouveaux emails, sans que vous ayez à ouvrir l'app.
+          </>
+        )}
       </p>
 
       <div className="rounded-xl border border-hairline p-4">
@@ -115,7 +125,7 @@ function AutoSyncSettings({ settings, onSaved }) {
         />
         {saving && (
           <p className="mt-3 flex items-center gap-2 text-xs text-muted">
-            <Spinner size={14} className="text-brand-500" /> Enregistrement…
+            <Spinner size={14} className="text-brand-500" /> Enregistrement...
           </p>
         )}
       </div>
@@ -129,7 +139,7 @@ function AutoSyncSettings({ settings, onSaved }) {
 // The hour travels to the server in UTC (unchanged contract) but is never shown
 // alone: the audience is French, i.e. one or two hours ahead depending on the
 // season, and "07:00" meant two different things to the user and to the server.
-function DigestSettings({ settings, onSaved }) {
+function DigestSettings({ settings, onSaved, gmailCard }) {
   const hotel = useHotel();
   const toast = useToast();
   const [saving, setSaving] = useState(false);
@@ -157,8 +167,8 @@ function DigestSettings({ settings, onSaved }) {
       const { data } = await accountService.sendTestDigest();
       toast.success(
         data.total > 0
-          ? 'Digest envoyé : regardez votre boîte.'
-          : 'Digest envoyé. Votre semaine est vide, le récap le dit tel quel.'
+          ? 'Récap envoyé : regardez votre boîte.'
+          : 'Récap envoyé. Votre semaine est vide, le récap le dit tel quel.'
       );
     } catch (err) {
       toast.error(errText(err, "L'envoi de test a échoué."));
@@ -185,7 +195,7 @@ function DigestSettings({ settings, onSaved }) {
         digestHourUTC: next.hour,
       });
       onSaved(data);
-      toast.success(next.enabled ? 'Digest quotidien activé.' : 'Réglages du digest enregistrés.');
+      toast.success(next.enabled ? 'Récap quotidien activé.' : 'Réglages du récap enregistrés.');
     } catch (err) {
       toast.error(errText(err, 'Enregistrement impossible.'));
     } finally {
@@ -199,15 +209,17 @@ function DigestSettings({ settings, onSaved }) {
         <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
           <Mail size={18} />
         </span>
-        <h2 className="text-lg font-bold text-ink-900">Digest quotidien</h2>
+        <h2 className="text-lg font-bold text-ink-900">Récap quotidien</h2>
       </div>
       <p className="mb-5 text-sm text-muted">
         Recevez chaque jour un <span className="font-semibold text-ink-700">récap de votre tri des 7 derniers jours</span>,
         directement dans votre boîte.
-        <span className="mt-1 block text-xs text-muted">
-          Astuce : si rien n'arrive, reconnectez Gmail depuis la carte « Compte Gmail » ci-dessous pour réautoriser
-          l'envoi.
-        </span>
+        {gmailCard && (
+          <span className="mt-1 block text-xs text-muted">
+            Astuce : si rien n'arrive, reconnectez Gmail depuis la carte « Compte Gmail » ci-dessous pour réautoriser
+            l'envoi.
+          </span>
+        )}
       </p>
 
       <div className="rounded-xl border border-hairline p-4">
@@ -245,7 +257,7 @@ function DigestSettings({ settings, onSaved }) {
 
         {saving && (
           <p className="mt-3 flex items-center gap-2 text-xs text-muted">
-            <Spinner size={14} className="text-brand-500" /> Enregistrement…
+            <Spinner size={14} className="text-brand-500" /> Enregistrement...
           </p>
         )}
 
@@ -260,7 +272,7 @@ function DigestSettings({ settings, onSaved }) {
           <button onClick={sendTest} disabled={sendingTest} className="btn-ghost btn-sm">
             {sendingTest ? <Spinner size={15} /> : <Mail size={15} />} M'envoyer un test
           </button>
-          <span className="text-xs text-muted">Un test n'utilise pas le digest du jour.</span>
+          <span className="text-xs text-muted">Un test ne remplace pas le récap du jour.</span>
         </div>
       </div>
 
@@ -268,7 +280,7 @@ function DigestSettings({ settings, onSaved }) {
         <Modal
           open
           onClose={() => setPreview(null)}
-          title="Aperçu du digest"
+          title="Aperçu du récap"
           description="Exactement ce que vous recevrez, rendu depuis vos 7 derniers jours."
           size="lg"
         >
@@ -325,11 +337,16 @@ function DigestFrame({ html }) {
 // insufficient authorisation pointed at a button that did not exist. Same call
 // as the login screen (authService.getAuthUrl -> data.authUrl), because it is
 // the same flow: the callback route re-issues the session.
-function GmailAccount() {
+//
+// Shown only for a mailbox connected through the Gmail API, on an instance that
+// holds Google credentials: anyone else has no Google authorisation to replay.
+// The address is the connected mailbox's, which is the one Google must be
+// shown, rather than the Mailsorter account's.
+function GmailAccount({ address }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [redirecting, setRedirecting] = useState(false);
-  const email = localStorage.getItem('userEmail') || '';
+  const email = address || localStorage.getItem('userEmail') || '';
 
   const reconnect = async () => {
     // Google reuses whichever account is active in the browser. Signing in with
@@ -371,7 +388,7 @@ function GmailAccount() {
         <h2 className="text-lg font-bold text-ink-900">Compte Gmail</h2>
       </div>
       <p className="mb-5 text-sm text-muted">
-        Rejouez l'autorisation Google si le digest n'arrive plus, si le tri échoue soudainement, ou si vous avez
+        Rejouez l'autorisation Google si le récap n'arrive plus, si le tri échoue soudainement, ou si vous avez
         révoqué l'accès depuis votre compte Google.{' '}
         <span className="font-semibold text-ink-700">Vos règles, protections et historique sont conservés.</span>
       </p>
@@ -382,7 +399,7 @@ function GmailAccount() {
         </button>
         {email && (
           <span className="text-sm text-muted">
-            Compte connecté : <span className="font-mono text-xs text-ink-700">{email}</span>
+            Boîte connectée : <span className="font-mono text-xs text-ink-700">{email}</span>
           </span>
         )}
       </div>
@@ -530,7 +547,10 @@ function ProtectedSenders() {
 // changes nothing for anyone else.
 
 function AISettingsCard() {
-  const { toast } = useToast();
+  // useToast() returns the toast object itself. Destructuring `{ toast }` out
+  // of it gave undefined: a successful connection test then threw inside its
+  // own try and reported a failure, and saving or resetting showed nothing.
+  const toast = useToast();
   const confirm = useConfirm();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -572,8 +592,16 @@ function AISettingsCard() {
         }
         setBaseUrl(s.baseUrl || '');
       } else {
-        setSelectedProvider(s.provider || 'mistral');
-        const match = provList.find((p) => p.name === (s.provider || 'mistral'));
+        // On the instance's AI, `provider` names the instance's chain
+        // ("mistral,openai") or "none": pre-select the first one this form
+        // knows, never a card that does not exist.
+        const first = (s.provider || '')
+          .split(',')
+          .map((n) => n.trim())
+          .find((n) => provList.some((p) => p.name === n));
+        const pick = first || provList[0]?.name || 'mistral';
+        setSelectedProvider(pick);
+        const match = provList.find((p) => p.name === pick);
         setModel(match?.defaultModel || '');
       }
     } catch (err) {
@@ -600,6 +628,17 @@ function AISettingsCard() {
     );
   }, [providers, selectedProvider]);
 
+  const displayNameOf = (name) => providers.find((p) => p.name === name)?.displayName || name;
+  // What the instance runs when the user brings no key: its providers by
+  // display name, or the plain sentence when it runs none ("none").
+  const instanceNames = (currentSettings?.provider || '')
+    .split(',')
+    .map((n) => n.trim())
+    .filter((n) => n && n !== 'none');
+  const instanceAiLabel = instanceNames.length
+    ? `IA de l'instance : ${instanceNames.map(displayNameOf).join(', ')}`
+    : NO_AI_MESSAGE;
+
   const handleSelectProvider = (name) => {
     setSelectedProvider(name);
     setTestResult(null);
@@ -620,11 +659,9 @@ function AISettingsCard() {
     } else {
       setModel(info.defaultModel || '');
       setCustomModel('');
-      if (name === 'ollama') {
-        setBaseUrl('http://localhost:11434');
-      } else {
-        setBaseUrl('');
-      }
+      // Nothing prefilled: the server accepts only a public HTTPS address here,
+      // and the old default (localhost) was refused on save.
+      setBaseUrl('');
     }
   };
 
@@ -681,7 +718,7 @@ function AISettingsCard() {
     const ok = await confirm({
       title: "Rétablir l'IA de l'instance ?",
       message:
-        "Votre clé et vos paramètres personnalisés seront effacés. Le tri automatique réutilisera le fournisseur IA par défaut du serveur.",
+        "Votre clé et vos paramètres personnalisés seront effacés. L'analyse reprendra avec l'IA configurée sur l'instance.",
       confirmLabel: 'Rétablir',
       danger: true,
     });
@@ -714,24 +751,24 @@ function AISettingsCard() {
             <Sparkles size={18} />
           </span>
           <div>
-            <h2 className="font-display text-lg font-bold text-ink-900">Intelligence Artificielle & Fournisseurs</h2>
+            <h2 className="font-display text-lg font-bold text-ink-900">Intelligence artificielle</h2>
           </div>
         </div>
 
         {currentSettings?.configured ? (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            Clé personnalisée active ({currentSettings.provider})
+            Votre clé est active ({displayNameOf(currentSettings.provider)})
           </span>
         ) : (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-ink-100 px-3 py-1 text-xs font-medium text-muted border border-hairline">
-            Fournisseur instance ({currentSettings?.provider || 'Défaut'})
+            {instanceAiLabel}
           </span>
         )}
       </div>
 
       <p className="mb-5 text-sm text-muted">
-        Configurez le modèle d'IA pour le tri et l'analyse de vos emails. Vous pouvez utiliser le fournisseur par défaut de l'instance ou apporter votre propre clé API (Bring Your Own Key).
+        Choisissez l'IA qui analyse vos emails. Vous pouvez utiliser celle de l'instance, ou apporter votre propre clé d'API chez un fournisseur en ligne.
       </p>
 
       {/* Provider selection */}
@@ -759,7 +796,7 @@ function AISettingsCard() {
                   {isSelected && <Check size={14} className="text-brand-600" />}
                 </div>
                 <span className="mt-1 text-xs text-muted">
-                  {p.requiresApiKey ? 'Clé API requise' : 'Auto-hébergé / Local'}
+                  {p.requiresApiKey ? 'Clé API requise' : 'Sans clé API'}
                 </span>
                 {isCurrent && (
                   <span className="mt-1.5 inline-block rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
@@ -821,13 +858,13 @@ function AISettingsCard() {
               type="text"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder={selectedProvider === 'ollama' ? 'http://localhost:11434' : 'https://api.groq.com/openai/v1/chat/completions'}
+              placeholder={selectedProvider === 'ollama' ? 'https://ollama.exemple.fr' : 'https://api.groq.com/openai/v1/chat/completions'}
               className="input-field w-full text-sm font-mono"
             />
             <p className="mt-1 text-[11px] text-muted">
               {selectedProvider === 'ollama'
-                ? "Adresse de votre instance Ollama locale ou distante."
-                : "Point de terminaison compatible OpenAI (ex. Groq, Together AI, vLLM, LM Studio)."}
+                ? "Adresse HTTPS publique uniquement. Un modèle sur votre machine se règle dans le .env de l'instance."
+                : "Point de terminaison compatible OpenAI (ex. Groq, Together AI), en adresse HTTPS publique uniquement. Un modèle sur votre machine se règle dans le .env de l'instance."}
             </p>
           </div>
         )}
@@ -856,7 +893,7 @@ function AISettingsCard() {
                 type="text"
                 value={customModel}
                 onChange={(e) => setCustomModel(e.target.value)}
-                placeholder="ex. llama-3.3-70b-versatile, claude-3-5-haiku-latest..."
+                placeholder="Le nom exact du modèle chez votre fournisseur"
                 className="input-field w-full text-sm font-mono"
               />
             </div>
@@ -914,6 +951,12 @@ function AISettingsCard() {
 
 function Settings() {
   const hotel = useHotel();
+  // Over IMAP the daily recap and the rules at sync are not available yet:
+  // the recap card is hidden, and the sync card does not promise the rules.
+  // The Gmail card is for a mailbox connected through the Gmail API only.
+  const { mailbox, known, failed, isGmail, fullFeatures } = useMailbox();
+  const { isConfigured } = useInstance();
+  const gmailCard = isGmail && isConfigured;
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -952,7 +995,11 @@ function Settings() {
         <PageHead
           floor="/settings"
           title="Réglages"
-          sub="Le tri en arrière-plan, le récap du matin, votre boîte et les expéditeurs qu'on ne touche pas."
+          sub={
+            fullFeatures
+              ? "Le tri en arrière-plan, le récap du matin, votre boîte et les expéditeurs qu'on ne touche pas."
+              : "La synchronisation en arrière-plan, l'IA, votre boîte et les expéditeurs qu'on ne touche pas."
+          }
         />
       ) : (
         <div className="mb-8 flex items-center gap-3">
@@ -962,7 +1009,9 @@ function Settings() {
           <div>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Réglages</h1>
             <p className="text-sm text-muted">
-              Synchronisation automatique, digest quotidien, compte Gmail et expéditeurs protégés.
+              {fullFeatures
+                ? 'Synchronisation automatique, récap quotidien, boîte mail et expéditeurs protégés.'
+                : 'Synchronisation automatique, IA, boîte mail et expéditeurs protégés.'}
             </p>
           </div>
         </div>
@@ -979,15 +1028,15 @@ function Settings() {
       ) : (
         settings && (
           <>
-            <AutoSyncSettings settings={settings} onSaved={applySaved} />
-            <DigestSettings settings={settings} onSaved={applySaved} />
+            <AutoSyncSettings settings={settings} onSaved={applySaved} rulesRun={fullFeatures} />
+            {fullFeatures && <DigestSettings settings={settings} onSaved={applySaved} gmailCard={gmailCard} />}
           </>
         )
       )}
 
       <AISettingsCard />
-      <GmailAccount />
-      <MailboxAccount />
+      {gmailCard && <GmailAccount address={mailbox?.username} />}
+      <MailboxAccount mailbox={mailbox} loading={!known && !failed} failed={failed} />
       <ProtectedSenders />
     </div>
   );
@@ -997,26 +1046,11 @@ function Settings() {
 // account card, because it is the same question asked differently: how does
 // Mailsorter reach your mail. A user of the hosted service has no other path,
 // Google offering them none.
-function MailboxAccount() {
-  const [mailbox, setMailbox] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    mailboxService
-      .get()
-      .then(({ data }) => {
-        if (!cancelled) setMailbox(data.mailbox || null);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+// The mailbox comes from the shared useMailbox() answer the rest of the screen
+// reads, rather than a second request of its own.
+// `failed`: the question could not be asked, which says nothing about the
+// mailbox, so the card does not claim there is none.
+function MailboxAccount({ mailbox, loading, failed }) {
   return (
     <div className="card animate-fade-up mt-6 p-7">
       <div className="mb-1 flex items-center gap-2">
@@ -1026,8 +1060,8 @@ function MailboxAccount() {
         <h2 className="text-lg font-bold text-ink-900">Boîte mail</h2>
       </div>
       <p className="mb-5 text-sm text-muted">
-        Branchez une boîte en IMAP avec un mot de passe d'application. C'est le chemin des
-        fournisseurs autres que Gmail, et le seul sur le service en ligne.
+        Branchez une boîte en IMAP avec un mot de passe d'application. C'est le chemin de la plupart
+        des fournisseurs, et le seul sur le service en ligne.
       </p>
 
       {loading ? (
@@ -1039,12 +1073,14 @@ function MailboxAccount() {
           <p className="text-xs font-bold uppercase tracking-wider text-ink-500">Branchée</p>
           <p className="mt-1 break-all font-mono text-sm text-ink-800">{mailbox.username}</p>
         </div>
+      ) : failed ? (
+        <p className="text-sm text-muted">La boîte branchée n'a pas pu être lue pour le moment.</p>
       ) : (
         <p className="text-sm text-muted">Aucune boîte branchée pour l'instant.</p>
       )}
 
       <Link to="/connect" className="btn-secondary mt-6">
-        {mailbox ? 'Gérer la boîte' : 'Brancher une boîte'} <ChevronRight size={16} />
+        {mailbox || failed ? 'Gérer la boîte' : 'Brancher une boîte'} <ChevronRight size={16} />
       </Link>
     </div>
   );
