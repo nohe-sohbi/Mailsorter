@@ -51,7 +51,8 @@ const SHORTCUTS = [
   ['Suppr / Retour arrière', 'Supprimer'],
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
-  ['S', 'Mettre en favori'],
+  // Not over IMAP, like the reader's star (see flagAction).
+  ['S', 'Mettre en favori', 'star'],
   ['A', 'Ranger les suggestions sûres'],
   ['I', "Demander un tri IA (dans l'email)"],
   ['R', 'Synchroniser'],
@@ -911,9 +912,11 @@ function Inbox() {
     const rollback = FLAG_PATCH[FLAG_INVERSE[action]];
     if (optimistic) patchEmail(email.messageId, optimistic);
     // Over IMAP the batch route does not exist yet (501), while the single
-    // action does read, unread, star and unstar: that one is used there, so the
-    // star and the "non lu" of the reader and the u / s keys keep working.
-    if (isImap) {
+    // action does read and unread: that one is used there, and whenever the
+    // mailbox is not known, since it works on both transports. The star is not
+    // offered over IMAP: the stored copy keeps no star, so it came back empty
+    // at the next listing.
+    if (!fullFeatures) {
       try {
         await emailService.action(email.messageId, action);
         toast.success(actionMeta(action).past, { duration: 1800 });
@@ -1304,7 +1307,7 @@ function Inbox() {
           if (cur) flagAction(cur, 'read');
           break;
         case 's':
-          if (cur) flagAction(cur, 'star');
+          if (cur && fullFeatures) flagAction(cur, 'star');
           break;
         // '#' is Gmail's delete key but needs Alt+3 on a French AZERTY layout,
         // and Alt-modified events are filtered out above, so it was simply
@@ -1321,7 +1324,7 @@ function Inbox() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
+  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail, fullFeatures]);
 
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
   const goalHit = gamify.today >= gamify.goal;
@@ -1355,6 +1358,7 @@ function Inbox() {
         can('snooze') ? (choice) => (triageMode ? handleTriageSnooze(choice) : handleSnooze(openEmail, choice)) : undefined
       }
       onFlag={(action) => flagAction(openEmail, action)}
+      canStar={fullFeatures}
       onProtect={() => handleProtect(openEmail)}
       onUnsubscribe={can('unsubscribe') ? () => handleUnsubscribe({ messageId: openEmail.messageId }) : undefined}
       unsubscribing={unsubscribing === openEmail.messageId}
@@ -2290,7 +2294,7 @@ function Inbox() {
       {/* Keyboard shortcuts */}
       <Modal open={showShortcuts} onClose={() => setShowShortcuts(false)} title="Raccourcis clavier" size="md">
         <div className="space-y-1">
-          {SHORTCUTS.map(([keys, desc]) => (
+          {SHORTCUTS.filter(([, , needs]) => !needs || fullFeatures).map(([keys, desc]) => (
             <div key={keys} className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-sunken">
               <span className="text-ink-700">{desc}</span>
               <kbd className="shrink-0 rounded-md border border-hairline bg-surface-sunken px-2 py-0.5 font-mono text-xs font-semibold text-ink-800">
