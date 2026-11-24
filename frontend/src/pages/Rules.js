@@ -470,8 +470,14 @@ function Rules() {
       .getSettings()
       .then((r) => setAutoApply(!!r.data.autoApplyRules))
       .catch(() => {});
-    // Les libellés sont chargés une fois pour toute la page. Un échec est
-    // silencieux : l'éditeur retombe alors sur la saisie libre.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Les libellés sont chargés une fois pour toute la page, et seulement là où
+  // la boîte en a (pas en IMAP). Un échec est silencieux : l'éditeur retombe
+  // alors sur la saisie libre.
+  useEffect(() => {
+    if (!fullFeatures) return;
     labelService
       .list()
       .then((r) => {
@@ -485,8 +491,7 @@ function Rules() {
         setLabelsKnown(true);
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fullFeatures]);
 
   const save = async (rule) => {
     setSaving(true);

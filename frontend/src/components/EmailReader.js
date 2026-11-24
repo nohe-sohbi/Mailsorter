@@ -156,7 +156,9 @@ function EmailReader({
   }, [messageId, loadMessage]);
 
   // Label names are per-account and rarely change; fetch once for the session.
+  // A mailbox without a star has no labels either (IMAP): nothing to ask.
   useEffect(() => {
+    if (!canStar) return undefined;
     let cancelled = false;
     labelService
       .list()
@@ -172,7 +174,7 @@ function EmailReader({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canStar]);
 
   if (!email) return null;
 
