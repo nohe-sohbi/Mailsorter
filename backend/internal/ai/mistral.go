@@ -190,12 +190,6 @@ func (c *MistralClient) chatTokens(prompt string, maxTokens int) (string, error)
 					c.model = "mistral-small-latest"
 					fallbackNeeded = true
 					break
-				} else if currentModel != "open-mistral-nemo" {
-					log.Printf("Mistral model %s not available (%v), falling back to open-mistral-nemo", currentModel, err)
-					currentModel = "open-mistral-nemo"
-					c.model = "open-mistral-nemo"
-					fallbackNeeded = true
-					break
 				}
 			}
 

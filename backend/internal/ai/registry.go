@@ -13,7 +13,7 @@ import (
 type ProviderConfig struct {
 	Name       string `json:"name" bson:"name"`           // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
 	APIKey     string `json:"apiKey" bson:"apiKey"`        // encrypted at rest when stored in DB
-	Model      string `json:"model" bson:"model"`          // e.g. "gpt-4o-mini"
+	Model      string `json:"model" bson:"model"`          // e.g. "gpt-6-luna"
 	BaseURL    string `json:"baseUrl" bson:"baseUrl"`      // custom endpoint (Ollama, Azure, etc.)
 	MaxRetries int    `json:"maxRetries" bson:"maxRetries"` // extra attempts on transient failures
 	Priority   int    `json:"priority" bson:"priority"`    // lower = tried first
@@ -220,7 +220,7 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "gpt-4o-mini"
+			model = "gpt-6-luna"
 		}
 		c := NewOpenAIClient(cfg.APIKey, model, baseURL)
 		if cfg.MaxRetries > 0 {
@@ -234,7 +234,7 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "claude-sonnet-4-20250514"
+			model = "claude-haiku-5-5"
 		}
 		c := NewAnthropicClient(cfg.APIKey, model)
 		if cfg.MaxRetries > 0 {
@@ -249,7 +249,7 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "llama3"
+			model = "qwen3.5:9b"
 		}
 		c := NewOllamaClient(model, baseURL)
 		return c, nil

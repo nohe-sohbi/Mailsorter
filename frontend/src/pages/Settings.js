@@ -856,7 +856,7 @@ function AISettingsCard() {
                 type="text"
                 value={customModel}
                 onChange={(e) => setCustomModel(e.target.value)}
-                placeholder="ex. llama-3.3-70b-versatile, claude-3-5-haiku-latest..."
+                placeholder="Le nom exact du modèle chez votre fournisseur"
                 className="input-field w-full text-sm font-mono"
               />
             </div>

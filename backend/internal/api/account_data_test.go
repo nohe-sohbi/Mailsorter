@@ -94,7 +94,7 @@ func TestAISettingsAreErasableButTheirKeyIsNotExportable(t *testing.T) {
 
 func TestRedactRowsStripsTheNamedFields(t *testing.T) {
 	rows := []bson.M{
-		{"userId": "me@example.com", "provider": "openai", "apiKey": "enc:v1:cipher", "model": "gpt-4o-mini"},
+		{"userId": "me@example.com", "provider": "openai", "apiKey": "enc:v1:cipher", "model": "gpt-6-luna"},
 		{"userId": "me@example.com", "provider": "orange", "secret": "enc:v1:cipher", "username": "me@orange.fr"},
 	}
 
@@ -114,7 +114,7 @@ func TestRedactRowsStripsTheNamedFields(t *testing.T) {
 		want  string
 	}{
 		{got[0], "provider", "openai"},
-		{got[0], "model", "gpt-4o-mini"},
+		{got[0], "model", "gpt-6-luna"},
 		{got[1], "username", "me@orange.fr"},
 		{got[0], "userId", "me@example.com"},
 	} {

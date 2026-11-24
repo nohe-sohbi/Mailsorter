@@ -128,7 +128,7 @@ func TestRegistryWithUserOverride(t *testing.T) {
 	userCfg := ProviderConfig{
 		Name:    "openai",
 		APIKey:  "sk-test-user-key",
-		Model:   "gpt-4o-mini",
+		Model:   "gpt-6-luna",
 		Enabled: true,
 	}
 
