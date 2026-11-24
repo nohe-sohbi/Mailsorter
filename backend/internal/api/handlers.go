@@ -594,6 +594,10 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 	return synced, len(messages), rulesApplied, nil
 }
 
+// reversedBy names, for each inverse a client sends right after an action, the
+// action as the ledger recorded it ("trash" is recorded as "delete").
+var reversedBy = map[string]string{"unarchive": "archive", "untrash": "delete"}
+
 // EmailAction performs a direct action on a single message, over whichever
 // transport the mailbox uses (archive, trash, mark read/unread), without going
 // through AI suggestions.
@@ -646,6 +650,14 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, errNotWhereLeft) {
 		writeError(w, http.StatusNotFound, notWhereLeftMessage)
 		return
+	}
+	if err == nil {
+		// "Annuler" right after an action sends its inverse here. Mark the
+		// action it reverses undone, as the history and batch-undo do, or the
+		// history keeps offering "Annuler" on work already reversed.
+		if forward, ok := reversedBy[req.Action]; ok {
+			h.recordUndo(ctx, userEmail, req.MessageID, forward, req.Action)
+		}
 	}
 
 	if err != nil {

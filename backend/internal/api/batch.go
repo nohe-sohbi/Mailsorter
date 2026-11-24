@@ -264,7 +264,7 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		restored++
-		h.recordBatchUndo(ctx, userEmail, id, req.Action, inverse)
+		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)})
@@ -295,19 +295,19 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 			continue
 		}
 		restored++
-		h.recordBatchUndo(ctx, userEmail, id, req.Action, inverse)
+		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)})
 }
 
-// recordBatchUndo marks the forward entry undone, so the history does not
+// recordUndo marks the forward entry undone, so the history does not
 // offer a second "Annuler" on work already reversed, and records the reversal
 // itself. Deliberately the MOST RECENT matching entry only: an UpdateMany here
 // would stamp every past archive of the same message as undone, rewriting
 // history the user never touched. Without the reversal entry a batch undo left
 // no trace and the ledger stopped being a truthful account of what Mailsorter
 // did.
-func (h *Handler) recordBatchUndo(ctx context.Context, userEmail, id, action, inverse string) {
+func (h *Handler) recordUndo(ctx context.Context, userEmail, id, action, inverse string) {
 	var entry models.ActionLog
 	err := h.db.ActionLog().FindOneAndUpdate(ctx,
 		bson.M{"userId": userEmail, "messageId": id, "action": action, "undone": bson.M{"$ne": true}},
