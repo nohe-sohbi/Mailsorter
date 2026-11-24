@@ -1,0 +1,298 @@
+//go:build acceptance
+
+package api
+
+// The files attached to a mail, on a mailbox reached over IMAP.
+//
+// The reader shows a mail's attachments under its text, one chip each with
+// its name, its type and its size, and a click on a chip saves the file
+// (EmailReader.js). Over the Gmail API, Google hands the parts over already
+// decoded. Over IMAP the files are inside the message itself, as its
+// server keeps it: a multipart/mixed whose parts are encoded for transport
+// (base64, quoted-printable) and whose names may be encoded twice over
+// (RFC 2047 or RFC 2231 for an accented name). The mail of these sentences
+// is written the way mail programs write one, and the file a person saves
+// must be the one that was sent, byte for byte, under its own name.
+//
+// A download names a part of one mail. A part that mail does not have must
+// get nothing: not another part, not the text of the mail.
+
+import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
+	"mime"
+	"net/http"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// invoiceMail is a shop's invoice, with its two files attached.
+var invoiceMail = incoming{
+	From:    "Boutique <factures@boutique.com>",
+	Subject: "Votre facture de décembre",
+	Body:    "Bonjour, vous trouverez ci-joint votre facture et le relevé de vos achats.",
+}
+
+// invoicePDF is the invoice itself: a binary file in base64, its accented
+// name written the way Gmail and Outlook write it.
+var invoicePDF = attachedFile{
+	Name:     "Facture décembre.pdf",
+	Type:     "application/pdf",
+	Data:     samplePDF(),
+	NameAs:   nameRFC2047,
+	Transfer: transferBase64,
+}
+
+// purchasesCSV is the statement that comes with it: a text file in
+// quoted-printable, its accented name written the way Thunderbird and Apple
+// Mail write it.
+var purchasesCSV = attachedFile{
+	Name:     "Relevé d'achats été.csv",
+	Type:     "text/csv",
+	Data:     []byte("Date;Libellé;Montant\r\n02/12/2026;Café en grains;12,90\r\n05/12/2026;Théière;34,00\r\n"),
+	NameAs:   nameRFC2231,
+	Transfer: transferQuotedPrintable,
+}
+
+// plainMail is a mail with no file attached.
+var plainMail = incoming{
+	From:    "Ma Banque <info@banque.fr>",
+	Subject: "Votre conseiller vous répond",
+	Body:    "Bonjour, votre rendez-vous est confirmé pour jeudi.",
+}
+
+// samplePDF is a small PDF whose content holds every byte value, the line
+// breaks and NUL among them: a file that went through a text conversion,
+// or was not decoded from its base64, does not come back equal.
+func samplePDF() []byte {
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Length 512 >>\nstream\n")
+	for round := 0; round < 2; round++ {
+		for c := 0; c < 256; c++ {
+			b.WriteByte(byte(c))
+		}
+	}
+	b.WriteString("\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
+	return b.Bytes()
+}
+
+// invoiceInInbox brings a person to where these sentences start: the
+// invoice in their IMAP inbox, synced, and on the inbox screen. It returns
+// the person and the invoice's number.
+func invoiceInInbox(app *testApp) (*imapPerson, string) {
+	app.t.Helper()
+	moi := app.imapPerson(imapInboxOwner)
+	uid := moi.receiveWithFiles(invoiceMail, invoicePDF, purchasesCSV)
+	moi.sync()
+	moi.requireShown(uid, invoiceMail.Subject)
+	return moi, uid
+}
+
+// requireShown stops the scenario when the inbox screen does not list this
+// mail: a sentence about what the reader shows of a mail proves nothing if
+// the person cannot open it.
+func (p *imapPerson) requireShown(uid, subject string) {
+	p.app.t.Helper()
+	if !p.shows(subject) {
+		p.app.fatalf("après la synchronisation, la boîte de réception de %s devrait montrer le mail n°%s %q, elle ne le montre pas : le scénario ne prouve rien", p.email, uid, subject)
+	}
+}
+
+// chipNamed returns the attachment the reader shows under this name.
+func chipNamed(shown []shownAttachment, name string) (shownAttachment, bool) {
+	for _, c := range shown {
+		if c.Filename == name {
+			return c, true
+		}
+	}
+	return shownAttachment{}, false
+}
+
+// describeChips is the attachments of the reader in a failure message.
+func describeChips(shown []shownAttachment) string {
+	if len(shown) == 0 {
+		return "aucune pièce jointe"
+	}
+	parts := make([]string, 0, len(shown))
+	for _, c := range shown {
+		parts = append(parts, fmt.Sprintf("« %s » (%s, %d octets)", c.Filename, c.MimeType, c.Size))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// sameMediaType compares two types as a reader shows them: the media type
+// alone, in any case, whatever parameter (a charset) comes after it.
+func sameMediaType(got, want string) bool {
+	t, _, err := mime.ParseMediaType(got)
+	return err == nil && strings.EqualFold(t, want)
+}
+
+// firstDifference is where two files part ways, for a failure message.
+func firstDifference(got, want []byte) int {
+	for i := range got {
+		if i >= len(want) || got[i] != want[i] {
+			return i
+		}
+	}
+	return len(got)
+}
+
+// leakedParts names the parts of the invoice and of plainMail found in a
+// download's body, decoded or still encoded as the server keeps them. A
+// download of a part the mail does not have must send none of them.
+func leakedParts(body []byte) []string {
+	marks := []struct {
+		what  string
+		marks []string
+	}{
+		// The start of the PDF, and the same start in base64.
+		{fmt.Sprintf("le PDF « %s »", invoicePDF.Name), []string{"%PDF-", base64.StdEncoding.EncodeToString([]byte("%PDF-1.4"))[:8]}},
+		// Its first line, the same decoded and in quoted-printable.
+		{fmt.Sprintf("le tableau « %s »", purchasesCSV.Name), []string{"Date;Libell"}},
+		{fmt.Sprintf("le texte du mail %q", invoiceMail.Subject), []string{invoiceMail.Body}},
+		{fmt.Sprintf("le texte du mail %q", plainMail.Subject), []string{plainMail.Body}},
+	}
+	var found []string
+	for _, m := range marks {
+		for _, s := range m.marks {
+			if bytes.Contains(body, []byte(s)) {
+				found = append(found, m.what)
+				break
+			}
+		}
+	}
+	return found
+}
+
+func TestScenarios_IMAPAttachments(t *testing.T) {
+	playScenarios(t, "Les pièces jointes sur une boîte IMAP", []scenario{
+		{
+			phrase: "Sur une boîte IMAP, le lecteur d'un mail montre ses pièces jointes, avec leur nom, leur type et leur taille.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uid := invoiceInInbox(app)
+
+				shown := moi.openInReader(uid)
+				sent := []attachedFile{invoicePDF, purchasesCSV}
+				for _, f := range sent {
+					chip, ok := chipNamed(shown, f.Name)
+					if !ok {
+						app.failf("le lecteur du mail n°%s %q de %s devrait montrer la pièce jointe « %s », il ne la montre pas (il montre : %s)", uid, invoiceMail.Subject, moi.email, f.Name, describeChips(shown))
+						continue
+					}
+					if !sameMediaType(chip.MimeType, f.Type) {
+						app.failf("le lecteur du mail n°%s %q de %s devrait montrer « %s » avec son type, %s, il montre %q", uid, invoiceMail.Subject, moi.email, f.Name, f.Type, chip.MimeType)
+					}
+					if chip.Size != int64(len(f.Data)) {
+						app.failf("le lecteur du mail n°%s %q de %s devrait montrer « %s » avec sa taille, %d octets, il montre %d octets", uid, invoiceMail.Subject, moi.email, f.Name, len(f.Data), chip.Size)
+					}
+				}
+				// Nothing else: the text of the mail is not a file, and a
+				// chip for it would offer to download what the reader
+				// already shows.
+				for _, c := range shown {
+					if c.Filename != invoicePDF.Name && c.Filename != purchasesCSV.Name {
+						app.failf("le lecteur du mail n°%s %q de %s ne devrait montrer que ses %d pièces jointes, il montre en plus « %s » (%s, %d octets)", uid, invoiceMail.Subject, moi.email, len(sent), c.Filename, c.MimeType, c.Size)
+					}
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, télécharger une pièce jointe depuis le lecteur donne le fichier tel qu'il a été envoyé, octet pour octet, avec son nom.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uid := invoiceInInbox(app)
+
+				shown := moi.openInReader(uid)
+				for _, f := range []attachedFile{invoicePDF, purchasesCSV} {
+					chip, ok := chipNamed(shown, f.Name)
+					if !ok {
+						app.failf("le lecteur du mail n°%s %q de %s ne propose pas de télécharger « %s » : il ne montre pas cette pièce jointe (il montre : %s)", uid, invoiceMail.Subject, moi.email, f.Name, describeChips(shown))
+						continue
+					}
+					if chip.AttachmentID == "" {
+						app.failf("le lecteur du mail n°%s %q de %s montre « %s » sans proposer de la télécharger (elle n'a pas d'attachmentId)", uid, invoiceMail.Subject, moi.email, f.Name)
+						continue
+					}
+
+					// A click on the chip.
+					got := moi.download(uid, chip.AttachmentID)
+					if got.code != http.StatusOK {
+						app.failf("télécharger « %s » depuis le lecteur du mail n°%s %q de %s devrait donner le fichier, le serveur a répondu %s", f.Name, uid, invoiceMail.Subject, moi.email, got)
+						continue
+					}
+					if !bytes.Equal(got.body, f.Data) {
+						app.failf("le fichier « %s » téléchargé depuis le lecteur du mail n°%s de %s devrait être celui envoyé, octet pour octet (%d octets) : il fait %d octets et diffère à partir de l'octet %d", f.Name, uid, moi.email, len(f.Data), len(got.body), firstDifference(got.body, f.Data))
+					}
+					// The name a browser saves it under: filename*, when
+					// the answer gives one, wins over filename.
+					disposition := got.header.Get("Content-Disposition")
+					_, params, err := mime.ParseMediaType(disposition)
+					if err != nil || params["filename"] != f.Name {
+						app.failf("le fichier « %s » téléchargé depuis le lecteur du mail n°%s de %s devrait arriver sous son nom, la réponse le nomme %q (Content-Disposition : %q)", f.Name, uid, moi.email, params["filename"], disposition)
+					}
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, télécharger une pièce jointe qui n'existe pas dans ce mail répond une erreur, sans rien envoyer d'autre.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapInboxOwner)
+				plain := moi.receive(plainMail)[0]
+				uid := moi.receiveWithFiles(invoiceMail, invoicePDF, purchasesCSV)
+				moi.sync()
+				moi.requireShown(plain, plainMail.Subject)
+				moi.requireShown(uid, invoiceMail.Subject)
+
+				// The attachments the reader hands out for the invoice, so
+				// none of them is taken for an invented one.
+				real := map[string]bool{}
+				for _, c := range moi.openInReader(uid) {
+					if c.AttachmentID != "" {
+						real[c.AttachmentID] = true
+					}
+				}
+
+				type try struct{ mail, subject, id, what string }
+				var tries []try
+				// On the invoice, ids it has no file under: its text ("1",
+				// the number of its first MIME part), a part past its last
+				// one, and "TEXT", the name IMAP gives the whole body.
+				for _, id := range []string{"1", "4", "TEXT"} {
+					if !real[id] {
+						tries = append(tries, try{uid, invoiceMail.Subject, id, "un identifiant sous lequel ce mail n'a pas de pièce jointe"})
+					}
+				}
+				// On the mail without files: "1" is its text, and the
+				// invoice's attachments are not its own.
+				tries = append(tries, try{plain, plainMail.Subject, "1", "ce mail n'a aucune pièce jointe"})
+				ids := make([]string, 0, len(real))
+				for id := range real {
+					ids = append(ids, id)
+				}
+				sort.Strings(ids)
+				for _, id := range ids {
+					if id != "1" {
+						tries = append(tries, try{plain, plainMail.Subject, id, fmt.Sprintf("une pièce jointe du mail %q, pas de celui-ci", invoiceMail.Subject)})
+					}
+				}
+
+				for _, tr := range tries {
+					got := moi.download(tr.mail, tr.id)
+					if got.code < 400 || got.code > 499 {
+						app.failf("télécharger la pièce jointe %q du mail n°%s %q de %s (%s) devrait répondre une erreur disant qu'elle n'existe pas (4xx), le serveur a répondu %s", tr.id, tr.mail, tr.subject, moi.email, tr.what, got)
+					}
+					if leaked := leakedParts(got.body); len(leaked) > 0 {
+						app.failf("télécharger la pièce jointe %q du mail n°%s %q de %s (%s) ne devrait rien envoyer d'autre qu'une erreur, la réponse contient %s", tr.id, tr.mail, tr.subject, moi.email, tr.what, strings.Join(leaked, ", "))
+					}
+					if d, params, err := mime.ParseMediaType(got.header.Get("Content-Disposition")); err == nil && d == "attachment" {
+						app.failf("télécharger la pièce jointe %q du mail n°%s %q de %s (%s) ne devrait proposer aucun fichier, la réponse propose %q", tr.id, tr.mail, tr.subject, moi.email, tr.what, params["filename"])
+					}
+				}
+			},
+		},
+	})
+}
