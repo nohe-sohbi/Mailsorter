@@ -145,7 +145,7 @@ export default function SnoozeButton({
               align === 'left' ? 'left-0' : 'right-0'
             )}
           >
-            <div className="px-3 py-1.5 text-xs font-semibold text-muted">Reporter jusqu'à…</div>
+            <div className="px-3 py-1.5 text-xs font-semibold text-muted">Reporter jusqu'à...</div>
             {SNOOZE_PRESETS.map(([preset, presetLabel]) => (
               <button
                 key={preset}
@@ -198,7 +198,7 @@ export default function SnoozeButton({
                   onClick={openCustom}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold text-brand-700 hover:bg-ink-100"
                 >
-                  <Clock size={15} className="text-brand-600" /> Date personnalisée…
+                  <Clock size={15} className="text-brand-600" /> Date personnalisée...
                 </button>
               )}
             </div>
