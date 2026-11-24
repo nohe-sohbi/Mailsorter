@@ -116,7 +116,8 @@ func (h *Handler) downloadAttachmentGmail(w http.ResponseWriter, gmailClient *gm
 // downloadAttachmentIMAP is the IMAP half of DownloadAttachment.
 //
 // The id is the part number the reader listed (getEmailIMAP), and the client
-// serves it only when the walk of this same message lists a file under it. A
+// serves it only when the reader's list of this same message has a file under
+// it. A
 // part number is easy to guess ("1" is the text of almost every mail), so
 // without that check the route would hand out the text of a mail, or any part
 // of it, as a file.

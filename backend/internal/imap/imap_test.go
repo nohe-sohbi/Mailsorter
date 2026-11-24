@@ -49,6 +49,16 @@ func startTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) st
 // each session.
 func serveTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr, wrap func(imapserver.SessionIMAP4rev2) imapserver.Session) string {
 	t.Helper()
+	return serveTestServerWith(t, mailboxes, wrap, imapv2.CapSet{
+		imapv2.CapIMAP4rev1: {},
+		imapv2.CapIMAP4rev2: {},
+	})
+}
+
+// serveTestServerWith is serveTestServer for a server with these
+// capabilities: IMAP4rev1 alone is a server without BINARY, like Gmail's.
+func serveTestServerWith(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr, wrap func(imapserver.SessionIMAP4rev2) imapserver.Session, caps imapv2.CapSet) string {
+	t.Helper()
 
 	user := imapmemserver.NewUser(testUser, testPass)
 	for name, attrs := range mailboxes {
@@ -72,10 +82,7 @@ func serveTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr, wr
 			return mem.NewSession(), nil, nil
 		},
 		InsecureAuth: true,
-		Caps: imapv2.CapSet{
-			imapv2.CapIMAP4rev1: {},
-			imapv2.CapIMAP4rev2: {},
-		},
+		Caps:         caps,
 	})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

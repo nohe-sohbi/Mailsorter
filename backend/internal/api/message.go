@@ -264,9 +264,9 @@ func gmailPart(part *gmailapi.MessagePart) attachment.Part {
 //
 // The two halves differ in more than their transport. Over the Gmail API the
 // message carries its labels and its attachment parts, and the reader renders
-// both. Over IMAP there are no labels. The files are walked out of the MIME
-// tree by the client (imap.Attachments), each under its part number, which is
-// the id the download route takes back.
+// both. Over IMAP there are no labels. The files are listed by the client
+// from the server's description of the message (imap.Client.Fetch), each
+// under its part number, which is the id the download route takes back.
 func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, session *mailSession, userEmail, messageID string, markRead bool) {
 	ref := session.RefFor(ctx, messageID)
 

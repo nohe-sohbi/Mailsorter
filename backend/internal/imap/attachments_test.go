@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"io"
 	"mime"
 	"mime/quotedprintable"
 	"net"
@@ -17,7 +16,6 @@ import (
 
 	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
-	gomessage "github.com/emersion/go-message"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 )
@@ -87,30 +85,75 @@ const csvPart = "Content-Type: text/csv; charset=windows-1252\r\n" +
 // as sent.
 var csvData = []byte("Date;Libell\xe9\r\n02/12;Caf\xe9")
 
+// csvUTF8 is a statement in UTF-8, for the sizes the reader lists: the
+// in-memory test server converts a text part's charset when it measures it
+// (BINARY.SIZE), which RFC 3516 does not ask and a real server does not do.
+const csvUTF8 = "Content-Type: text/csv; charset=utf-8\r\n" +
+	"Content-Disposition: attachment; filename*=utf-8''Relev%C3%A9%20d%27achats.csv\r\n" +
+	"Content-Transfer-Encoding: quoted-printable\r\n" +
+	"\r\n" +
+	"Date;Libell=C3=A9\r\n" +
+	"02/12;Caf=C3=A9"
+
 // testLimit is a download cap no file of these tests reaches.
 const testLimit = 30 << 20
 
-// The reader lists what was attached, under the part number IMAP gives it,
-// with the name decoded and the size of the file itself.
-func TestAttachmentsListsTheFilesOfAMessage(t *testing.T) {
-	raw := mixed(textPart, pdfPart(), csvPart)
+// noBinary is a server without BINARY, like Gmail's: it does not measure a
+// part decoded, so the reader estimates.
+var noBinary = imapv2.CapSet{imapv2.CapIMAP4rev1: {}}
 
-	got, err := Attachments([]byte(raw))
+// stored puts raw in the inbox of the server c talks to and returns its UID.
+func stored(t *testing.T, c *Client, raw string) string {
+	t.Helper()
+	appendRaw(t, c, "INBOX", raw)
+	emails, err := c.List(context.Background(), "INBOX", 100)
+	if err != nil || len(emails) == 0 {
+		t.Fatalf("List after append = %d mails, %v", len(emails), err)
+	}
+	return emails[0].MessageID // newest first
+}
+
+// listed is what the reader lists of the message uid: part number to file.
+func listed(t *testing.T, c *Client, uid string) map[string]Attachment {
+	t.Helper()
+	msg, err := c.Fetch(context.Background(), "INBOX", uid)
 	if err != nil {
-		t.Fatalf("Attachments: %v", err)
+		t.Fatalf("Fetch(%s): %v", uid, err)
+	}
+	out := map[string]Attachment{}
+	for _, a := range msg.Attachments {
+		out[a.Part] = a
+	}
+	return out
+}
+
+// The reader lists what was attached, under the part number IMAP gives it,
+// with the name decoded and the size of the file itself, as the server
+// measures it.
+func TestFetchListsTheFilesOfAMessage(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	uid := stored(t, c, mixed(textPart, pdfPart(), csvUTF8))
+
+	msg, err := c.Fetch(context.Background(), "INBOX", uid)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
 	}
 	want := []Attachment{
 		{Part: "2", Filename: "Facture décembre.pdf", MimeType: "application/pdf", Size: int64(len(everyByte()))},
-		{Part: "3", Filename: "Relevé d'achats.csv", MimeType: "text/csv", Size: int64(len(csvData))},
+		{Part: "3", Filename: "Relevé d'achats.csv", MimeType: "text/csv", Size: int64(len("Date;Libellé\r\n02/12;Café"))},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Attachments(...) = %+v, want %+v", got, want)
+	if !reflect.DeepEqual(msg.Attachments, want) {
+		t.Errorf("Fetch(...).Attachments = %+v, want %+v", msg.Attachments, want)
+	}
+	if strings.TrimSpace(msg.Body) != "Bonjour, voici votre facture." {
+		t.Errorf("Fetch(...).Body = %q, want the text part alone", msg.Body)
 	}
 }
 
-// What makes a part a file, and what name it is listed under, as the walk
-// reads a part for internal/attachment's rule. The images the HTML shows are
-// TestTheListAndTheDownloadFollowOneRule's: a part alone has no HTML.
+// What makes a part a file, and what name it is listed under, as a part's
+// MIME header gives them to internal/attachment's rule. The images the HTML
+// shows are TestTheListAndTheDownloadFollowOneRule's: a part alone has no
+// HTML.
 func TestPartOf(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -273,17 +316,11 @@ func TestPartOf(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := tc.header + "\r\nbody"
+			part := partOf(parseHeader([]byte(tc.header + "\r\n")))
 			var got Attachment
-			ok := false
-			if err := walkLeaves(strings.NewReader(raw), func(number string, header gomessage.Header, _ io.Reader) error {
-				part := partOf(header)
-				got.MimeType = part.MediaType
-				got.Filename, ok = attachment.Listed(part, nil)
-				return nil
-			}); err != nil {
-				t.Fatalf("walkLeaves: %v", err)
-			}
+			got.MimeType = part.MediaType
+			var ok bool
+			got.Filename, ok = attachment.Listed(part, nil)
 			if ok != tc.wantOK {
 				t.Fatalf("Listed(partOf(%q)) ok = %v, want %v", tc.header, ok, tc.wantOK)
 			}
@@ -303,7 +340,7 @@ func TestPartOf(t *testing.T) {
 // Part numbers follow IMAP's: a single-part message is part 1, the children
 // of a multipart are numbered from 1, and a nested multipart numbers its own
 // under its number.
-func TestAttachmentsNumbersPartsTheWayIMAPDoes(t *testing.T) {
+func TestFetchNumbersPartsTheWayIMAPDoes(t *testing.T) {
 	file := func(name string) string {
 		return "Content-Type: application/pdf\r\n" +
 			"Content-Disposition: attachment; filename=\"" + name + "\"\r\n" +
@@ -356,16 +393,13 @@ func TestAttachmentsNumbersPartsTheWayIMAPDoes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			list, err := Attachments([]byte(tc.raw))
-			if err != nil {
-				t.Fatalf("Attachments: %v", err)
-			}
+			c := newTestServer(t, standardMailboxes())
 			got := map[string]string{}
-			for _, a := range list {
-				got[a.Part] = a.Filename
+			for part, a := range listed(t, c, stored(t, c, tc.raw)) {
+				got[part] = a.Filename
 			}
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("Attachments(...) parts = %v, want %v", got, tc.want)
+				t.Errorf("Fetch(...).Attachments = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -373,44 +407,47 @@ func TestAttachmentsNumbersPartsTheWayIMAPDoes(t *testing.T) {
 
 // The download hands back the file as it was sent: decoded from its transfer
 // encoding, and from nothing else. A text file in windows-1252 stays in
-// windows-1252.
-func TestAttachmentInGivesTheFileByteForByte(t *testing.T) {
-	raw := []byte(mixed(textPart, pdfPart(), csvPart))
+// windows-1252, and a message that is a file and nothing else gives it.
+func TestAttachmentGivesTheFileByteForByte(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	invoice := stored(t, c, mixed(textPart, pdfPart(), csvPart))
+	alone := stored(t, c, "From: a@b.com\r\nSubject: S\r\nMIME-Version: 1.0\r\n"+
+		"Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"seul.pdf\"\r\n"+
+		"Content-Transfer-Encoding: base64\r\n\r\n"+base64Body(everyByte()))
 
 	cases := []struct {
-		part     string
-		wantName string
-		wantData []byte
+		uid, part string
+		wantName  string
+		wantData  []byte
 	}{
-		{"2", "Facture décembre.pdf", everyByte()},
-		{"3", "Relevé d'achats.csv", csvData},
+		{invoice, "2", "Facture décembre.pdf", everyByte()},
+		{invoice, "3", "Relevé d'achats.csv", csvData},
+		{alone, "1", "seul.pdf", everyByte()},
 	}
 	for _, tc := range cases {
-		att, data, err := attachmentIn(bytes.NewReader(raw), tc.part, testLimit)
+		att, data, err := c.Attachment(context.Background(), "INBOX", tc.uid, tc.part, testLimit)
 		if err != nil {
-			t.Fatalf("attachmentIn(%q): %v", tc.part, err)
+			t.Fatalf("Attachment(%s, %q): %v", tc.uid, tc.part, err)
 		}
 		if !bytes.Equal(data, tc.wantData) {
-			t.Errorf("attachmentIn(%q) = %q, want %q", tc.part, data, tc.wantData)
+			t.Errorf("Attachment(%s, %q) = %q, want %q", tc.uid, tc.part, data, tc.wantData)
 		}
-		if att.Filename != tc.wantName {
-			t.Errorf("attachmentIn(%q) filename = %q, want %q", tc.part, att.Filename, tc.wantName)
-		}
-		if att.Size != int64(len(tc.wantData)) {
-			t.Errorf("attachmentIn(%q) size = %d, want %d", tc.part, att.Size, len(tc.wantData))
+		if att.Filename != tc.wantName || att.Size != int64(len(tc.wantData)) {
+			t.Errorf("Attachment(%s, %q) = %q of %d bytes, want %q of %d", tc.uid, tc.part, att.Filename, att.Size, tc.wantName, len(tc.wantData))
 		}
 	}
 }
 
 // A part number is easy to guess. Only one the reader lists as a file is
 // served: never the text of the mail, never a section IMAP knows by name.
-func TestAttachmentInRefusesWhatIsNotAFile(t *testing.T) {
-	invoice := []byte(mixed(textPart, pdfPart(), csvPart))
-	plain := []byte("From: a@b.com\r\nSubject: S\r\nContent-Type: text/plain\r\n\r\nBonjour.\r\n")
+func TestAttachmentRefusesWhatIsNotAFile(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	invoice := stored(t, c, mixed(textPart, pdfPart(), csvPart))
+	plain := stored(t, c, "From: a@b.com\r\nSubject: S\r\nContent-Type: text/plain\r\n\r\nBonjour.\r\n")
 
 	cases := []struct {
 		name string
-		raw  []byte
+		uid  string
 		part string
 	}{
 		{"the text of the mail", invoice, "1"},
@@ -426,20 +463,20 @@ func TestAttachmentInRefusesWhatIsNotAFile(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, data, err := attachmentIn(bytes.NewReader(tc.raw), tc.part, testLimit)
+			_, data, err := c.Attachment(context.Background(), "INBOX", tc.uid, tc.part, testLimit)
 			if !errors.Is(err, ErrNoSuchAttachment) {
-				t.Errorf("attachmentIn(%q) error = %v, want ErrNoSuchAttachment", tc.part, err)
+				t.Errorf("Attachment(%q) error = %v, want ErrNoSuchAttachment", tc.part, err)
 			}
 			if data != nil {
-				t.Errorf("attachmentIn(%q) handed out %d bytes, want none", tc.part, len(data))
+				t.Errorf("Attachment(%q) handed out %d bytes, want none", tc.part, len(data))
 			}
 		})
 	}
 }
 
-// One file that does not decode does not keep the reader from listing the
-// others, and the error names it. Its download is an error, not "no such
-// file": the mail does have one there.
+// A file in an encoding nobody knows is left out of the list, named in why,
+// and not served. One whose base64 is broken cannot be told without reading
+// it: it is listed, and its download is an error, not "no such file".
 func TestAnUndecodableFile(t *testing.T) {
 	broken := "Content-Type: application/pdf\r\n" +
 		"Content-Disposition: attachment; filename=\"casse.pdf\"\r\n" +
@@ -451,30 +488,33 @@ func TestAnUndecodableFile(t *testing.T) {
 		"Content-Transfer-Encoding: x-uuencode\r\n" +
 		"\r\n" +
 		"begin 644 vieux.bin"
-	raw := []byte(mixed(textPart, broken, unknown, pdfPart()))
+	c := newTestServer(t, standardMailboxes())
+	uid := stored(t, c, mixed(textPart, broken, unknown, pdfPart()))
 
-	list, err := Attachments(raw)
-	if err == nil {
-		t.Error("Attachments(...) said nothing of the files it could not decode")
-	} else {
-		for _, name := range []string{"casse.pdf", "vieux.bin"} {
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("Attachments(...) error = %q, want it to name %q", err, name)
-			}
-		}
+	described, err := c.fetchOne("INBOX", uid, &imapv2.FetchOptions{UID: true, BodyStructure: &imapv2.FetchItemBodyStructure{Extended: true}})
+	if err != nil {
+		t.Fatalf("fetchOne: %v", err)
 	}
-	if len(list) != 1 || list[0].Filename != "Facture décembre.pdf" {
-		t.Errorf("Attachments(...) = %+v, want the one file that decodes", list)
+	inside, err := c.readParts("INBOX", uid, described.BodyStructure, true)
+	if err != nil {
+		t.Fatalf("readParts: %v", err)
+	}
+	if inside.skipped == nil || !strings.Contains(inside.skipped.Error(), "vieux.bin") {
+		t.Errorf("readParts(...).skipped = %v, want it to name vieux.bin", inside.skipped)
+	}
+	var names []string
+	for _, f := range inside.files {
+		names = append(names, f.Filename)
+	}
+	if !reflect.DeepEqual(names, []string{"casse.pdf", "Facture décembre.pdf"}) {
+		t.Errorf("readParts(...).files = %q, want casse.pdf and the PDF", names)
 	}
 
-	for _, part := range []string{"2", "3"} {
-		_, data, err := attachmentIn(bytes.NewReader(raw), part, testLimit)
-		if err == nil || errors.Is(err, ErrNoSuchAttachment) {
-			t.Errorf("attachmentIn(%q) error = %v, want a decoding error", part, err)
-		}
-		if data != nil {
-			t.Errorf("attachmentIn(%q) handed out %d bytes, want none", part, len(data))
-		}
+	if _, data, err := c.Attachment(context.Background(), "INBOX", uid, "3", testLimit); !errors.Is(err, ErrNoSuchAttachment) || data != nil {
+		t.Errorf("Attachment(vieux.bin) = %d bytes, %v, want ErrNoSuchAttachment", len(data), err)
+	}
+	if _, data, err := c.Attachment(context.Background(), "INBOX", uid, "2", testLimit); err == nil || errors.Is(err, ErrNoSuchAttachment) || data != nil {
+		t.Errorf("Attachment(casse.pdf) = %d bytes, %v, want a decoding error", len(data), err)
 	}
 }
 
@@ -482,13 +522,7 @@ func TestAnUndecodableFile(t *testing.T) {
 // gives the file without marking the mail read.
 func TestClientAttachmentOverIMAP(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
-	appendRaw(t, c, "INBOX", mixed(textPart, pdfPart(), csvPart))
-
-	emails, err := c.List(context.Background(), "INBOX", 10)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	uid := emails[0].MessageID
+	uid := stored(t, c, mixed(textPart, pdfPart(), csvPart))
 
 	msg, err := c.Fetch(context.Background(), "INBOX", uid)
 	if err != nil {
@@ -505,13 +539,10 @@ func TestClientAttachmentOverIMAP(t *testing.T) {
 	if !bytes.Equal(data, everyByte()) || att.Filename != "Facture décembre.pdf" {
 		t.Errorf("Attachment(2) = %q (%d bytes), want the PDF as sent", att.Filename, len(data))
 	}
-	if _, _, err := c.Attachment(context.Background(), "INBOX", uid, "1", testLimit); !errors.Is(err, ErrNoSuchAttachment) {
-		t.Errorf("Attachment(1) error = %v, want ErrNoSuchAttachment: part 1 is the text", err)
-	}
 
 	// Read back off the server, not off what the fetch returned.
 	if flags := flagsOf(t, c, "INBOX", uid); has(flags, mailbox.FlagSeen) {
-		t.Errorf("after Attachment, the message carries %s on the server: the download must peek", mailbox.FlagSeen)
+		t.Errorf("after Fetch and Attachment, the message carries %s on the server: both must peek", mailbox.FlagSeen)
 	}
 }
 
@@ -542,38 +573,40 @@ func newsletterMail() string {
 // what the reader lists is what the download serves, under the same name,
 // and what it does not list, the download does not serve.
 func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
-	raw := []byte(newsletterMail())
+	c := newTestServer(t, standardMailboxes())
+	uid := stored(t, c, newsletterMail())
+	forwarded := "From: a@b.com\r\nSubject: Transfert\r\n\r\nLe mail d'origine.\r\n"
 	want := []Attachment{
 		{Part: "2", Filename: "facture.pdf", MimeType: "application/pdf", Size: int64(len("%PDF-gmail"))},
 		{Part: "3", Filename: "devis.pdf", MimeType: "application/pdf", Size: int64(len("%PDF-apple"))},
 		{Part: "4", Filename: "photo.jpg", MimeType: "image/jpeg", Size: int64(len("JPEG-photo"))},
 		{Part: "5", Filename: attachment.Unnamed, MimeType: "application/octet-stream", Size: int64(len("BYTES"))},
-		{Part: "6", Filename: attachment.UnnamedMail, MimeType: "message/rfc822", Size: int64(len("From: a@b.com\r\nSubject: Transfert\r\n\r\nLe mail d'origine.\r\n"))},
+		{Part: "6", Filename: attachment.UnnamedMail, MimeType: "message/rfc822", Size: int64(len(forwarded))},
 	}
 
-	got, err := Attachments(raw)
+	msg, err := c.Fetch(context.Background(), "INBOX", uid)
 	if err != nil {
-		t.Fatalf("Attachments: %v", err)
+		t.Fatalf("Fetch: %v", err)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Attachments(...) = %+v, want %+v", got, want)
+	if !reflect.DeepEqual(msg.Attachments, want) {
+		t.Errorf("Fetch(...).Attachments = %+v, want %+v", msg.Attachments, want)
 	}
 
 	for _, w := range want {
-		att, data, err := attachmentIn(bytes.NewReader(raw), w.Part, testLimit)
+		att, data, err := c.Attachment(context.Background(), "INBOX", uid, w.Part, testLimit)
 		if err != nil {
-			t.Errorf("attachmentIn(%q) error = %v, want the file the reader lists", w.Part, err)
+			t.Errorf("Attachment(%q) error = %v, want the file the reader lists", w.Part, err)
 			continue
 		}
 		if att != w || int64(len(data)) != w.Size {
-			t.Errorf("attachmentIn(%q) = %+v (%d bytes), want %+v", w.Part, att, len(data), w)
+			t.Errorf("Attachment(%q) = %+v (%d bytes), want %+v", w.Part, att, len(data), w)
 		}
 	}
-	// The two images the HTML shows: the logo, and the background,
-	// declared an attachment and unnamed.
+	// The two images the HTML shows (the logo, and the background,
+	// declared an attachment and unnamed), and the HTML itself.
 	for _, part := range []string{"1.2", "1.3", "1.1"} {
-		if _, data, err := attachmentIn(bytes.NewReader(raw), part, testLimit); !errors.Is(err, ErrNoSuchAttachment) || data != nil {
-			t.Errorf("attachmentIn(%q) = %d bytes, %v, want ErrNoSuchAttachment", part, len(data), err)
+		if _, data, err := c.Attachment(context.Background(), "INBOX", uid, part, testLimit); !errors.Is(err, ErrNoSuchAttachment) || data != nil {
+			t.Errorf("Attachment(%q) = %d bytes, %v, want ErrNoSuchAttachment", part, len(data), err)
 		}
 	}
 }
@@ -586,38 +619,38 @@ func TestAnImageTheHTMLShowsAfterIt(t *testing.T) {
 		"--rel\r\n" + "Content-Type: image/png; name=\"logo.png\"\r\nContent-ID: <logo@acme>\r\n\r\nPNG\r\n" +
 		"--rel\r\n" + "Content-Type: text/html\r\n\r\n<img src=\"cid:logo@acme\">\r\n" +
 		"--rel--"
-	raw := []byte(mixed(related, pdfPart()))
+	c := newTestServer(t, standardMailboxes())
+	uid := stored(t, c, mixed(related, pdfPart()))
 
-	got, err := Attachments(raw)
-	if err != nil {
-		t.Fatalf("Attachments: %v", err)
+	got := listed(t, c, uid)
+	if len(got) != 1 || got["2"].Filename != "Facture décembre.pdf" {
+		t.Errorf("Fetch(...).Attachments = %+v, want the PDF alone", got)
 	}
-	if len(got) != 1 || got[0].Part != "2" {
-		t.Errorf("Attachments(...) = %+v, want the PDF alone", got)
-	}
-	if _, _, err := attachmentIn(bytes.NewReader(raw), "1.1", testLimit); !errors.Is(err, ErrNoSuchAttachment) {
-		t.Errorf("attachmentIn(1.1) error = %v, want ErrNoSuchAttachment", err)
+	if _, _, err := c.Attachment(context.Background(), "INBOX", uid, "1.1", testLimit); !errors.Is(err, ErrNoSuchAttachment) {
+		t.Errorf("Attachment(1.1) error = %v, want ErrNoSuchAttachment", err)
 	}
 }
 
 // The download holds no more of a file than the cap: one at the cap is
-// served, one byte over is refused and nothing of it handed out.
-func TestAttachmentInStopsAtTheLimit(t *testing.T) {
+// read whole, one byte over is refused and nothing of it handed out.
+func TestReadFileStopsAtTheLimit(t *testing.T) {
 	data := bytes.Repeat([]byte("Libellé;Montant\r\n"), 100)
 	var qp bytes.Buffer
 	w := quotedprintable.NewWriter(&qp)
 	_, _ = w.Write(data)
 	_ = w.Close()
-	file := "Content-Type: text/csv\r\nContent-Disposition: attachment; filename=\"achats.csv\"\r\n" +
-		"Content-Transfer-Encoding: quoted-printable\r\n\r\n" + qp.String()
-	raw := []byte(mixed(textPart, file))
+	header := parseHeader([]byte("Content-Type: text/csv; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"))
 
-	att, got, err := attachmentIn(bytes.NewReader(raw), "2", int64(len(data)))
-	if err != nil || !bytes.Equal(got, data) || att.Size != int64(len(data)) {
-		t.Errorf("attachmentIn(limit = its size) = %d bytes, %v, want the file", len(got), err)
+	got, err := readFile(header, bytes.NewReader(qp.Bytes()), int64(len(data)))
+	if err != nil || !bytes.Equal(got, data) {
+		t.Errorf("readFile(limit = its size) = %d bytes, %v, want the file", len(got), err)
 	}
-	if _, got, err := attachmentIn(bytes.NewReader(raw), "2", int64(len(data))-1); !errors.Is(err, ErrAttachmentTooLarge) || got != nil {
-		t.Errorf("attachmentIn(limit = its size - 1) = %d bytes, %v, want ErrAttachmentTooLarge and nothing", len(got), err)
+	if got, err := readFile(header, bytes.NewReader(qp.Bytes()), int64(len(data))-1); !errors.Is(err, ErrAttachmentTooLarge) || got != nil {
+		t.Errorf("readFile(limit = its size - 1) = %d bytes, %v, want ErrAttachmentTooLarge and nothing", len(got), err)
+	}
+	broken := parseHeader([]byte("Content-Transfer-Encoding: base64\r\n\r\n"))
+	if got, err := readFile(broken, strings.NewReader("JVBERi0x!!!"), testLimit); err == nil || errors.Is(err, ErrAttachmentTooLarge) || got != nil {
+		t.Errorf("readFile(broken base64) = %d bytes, %v, want a decoding error", len(got), err)
 	}
 }
 
@@ -658,47 +691,46 @@ func TestMinDecodedSize(t *testing.T) {
 	}
 }
 
-// The server's description of a message is enough to refuse a file too
-// large, and only a file: never the text of the mail, never a part it does
-// not describe.
-func TestTooLargeToRead(t *testing.T) {
-	structure := &imapv2.BodyStructureMultiPart{
-		Subtype: "mixed",
-		Children: []imapv2.BodyStructure{
-			&imapv2.BodyStructureSinglePart{Type: "text", Subtype: "plain", Encoding: "8bit", Size: 50 << 20},
-			&imapv2.BodyStructureSinglePart{
-				Type: "application", Subtype: "pdf", Encoding: "base64", Size: 4 << 20,
-				Extended: &imapv2.BodyStructureSinglePartExt{Disposition: &imapv2.BodyStructureDisposition{Value: "attachment", Params: map[string]string{"filename*": "utf-8''Re%C3%A7u.pdf"}}},
-			},
-			&imapv2.BodyStructureMultiPart{Subtype: "related", Children: []imapv2.BodyStructure{
-				&imapv2.BodyStructureSinglePart{Type: "text", Subtype: "html", Size: 10},
-				&imapv2.BodyStructureSinglePart{Type: "image", Subtype: "png", Params: map[string]string{"name": "logo.png"}, Encoding: "base64", Size: 4 << 20},
-			}},
-			&imapv2.BodyStructureSinglePart{Type: "message", Subtype: "rfc822", Size: 4 << 20},
-		},
+// Without the server's measure, the size the reader shows is the stored
+// size read as base64 in lines of 76: a few bytes off at most, whatever the
+// file.
+func TestEstimatedSize(t *testing.T) {
+	for _, n := range []int{0, 1, 2, 3, 56, 57, 58, 1000, 20480, 1 << 20} {
+		body := base64Body(bytes.Repeat([]byte{0xab}, n))
+		got := estimatedSize(int64(len(body)), "base64")
+		if d := got - int64(n); d < -3 || d > 3 {
+			t.Errorf("estimatedSize(base64 of %d bytes) = %d", n, got)
+		}
+	}
+	for _, encoding := range []string{"", "7bit", "8bit", "binary", "quoted-printable"} {
+		if got := estimatedSize(1000, encoding); got != 1000 {
+			t.Errorf("estimatedSize(1000, %q) = %d, want 1000", encoding, got)
+		}
+	}
+}
+
+// A file is refused before it is read on the server's measure, exactly, or,
+// without one, only when its stored size is sure to be over.
+func TestCannotFit(t *testing.T) {
+	base64Leaf := func(stored uint32, size int64, exact bool) leaf {
+		return leaf{desc: &imapv2.BodyStructureSinglePart{Encoding: "base64", Size: stored}, size: size, exact: exact}
 	}
 	cases := []struct {
-		part  string
+		name  string
+		leaf  leaf
 		limit int64
 		want  bool
 	}{
-		{"2", 2 << 20, true},
-		{"2", 3 << 20, false}, // 4 MiB of base64 is about 3 MiB of file
-		{"3.2", 2 << 20, true},
-		{"4", 3 << 20, true},
-		{"1", 1 << 20, false}, // the text of the mail is not a file
-		{"3", 1, false},       // a multipart is not a leaf
-		{"5", 1, false},
-		{"TEXT", 1, false},
-		{"", 1, false},
+		{"measured, at the cap", base64Leaf(1400, 1000, true), 1000, false},
+		{"measured, one byte over", base64Leaf(1400, 1001, true), 1000, true},
+		{"estimated, surely over", base64Leaf(4<<20, 3<<20, false), 2 << 20, true},
+		{"estimated, maybe under", base64Leaf(4<<20, 3<<20, false), 3 << 20, false},
+		{"quoted-printable, not measured, is left to the read", leaf{desc: &imapv2.BodyStructureSinglePart{Encoding: "quoted-printable", Size: 50 << 20}, size: 50 << 20}, 1 << 20, false},
 	}
 	for _, tc := range cases {
-		if got := tooLargeToRead(structure, tc.part, tc.limit); got != tc.want {
-			t.Errorf("tooLargeToRead(%q, %d) = %v, want %v", tc.part, tc.limit, got, tc.want)
+		if got := cannotFit(tc.leaf, tc.limit); got != tc.want {
+			t.Errorf("cannotFit(%s) = %v, want %v", tc.name, got, tc.want)
 		}
-	}
-	if tooLargeToRead(nil, "1", 1) {
-		t.Error("tooLargeToRead(nil, ...) = true, want false: no description, no refusal")
 	}
 }
 
@@ -715,54 +747,118 @@ func (c countingConn) Read(p []byte) (int, error) {
 }
 
 // A file over the cap is refused on the server's word, before a byte of it
-// comes over the connection.
+// comes over the connection: measured (BINARY), or told by its stored size
+// on a server without BINARY.
 func TestClientAttachmentRefusesALargeFileBeforeReadingIt(t *testing.T) {
-	var read atomic.Int64
-	c := dialTestServerThrough(t, startTestServer(t, standardMailboxes()), func(conn net.Conn) net.Conn {
-		return countingConn{Conn: conn, read: &read}
-	})
 	big := bytes.Repeat(everyByte(), 2048) // 1 MiB
 	file := "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"gros.pdf\"\r\n" +
 		"Content-Transfer-Encoding: base64\r\n\r\n" + base64Body(big)
-	appendRaw(t, c, "INBOX", mixed(textPart, file))
-	emails, err := c.List(context.Background(), "INBOX", 10)
-	if err != nil || len(emails) != 1 {
-		t.Fatalf("List = %d mails, %v", len(emails), err)
-	}
+	for _, server := range []struct {
+		name string
+		caps imapv2.CapSet
+	}{
+		{"with BINARY", nil},
+		{"without BINARY", noBinary},
+	} {
+		t.Run(server.name, func(t *testing.T) {
+			c, read := countingServer(t, server.caps)
+			uid := stored(t, c, mixed(textPart, file))
 
-	before := read.Load()
-	_, data, err := c.Attachment(context.Background(), "INBOX", emails[0].MessageID, "2", 512<<10)
-	if !errors.Is(err, ErrAttachmentTooLarge) || data != nil {
-		t.Fatalf("Attachment(1 MiB file, cap 512 KiB) = %d bytes, %v, want ErrAttachmentTooLarge", len(data), err)
-	}
-	if got := read.Load() - before; got > 16<<10 {
-		t.Errorf("Attachment read %d bytes off the connection to refuse it, want the server's description only", got)
-	}
+			before := read.Load()
+			_, data, err := c.Attachment(context.Background(), "INBOX", uid, "2", 512<<10)
+			if !errors.Is(err, ErrAttachmentTooLarge) || data != nil {
+				t.Fatalf("Attachment(1 MiB file, cap 512 KiB) = %d bytes, %v, want ErrAttachmentTooLarge", len(data), err)
+			}
+			if got := read.Load() - before; got > 16<<10 {
+				t.Errorf("Attachment read %d bytes off the connection to refuse it, want the server's description only", got)
+			}
 
-	// The same file under a cap it fits in comes whole.
-	_, data, err = c.Attachment(context.Background(), "INBOX", emails[0].MessageID, "2", int64(len(big)))
-	if err != nil || !bytes.Equal(data, big) {
-		t.Errorf("Attachment(1 MiB file, cap 1 MiB) = %d bytes, %v, want the file", len(data), err)
+			// The same file under a cap it fits in comes whole.
+			_, data, err = c.Attachment(context.Background(), "INBOX", uid, "2", int64(len(big)))
+			if err != nil || !bytes.Equal(data, big) {
+				t.Errorf("Attachment(1 MiB file, cap 1 MiB) = %d bytes, %v, want the file", len(data), err)
+			}
+		})
 	}
 }
 
-// A file whose size the description cannot bound (quoted-printable) is
-// read through the cap, and refused there.
-func TestClientAttachmentStopsAtTheLimit(t *testing.T) {
-	c := newTestServer(t, standardMailboxes())
-	data := bytes.Repeat([]byte("Café;12,90\r\n"), 2000)
-	var qp bytes.Buffer
-	w := quotedprintable.NewWriter(&qp)
-	_, _ = w.Write(data)
-	_ = w.Close()
-	appendRaw(t, c, "INBOX", mixed(textPart, "Content-Type: text/csv\r\nContent-Disposition: attachment; filename=\"achats.csv\"\r\n"+
-		"Content-Transfer-Encoding: quoted-printable\r\n\r\n"+qp.String()))
-	emails, err := c.List(context.Background(), "INBOX", 10)
-	if err != nil || len(emails) != 1 {
-		t.Fatalf("List = %d mails, %v", len(emails), err)
+// countingServer is a test server, with caps when they are set, and a client
+// whose socket counts what it reads.
+func countingServer(t *testing.T, caps imapv2.CapSet) (*Client, *atomic.Int64) {
+	t.Helper()
+	var read atomic.Int64
+	addr := serveTestServer(t, standardMailboxes(), nil)
+	if caps != nil {
+		addr = serveTestServerWith(t, standardMailboxes(), nil, caps)
 	}
-	if _, got, err := c.Attachment(context.Background(), "INBOX", emails[0].MessageID, "2", 1000); !errors.Is(err, ErrAttachmentTooLarge) || got != nil {
-		t.Errorf("Attachment(cap 1000 bytes) = %d bytes, %v, want ErrAttachmentTooLarge", len(got), err)
+	c := dialTestServerThrough(t, addr, func(conn net.Conn) net.Conn {
+		return countingConn{Conn: conn, read: &read}
+	})
+	return c, &read
+}
+
+// Opening a mail with a large file reads its text and the list of its files,
+// never the file: on a server with BINARY, which gives its size exactly, and
+// on one without, where it is estimated.
+func TestFetchDoesNotReadTheFiles(t *testing.T) {
+	big := bytes.Repeat(everyByte(), 4096) // 2 MiB
+	file := "Content-Type: video/mp4\r\nContent-Disposition: attachment; filename=\"film.mp4\"\r\n" +
+		"Content-Transfer-Encoding: base64\r\n\r\n" + base64Body(big)
+	for _, server := range []struct {
+		name  string
+		caps  imapv2.CapSet
+		exact bool
+	}{
+		{"with BINARY", nil, true},
+		{"without BINARY", noBinary, false},
+	} {
+		t.Run(server.name, func(t *testing.T) {
+			c, read := countingServer(t, server.caps)
+			uid := stored(t, c, mixed(textPart, file))
+
+			before := read.Load()
+			msg, err := c.Fetch(context.Background(), "INBOX", uid)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if got := read.Load() - before; got > 32<<10 {
+				t.Errorf("Fetch read %d bytes off the connection for a mail with a 2 MiB file, want its text and headers only", got)
+			}
+			if strings.TrimSpace(msg.Body) != "Bonjour, voici votre facture." {
+				t.Errorf("Fetch(...).Body = %q, want the text", msg.Body)
+			}
+			if len(msg.Attachments) != 1 || msg.Attachments[0].Filename != "film.mp4" {
+				t.Fatalf("Fetch(...).Attachments = %+v, want film.mp4", msg.Attachments)
+			}
+			size := msg.Attachments[0].Size
+			if server.exact && size != int64(len(big)) {
+				t.Errorf("film.mp4 is listed at %d bytes, want %d, as the server measures it", size, len(big))
+			}
+			if d := size - int64(len(big)); d < -3 || d > 3 {
+				t.Errorf("film.mp4 is listed at %d bytes, want about %d", size, len(big))
+			}
+		})
+	}
+}
+
+// The text the reader shows is bounded, in what is read off the connection
+// as in what is kept.
+func TestFetchBoundsTheText(t *testing.T) {
+	c, read := countingServer(t, nil)
+	html := "<p>" + strings.Repeat("Soldes ", (8<<20)/7) + "</p>"
+	uid := stored(t, c, "From: news@acme.com\r\nTo: "+testUser+"\r\nSubject: Promo\r\nMIME-Version: 1.0\r\n"+
+		"Content-Type: text/html; charset=utf-8\r\n\r\n"+html)
+
+	before := read.Load()
+	msg, err := c.Fetch(context.Background(), "INBOX", uid)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(msg.HTML) != maxBodyBytes {
+		t.Errorf("Fetch(...).HTML is %d bytes, want it cut at %d", len(msg.HTML), maxBodyBytes)
+	}
+	if got := read.Load() - before; got > maxTextFetch+64<<10 {
+		t.Errorf("Fetch read %d bytes off the connection for an 8 MiB HTML, want at most about %d", got, maxTextFetch)
 	}
 }
 
@@ -770,12 +866,7 @@ func TestClientAttachmentStopsAtTheLimit(t *testing.T) {
 // reader and for the download, which is not a failure of the server.
 func TestClientReadsOfAMailThatIsGone(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
-	appendRaw(t, c, "INBOX", mixed(textPart, pdfPart()))
-	emails, err := c.List(context.Background(), "INBOX", 10)
-	if err != nil || len(emails) != 1 {
-		t.Fatalf("List = %d mails, %v", len(emails), err)
-	}
-	uid := emails[0].MessageID
+	uid := stored(t, c, mixed(textPart, pdfPart()))
 	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionArchive}); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
@@ -788,9 +879,9 @@ func TestClientReadsOfAMailThatIsGone(t *testing.T) {
 	}
 }
 
-// heldFetch is a server session whose FETCH of a whole message (BODY[])
-// waits for release: a server too slow to hand a mail over. The listing,
-// which asks for two header fields, is answered.
+// heldFetch is a server session whose FETCH of a message's parts waits for
+// release: a server too slow to hand a mail over. A FETCH of the server's
+// description, or of named header fields (the listing's), is answered.
 type heldFetch struct {
 	imapserver.SessionIMAP4rev2
 	release <-chan struct{}
@@ -798,50 +889,55 @@ type heldFetch struct {
 
 func (s heldFetch) Fetch(w *imapserver.FetchWriter, numSet imapv2.NumSet, options *imapv2.FetchOptions) error {
 	for _, section := range options.BodySection {
-		if section.Specifier == imapv2.PartSpecifierNone && len(section.Part) == 0 {
+		if len(section.HeaderFields) == 0 {
 			<-s.release
+			break
 		}
 	}
 	return s.SessionIMAP4rev2.Fetch(w, numSet, options)
 }
 
-// The download ends with its request: a server that does not answer is
-// left when the context ends, not when the client's own timeout does.
-func TestClientAttachmentEndsWithItsContext(t *testing.T) {
-	release := make(chan struct{})
-	addr := serveTestServer(t, standardMailboxes(), func(s imapserver.SessionIMAP4rev2) imapserver.Session {
-		return heldFetch{SessionIMAP4rev2: s, release: release}
-	})
-	t.Cleanup(func() { close(release) })
-	c := dialTestServer(t, addr)
-	appendRaw(t, c, "INBOX", mixed(textPart, pdfPart()))
-	emails, err := c.List(context.Background(), "INBOX", 10)
-	if err != nil || len(emails) != 1 {
-		t.Fatalf("List = %d mails, %v", len(emails), err)
+// Opening a mail and downloading a file end with their request: a server
+// that does not answer is left when the context ends, not when the client's
+// own timeout would.
+func TestReadsEndWithTheirContext(t *testing.T) {
+	reads := map[string]func(c *Client, ctx context.Context, uid string) error{
+		"Fetch": func(c *Client, ctx context.Context, uid string) error {
+			_, err := c.Fetch(ctx, "INBOX", uid)
+			return err
+		},
+		"Attachment": func(c *Client, ctx context.Context, uid string) error {
+			_, _, err := c.Attachment(ctx, "INBOX", uid, "2", testLimit)
+			return err
+		},
 	}
+	for name, read := range reads {
+		t.Run(name, func(t *testing.T) {
+			release := make(chan struct{})
+			addr := serveTestServer(t, standardMailboxes(), func(s imapserver.SessionIMAP4rev2) imapserver.Session {
+				return heldFetch{SessionIMAP4rev2: s, release: release}
+			})
+			t.Cleanup(func() { close(release) })
+			c := dialTestServer(t, addr)
+			uid := stored(t, c, mixed(textPart, pdfPart()))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	type answer struct {
-		data []byte
-		err  error
-	}
-	done := make(chan answer, 1)
-	go func() {
-		_, data, err := c.Attachment(ctx, "INBOX", emails[0].MessageID, "2", testLimit)
-		done <- answer{data, err}
-	}()
-	select {
-	case got := <-done:
-		if !errors.Is(got.err, context.DeadlineExceeded) || got.data != nil {
-			t.Errorf("Attachment(server held) = %d bytes, %v, want context.DeadlineExceeded", len(got.data), got.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Attachment(server held) still waits 10s after its context ended at 300ms")
-	}
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- read(c, ctx, uid) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("%s(server held) error = %v, want context.DeadlineExceeded", name, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s(server held) still waits 10s after its context ended at 300ms", name)
+			}
 
-	if _, _, err := c.Attachment(ctx, "INBOX", emails[0].MessageID, "2", testLimit); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Attachment(ended context) error = %v, want context.DeadlineExceeded at once", err)
+			if err := read(c, ctx, uid); !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s(ended context) error = %v, want context.DeadlineExceeded at once", name, err)
+			}
+		})
 	}
 }
 

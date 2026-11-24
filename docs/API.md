@@ -501,16 +501,25 @@ attachment id, which nothing promises to stay the same from one
 gives no part number, has `"payload"`. A Gmail part whose data travels inline
 in the message payload has no `attachmentId` and is not downloadable.
 
-On a mailbox reached over IMAP the fetch PEEKS: it downloads the body without
+On a mailbox reached over IMAP the fetch PEEKS: it reads the message without
 setting `\Seen`, so opening a message stays distinct from reading it and only
 `markRead=1` changes the flag. The star comes as `isStarred`, read off the
-server. `labelIds` comes back empty there. `attachments`
-is read out of the message's MIME tree, file names decoded from RFC 2047 or
-RFC 2231 (in any charset the server's mail may use, ISO-8859-1 or windows-1252
-included). `attachmentId` is the part's IMAP number (`"2"`, `"1.3"`),
-`mimeType` the declared type without its parameters, and `size` the size of
-the decoded file, as on Gmail, not of its base64. A file whose transfer
-encoding does not decode is left out of the list and logged.
+server. `labelIds` comes back empty there. It reads the
+server's description of the message first (`BODYSTRUCTURE`), then, in one
+command, the MIME header of each part, the text and the HTML (each fetched up
+to about 6.9 MiB as stored and kept up to 5 MiB decoded) and the decoded size
+of each part (`BINARY.SIZE`, on a server with BINARY or IMAP4rev2). The bytes
+of a file are never read to open a mail. The request's 20 s deadline ends the
+IMAP command too (the connection is closed). `attachments` lists the parts by
+the rule above, file names decoded from RFC 2047 or RFC 2231 (in any charset
+the mail may use, ISO-8859-1 or windows-1252 included). `attachmentId` is the
+part's IMAP number (`"2"`, `"1.3"`), `mimeType` the declared type without its
+parameters, and `size` the size of the decoded file, as on Gmail, not of its
+base64: the server's measure, or, on a server without BINARY (Gmail's IMAP
+among them), an estimate from the stored size (a few bytes off for base64,
+the stored size for quoted-printable). A file in a transfer encoding nobody
+knows is left out of the list and logged; one whose base64 is broken cannot be
+told without reading it, so it is listed and its download answers 502.
 
 **Error Responses:**
 - `400 Bad Request`: Missing id
@@ -541,18 +550,19 @@ out, is served only while the fresh copy still gives a file that id.
 Only a part of the named message may be served: an id the message does not
 carry is a 404, never a passthrough to Gmail.
 
-Over IMAP the file is inside the message. The route first asks the server
-for the message's `BODYSTRUCTURE`: a file whose stored size cannot fit under
-30 MiB once decoded is a 413 before a byte of it is read. Then it fetches the
-whole message with `BODY.PEEK[]` (saving a file does not mark the mail read),
-reading it as it arrives rather than into memory, walks it the way the reader
-does, and serves the part only when that walk lists a file under
-`attachmentId`. The file is read through the 30 MiB cap, so no more than that
-of it is ever held, and the rest of the message is not kept. The request's
-60 s deadline ends the IMAP command too (the connection is closed). Any other
-id, the text of the mail (`"1"`), a section name (`"TEXT"`), a part past the
-last one or a file of another mail, is a 404 `{"error": "Cette pièce jointe
-est introuvable dans ce mail."}` and nothing else. The bytes are the file as
+Over IMAP the file is inside the message. The route reads the message the
+way the reader does (its description, the headers of its parts, its HTML and
+the parts' decoded sizes, never a file) and serves the part only when the
+reader's list has a file under `attachmentId`. A file over 30 MiB once
+decoded is a 413 before a byte of it is read: on the server's measure
+(`BINARY.SIZE`), or, without one, when its stored size cannot fit. Then it
+fetches that part alone with `BODY.PEEK[part]` (saving a file does not mark the
+mail read), reading it as it arrives rather than into memory and through the
+30 MiB cap, so no more than that of it is ever held. The request's 60 s
+deadline ends the IMAP command too (the connection is closed). Any other id,
+the text of the mail (`"1"`), a section name (`"TEXT"`), a part past the last
+one or a file of another mail, is a 404 `{"error": "Cette pièce jointe est
+introuvable dans ce mail."}` and nothing else. The bytes are the file as
 sent: the transfer encoding (base64, quoted-printable) is undone, the charset
 of a text file is left as it is.
 
