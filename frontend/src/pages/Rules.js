@@ -119,7 +119,7 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
   );
 }
 
-// `labelsOk` is false on a mailbox with no labels (IMAP, or not known yet):
+// `labelsOk` is false where rules do not run (IMAP, or not known yet):
 // "Étiqueter" and "Mettre en favori" are then not offered for a new action.
 // An action that already does one (an imported rule) keeps its choice, so the
 // list can still show it.
@@ -152,7 +152,9 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
   // Actions already chosen can't be picked again (except "label", which can
   // repeat with different names), which keeps the combo meaningful.
   const usedTypes = new Set(rule.actions.map((a) => a.type));
-  // The star is as Gmail-only as the label: an IMAP mailbox keeps none.
+  // The label has no IMAP equivalent (a message sits in one folder). The star
+  // has one, but rules do not run over IMAP yet: it joins the editor there
+  // when they do.
   const gmailOnly = (type) => type === 'label' || type === 'star';
   const offered = (type, current) => {
     if (gmailOnly(type) && !labelsOk && current !== type) return false;
