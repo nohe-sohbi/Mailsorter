@@ -220,7 +220,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags of the whole folder, the size and the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE) |
+| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
 | `smtpsend` | Hands one message to the sending server of an IMAP mailbox: the daily recap on that transport. Implicit TLS (465) or STARTTLS (587), never cleartext (a STARTTLS route whose server does not offer it is refused before the password is sent), certificate verified against the system roots, AUTH PLAIN, 30 s bound. `ErrAuth` (credentials refused: 535, or 534 5.7.9), `ErrBlocked` (sign-in blocked for where it came from, the password being right: 534 5.7.14) and `ErrUnreachable` are typed; any other 534 is none of them |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
@@ -262,7 +262,7 @@ The outbound clients and primitives:
 | `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap to the mailbox's sending server: the only two readers of the sealed app password |
 | `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
-| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `refreshInboxFlags` and `completeInboxDetails` keep the read state, the star, the size and the attachments of every stored row right, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`) |
+| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `storeStarredOutsideList`, `refreshInboxState` and `completeInboxStructure` keep the read state, the star, the size and the attachments of every stored row right, old favorites included, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`) |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest from the user's own mailbox (`deliverDigest`: the Gmail API, or the IMAP mailbox's sending server through `sendThroughBox`; `digestMessage` gives it its `Message-ID`), paced by `dailyDigestPace` (4 accounts at once, 30 s each, the stamp under its own 10 s), `digestHourOf` (a stored hour, 0 = midnight, or `DIGEST_HOUR_UTC` when none was picked; the settings screen and the scheduler both read it), `POST /api/account/digest/test` (one per account per minute, `digestTestLimiter`, a 429 in words beyond; `writeDigestSendError` says why a test did not leave, never with the Gmail sentence on IMAP, never with a 401), and `digestStyle()`, the UI theme as a digest style |
 | `auto_sync.go` | 30 min per-user background inbox sync |
@@ -736,13 +736,25 @@ Do not duplicate these into this file. Point at them.
   Every quick filter of the inbox is answered (`is:unread`, `newer_than:`,
   `is:starred`, `has:attachment`, `larger:5M`), because the copy keeps what they
   ask: the star, the size and whether a mail carries a file. Each sync keeps them
-  right beyond the 100 messages it lists: `imap.Client.States` reads the flags of
-  the whole inbox in one FETCH and `refreshInboxFlags` carries read and star into
-  every stored row (a row Mailsorter changed after that read, `flagsAt`, is left
-  alone), and `completeInboxDetails` reads `RFC822.SIZE` and `BODYSTRUCTURE` for
-  up to 500 rows without a `sizeEstimate`, newest first, so rows stored before
-  that field existed are completed over a few syncs. A row without a size
-  matches no size or attachment filter.
+  right beyond the 100 messages it lists: `imap.Client.States` reads the flags and
+  `RFC822.SIZE` of the whole inbox in one FETCH; `storeStarredOutsideList` stores
+  the starred messages the copy does not hold yet (a favorite of years ago, 500 a
+  sync); `refreshInboxState` carries read, star and size into every stored row (a
+  row Mailsorter changed after the flags were read, `flagsAt`, keeps its flags;
+  the upsert of a listed row writes them only on insert, `inboxUpsert`); and
+  `completeInboxStructure` reads `BODYSTRUCTURE` for up to 500 rows without
+  `hasAttachments`, newest first. A row without it matches no attachment filter.
+- **A FETCH of many messages is read by halves (`imap.ReadInHalves`).** go-imap
+  reads an answer whole: one message whose description it cannot parse fails the
+  command AND closes the connection. Read as one batch, that message would fail
+  its neighbours at every sync and empty the filter for good. So the sync's
+  batch reads (starred envelopes, structures) go through `ReadInHalves`: on a
+  failed batch it reopens the connection (`sessionReopener`, at most
+  `syncReopens` times a sync) and reads each half, down to the message alone. A
+  message unreadable alone is logged, and its structure is stored as
+  `hasAttachments: false, structureUnreadable: true`, never asked again. A
+  reopen that fails is the mailbox, not a message: `errMailboxLost`, never
+  swallowed. Out of reopens, the rest waits for the next sync.
 - **Free text from a query goes into a `$regex`, so it goes through `regexp.QuoteMeta`.**
   `containsInsensitive` in `mirror.go` is the only place a user-typed string becomes a
   pattern. Unescaped, a "(" is a syntax error that fails the whole listing and a "."

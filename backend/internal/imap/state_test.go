@@ -11,8 +11,9 @@ import (
 )
 
 // States answers for the whole folder, not a page of it: it is how the sync
-// tells which old stored messages are still in the inbox, and what another
-// mail program did to them. Read from the server after real STOREs.
+// tells which old stored messages are still in the inbox, what another mail
+// program did to them, and how large each is. Read from the server after real
+// STOREs.
 func TestStatesReadsEveryMessageOfTheFolder(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	plain := appendMessage(t, c, "INBOX")
@@ -38,11 +39,13 @@ func TestStatesReadsEveryMessageOfTheFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// appendMessage appends the same text each time.
+	size := int64(len("From: sender@example.com\r\nTo: " + testUser + "\r\nSubject: Test\r\n\r\nBody.\r\n"))
 	want := map[string]State{
-		plain:   {},
-		read:    {Read: true},
-		starred: {Starred: true},
-		both:    {Read: true, Starred: true},
+		plain:   {Size: size},
+		read:    {Read: true, Size: size},
+		starred: {Starred: true, Size: size},
+		both:    {Read: true, Starred: true, Size: size},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("States(INBOX) = %v, want %v", got, want)
@@ -65,17 +68,12 @@ func mimeMessage(subject, contentType, body string) string {
 		"MIME-Version: 1.0\r\nContent-Type: " + contentType + "\r\n\r\n" + body
 }
 
-// Details reads the size and the attachments off the server, for the messages
-// asked and those only, without marking them read.
-func TestDetailsReadsSizeAndAttachments(t *testing.T) {
+// Attachments reads off the server whether each message asked carries a file,
+// for those only, without marking them read.
+func TestAttachmentsReadsTheStructure(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
-	plain := message("a@b.com", "Texte")
-	withFile := mimeMessage("Facture", `multipart/mixed; boundary="b"`,
-		"--b\r\nContent-Type: text/plain\r\n\r\nVoici la facture.\r\n"+
-			"--b\r\nContent-Type: application/pdf; name=\"facture.pdf\"\r\nContent-Disposition: attachment; filename=\"facture.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n"+
-			"--b--\r\n")
-	appendRaw(t, c, "INBOX", plain)
-	appendRaw(t, c, "INBOX", withFile)
+	appendRaw(t, c, "INBOX", message("a@b.com", "Texte"))
+	appendRaw(t, c, "INBOX", invoiceMessage("Facture", "facture.pdf"))
 	appendRaw(t, c, "INBOX", message("a@b.com", "Pas demandé"))
 
 	emails, err := c.List(context.Background(), "INBOX", 10)
@@ -85,36 +83,67 @@ func TestDetailsReadsSizeAndAttachments(t *testing.T) {
 	// Newest first: the one not asked, the invoice, the text.
 	notAsked, invoiceUID, textUID := emails[0].MessageID, emails[1].MessageID, emails[2].MessageID
 
-	got, err := c.Details("INBOX", []string{textUID, invoiceUID, "999"})
+	got, err := c.Attachments("INBOX", []string{textUID, invoiceUID, "999"})
 	if err != nil {
-		t.Fatalf("Details: %v", err)
+		t.Fatalf("Attachments: %v", err)
 	}
-	want := map[string]Details{
-		textUID:    {Size: int64(len(plain))},
-		invoiceUID: {Size: int64(len(withFile)), HasAttachments: true},
-	}
+	want := map[string]bool{textUID: false, invoiceUID: true}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Details = %v, want %v (and nothing for %s, not asked, nor 999, not there)", got, want, notAsked)
+		t.Errorf("Attachments = %v, want %v (and nothing for %s, not asked, nor 999, not there)", got, want, notAsked)
 	}
 	for _, uid := range []string{textUID, invoiceUID} {
 		if flags := flagsOf(t, c, "INBOX", uid); has(flags, mailbox.FlagSeen) {
-			t.Errorf("message %s is read after Details: flags %v", uid, flags)
+			t.Errorf("message %s is read after Attachments: flags %v", uid, flags)
 		}
 	}
 }
 
-func TestDetailsOfNothingAsksNothing(t *testing.T) {
+// invoiceMessage is a mail with a PDF attached under this file name.
+func invoiceMessage(subject, filename string) string {
+	return mimeMessage(subject, `multipart/mixed; boundary="b"`,
+		"--b\r\nContent-Type: text/plain\r\n\r\nVoici la facture.\r\n"+
+			"--b\r\nContent-Type: application/pdf; name=\""+filename+"\"\r\nContent-Disposition: attachment; filename=\""+filename+"\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n"+
+			"--b--\r\n")
+}
+
+func TestAttachmentsOfNothingAsksNothing(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
-	if got, err := c.Details("INBOX", nil); err != nil || len(got) != 0 {
-		t.Errorf("Details(nil) = %v, %v; want an empty map", got, err)
+	if got, err := c.Attachments("INBOX", nil); err != nil || len(got) != 0 {
+		t.Errorf("Attachments(nil) = %v, %v; want an empty map", got, err)
 	}
 }
 
 // A Gmail id is not a UID: refused, never read as the number it starts with.
-func TestDetailsRefusesSomethingThatIsNotAUID(t *testing.T) {
+func TestAttachmentsRefusesSomethingThatIsNotAUID(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
-	if _, err := c.Details("INBOX", []string{"18c8c1f2a3b4d5e6"}); err == nil {
-		t.Error("Details accepted a Gmail message id as a UID")
+	if _, err := c.Attachments("INBOX", []string{"18c8c1f2a3b4d5e6"}); err == nil {
+		t.Error("Attachments accepted a Gmail message id as a UID")
+	}
+}
+
+// Envelopes reads old messages by number the way the listing reads a page,
+// star included, for those asked only, without marking them read.
+func TestEnvelopesReadsMessagesByNumber(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	old := appendMessage(t, c, "INBOX")
+	appendMessage(t, c, "INBOX")
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", old), mailbox.Mutation{Action: mailbox.ActionStar}); err != nil {
+		t.Fatalf("star: %v", err)
+	}
+
+	got, err := c.Envelopes("INBOX", []string{old, "999"})
+	if err != nil {
+		t.Fatalf("Envelopes: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Envelopes = %v, want the one message asked that is there", got)
+	}
+	e := got[old]
+	if e.MessageID != old || e.Subject != "Test" || e.From != "sender@example.com" || !e.IsStarred || e.IsRead {
+		t.Errorf("Envelopes[%s] = %+v, want subject Test, from sender@example.com, starred, unread", old, e)
+	}
+	if flags := flagsOf(t, c, "INBOX", old); has(flags, mailbox.FlagSeen) {
+		t.Errorf("message %s is read after Envelopes: flags %v", old, flags)
 	}
 }
 

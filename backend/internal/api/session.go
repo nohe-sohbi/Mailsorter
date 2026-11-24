@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
@@ -189,9 +190,9 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 		return 0, 0, err
 	}
 	// The listing reads the newest messages only; which of the older ones
-	// stored are still in the inbox, and what another mail program changed on
-	// them (read, starred), it cannot tell. One FETCH of the flags of the whole
-	// inbox can, whatever its size.
+	// stored are still in the inbox, what another mail program changed on
+	// them (read, starred), and how large they are, it cannot tell. One FETCH
+	// of the flags and the size of the whole inbox can, whatever its size.
 	statesAt := time.Now()
 	states, err := session.imapc.States(folder)
 	if err != nil {
@@ -217,31 +218,25 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 			// list it again until the next sync.
 			continue
 		}
-		email.UserID = userEmail
-		// The folder is stored with the message because on IMAP it is half of
-		// its identity: without it the UID below names nothing in particular.
-		email.Folder = folder
-
-		if _, uErr := h.db.Emails().UpdateOne(ctx,
-			bson.M{"messageId": email.MessageID, "userId": userEmail},
-			// syncedAt tells a sync running at the same time that this row
-			// was just written from a fresher listing than its own.
-			bson.M{"$set": email, "$currentDate": bson.M{"syncedAt": true}},
-			options.Update().SetUpsert(true),
-		); uErr != nil {
+		if sErr := h.storeInboxMessage(ctx, userEmail, email); sErr != nil {
 			failed++
-			log.Printf("imap sync: message uid %s in %s not stored: %v", email.MessageID, folder, uErr)
+			log.Printf("imap sync: message uid %s in %s not stored: %v", email.MessageID, folder, sErr)
 			continue
 		}
 		synced++
 	}
-	// After the listed messages are stored, so both cover them too.
-	flagsErr := h.refreshInboxFlags(ctx, userEmail, states, statesAt)
-	detailsErr := h.completeInboxDetails(ctx, userEmail, session.imapc, present)
+
+	// The connection may be opened again a few times between here and the
+	// end, when a FETCH answer it cannot read closes it (imap.ReadInHalves).
+	reopen := h.sessionReopener(ctx, userEmail, session)
+	starredErr := h.storeStarredOutsideList(ctx, userEmail, session, states, reopen)
+	// After every message is stored, so it covers them all.
+	stateErr := h.refreshInboxState(ctx, userEmail, states, statesAt)
+	structureErr := h.completeInboxStructure(ctx, userEmail, session, present, reopen)
 	if failed > 0 {
 		return synced, len(emails), fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
 	}
-	for _, err := range []error{dropErr, flagsErr, detailsErr} {
+	for _, err := range []error{dropErr, starredErr, stateErr, structureErr} {
 		if err != nil {
 			return synced, len(emails), err
 		}
@@ -252,50 +247,239 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 // imapListLimit is how many of the most recent inbox messages a sync reads.
 const imapListLimit = 100
 
-// flagsRow is a stored inbox message, as the refresh of the flags reads it.
-type flagsRow struct {
-	MessageID string `bson:"messageId"`
-	IsRead    bool   `bson:"isRead"`
-	IsStarred bool   `bson:"isStarred"`
+// storeInboxMessage writes a message the sync read in full (its envelope)
+// into the stored copy of the inbox.
+func (h *Handler) storeInboxMessage(ctx context.Context, userEmail string, email models.Email) error {
+	email.UserID = userEmail
+	// The folder is stored with the message because on IMAP it is half of
+	// its identity: without it the UID names nothing in particular.
+	email.Folder = string(mailbox.FolderInbox)
+	update, err := inboxUpsert(email)
+	if err != nil {
+		return err
+	}
+	_, err = h.db.Emails().UpdateOne(ctx,
+		bson.M{"messageId": email.MessageID, "userId": userEmail},
+		update,
+		options.Update().SetUpsert(true),
+	)
+	return err
 }
 
-// refreshInboxFlags carries into the stored copy of the inbox the read state
-// and the star every stored message has on the server now (states, read at
-// statesAt), the old ones a listing no longer reads included: a mail read or
-// starred on the phone shows so after the next sync, whatever its age. A row
-// Mailsorter changed after the flags were read (flagsAt, see mirrorFlags) is
-// left as it is: its value is newer than theirs.
-func (h *Handler) refreshInboxFlags(ctx context.Context, userEmail string, states map[string]imap.State, statesAt time.Time) error {
-	folder := string(mailbox.FolderInbox)
-	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder},
-		options.Find().SetProjection(bson.M{"messageId": 1, "isRead": 1, "isStarred": 1}))
+// inboxUpsert is the write that stores a message read by a sync.
+//
+// The read state and the star are written only when the row is created
+// ($setOnInsert). On a row already stored they are refreshInboxState's,
+// which leaves alone a row Mailsorter changed after the flags were read
+// (flagsAt): written here, a star put on during the sync would be taken off
+// again by a listing read just before it, until the next sync.
+func inboxUpsert(email models.Email) (bson.M, error) {
+	raw, err := bson.Marshal(email)
 	if err != nil {
-		log.Printf("imap sync: read the flags stored for the inbox of %s: %v", userEmail, err)
+		return nil, fmt.Errorf("encode message %s: %w", email.MessageID, err)
+	}
+	var set bson.M
+	if err := bson.Unmarshal(raw, &set); err != nil {
+		return nil, fmt.Errorf("encode message %s: %w", email.MessageID, err)
+	}
+	delete(set, "isRead")
+	delete(set, "isStarred")
+	return bson.M{
+		"$set":         set,
+		"$setOnInsert": bson.M{"isRead": email.IsRead, "isStarred": email.IsStarred},
+		// syncedAt tells a sync running at the same time that this row was
+		// just written from a fresher listing than its own.
+		"$currentDate": bson.M{"syncedAt": true},
+	}, nil
+}
+
+// errMailboxLost is a sync that lost the connection to the mailbox and could
+// not open it again. Its text is what the user is told.
+var errMailboxLost = errors.New("la connexion à votre boîte a été perdue pendant la synchronisation")
+
+// syncReopens bounds how many times one sync opens the connection again after
+// a FETCH answer it could not read. Finding one unreadable message among a
+// batch of 100 takes 8 (one per halving), so each sync finds at least one,
+// and a mailbox where every message is unreadable costs a sync seconds, not
+// minutes.
+const syncReopens = 10
+
+// sessionReopener opens the session's connection again, syncReopens times at
+// most for this sync, then answers imap.ErrReopenLimit.
+func (h *Handler) sessionReopener(ctx context.Context, userEmail string, session *mailSession) func() error {
+	left := syncReopens
+	return func() error {
+		if left == 0 {
+			return imap.ErrReopenLimit
+		}
+		left--
+		// The connection the failed FETCH ended: closing it only releases it.
+		_ = session.imapc.Close()
+		client, err := h.openMailbox(ctx, userEmail)
+		if err != nil {
+			return err
+		}
+		session.imapc = client
+		return nil
+	}
+}
+
+// readBatch is how many messages one FETCH of a sync reads, besides the
+// listing and the flags: the unit imap.ReadInHalves halves.
+const readBatch = 100
+
+// starredPerSync bounds how many starred messages a sync stores that it did
+// not list, the most recent first; the next syncs store the rest.
+const starredPerSync = 500
+
+// storeStarredOutsideList stores the starred messages of the inbox the copy
+// does not hold: older than the page a sync lists, and never in it since
+// Mailsorter was connected. Without them the filter "Favoris" would show a
+// favorite of years ago only if it had once been among the 100 most recent.
+func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string, session *mailSession, states map[string]imap.State, reopen func() error) error {
+	folder := string(mailbox.FolderInbox)
+	stored, err := h.storedInboxUIDs(ctx, userEmail)
+	if err != nil {
+		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
 		return errMirrorNotReconciled
 	}
-	var rows []flagsRow
+	var missing []string
+	for uid, st := range states {
+		if st.Starred && !stored[uid] {
+			missing = append(missing, uid)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	// The most recent first: a UID grows with each message a folder receives.
+	sort.Slice(missing, func(i, j int) bool { return uidLess(missing[j], missing[i]) })
+	if len(missing) > starredPerSync {
+		missing = missing[:starredPerSync]
+	}
+	got, err := imap.ReadInHalves(missing, readBatch,
+		func(uids []string) (map[string]models.Email, error) { return session.imapc.Envelopes(folder, uids) },
+		reopen)
+	for uid, rErr := range got.Unreadable {
+		// Not stored: the next sync tries it again.
+		log.Printf("imap sync: starred message uid %s of %s could not be read, not stored: %v", uid, userEmail, rErr)
+	}
+	if len(got.Left) > 0 {
+		log.Printf("imap sync: %d starred messages of %s left for the next sync, the connection may not be opened again: %v", len(got.Left), userEmail, got.Stopped)
+	}
+	failed := false
+	for _, email := range got.Read {
+		if sErr := h.storeInboxMessage(ctx, userEmail, email); sErr != nil {
+			log.Printf("imap sync: starred message uid %s of %s not stored: %v", email.MessageID, userEmail, sErr)
+			failed = true
+		}
+	}
+	if err != nil {
+		log.Printf("imap sync: read the starred messages of %s: %v", userEmail, err)
+		return errMailboxLost
+	}
+	if failed {
+		return errMirrorNotReconciled
+	}
+	return nil
+}
+
+// storedInboxUIDs is the UID of every message the copy of the inbox holds.
+func (h *Handler) storedInboxUIDs(ctx context.Context, userEmail string) (map[string]bool, error) {
+	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox)},
+		options.Find().SetProjection(bson.M{"messageId": 1}))
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		MessageID string `bson:"messageId"`
+	}
 	if err := cur.All(ctx, &rows); err != nil {
-		log.Printf("imap sync: read the flags stored for the inbox of %s: %v", userEmail, err)
+		return nil, err
+	}
+	out := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		out[r.MessageID] = true
+	}
+	return out, nil
+}
+
+// uidLess orders two UIDs as numbers: "9" before "10".
+func uidLess(a, b string) bool {
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	return a < b
+}
+
+// stateRow is a stored inbox message, as the refresh of its state reads it.
+type stateRow struct {
+	MessageID    string `bson:"messageId"`
+	IsRead       bool   `bson:"isRead"`
+	IsStarred    bool   `bson:"isStarred"`
+	SizeEstimate int64  `bson:"sizeEstimate"`
+}
+
+// flagState is the read state and the star of a message, what one write of
+// refreshInboxState sets on many rows at once.
+type flagState struct {
+	read, starred bool
+}
+
+// refreshInboxState carries into the stored copy of the inbox the read state,
+// the star and the size every stored message has on the server now (states,
+// read at statesAt), the old ones a listing no longer reads included: a mail
+// read or starred on the phone shows so after the next sync, whatever its
+// age, and "Volumineux" knows the size of every stored mail. A row Mailsorter
+// changed after the flags were read (flagsAt, see mirrorFlags) keeps its read
+// state and its star: they are newer than the ones read.
+func (h *Handler) refreshInboxState(ctx context.Context, userEmail string, states map[string]imap.State, statesAt time.Time) error {
+	folder := string(mailbox.FolderInbox)
+	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder},
+		options.Find().SetProjection(bson.M{"messageId": 1, "isRead": 1, "isStarred": 1, "sizeEstimate": 1}))
+	if err != nil {
+		log.Printf("imap sync: read the state stored for the inbox of %s: %v", userEmail, err)
+		return errMirrorNotReconciled
+	}
+	var rows []stateRow
+	if err := cur.All(ctx, &rows); err != nil {
+		log.Printf("imap sync: read the state stored for the inbox of %s: %v", userEmail, err)
 		return errMirrorNotReconciled
 	}
 	// One write per state rather than per message: four at most, whatever the
-	// size of the inbox.
-	changed := map[imap.State][]string{}
+	// size of the inbox. A size is per message, but written once: it never
+	// changes for a UID.
+	changed := map[flagState][]string{}
+	var sizes []mongo.WriteModel
 	for _, r := range rows {
 		now, ok := states[r.MessageID]
-		if !ok || (now.Read == r.IsRead && now.Starred == r.IsStarred) {
+		if !ok {
 			continue
 		}
-		changed[now] = append(changed[now], r.MessageID)
+		if now.Read != r.IsRead || now.Starred != r.IsStarred {
+			key := flagState{read: now.Read, starred: now.Starred}
+			changed[key] = append(changed[key], r.MessageID)
+		}
+		if now.Size > 0 && now.Size != r.SizeEstimate {
+			sizes = append(sizes, mongo.NewUpdateOneModel().
+				SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": r.MessageID}).
+				SetUpdate(bson.M{"$set": bson.M{"sizeEstimate": now.Size}}))
+		}
 	}
 	failed := false
 	for state, ids := range changed {
 		if _, err := h.db.Emails().UpdateMany(ctx,
 			bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": ids},
 				"flagsAt": bson.M{"$not": bson.M{"$gte": statesAt}}},
-			bson.M{"$set": bson.M{"isRead": state.Read, "isStarred": state.Starred}},
+			bson.M{"$set": bson.M{"isRead": state.read, "isStarred": state.starred}},
 		); err != nil {
 			log.Printf("imap sync: carry the read state and the star of %d messages of %s into the copy: %v", len(ids), userEmail, err)
+			failed = true
+		}
+	}
+	if len(sizes) > 0 {
+		if _, err := h.db.Emails().BulkWrite(ctx, sizes, options.BulkWrite().SetOrdered(false)); err != nil {
+			log.Printf("imap sync: store the size of %d messages of %s: %v", len(sizes), userEmail, err)
 			failed = true
 		}
 	}
@@ -305,33 +489,37 @@ func (h *Handler) refreshInboxFlags(ctx context.Context, userEmail string, state
 	return nil
 }
 
-// detailsPerSync bounds how many stored inbox messages one sync reads the size
-// and the attachments of, the most recent first: the ones it just listed, and
-// older ones stored before Mailsorter kept these, which the next syncs
-// complete rather than one sync holding the user for minutes.
-const detailsPerSync = 500
+// structurePerSync bounds how many stored inbox messages one sync reads the
+// MIME structure of, the most recent first: the ones it just stored, and
+// older ones stored before Mailsorter kept it, which the next syncs complete
+// rather than one sync holding the user for minutes.
+const structurePerSync = 500
 
-// completeInboxDetails reads the size and the attachments of the stored inbox
-// messages that have none yet (no sizeEstimate), for the filters "Volumineux"
-// and "Pièces jointes", which are answered from the copy. Only messages the
-// inbox still holds (present): a number it no longer holds names nothing.
-func (h *Handler) completeInboxDetails(ctx context.Context, userEmail string, client *imap.Client, present map[string]bool) error {
+// completeInboxStructure reads whether the stored inbox messages carry a file
+// (their MIME structure), for the filter "Pièces jointes", which is answered
+// from the copy. A row without hasAttachments has not been read yet; once
+// read it holds true or false. A message whose structure cannot be read even
+// alone is stored without an attachment and marked structureUnreadable: it
+// is logged, never asked again, and no longer fails the messages next to it.
+// Only messages the inbox still holds (present): a number it no longer holds
+// names nothing.
+func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, session *mailSession, present map[string]bool, reopen func() error) error {
 	folder := string(mailbox.FolderInbox)
 	cur, err := h.db.Emails().Find(ctx,
-		bson.M{"userId": userEmail, "folder": folder, "leftInbox": notLeftInbox, "sizeEstimate": bson.M{"$exists": false}},
+		bson.M{"userId": userEmail, "folder": folder, "leftInbox": notLeftInbox, "hasAttachments": bson.M{"$exists": false}},
 		options.Find().
 			SetProjection(bson.M{"messageId": 1}).
 			SetSort(bson.D{{Key: "receivedDate", Value: -1}}).
-			SetLimit(detailsPerSync))
+			SetLimit(structurePerSync))
 	if err != nil {
-		log.Printf("imap sync: look for the inbox messages of %s without a size: %v", userEmail, err)
+		log.Printf("imap sync: look for the inbox messages of %s whose structure is not read: %v", userEmail, err)
 		return errMirrorNotReconciled
 	}
 	var rows []struct {
 		MessageID string `bson:"messageId"`
 	}
 	if err := cur.All(ctx, &rows); err != nil {
-		log.Printf("imap sync: look for the inbox messages of %s without a size: %v", userEmail, err)
+		log.Printf("imap sync: look for the inbox messages of %s whose structure is not read: %v", userEmail, err)
 		return errMirrorNotReconciled
 	}
 	uids := make([]string, 0, len(rows))
@@ -343,25 +531,36 @@ func (h *Handler) completeInboxDetails(ctx context.Context, userEmail string, cl
 	if len(uids) == 0 {
 		return nil
 	}
-	details, err := client.Details(folder, uids)
-	if err != nil {
-		// Only an addition to what the list shows (the size and attachment
-		// filters): a server whose answer cannot be read here must not turn
-		// every sync of the inbox into an error. Logged, tried again next sync.
-		log.Printf("imap sync: read the size and the attachments of %d messages of %s: %v", len(uids), userEmail, err)
-		return nil
-	}
-	writes := make([]mongo.WriteModel, 0, len(details))
-	for uid, d := range details {
+	got, readErr := imap.ReadInHalves(uids, readBatch,
+		func(batch []string) (map[string]bool, error) { return session.imapc.Attachments(folder, batch) },
+		reopen)
+	writes := make([]mongo.WriteModel, 0, len(got.Read)+len(got.Unreadable))
+	for uid, has := range got.Read {
 		writes = append(writes, mongo.NewUpdateOneModel().
 			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
-			SetUpdate(bson.M{"$set": bson.M{"sizeEstimate": d.Size, "hasAttachments": d.HasAttachments}}))
+			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": has}}))
 	}
-	if len(writes) == 0 {
-		return nil
+	for uid, rErr := range got.Unreadable {
+		log.Printf("imap sync: the structure of message uid %s of %s cannot be read, kept without an attachment: %v", uid, userEmail, rErr)
+		writes = append(writes, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
+			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": false, "structureUnreadable": true}}))
 	}
-	if _, err := h.db.Emails().BulkWrite(ctx, writes, options.BulkWrite().SetOrdered(false)); err != nil {
-		log.Printf("imap sync: store the size and the attachments of %d messages of %s: %v", len(writes), userEmail, err)
+	if len(got.Left) > 0 {
+		log.Printf("imap sync: the structure of %d messages of %s left for the next sync, the connection may not be opened again: %v", len(got.Left), userEmail, got.Stopped)
+	}
+	failed := false
+	if len(writes) > 0 {
+		if _, err := h.db.Emails().BulkWrite(ctx, writes, options.BulkWrite().SetOrdered(false)); err != nil {
+			log.Printf("imap sync: store the attachments of %d messages of %s: %v", len(writes), userEmail, err)
+			failed = true
+		}
+	}
+	if readErr != nil {
+		log.Printf("imap sync: read the structure of the messages of %s: %v", userEmail, readErr)
+		return errMailboxLost
+	}
+	if failed {
 		return errMirrorNotReconciled
 	}
 	return nil
@@ -622,7 +821,7 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 // mirrorFlags carries a change of the read state or of the star into the
 // stored copy the list is served from, so the list and its filters show it at
 // once rather than at the next sync. flagsAt tells a sync that read the flags
-// before this change not to put the old ones back (refreshInboxFlags). The
+// before this change not to put the old ones back (refreshInboxState). The
 // server already changed; a failure here is only logged, and the next sync
 // carries the change.
 func (m mirroredIMAP) mirrorFlags(ctx context.Context, ref mailbox.Ref, op mailbox.IMAPOp) {

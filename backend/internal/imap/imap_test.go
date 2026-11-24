@@ -32,6 +32,13 @@ const (
 // purpose: see newClient.
 func newTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) *Client {
 	t.Helper()
+	return dialTestServer(t, startTestServer(t, mailboxes))
+}
+
+// startTestServer runs the in-memory server and returns its address, for a
+// test that connects more than once (or through something in between).
+func startTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) string {
+	t.Helper()
 
 	user := imapmemserver.NewUser(testUser, testPass)
 	for name, attrs := range mailboxes {
@@ -67,17 +74,27 @@ func newTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) *Cli
 		srv.Close()
 		ln.Close()
 	})
+	return ln.Addr().String()
+}
 
-	raw, err := imapclient.DialInsecure(ln.Addr().String(), clientOptions("127.0.0.1"))
+// dialTestServer is one authenticated Client on the server at addr.
+func dialTestServer(t *testing.T, addr string) *Client {
+	t.Helper()
+	client, err := dialTestClient(addr)
 	if err != nil {
-		t.Fatalf("dial test server: %v", err)
-	}
-	client, err := newClient(raw, testUser, testPass)
-	if err != nil {
-		t.Fatalf("newClient: %v", err)
+		t.Fatalf("connect to the test server: %v", err)
 	}
 	t.Cleanup(func() { client.Close() })
 	return client
+}
+
+// dialTestClient connects and authenticates, and says why it could not.
+func dialTestClient(addr string) (*Client, error) {
+	raw, err := imapclient.DialInsecure(addr, clientOptions("127.0.0.1"))
+	if err != nil {
+		return nil, err
+	}
+	return newClient(raw, testUser, testPass)
 }
 
 // standardMailboxes is a server that advertises RFC 6154 special-use, the happy

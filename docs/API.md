@@ -337,9 +337,9 @@ set of labels; `folder` carries that folder instead, and `messageId` is the
 message's UID in it. Three fields come with it there: `isStarred` (`true` when
 the server holds `\Flagged`, absent otherwise), `sizeEstimate` (the whole
 message in bytes, `RFC822.SIZE`) and `hasAttachments` (`true` when it carries a
-file, absent otherwise), the last two absent on a message the sync has not
-read them for yet. The Gmail API's answer carries none of them: the star is the
-`STARRED` label there. See "Transports and what works on each".
+file, absent otherwise), the last two read by the sync. The Gmail API's
+answer carries none of them: the star is the `STARRED` label there. See
+"Transports and what works on each".
 
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
@@ -852,19 +852,28 @@ Two consequences worth knowing:
   a message that left, either way, become `moot`: they leave the plan, and
   applying one from a screen loaded before does nothing (`ApplySuggestion`
   answers `{"status":"already"}`, `apply-batch` neither counts nor fails it).
-- Each sync also reads the flags of every message of the inbox, in one
-  `FETCH` of `FLAGS` whatever its size, and carries the read state and the
-  star into every stored message: a mail read or starred on another mail
-  program shows so after the next sync, however old it is. A change made from
-  Mailsorter after that read (`flagsAt`) is left as it is.
-- And it reads the size and the MIME structure (`RFC822.SIZE`,
-  `BODYSTRUCTURE`, no message downloaded) of up to 500 stored inbox messages
-  that do not have them yet, newest first: the ones it just listed, and older
-  ones stored before Mailsorter kept these, which the next syncs complete. A
-  message carries a file when a part is marked `Content-Disposition:
-  attachment`, or is a named file that is neither text nor a picture the HTML
-  draws (a part with a `Content-ID`). Until it is read, a message matches
-  neither `has:attachment` nor `larger:` / `smaller:`.
+- Each sync also reads the flags and the size of every message of the inbox,
+  in one `FETCH` of `FLAGS` and `RFC822.SIZE` whatever its size, and carries the
+  read state, the star and the size into every stored message: a mail read or
+  starred on another mail program shows so after the next sync, however old it
+  is, and `larger:` / `smaller:` know every stored message from the first sync.
+  A read state or a star changed from Mailsorter after that read (`flagsAt`) is
+  left as it is.
+- It stores the starred messages of the inbox the copy does not hold yet, up
+  to 500 a sync, most recent first: a favorite older than the 100 most recent
+  is in `is:starred` from the first sync.
+- And it reads the MIME structure (`BODYSTRUCTURE`, no message downloaded) of
+  up to 500 stored inbox messages it has not read it for yet, newest first,
+  which the next syncs complete. A message carries a file when a part is
+  marked `Content-Disposition: attachment`, or is a named file that is neither
+  text nor a picture the HTML draws (a part with a `Content-ID`). Until it is
+  read, a message does not match `has:attachment`. A message whose structure
+  cannot be read even alone (the batch it is in fails, the connection is
+  opened again and the batch read by halves) is logged, kept without an
+  attachment and marked `structureUnreadable`, and not asked again; the
+  others are read. A connection that cannot be opened again fails the sync
+  with `500` "la connexion à votre boîte a été perdue pendant la
+  synchronisation".
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 The filters the inbox offers are all answered: `is:unread`, `is:read`,

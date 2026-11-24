@@ -91,10 +91,11 @@ type Email struct {
 	IsStarred bool `json:"isStarred,omitempty" bson:"isStarred"`
 	// SizeEstimate is the size of the whole message in bytes (RFC822.SIZE) and
 	// HasAttachments whether it carries a file, both set on the IMAP transport
-	// only, read by the sync (see syncInboxIMAP): a stored message without a
-	// size has not been read for them yet. Both are omitted when empty, so
-	// writing a message back from a listing or from the reader, which do not
-	// read them, never erases what the sync stored.
+	// only, by the sync (see syncInboxIMAP), which stores false too once it has
+	// read the structure: a stored message without hasAttachments has not been
+	// read for it yet. Both are omitted when empty here, so writing a message
+	// back from a listing or from the reader, which do not read them, never
+	// erases what the sync stored.
 	SizeEstimate   int64 `json:"sizeEstimate,omitempty" bson:"sizeEstimate,omitempty"`
 	HasAttachments bool  `json:"hasAttachments,omitempty" bson:"hasAttachments,omitempty"`
 	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.

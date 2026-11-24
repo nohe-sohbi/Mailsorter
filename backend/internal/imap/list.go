@@ -74,7 +74,22 @@ func (c *Client) List(ctx context.Context, folder string, limit int) ([]models.E
 		low = high - uint32(limit) + 1
 	}
 
-	messages, err := c.c.Fetch(imapv2.SeqSet{{Start: low, Stop: high}}, &imapv2.FetchOptions{
+	messages, err := c.c.Fetch(imapv2.SeqSet{{Start: low, Stop: high}}, listOptions()).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetch %q: %w", folder, err)
+	}
+
+	out := make([]models.Email, 0, len(messages))
+	for i := len(messages) - 1; i >= 0; i-- {
+		out = append(out, emailFrom(messages[i]))
+	}
+	return out, nil
+}
+
+// listOptions is what a listing reads of each message: the envelope, the
+// flags and the two unsubscribe headers, never the body.
+func listOptions() *imapv2.FetchOptions {
+	return &imapv2.FetchOptions{
 		UID:          true,
 		Flags:        true,
 		Envelope:     true,
@@ -88,14 +103,43 @@ func (c *Client) List(ctx context.Context, folder string, limit int) ([]models.E
 			// watches their unread count fall to zero for no reason they did.
 			Peek: true,
 		}},
-	}).Collect()
-	if err != nil {
-		return nil, fmt.Errorf("imap: fetch %q: %w", folder, err)
 	}
+}
 
-	out := make([]models.Email, 0, len(messages))
-	for i := len(messages) - 1; i >= 0; i-- {
-		out = append(out, emailFrom(messages[i]))
+// Envelopes reads these messages of folder, by UID, the way List reads a
+// page: envelope, flags and unsubscribe headers, peeked. It is how a sync
+// stores a message older than the page it lists, a favorite of years ago for
+// instance. A UID the folder no longer holds is simply not in the answer.
+func (c *Client) Envelopes(folder string, uids []string) (map[string]models.Email, error) {
+	out := make(map[string]models.Email, len(uids))
+	if len(uids) == 0 {
+		return out, nil
+	}
+	var set imapv2.UIDSet
+	asked := make(map[imapv2.UID]bool, len(uids))
+	for _, uid := range uids {
+		num, err := parseUID(uid)
+		if err != nil {
+			return nil, err
+		}
+		set.AddNum(num)
+		asked[num] = true
+	}
+	if err := c.selectFolder(folder); err != nil {
+		return nil, err
+	}
+	messages, err := c.c.Fetch(set, listOptions()).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetch %d messages of %q: %w", len(uids), folder, err)
+	}
+	for _, m := range messages {
+		// Only what was asked, with its envelope: a server may slip in news
+		// about another message (a flag changed elsewhere).
+		if !asked[m.UID] || m.Envelope == nil {
+			continue
+		}
+		email := emailFrom(m)
+		out[email.MessageID] = email
 	}
 	return out, nil
 }

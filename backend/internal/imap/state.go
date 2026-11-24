@@ -15,21 +15,23 @@ import (
 // nothing about the older ones. Two things about those still change, or were
 // never read: what another mail program did to them (read, starred), and what
 // the filters above the inbox ask of every message (its size, whether it
-// carries a file). Both are read here, cheaply: the flags of the whole folder
-// in one FETCH, and the size and the MIME structure of a batch of messages in
+// carries a file). Both are read here, cheaply: the flags and the size of the
+// whole folder in one FETCH, and the MIME structure of a batch of messages in
 // another, neither of which downloads a message.
 
-// State is what a message's flags say, of the two the app shows: read
-// (\Seen) and the star (\Flagged).
+// State is what the sync reads of every message of a folder: the two flags the
+// app shows, read (\Seen) and the star (\Flagged), and the size of the whole
+// message in bytes (RFC822.SIZE), a few bytes more per message.
 type State struct {
 	Read    bool
 	Starred bool
+	Size    int64
 }
 
 // States returns the state of every message in folder, by UID, in one FETCH of
-// the flags, whatever the size of the folder. It is how the sync knows which
-// of the older messages it stored are still there, and what another mail
-// program changed on them since.
+// the flags and the size, whatever the size of the folder. It is how the sync
+// knows which of the older messages it stored are still there, what another
+// mail program changed on them since, and how large each one is.
 func (c *Client) States(folder string) (map[string]State, error) {
 	// Re-selected, like a listing: the answer must reflect the folder now.
 	data, err := c.reselect(folder)
@@ -44,7 +46,7 @@ func (c *Client) States(folder string) (map[string]State, error) {
 	// Read one message at a time rather than collected: on an inbox of fifty
 	// thousand messages the answer is that many lines, and only two booleans of
 	// each are kept.
-	cmd := c.c.Fetch(imapv2.SeqSet{{Start: 1, Stop: data.NumMessages}}, &imapv2.FetchOptions{UID: true, Flags: true})
+	cmd := c.c.Fetch(imapv2.SeqSet{{Start: 1, Stop: data.NumMessages}}, &imapv2.FetchOptions{UID: true, Flags: true, RFC822Size: true})
 	for {
 		msg := cmd.Next()
 		if msg == nil {
@@ -63,6 +65,7 @@ func (c *Client) States(folder string) (map[string]State, error) {
 		out[strconv.FormatUint(uint64(buf.UID), 10)] = State{
 			Read:    mailbox.IMAPIsRead(flags),
 			Starred: mailbox.IMAPIsStarred(flags),
+			Size:    buf.RFC822Size,
 		}
 	}
 	if err := cmd.Close(); err != nil {
@@ -71,19 +74,17 @@ func (c *Client) States(folder string) (map[string]State, error) {
 	return out, nil
 }
 
-// Details is what the filters "Volumineux" and "Pièces jointes" ask of a
-// message: its size in bytes, and whether it carries a file.
-type Details struct {
-	Size           int64
-	HasAttachments bool
-}
-
-// Details reads the size (RFC822.SIZE) and the MIME structure (BODYSTRUCTURE)
-// of these messages of folder, by UID, in one FETCH. The structure lists the
-// parts without their content, so a mail of 8 MB costs what a mail of 8 KB
-// does. A UID the folder no longer holds is simply not in the answer.
-func (c *Client) Details(folder string, uids []string) (map[string]Details, error) {
-	out := make(map[string]Details, len(uids))
+// Attachments reads the MIME structure (BODYSTRUCTURE) of these messages of
+// folder, by UID, in one FETCH, and says for each whether it carries a file,
+// for the filter "Pièces jointes". The structure lists the parts without their
+// content, so a mail of 8 MB costs what a mail of 8 KB does. A UID the folder
+// no longer holds is simply not in the answer.
+//
+// A structure go-imap cannot read fails the whole FETCH and closes the
+// connection with it: read a batch through ReadInHalves, which opens it again
+// and finds the message.
+func (c *Client) Attachments(folder string, uids []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(uids))
 	if len(uids) == 0 {
 		return out, nil
 	}
@@ -102,22 +103,18 @@ func (c *Client) Details(folder string, uids []string) (map[string]Details, erro
 	}
 	msgs, err := c.c.Fetch(set, &imapv2.FetchOptions{
 		UID:           true,
-		RFC822Size:    true,
 		BodyStructure: &imapv2.FetchItemBodyStructure{Extended: true},
 	}).Collect()
 	if err != nil {
-		return nil, fmt.Errorf("imap: read the size and the parts of %d messages in %q: %w", len(uids), folder, err)
+		return nil, fmt.Errorf("imap: read the parts of %d messages in %q: %w", len(uids), folder, err)
 	}
 	for _, m := range msgs {
 		// Only what was asked: a server may slip in news about another
-		// message (a flag changed elsewhere), which carries neither.
-		if !asked[m.UID] {
+		// message (a flag changed elsewhere), which carries no structure.
+		if !asked[m.UID] || m.BodyStructure == nil {
 			continue
 		}
-		out[strconv.FormatUint(uint64(m.UID), 10)] = Details{
-			Size:           m.RFC822Size,
-			HasAttachments: hasAttachment(m.BodyStructure),
-		}
+		out[strconv.FormatUint(uint64(m.UID), 10)] = hasAttachment(m.BodyStructure)
 	}
 	return out, nil
 }
