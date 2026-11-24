@@ -354,5 +354,45 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 				moi.expectShows(uids[0], bankStatement.Subject)
 			},
 		},
+		{
+			phrase: "Sur une boîte IMAP, supprimer depuis un écran resté ouvert un mail que Mailsorter a déjà archivé le met bien à la corbeille, et « Annuler » juste après le remet dans ta boîte de réception.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				moi.act(uids[1], "archive")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver")
+
+				// "Supprimer" on the same mail, from another tab left open on
+				// the inbox from before the archive: "delete" (Inbox.js,
+				// directAction) on the number the row still shows. act
+				// expects it to answer 200.
+				moi.act(uids[1], "delete")
+				moi.expectOnServer(serverTrash, shopOrder.Subject)
+				moi.expectNotOnServer(serverArchive, shopOrder.Subject, "tu l'as supprimé depuis un écran resté ouvert, après l'avoir archivé")
+				moi.expectNotOnServer(serverInbox, shopOrder.Subject, "tu l'as archivé puis supprimé")
+
+				// "Annuler" in the message that follows that "Supprimer":
+				// "untrash" on the same number.
+				if got := moi.undoRightAfter(uids[1], "delete"); got.code != http.StatusOK {
+					app.failf("« Annuler » juste après la suppression du mail n°%s %q, déjà archivé, devrait répondre 200, le serveur a répondu %s", uids[1], shopOrder.Subject, got)
+				}
+
+				// What the screen shows right after: Inbox.js reloads the
+				// listing once the undo answers, without a sync. Then the
+				// server: back in the inbox, and in neither folder it went
+				// through.
+				moi.expectBackInInbox(shopOrder.Subject, "juste après « Annuler » sur sa suppression")
+				moi.expectOnServer(serverInbox, shopOrder.Subject)
+				moi.expectNotOnServer(serverTrash, shopOrder.Subject, "« Annuler » l'a remis dans la boîte de réception")
+				moi.expectNotOnServer(serverArchive, shopOrder.Subject, "« Annuler » l'a remis dans la boîte de réception")
+				// The history is not read: the sentence says nothing of it,
+				// and it may show a line for the deletion next to the one
+				// for the archive.
+				//
+				// The control: the mail nobody touched is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
 	})
 }

@@ -13,8 +13,9 @@ package api
 //
 // A proposal can also outlive its point: the person files the mail by hand,
 // from its row, before answering the plan. Over IMAP that mail stays stored,
-// hidden, so "Annuler" can bring it back; the last sentence says its proposal
-// does not stay with it.
+// hidden, so "Annuler" can bring it back; the last two sentences say its
+// proposal does not stay with it, and that "Tout ranger" from a screen that
+// still shows it moves, counts and records nothing more for that mail.
 
 import (
 	"net/http"
@@ -179,7 +180,10 @@ func TestScenarios_IMAPAI(t *testing.T) {
 				// still shows it (a tab left open): both ids, as TriagePlan.js
 				// sends them. The control is there so that a "Tout ranger"
 				// that counts nothing at all cannot pass for one that leaves
-				// out the mail already archived.
+				// out the mail already archived. Not counting it means in
+				// neither count of the answer: the plan also reads "failed",
+				// and would say "1 email n'a pas pu être traité." about a
+				// mail already tidied (TriagePlan.js).
 				got := moi.tidyAll(byHand.ID, control.ID)
 				if got.code != http.StatusOK {
 					app.fatalf("« Tout ranger » devrait répondre 200 avec le compte des mails rangés, le serveur a répondu %s : le scénario ne prouve rien", got)
@@ -200,9 +204,90 @@ func TestScenarios_IMAPAI(t *testing.T) {
 				if n := app.number(got.body, "applied"); n != 1 {
 					app.failf("« Tout ranger » annonce %d mails rangés, alors que seul le mail n°%s %q pouvait être rangé : le mail n°%s %q était déjà archivé à la main", n, uids[1], travelOffer.Subject, uids[0], shopOrder.Subject)
 				}
+				if n := app.number(got.body, "failed"); n != 0 {
+					app.failf("« Tout ranger » compte %d mail(s) en échec, alors que le mail n°%s %q, que tu avais déjà archivé à la main, n'avait plus rien à ranger et que le mail n°%s %q a été rangé : l'écran annonce qu'un mail n'a pas pu être traité à propos d'un mail déjà rangé", n, uids[0], shopOrder.Subject, uids[1], travelOffer.Subject)
+				}
 
 				// The Historique screen: the archive by hand, and nothing from
 				// a "Tout ranger" that moved nothing.
+				lines := moi.historyLinesOf(uids[0])
+				if len(lines) != 1 || lines[0].Action != "archive" || lines[0].Source != SourceDirect {
+					app.failf("l'historique de %s devrait montrer une seule ligne pour le mail n°%s %q, ton archivage à la main (\"archive\", %s) : il en montre %d (%s)", moi.email, uids[0], shopOrder.Subject, SourceDirect, len(lines), describeHistory(lines))
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, « Tout ranger » sur un écran resté ouvert après que tu as rangé un mail à la main ne range rien de plus pour ce mail : il n'est compté ni rangé ni en échec, et l'historique n'a que ton rangement.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, shopOrder, travelOffer)
+
+				// The AI proposes to archive both mails. The second one nobody
+				// touches: it is the control.
+				app.ai.willSay("archive", 0.95)
+				moi.analyze(uids...)
+				byHand := moi.proposalFor(uids[0])
+				control := moi.proposalFor(uids[1])
+				if byHand.Action != "archive" || control.Action != "archive" {
+					app.fatalf("le plan de l'IA devrait proposer d'archiver le mail n°%s %q et le mail n°%s %q, il propose %q et %q : le scénario ne prouve rien", uids[0], shopOrder.Subject, uids[1], travelOffer.Subject, byHand.Action, control.Action)
+				}
+
+				// "Archiver" on the row of the first mail, and no
+				// "Synchroniser" after it: the plan still waits for an answer
+				// on its proposal, the way another tab left open on the inbox
+				// still shows it.
+				moi.act(uids[0], "archive")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver à la main")
+
+				// "Tout ranger" on that screen: both ids, as TriagePlan.js
+				// sends them. The control is there so that a "Tout ranger"
+				// that tidies nothing at all cannot pass for one that leaves
+				// out the mail already archived.
+				got := moi.tidyAll(byHand.ID, control.ID)
+				if got.code != http.StatusOK {
+					app.fatalf("« Tout ranger » devrait répondre 200 avec le compte des mails rangés, le serveur a répondu %s : le scénario ne prouve rien", got)
+				}
+				counted := map[string]bool{}
+				list, _ := got.body["appliedIds"].([]interface{})
+				for _, v := range list {
+					if id, ok := v.(string); ok {
+						counted[id] = true
+					}
+				}
+				if !counted[control.ID] {
+					app.fatalf("« Tout ranger » devrait compter parmi les mails rangés le mail n°%s %q, que personne n'a touché, il ne le compte pas (%v) : le scénario ne prouve rien", uids[1], travelOffer.Subject, got.body)
+				}
+				moi.requireOnServer(serverArchive, travelOffer.Subject, "« Tout ranger » l'a compté parmi les mails rangés")
+
+				// What the plan announces: the control, and nothing for the
+				// mail already archived, neither among the mails tidied nor
+				// among those that failed ("n'a pas pu être traité").
+				if counted[byHand.ID] {
+					app.failf("« Tout ranger » compte parmi les mails rangés le mail n°%s %q, alors que tu l'avais déjà archivé à la main et qu'il n'a rien rangé de plus", uids[0], shopOrder.Subject)
+				}
+				if n := app.number(got.body, "applied"); n != 1 {
+					app.failf("« Tout ranger » annonce %d mails rangés, alors que seul le mail n°%s %q pouvait être rangé : le mail n°%s %q était déjà archivé à la main", n, uids[1], travelOffer.Subject, uids[0], shopOrder.Subject)
+				}
+				if n := app.number(got.body, "failed"); n != 0 {
+					app.failf("« Tout ranger » compte %d mail(s) en échec, alors que le mail n°%s %q, que tu avais déjà archivé à la main, n'avait plus rien à ranger et que le mail n°%s %q a été rangé : l'écran annonce qu'un mail n'a pas pu être traité à propos d'un mail déjà rangé", n, uids[0], shopOrder.Subject, uids[1], travelOffer.Subject)
+				}
+
+				// The server, as another mail program sees it: the mail stays
+				// where you put it, once, and nowhere else.
+				copies := 0
+				for _, s := range moi.onServer(serverArchive) {
+					if s == shopOrder.Subject {
+						copies++
+					}
+				}
+				if copies != 1 {
+					app.failf("après « Tout ranger », le dossier %s du serveur IMAP de %s devrait contenir le mail %q une fois, celle où tu l'as archivé à la main : il le contient %d fois", serverArchive, moi.email, shopOrder.Subject, copies)
+				}
+				moi.expectNotOnServer(serverInbox, shopOrder.Subject, "tu l'as archivé à la main avant « Tout ranger »")
+				moi.expectNotOnServer(serverTrash, shopOrder.Subject, "tu l'as archivé à la main avant « Tout ranger »")
+
+				// The Historique screen: the archive by hand, and nothing from
+				// a "Tout ranger" that moved nothing for that mail.
 				lines := moi.historyLinesOf(uids[0])
 				if len(lines) != 1 || lines[0].Action != "archive" || lines[0].Source != SourceDirect {
 					app.failf("l'historique de %s devrait montrer une seule ligne pour le mail n°%s %q, ton archivage à la main (\"archive\", %s) : il en montre %d (%s)", moi.email, uids[0], shopOrder.Subject, SourceDirect, len(lines), describeHistory(lines))
