@@ -2179,8 +2179,8 @@ the generic entry and gets the same `422`.
 
 Routes are ordered best first: a revocable token before a pasted full-mailbox
 credential. `auth` is the credential the route asks for: `oauth`,
-`app-password`, or `password`, the mailbox password itself (Infomaniak, Proton
-through Bridge, and the autodiscovery routes). `autodiscover` is true for an
+`app-password`, or `password`, the mailbox password itself (Proton through
+Bridge, which shows its own, and the autodiscovery routes). `autodiscover` is true for an
 IMAP route whose IMAP or SMTP server the catalog does not carry: its settings
 would have to be found from the domain, which is not implemented yet, so the
 screen must not promise settings it does not have.

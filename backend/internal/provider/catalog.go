@@ -257,12 +257,15 @@ var catalog = []Provider{
 		Routes: []Route{
 			{
 				Transport: TransportIMAP,
-				Auth:      AuthPassword,
-				Editions:  bothEditions,
-				IMAP:      &Endpoint{Host: "mail.infomaniak.com", Port: 993, TLS: TLSImplicit},
-				SMTP:      &Endpoint{Host: "mail.infomaniak.com", Port: 587, TLS: TLSSTARTTLS},
-				Caps:      CapServerSend,
-				Note:      "Hebergeur suisse, donnees en Europe: l'argument de confidentialite que les outils americains ne peuvent pas tenir.",
+				// A device password created in the Manager (Mail Service, the
+				// address, Devices tab), shown once: an address has no password
+				// of its own outside Infomaniak's apps (FAQ 1321 and 1344).
+				Auth:     AuthAppPassword,
+				Editions: bothEditions,
+				IMAP:     &Endpoint{Host: "mail.infomaniak.com", Port: 993, TLS: TLSImplicit},
+				SMTP:     &Endpoint{Host: "mail.infomaniak.com", Port: 587, TLS: TLSSTARTTLS},
+				Caps:     CapServerSend,
+				Note:     "Hebergeur suisse, donnees en Europe: l'argument de confidentialite que les outils americains ne peuvent pas tenir.",
 			},
 		},
 	},

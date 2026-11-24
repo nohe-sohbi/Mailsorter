@@ -51,7 +51,8 @@ const PROVIDER_TIPS = {
     "Chez Orange, ce mot de passe s'appelle une « clé d'accès ». Créez-la dans l'espace sécurité de votre compte Orange : ce n'est pas le mot de passe du compte, et c'est elle qu'il faut saisir ici.",
   icloud:
     "Apple n'affiche ce mot de passe qu'une seule fois, au moment où vous le créez : gardez la page ouverte et copiez-le tout de suite.",
-  yahoo: 'Chez Yahoo, ce mot de passe se crée dans la section des connexions externes de votre compte.',
+  infomaniak:
+    "Chez Infomaniak, c'est un mot de passe d'appareil : créez-le dans le Manager (Service Mail, votre adresse, onglet Appareils). Il ne s'affiche qu'une seule fois, copiez-le tout de suite.",
   proton:
     'Proton passe par Proton Mail Bridge, installé sur la machine où tourne Mailsorter. Saisissez le mot de passe que Bridge affiche pour cette adresse, pas celui de votre compte Proton.',
 };

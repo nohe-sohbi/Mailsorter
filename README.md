@@ -53,7 +53,7 @@ Le fournisseur est reconnu au domaine de l'adresse, et la connexion part vers le
 | La Poste | `laposte.net` | un mot de passe d'application | les deux |
 | iCloud Mail | `icloud.com`, `me.com`, `mac.com` | un mot de passe d'application (double authentification requise) | les deux |
 | Fastmail | `fastmail.com`, `fastmail.fr` | un mot de passe d'application | les deux |
-| Infomaniak | `ik.me`, `etik.com`, `ikmail.com` | le mot de passe de la boîte | les deux |
+| Infomaniak | `ik.me`, `etik.com`, `ikmail.com` | un mot de passe d'appareil, créé dans le Manager (Service Mail, l'adresse, onglet Appareils) | les deux |
 | Proton Mail | `proton.me`, `protonmail.com`, `pm.me` | le mot de passe de la boîte, via Bridge (offre payante de Proton) | auto-hébergée |
 
 En auto-hébergé s'ajoutent **Gmail et Google Workspace par l'API Gmail complète** (OAuth), avec votre propre projet Google Cloud : voir [Connecter Gmail par l'API](#connecter-gmail-par-lapi).
@@ -147,7 +147,7 @@ Sans ces identifiants, une adresse Gmail se branche quand même, par IMAP avec u
 
 ### Connecter un autre fournisseur
 
-Selon le fournisseur, l'écran Connecter demande un mot de passe d'application que vous générez chez lui, ou le mot de passe de la boîte elle-même (Infomaniak, et Proton via Bridge) : voir [le tableau des fournisseurs](#ce-qui-se-branche-aujourdhui). Il vous dit lequel, et ce qui peut bloquer la connexion, depuis le même catalogue que celui avec lequel le serveur se connecte. La connexion est essayée avant d'être enregistrée, et l'identifiant est stocké chiffré (AES-256-GCM) : aucune route ne le renvoie.
+Selon le fournisseur, l'écran Connecter demande un mot de passe d'application que vous générez chez lui, ou celui que Proton Mail Bridge affiche : voir [le tableau des fournisseurs](#ce-qui-se-branche-aujourdhui). Il vous dit lequel, et ce qui peut bloquer la connexion, depuis le même catalogue que celui avec lequel le serveur se connecte. La connexion est essayée avant d'être enregistrée, et l'identifiant est stocké chiffré (AES-256-GCM) : aucune route ne le renvoie.
 
 ## IA locale
 
