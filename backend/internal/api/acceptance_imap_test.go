@@ -127,7 +127,8 @@ func (a *testApp) setEmailsValidator(validator bson.M) {
 // ---------------------------------------------------------------------------
 
 var (
-	// imapServerTLS is what every fake IMAP server presents.
+	// imapServerTLS is what every fake IMAP server presents, and every fake
+	// sending server of acceptance_smtp_test.go: both live on 127.0.0.1.
 	imapServerTLS *tls.Config
 	// imapTLSErr is why imapServerTLS is missing, reported by the first
 	// scenario that needs a server rather than by every scenario.
@@ -225,6 +226,9 @@ type imapPerson struct {
 	token   string
 	mailbox *imapmemserver.User
 	port    int
+	// sending is the sending server next to the IMAP one, nil until
+	// withSendingServer (acceptance_smtp_test.go) gives the person one.
+	sending *fakeSMTP
 }
 
 // imapPerson signs a person up the way POST /api/auth/mailbox leaves them: a
