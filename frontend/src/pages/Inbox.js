@@ -51,7 +51,8 @@ const SHORTCUTS = [
   ['Suppr / Retour arrière', 'Supprimer'],
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
-  ['S', 'Mettre en favori'],
+  // Not over IMAP, like the reader's star (see flagAction).
+  ['S', 'Mettre en favori', 'star'],
   ['A', 'Ranger les suggestions sûres'],
   ['I', "Demander un tri IA (dans l'email)"],
   ['R', 'Synchroniser'],
@@ -177,8 +178,8 @@ function welcomeLevers({ can, selfHosted }) {
       Icon: Bolt,
       t: 'Encoder vos évidences en règles',
       d: selfHosted
-        ? "Les règles trient sans IA. Un aperçu montre ce qu'elles feraient avant de rien toucher."
-        : "Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre ce qu'elles feraient avant de rien toucher.",
+        ? "Les règles trient sans IA. Un aperçu montre d'abord ce qu'elles feraient, sans rien modifier."
+        : "Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre d'abord ce qu'elles feraient, sans rien modifier.",
       lead: 'Vos évidences deviennent des règles.',
       rest: selfHosted
         ? "Elles trient sans IA, et un aperçu montre ce qu'elles feraient avant de toucher à quoi que ce soit."
@@ -229,8 +230,10 @@ function Inbox() {
   // Every control the server would answer "not available" to is hidden, not
   // disabled (the one rule, see IMAP_UNAVAILABLE in landing/features.js), and
   // undo is never offered: the server cannot put an IMAP message back yet.
-  // `fullFeatures` waits for the answer, so an IMAP user never sees them flash.
-  const { isImap, fullFeatures } = useMailbox();
+  // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
+  // and stays false when that answer failed: a guess offers nothing the server
+  // may refuse. `isImap` is only for what is said about IMAP.
+  const { isImap, known, fullFeatures } = useMailbox();
   const can = (feature) => canPromise(feature, fullFeatures);
   const quickFilters = QUICK_FILTERS.filter((f) => fullFeatures || !f.gmailOnly);
   const statCards = STAT_CARDS.filter((c) => fullFeatures || !c.gmailOnly);
@@ -322,9 +325,12 @@ function Inbox() {
   const readerIsOverlay = Boolean(selectedEmail) && isNarrow;
   useScrollLock(readerIsOverlay);
 
+  // Opened once the mailbox is known, not at mount: its levers depend on it,
+  // and a dialog opened on a guess grew from two levers to four, renumbering
+  // the hotel's plaques under the reader's eyes.
   useEffect(() => {
-    if (!localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
-  }, []);
+    if (known && !localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
+  }, [known]);
 
   // A selection is scoped to the list that produced it. Keeping it across a
   // query change meant "Archiver la sélection" could act on messages that were
@@ -380,10 +386,10 @@ function Inbox() {
   const suggestionByEmail = useMemo(() => {
     const map = new Map();
     suggestions.forEach((s) => {
-      if (s.action !== 'keep' && canApplyVerdict(s.action, isImap)) map.set(s.emailId, s);
+      if (s.action !== 'keep' && canApplyVerdict(s.action, !fullFeatures)) map.set(s.emailId, s);
     });
     return map;
-  }, [suggestions, isImap]);
+  }, [suggestions, fullFeatures]);
 
   // Avatars: the classic fills, or the hotel's inked discs with initials.
   const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
@@ -412,8 +418,9 @@ function Inbox() {
   // --- Undo helper ---------------------------------------------------------
   // Not over IMAP: a moved message changes its id there, and putting it back
   // is not written yet, so an "Annuler" would announce an undo that did nothing.
+  // Nor while the mailbox is not known.
   const undoToast = (messageId, action, message) => {
-    if (isImap) {
+    if (!fullFeatures) {
       toast.success(message);
       return;
     }
@@ -496,8 +503,14 @@ function Inbox() {
     track('inbox_sync');
     // Success only on success. A failed sync used to be swallowed and
     // announced as done; a failed listing is already on screen as an error.
+    // The list of an IMAP mailbox is the stored copy, so it is the last sync's.
+    // Over the Gmail API the list is read live, and saying so would be false.
     if (result?.syncError) {
-      toast.error(`La synchronisation a échoué. ${result.syncError} Les emails affichés sont ceux de la dernière synchronisation réussie.`);
+      toast.error(
+        `La synchronisation a échoué. ${result.syncError}${
+          isImap ? ' Les emails affichés sont ceux de la dernière synchronisation réussie.' : ''
+        }`
+      );
     } else if (!result?.listError) {
       toast.success('Boîte synchronisée');
     }
@@ -911,9 +924,11 @@ function Inbox() {
     const rollback = FLAG_PATCH[FLAG_INVERSE[action]];
     if (optimistic) patchEmail(email.messageId, optimistic);
     // Over IMAP the batch route does not exist yet (501), while the single
-    // action does read, unread, star and unstar: that one is used there, so the
-    // star and the "non lu" of the reader and the u / s keys keep working.
-    if (isImap) {
+    // action does read and unread: that one is used there, and whenever the
+    // mailbox is not known, since it works on both transports. The star is not
+    // offered over IMAP: the stored copy keeps no star, so it came back empty
+    // at the next listing.
+    if (!fullFeatures) {
       try {
         await emailService.action(email.messageId, action);
         toast.success(actionMeta(action).past, { duration: 1800 });
@@ -1304,7 +1319,7 @@ function Inbox() {
           if (cur) flagAction(cur, 'read');
           break;
         case 's':
-          if (cur) flagAction(cur, 'star');
+          if (cur && fullFeatures) flagAction(cur, 'star');
           break;
         // '#' is Gmail's delete key but needs Alt+3 on a French AZERTY layout,
         // and Alt-modified events are filtered out above, so it was simply
@@ -1321,7 +1336,7 @@ function Inbox() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
+  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail, fullFeatures]);
 
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
   const goalHit = gamify.today >= gamify.goal;
@@ -1337,7 +1352,7 @@ function Inbox() {
     : null;
   // A verdict this mailbox cannot apply (a label over IMAP) is shown with its
   // reason and "Ignorer", without the button that would do nothing.
-  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, isImap);
+  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, !fullFeatures);
 
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
@@ -1355,6 +1370,7 @@ function Inbox() {
         can('snooze') ? (choice) => (triageMode ? handleTriageSnooze(choice) : handleSnooze(openEmail, choice)) : undefined
       }
       onFlag={(action) => flagAction(openEmail, action)}
+      canStar={fullFeatures}
       onProtect={() => handleProtect(openEmail)}
       onUnsubscribe={can('unsubscribe') ? () => handleUnsubscribe({ messageId: openEmail.messageId }) : undefined}
       unsubscribing={unsubscribing === openEmail.messageId}
@@ -2290,7 +2306,7 @@ function Inbox() {
       {/* Keyboard shortcuts */}
       <Modal open={showShortcuts} onClose={() => setShowShortcuts(false)} title="Raccourcis clavier" size="md">
         <div className="space-y-1">
-          {SHORTCUTS.map(([keys, desc]) => (
+          {SHORTCUTS.filter(([, , needs]) => !needs || fullFeatures).map(([keys, desc]) => (
             <div key={keys} className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-sunken">
               <span className="text-ink-700">{desc}</span>
               <kbd className="shrink-0 rounded-md border border-hairline bg-surface-sunken px-2 py-0.5 font-mono text-xs font-semibold text-ink-800">

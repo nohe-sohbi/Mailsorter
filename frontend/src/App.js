@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import Inbox from './pages/Inbox';
 import Setup from './pages/Setup';
@@ -13,14 +13,13 @@ import AuthCallback from './pages/AuthCallback';
 import Privacy from './pages/Privacy';
 import Terms from './pages/Terms';
 import Header from './components/Header';
-import { EmailProvider } from './contexts/EmailContext';
+import { EmailProvider, useMailbox } from './contexts/EmailContext';
 import { InstanceProvider, useInstance } from './contexts/InstanceContext';
 import { ToastProvider } from './ui/Toast';
 import { ConfirmProvider } from './ui/Confirm';
 import { ThemeProvider } from './ui/theme';
 import { Logo, Alert, Inbox as InboxIcon, Mail } from './ui/icons';
 import { CONTACT_EMAIL } from './components/PublicFooter';
-import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
 import { isAuthed, sessionOwner } from './lib/session';
 import { effectiveUiTheme, bootUiTheme } from './lib/uiTheme';
@@ -215,54 +214,43 @@ function RequireAuth({ children }) {
   return authed ? children : null;
 }
 
-function RequireMailbox({ children }) {
+// RequireMailbox holds a screen until the shared answer to "which mailbox is
+// this" (useMailbox, GET /api/mailbox) is in, or has failed.
+//
+// Every screen it wraps draws controls from that answer: the inbox's filters,
+// counters, Abonnements tab and welcome levers, the history's subtitle, the
+// recap card in Réglages. Drawn before it, a Gmail account saw three filters
+// become six and the hotel's numbered plaques renumber, and an IMAP account
+// saw Gmail-only controls for a moment. The wait is one Mongo lookup, once per
+// session (the answer is shared), and the loader only fades in if it lasts.
+//
+// `redirect` sends an account with no mailbox to /connect, as before: only
+// when this browser has not already seen one (`hasMailbox`), and never on a
+// failed request, which says nothing about the mailbox.
+function RequireMailbox({ children, redirect = true }) {
   const navigate = useNavigate();
-  const [ready, setReady] = useState(() => Boolean(localStorage.getItem('hasMailbox')));
-  const [checking, setChecking] = useState(() => !localStorage.getItem('hasMailbox'));
+  const { mailbox, known, settled } = useMailbox();
+  const remembered = Boolean(localStorage.getItem('hasMailbox'));
+  const missing = redirect && known && !mailbox && !remembered;
 
   useEffect(() => {
-    if (localStorage.getItem('hasMailbox')) {
-      setReady(true);
-      setChecking(false);
-      return;
-    }
-    let cancelled = false;
-    mailboxService
-      .get()
-      .then(({ data }) => {
-        if (cancelled) return;
-        if (data?.mailbox) {
-          localStorage.setItem('hasMailbox', 'true');
-          setReady(true);
-        } else {
-          localStorage.removeItem('hasMailbox');
-          navigate('/connect', { replace: true });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setReady(true);
-      })
-      .finally(() => {
-        if (!cancelled) setChecking(false);
-      });
+    if (!redirect || !known) return;
+    if (mailbox) localStorage.setItem('hasMailbox', 'true');
+    else if (!remembered) navigate('/connect', { replace: true });
+  }, [redirect, known, mailbox, remembered, navigate]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [navigate]);
-
-  if (checking) {
+  if (!settled) {
     return (
-      <BootScreen>
-        <div className="flex items-center gap-3 text-muted">
+      <div className="flex min-h-[60vh] items-center justify-center px-6">
+        <div className="flex animate-fade-in items-center gap-3 text-muted" style={{ animationDelay: '400ms' }}>
           <Spinner size={18} className="text-brand-600" />
           <span className="text-sm font-medium">Chargement de votre boîte...</span>
         </div>
-      </BootScreen>
+      </div>
     );
   }
 
-  return ready ? children : null;
+  return missing ? null : children;
 }
 
 // The page under the header. The hotel leaves it transparent so the striped
@@ -374,7 +362,18 @@ function App() {
   // Gated on "is there a way in at all", not on "does Google work here": an
   // instance whose only door is a mailbox is a working instance, and calling it
   // unconfigured made the hosted edition impossible to enter.
-  const guard = (element, requireMailbox = false) => (isUsable ? <RequireAuth>{requireMailbox ? <RequireMailbox>{element}</RequireMailbox> : element}</RequireAuth> : unconfigured());
+  // `mailbox`: 'required' holds the screen until the mailbox is known and sends
+  // an account without one to /connect; 'known' only holds it (Réglages and
+  // Compte draw from the answer, but are where an account without a mailbox
+  // goes); none renders at once (/connect asks for itself).
+  const guard = (element, mailbox) =>
+    isUsable ? (
+      <RequireAuth>
+        {mailbox ? <RequireMailbox redirect={mailbox === 'required'}>{element}</RequireMailbox> : element}
+      </RequireAuth>
+    ) : (
+      unconfigured()
+    );
 
   return (
     <Router>
@@ -404,16 +403,16 @@ function App() {
                       element={isConfigured ? <Navigate to="/" replace /> : <Setup onComplete={reload} />}
                     />
                     <Route path="/" element={isUsable ? <Landing /> : unconfigured()} />
-                    <Route path="/inbox" element={guard(<Inbox />, true)} />
-                    <Route path="/rules" element={guard(<Rules />, true)} />
-                    <Route path="/snoozed" element={guard(<Snoozed />, true)} />
-                    <Route path="/history" element={guard(<History />, true)} />
-                    <Route path="/settings" element={guard(<Settings />)} />
+                    <Route path="/inbox" element={guard(<Inbox />, 'required')} />
+                    <Route path="/rules" element={guard(<Rules />, 'required')} />
+                    <Route path="/snoozed" element={guard(<Snoozed />, 'required')} />
+                    <Route path="/history" element={guard(<History />, 'required')} />
+                    <Route path="/settings" element={guard(<Settings />, 'known')} />
                     {/* Brancher une boite par IMAP. Garde comme les autres: on
                         branche une boite SUR un compte, donc il faut deja etre
                         connecte a Mailsorter. */}
                     <Route path="/connect" element={guard(<Connect />)} />
-                    <Route path="/account" element={guard(<Account />)} />
+                    <Route path="/account" element={guard(<Account />, 'known')} />
                     {/* A self-hosted instance bills nobody, so there is no pricing
                         page to land on: the route redirects rather than rendering
                         an empty one. */}

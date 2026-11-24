@@ -119,7 +119,10 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
   );
 }
 
-function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) {
+// `labelsOk` is false on a mailbox with no labels (IMAP, or not known yet):
+// "Étiqueter" is then not offered for a new action. An action that already
+// labels (an imported rule) keeps its choice, so the list can still show it.
+function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, labelsOk }) {
   const [rule, setRule] = useState(initial);
   const toast = useToast();
   const uid = useId();
@@ -145,8 +148,16 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
         idx === i ? { ...a, type, labelName: type === 'label' ? a.labelName || '' : a.labelName } : a
       ),
     }));
+  // Actions already chosen can't be picked again (except "label", which can
+  // repeat with different names), which keeps the combo meaningful.
+  const usedTypes = new Set(rule.actions.map((a) => a.type));
+  const offered = (type, current) =>
+    type === 'label' ? labelsOk || current === 'label' : type === current || !usedTypes.has(type);
+  // What "+ Ajouter une action" adds: a label, which can repeat, or else the
+  // first action not chosen yet.
+  const nextType = labelsOk ? 'label' : ACTION_TYPES.find((type) => type !== 'label' && !usedTypes.has(type));
   const addAction = () =>
-    setRule((r) => ({ ...r, actions: [...r.actions, { type: 'label', labelName: '' }] }));
+    setRule((r) => ({ ...r, actions: [...r.actions, { type: nextType, labelName: '' }] }));
   const removeAction = (i) =>
     setRule((r) => ({ ...r, actions: r.actions.filter((_, idx) => idx !== i) }));
 
@@ -159,10 +170,6 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
       return toast.error('Chaque condition doit avoir une valeur.');
     onSave(rule);
   };
-
-  // Actions already chosen can't be picked again (except "label", which can
-  // repeat with different names), which keeps the combo meaningful.
-  const usedTypes = new Set(rule.actions.map((a) => a.type));
 
   return (
     <div className="card space-y-5 p-6">
@@ -267,14 +274,16 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold text-ink-700">Actions</span>
-          <span className="text-xs text-muted">Exécutées dans l'ordre, ex. <em>Étiqueter</em> puis <em>Archiver</em></span>
+          <span className="text-xs text-muted">
+            Exécutées dans l'ordre, ex. <em>{labelsOk ? 'Étiqueter' : 'Marquer comme lu'}</em> puis <em>Archiver</em>
+          </span>
         </div>
         <div className="space-y-2">
           {rule.actions.map((a, i) => (
             <div key={i} className="flex flex-wrap items-start gap-2">
               <select className="select w-auto flex-none" value={a.type} onChange={(e) => setActionType(i, e.target.value)}>
-                {ACTION_TYPES.map((type) => (
-                  <option key={type} value={type} disabled={type !== 'label' && type !== a.type && usedTypes.has(type)}>
+                {ACTION_TYPES.filter((type) => type !== 'label' || offered(type, a.type)).map((type) => (
+                  <option key={type} value={type} disabled={!offered(type, a.type)}>
                     {actionMeta(type).label}
                   </option>
                 ))}
@@ -297,7 +306,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
             </div>
           ))}
         </div>
-        {rule.actions.length < ACTION_TYPES.length && (
+        {rule.actions.length < ACTION_TYPES.length && nextType && (
           <button onClick={addAction} className="mt-2 text-sm font-semibold text-brand-600 hover:text-brand-700">
             + Ajouter une action
           </button>
@@ -435,9 +444,12 @@ function Rules() {
   const [labelsKnown, setLabelsKnown] = useState(false);
   // Rules run through the Gmail API only: over IMAP the preview, "Appliquer
   // maintenant" and the run at each sync answer 501, so they are hidden and the
-  // page says so once. Writing rules still works. The quota is mentioned only
-  // where there is one.
+  // page says so once. Writing rules still works, so the page then describes
+  // what a rule says, never that it sorts by itself, and offers no label (a
+  // message sits in one folder). The quota is mentioned only where there is
+  // one. `rulesRun` is false too while the mailbox is not known.
   const { isImap, fullFeatures } = useMailbox();
+  const rulesRun = fullFeatures;
   const { selfHosted } = useInstance();
 
   const load = () => {
@@ -670,25 +682,31 @@ function Rules() {
           floor="/rules"
           title="Règles de tri"
           sub={
-            selfHosted
+            !rulesRun
+              ? "Les évidences n'ont pas besoin d'IA. Écrivez-les une fois en règles."
+              : selfHosted
               ? "Les évidences n'ont pas besoin d'IA. Vos règles trient sans le modèle."
               : "Les évidences n'ont pas besoin d'IA. Vos règles trient sans le modèle, et ne touchent pas à votre quota."
           }
         >
-          {hasRules && fullFeatures && ruleTools}
+          {hasRules && rulesRun && ruleTools}
         </PageHead>
       ) : (
         <div className="mb-6 flex items-end justify-between gap-4">
           <div>
-            <span className="chip mb-2 bg-brand-50 text-brand-700"><Bolt size={14} /> Tri automatique, sans IA</span>
+            <span className="chip mb-2 bg-brand-50 text-brand-700">
+              <Bolt size={14} /> {rulesRun ? 'Tri automatique, sans IA' : 'Vos évidences, sans IA'}
+            </span>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Règles de tri</h1>
             <p className="mt-1 max-w-lg text-sm text-ink-500">
-              {selfHosted
+              {!rulesRun
+                ? 'Encodez vos cas évidents une fois : chaque règle dit quoi faire des emails qui lui correspondent.'
+                : selfHosted
                 ? "Encodez vos cas évidents une fois : les règles s'appliquent instantanément, sans IA."
                 : "Encodez vos cas évidents une fois : les règles s'appliquent instantanément, gratuitement et sans consommer votre quota IA."}
             </p>
           </div>
-          {hasRules && fullFeatures && (
+          {hasRules && rulesRun && (
             <div className="flex shrink-0 items-center gap-2">
               {ruleTools}
             </div>
@@ -708,7 +726,7 @@ function Rules() {
         </div>
       )}
 
-      {hasRules && fullFeatures && (
+      {hasRules && rulesRun && (
         <div className="card mb-5 flex items-center gap-3 p-4">
           <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', autoApply ? 'bg-brand-50 text-brand-600' : 'bg-ink-100 text-muted')}>
             <Bolt size={18} />
@@ -776,6 +794,7 @@ function Rules() {
             saving={saving}
             labels={labels}
             labelsKnown={labelsKnown}
+            labelsOk={rulesRun}
             onCancel={() => setEditing(null)}
             onSave={save}
           />
@@ -795,12 +814,18 @@ function Rules() {
             scene={{ prop: 'signpost', color: '#2F6F73' }}
             hotelTitle="Aucune règle pour l'instant."
             hotelDescription={
-              selfHosted
+              !rulesRun
+                ? "Une règle dit quoi faire de ce qui revient chaque semaine : l'archiver, le supprimer, le marquer comme lu. Sans IA."
+                : selfHosted
                 ? 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA.'
                 : 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota.'
             }
             title="Aucune règle pour l'instant"
-            description="Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents."
+            description={
+              rulesRun
+                ? 'Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents.'
+                : 'Créez votre première règle pour dire quoi faire des emails récurrents : les archiver, les supprimer ou les marquer comme lus.'
+            }
             action={<button onClick={() => setEditing('new')} className="btn-primary">+ Créer une règle</button>}
           />
         </div>
@@ -821,6 +846,7 @@ function Rules() {
                 saving={saving}
                 labels={labels}
                 labelsKnown={labelsKnown}
+                labelsOk={rulesRun}
                 onCancel={() => setEditing(null)}
                 onSave={save}
               />

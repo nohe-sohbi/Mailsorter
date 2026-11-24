@@ -377,7 +377,7 @@ function Connect() {
             </form>
 
             {detected ? (
-              <ProviderBriefing provider={detected} />
+              <ProviderBriefing provider={detected} googleOn={isConfigured} />
             ) : hotel ? (
               <HotelKeyBoard providers={providers} />
             ) : (

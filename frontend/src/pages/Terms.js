@@ -66,7 +66,7 @@ function Terms() {
           items={[
             "aucune action n'est appliquée sans votre validation, sauf celles que vous avez explicitement automatisées (règles de tri, auto-pilote par expéditeur, synchronisation automatique),",
             "chaque action est inscrite dans un journal consultable, avec son origine : vous, une règle, l'IA ou l'auto-pilote,",
-            'sur une boîte Gmail, les actions réversibles peuvent être annulées depuis ce journal,',
+            "quand une action peut être défaite, le journal propose de l'annuler,",
             'une suppression est un envoi dans la corbeille de votre fournisseur (30 jours chez Gmail), jamais un effacement définitif,',
             'les expéditeurs que vous protégez ne sont jamais archivés ni supprimés automatiquement.',
           ]}
@@ -109,9 +109,13 @@ function Terms() {
       <LegalSection n="6" title="Disponibilité">
         <p>
           Le service est fourni en l'état, sans garantie de disponibilité. Il dépend de tiers (votre
-          fournisseur de messagerie, le fournisseur d'IA configuré sur l'instance, qui peut être un modèle
-          local, et l'hébergeur) dont les interruptions échappent à l'exploitant. Des interruptions pour
-          maintenance ou mise à jour peuvent survenir sans préavis.
+          fournisseur de messagerie,{' '}
+          {selfHosted
+            ? "le fournisseur d'IA configuré sur l'instance, qui peut être un modèle local,"
+            : "Mistral AI, le fournisseur d'IA du service en ligne,"}{' '}
+          ou celui dont vous avez branché votre propre clé, et l'hébergeur) dont les interruptions
+          échappent à l'exploitant. Des interruptions pour maintenance ou mise à jour peuvent survenir
+          sans préavis.
         </p>
         <p>
           Mailsorter ne se substitue pas à votre boîte mail : vos messages restent chez votre

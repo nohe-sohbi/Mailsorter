@@ -79,6 +79,10 @@ function EmailReader({
   onSnooze,
   onProtect,
   onFlag,
+  // Whether this mailbox keeps a star. Over IMAP the stored copy does not, so
+  // a star set from here came back empty at the next listing and the toggle
+  // could only ever say "Mettre en favori": the button is not drawn there.
+  canStar = false,
   unsubscribing,
   onRead,
   triage,
@@ -344,18 +348,20 @@ function EmailReader({
                   besides getting rid of mail: flagging what matters and putting
                   back what you opened by mistake. Both were reachable only from
                   the list's keyboard shortcuts, i.e. not while reading. */}
-              <button
-                onClick={() => onFlag(starred ? 'unstar' : 'star')}
-                className={cn(
-                  'btn-ghost btn-sm btn-icon',
-                  starred ? 'text-caution-600 hover:bg-caution-50' : 'hover:bg-ink-100'
-                )}
-                aria-pressed={starred}
-                aria-label={starred ? 'Retirer des favoris' : 'Mettre en favori'}
-                title={starred ? 'Retirer des favoris' : 'Mettre en favori'}
-              >
-                <Star size={18} className={starred ? 'fill-current' : undefined} />
-              </button>
+              {canStar && (
+                <button
+                  onClick={() => onFlag(starred ? 'unstar' : 'star')}
+                  className={cn(
+                    'btn-ghost btn-sm btn-icon',
+                    starred ? 'text-caution-600 hover:bg-caution-50' : 'hover:bg-ink-100'
+                  )}
+                  aria-pressed={starred}
+                  aria-label={starred ? 'Retirer des favoris' : 'Mettre en favori'}
+                  title={starred ? 'Retirer des favoris' : 'Mettre en favori'}
+                >
+                  <Star size={18} className={starred ? 'fill-current' : undefined} />
+                </button>
+              )}
               <button
                 onClick={() => onFlag('unread')}
                 className="btn-ghost btn-sm btn-icon"
