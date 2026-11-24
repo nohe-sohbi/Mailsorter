@@ -22,13 +22,24 @@ package api
 // the server, so a mail the person put back to unread would turn read, on
 // their phone as on the list after the next sync, just because they saved
 // its invoice.
+//
+// The pictures an HTML mail draws in its text (a logo, a photo pasted in the
+// message) are parts of the mail too, named by a cid: URL that no browser
+// resolves. They are not files: the reader says which part each cid: is
+// (inlineImages) and the screen downloads it to put it in place. Only a
+// picture a browser shows without running anything: an SVG, a document that
+// can carry script, is neither handed out nor served.
 
 import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"mime"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"testing"
@@ -174,6 +185,70 @@ func leakedParts(body []byte) []string {
 		}
 	}
 	return found
+}
+
+// newsletterMail is a shop's newsletter in HTML, which draws its logo and a
+// badge in its text, by their cid:.
+var newsletterMail = incoming{
+	From:    "Boutique <nouveautes@boutique.com>",
+	Subject: "Nos nouveautés de décembre",
+	Body:    "Bonjour, voici nos nouveautés de décembre.",
+	HTML: `<html><body><p><img src="cid:` + shopLogo.ContentID + `" alt="Boutique"></p>` +
+		`<p>Bonjour, voici nos nouveautés de décembre.</p>` +
+		`<p><img src="cid:` + shopBadge.ContentID + `" alt="Badge"></p></body></html>`,
+}
+
+// shopLogo is the logo the newsletter draws: a PNG without a name, its
+// Content-ID in capitals as Apple Mail writes one.
+var shopLogo = drawnPicture{
+	ContentID: "6F0B3C2E-91D4-4A7B-B8E5-0C4D2A1F9E37@boutique.com",
+	Type:      "image/png",
+	Data:      samplePNG(),
+}
+
+// shopBadge is a picture the newsletter draws the same way, in SVG.
+var shopBadge = drawnPicture{
+	ContentID: "badge@boutique.com",
+	Type:      "image/svg+xml",
+	Data:      []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><script>/* badge du scenario */</script><rect width="16" height="16"/></svg>`),
+}
+
+// samplePNG is a small PNG of four pixels, each of another colour: bytes of
+// every kind, a NUL among them, so a picture that went through a text
+// conversion, or was not decoded from its base64, does not come back equal.
+func samplePNG() []byte {
+	img := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.NRGBA{R: 0xff, A: 0xff})
+	img.Set(1, 0, color.NRGBA{G: 0xff, A: 0xff})
+	img.Set(0, 1, color.NRGBA{B: 0xff, A: 0x80})
+	img.Set(1, 1, color.NRGBA{A: 0x00})
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		panic(err)
+	}
+	return b.Bytes()
+}
+
+// screenCIDKey is the key the screen looks a cid: URL up under in
+// inlineImages (cidKey in EmailReader.js): unescaped, without angle
+// brackets, in lower case.
+func screenCIDKey(ref string) string {
+	id := ref
+	if unescaped, err := url.PathUnescape(ref); err == nil {
+		id = unescaped
+	}
+	id = strings.TrimSpace(id)
+	id = strings.TrimPrefix(id, "<")
+	id = strings.TrimSuffix(id, ">")
+	return strings.ToLower(strings.TrimSpace(id))
+}
+
+// screenDrawnTypes are the types of the pictures the screen draws
+// (DRAWN_TYPES in EmailReader.js): it compares the type of the download, in
+// lower case, to these, whole.
+var screenDrawnTypes = map[string]bool{
+	"image/png": true, "image/jpeg": true, "image/jpg": true,
+	"image/gif": true, "image/webp": true, "image/bmp": true,
 }
 
 func TestScenarios_IMAPAttachments(t *testing.T) {
@@ -361,6 +436,72 @@ func TestScenarios_IMAPAttachments(t *testing.T) {
 				unreadOnList(fmt.Sprintf("juste après le téléchargement de « %s »", invoicePDF.Name))
 				moi.sync()
 				unreadOnList(fmt.Sprintf("après le téléchargement de « %s » et une synchronisation", invoicePDF.Name))
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, le lecteur d'un mail HTML montre à leur place les images que le mail intègre, sans en faire des pièces jointes.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapInboxOwner)
+				uid := moi.receiveHTMLWithPictures(newsletterMail, []drawnPicture{shopLogo, shopBadge}, invoicePDF)
+				moi.sync()
+				moi.requireShown(uid, newsletterMail.Subject)
+
+				page := moi.readerPage(uid)
+
+				// Not files: the reader's only chip is the invoice, a real
+				// attachment, which stays one.
+				if _, ok := chipNamed(page.Attachments, invoicePDF.Name); !ok {
+					app.failf("le lecteur du mail n°%s %q de %s devrait montrer sa pièce jointe « %s », il ne la montre pas (il montre : %s)", uid, newsletterMail.Subject, moi.email, invoicePDF.Name, describeChips(page.Attachments))
+				}
+				for _, c := range page.Attachments {
+					if c.Filename != invoicePDF.Name {
+						app.failf("le lecteur du mail n°%s %q de %s ne devrait montrer en pièce jointe que « %s », il montre aussi « %s » (%s, %d octets) : les images du texte ne sont pas des pièces jointes", uid, newsletterMail.Subject, moi.email, invoicePDF.Name, c.Filename, c.MimeType, c.Size)
+					}
+				}
+
+				// In its place: the text the reader renders still points at
+				// the logo, and the reader says, under the key the screen
+				// looks that cid: up under, which part to draw there.
+				if !strings.Contains(page.BodyHTML, "cid:"+shopLogo.ContentID) {
+					app.failf("le texte du mail n°%s %q que le lecteur de %s affiche devrait garder l'image cid:%s à sa place, il ne la contient plus", uid, newsletterMail.Subject, moi.email, shopLogo.ContentID)
+				}
+				id, ok := page.InlineImages[screenCIDKey(shopLogo.ContentID)]
+				if !ok {
+					app.failf("le lecteur du mail n°%s %q de %s devrait donner à l'écran l'image du texte cid:%s pour la montrer à sa place, il ne la donne pas (il donne : %v)", uid, newsletterMail.Subject, moi.email, shopLogo.ContentID, page.InlineImages)
+				} else {
+					// What the screen downloads to draw it.
+					got := moi.download(uid, id)
+					switch {
+					case got.code != http.StatusOK:
+						app.failf("l'image cid:%s du mail n°%s %q de %s devrait se télécharger pour être montrée dans le texte, le serveur a répondu %s", shopLogo.ContentID, uid, newsletterMail.Subject, moi.email, got)
+					case !screenDrawnTypes[strings.ToLower(got.header.Get("Content-Type"))]:
+						app.failf("l'image cid:%s du mail n°%s %q de %s arrive avec le type %q, que l'écran ne dessine pas : il attend exactement %s", shopLogo.ContentID, uid, newsletterMail.Subject, moi.email, got.header.Get("Content-Type"), shopLogo.Type)
+					case !bytes.Equal(got.body, shopLogo.Data):
+						app.failf("l'image cid:%s du mail n°%s %q de %s devrait être celle du mail, octet pour octet (%d octets) : elle fait %d octets et diffère à partir de l'octet %d", shopLogo.ContentID, uid, newsletterMail.Subject, moi.email, len(shopLogo.Data), len(got.body), firstDifference(got.body, shopLogo.Data))
+					}
+				}
+
+				// The SVG the text points at the same way: not handed to the
+				// screen, and served under none of the mail's part numbers
+				// (the ids the reader hands out, see receiveHTMLWithPictures),
+				// its own (1.2.3) least of all.
+				if _, ok := page.InlineImages[screenCIDKey(shopBadge.ContentID)]; ok {
+					app.failf("le lecteur du mail n°%s %q de %s ne devrait pas donner à l'écran l'image SVG cid:%s, une image qui peut porter du script, il la donne", uid, newsletterMail.Subject, moi.email, shopBadge.ContentID)
+				}
+				svgMarks := [][]byte{[]byte("badge du scenario"), []byte(base64.StdEncoding.EncodeToString(shopBadge.Data)[:24])}
+				for _, part := range []string{"1", "1.1", "1.2", "1.2.1", "1.2.2", "1.2.3", "1.2.4", "2", "3", "TEXT"} {
+					got := moi.download(uid, part)
+					for _, mark := range svgMarks {
+						if bytes.Contains(got.body, mark) {
+							app.failf("télécharger la partie %q du mail n°%s %q de %s ne devrait jamais donner l'image SVG cid:%s, la réponse la contient (%s)", part, uid, newsletterMail.Subject, moi.email, shopBadge.ContentID, got)
+							break
+						}
+					}
+					if part == "1.2.3" && (got.code < 400 || got.code > 499) {
+						app.failf("télécharger la partie 1.2.3 du mail n°%s %q de %s, l'image SVG cid:%s, devrait être refusé, le serveur a répondu %s", uid, newsletterMail.Subject, moi.email, shopBadge.ContentID, got)
+					}
+				}
 			},
 		},
 	})
