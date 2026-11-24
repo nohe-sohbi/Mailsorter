@@ -39,6 +39,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -276,12 +277,47 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 }
 
 // The folders every person's server has, by the names a mail program shows.
-// Mailsorter finds the last two by their special use, not by these names.
+// The in-memory server drops the special use startServer asks for (go-imap
+// v2.0.0-beta.8 ignores CreateOptions.SpecialUse), so, as on a server without
+// the SPECIAL-USE extension, Mailsorter knows the last two by these names.
 const (
 	serverInbox   = "INBOX"
 	serverArchive = "Archive"
 	serverTrash   = "Trash"
 )
+
+// The other special folders a real mailbox comes with, by the names a mail
+// program shows. Only usualSpecialFolders makes them, and the server says
+// which is which by these names alone, as it does for the archive and the
+// trash.
+const (
+	serverSent   = "Sent"
+	serverDrafts = "Drafts"
+	serverJunk   = "Junk"
+)
+
+// usualSpecialFolders gives this person's server the special folders a real
+// mailbox has besides the inbox, the archive and the trash: sent mail, drafts
+// and junk, empty. Made on the server itself, as the provider makes them, not
+// by a mail program. For the sentences about which folders are the person's
+// own: a server with only an inbox, an archive and a trash cannot tell a list
+// that leaves out every special folder from one that leaves out those three.
+func (p *imapPerson) usualSpecialFolders() {
+	a := p.app
+	a.t.Helper()
+	for _, f := range []struct {
+		name string
+		use  imapv2.MailboxAttr
+	}{
+		{serverSent, imapv2.MailboxAttrSent},
+		{serverDrafts, imapv2.MailboxAttrDrafts},
+		{serverJunk, imapv2.MailboxAttrJunk},
+	} {
+		if err := p.mailbox.Create(f.name, &imapv2.CreateOptions{SpecialUse: []imapv2.MailboxAttr{f.use}}); err != nil {
+			a.fatalf("création du dossier %q sur le serveur IMAP de %s : %v", f.name, p.email, err)
+		}
+	}
+}
 
 // startServer runs this person's own IMAP server, over implicit TLS. Without
 // InsecureAuth, so the server itself refuses a login that did not come over TLS.
@@ -1093,6 +1129,38 @@ func (p *imapPerson) newFolderElsewhere(name string) {
 	}
 }
 
+// folders is every folder of this person's server, by its full name
+// ("Projets/Maison" for a folder inside another), sorted, as another mail
+// program lists them (LIST "" "*").
+func (p *imapPerson) folders() []string {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	listed, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		a.fatalf("lecture des dossiers du serveur IMAP de %s : %v", p.email, err)
+	}
+	names := make([]string, 0, len(listed))
+	for _, l := range listed {
+		names = append(names, l.Mailbox)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// hasFolder reports whether this person's server has a folder by this full
+// name, as another mail program lists it.
+func (p *imapPerson) hasFolder(name string) bool {
+	p.app.t.Helper()
+	for _, f := range p.folders() {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
 // movedFromElsewhere is another mail program moving the mail with this
 // subject out of folder into to: the person filed it elsewhere on their
 // phone. It does not sync.
@@ -1425,6 +1493,51 @@ func (p *imapPerson) tidyAll(ids ...string) answer {
 	return answer{code: code, body: out}
 }
 
+// listedFolder is one entry of the list of folders, or labels, Mailsorter
+// offers to file a mail into (GET /api/labels): the shape of a Gmail label.
+// Every screen that offers one (LabelPicker in Inbox.js, the rules editor)
+// shows the name of the entries whose type is "user", and only those.
+type listedFolder struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// offeredByScreens reports whether the screens offer this entry to file into.
+func (f listedFolder) offeredByScreens() bool {
+	return f.Type == "user" && f.Name != ""
+}
+
+// foldersToFileInto is the list of folders Mailsorter offers this person to
+// file a mail into, every entry as GET /api/labels hands it over. It stops the
+// scenario when the list does not load: there is then nothing to look at.
+func (p *imapPerson) foldersToFileInto() []listedFolder {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/labels", nil)
+	if code != http.StatusOK {
+		a.fatalf("la liste des dossiers où classer de %s ne s'affiche pas : GET /api/labels a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var list []listedFolder
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		a.fatalf("réponse de GET /api/labels illisible pour %s : %v (%v)", p.email, err, out)
+	}
+	return list
+}
+
+// describeFolders is that list in a failure message.
+func describeFolders(list []listedFolder) string {
+	if len(list) == 0 {
+		return "aucun dossier"
+	}
+	parts := make([]string, 0, len(list))
+	for _, f := range list {
+		parts = append(parts, fmt.Sprintf("%q (type %q)", f.Name, f.Type))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // history returns this person's action log for one mail, oldest first: what
 // their Historique screen lists for it. Scoped to this person, since another
 // person's mail may carry the same number.
@@ -1542,6 +1655,48 @@ func (p *imapPerson) historyLinesOf(uid string) []historyLine {
 		}
 	}
 	return lines
+}
+
+// historyLineSent is the line of this person's Historique screen with this
+// id, every field as GET /api/activity/log hands it over, or nil when the
+// screen no longer shows it: for a sentence about what a line says beyond the
+// fields historyLine reads.
+func (p *imapPerson) historyLineSent(id string) map[string]interface{} {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/activity/log?limit=50", nil)
+	if code != http.StatusOK {
+		a.fatalf("l'historique de %s ne s'affiche pas : GET /api/activity/log a répondu %d : %v", p.email, code, out)
+	}
+	entries, _ := out["entries"].([]interface{})
+	for _, e := range entries {
+		if line, ok := e.(map[string]interface{}); ok && line["id"] == id {
+			return line
+		}
+	}
+	return nil
+}
+
+// holdsString reports whether v, a value decoded from JSON, holds the string
+// want at any depth, outside the keys in skip (at any depth too).
+func holdsString(v interface{}, want string, skip map[string]bool) bool {
+	switch t := v.(type) {
+	case string:
+		return t == want
+	case map[string]interface{}:
+		for k, inner := range t {
+			if !skip[k] && holdsString(inner, want, skip) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, inner := range t {
+			if holdsString(inner, want, skip) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // describeHistory is lines of the Historique screen in a failure message:
