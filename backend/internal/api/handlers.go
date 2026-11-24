@@ -655,9 +655,19 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, undoExpiredMessage)
 		return
 	}
+	if errors.Is(err, errLeftInbox) {
+		writeError(w, http.StatusNotFound, leftInboxMessage)
+		return
+	}
 	if errors.Is(err, errAlreadyOut) {
-		// Mailsorter had already moved it out: nothing happened, so nothing
-		// is recorded. The client's request is satisfied all the same.
+		// It had already left the inbox (moved there by Mailsorter, or by
+		// another mail client): nothing happened, so nothing is recorded, and
+		// the screen is told so rather than announce a move.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already", "action": req.Action})
+		return
+	}
+	if errors.Is(err, errAlreadyBack) {
+		// Another "Annuler" brought it back a moment ago and recorded it.
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})
 		return
 	}

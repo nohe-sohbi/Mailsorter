@@ -258,6 +258,7 @@ func (c *Client) FolderName(role mailbox.Folder) (string, bool) {
 // A message no longer in ref's folder answers ErrMessageGone, checked BEFORE
 // moving: a MOVE on a UID that does not exist answers OK and does nothing,
 // which is how undo used to "succeed" without anything coming back.
+// With a headerMessageID, the UID must also still carry that Message-ID.
 func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
 	if !ref.Scoped() {
 		return mailbox.Ref{}, fmt.Errorf("%w: an imap uid needs its folder, got %s", mailbox.ErrWrongRefKind, ref)
@@ -274,7 +275,13 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 		return mailbox.Ref{}, err
 	}
 	set := imapv2.UIDSetNum(num)
-	found, err := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}, nil).Wait()
+	criteria := &imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}
+	if headerMessageID != "" {
+		// The number must still name THIS mail: after a server renumbered
+		// its folders, it may name another one.
+		criteria.Header = []imapv2.SearchCriteriaHeaderField{{Key: "Message-ID", Value: headerMessageID}}
+	}
+	found, err := c.c.UIDSearch(criteria, nil).Wait()
 	if err != nil {
 		return mailbox.Ref{}, fmt.Errorf("imap: look for uid %s in %q: %w", ref.ID, ref.Folder, err)
 	}

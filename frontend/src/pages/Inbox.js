@@ -924,8 +924,14 @@ function Inbox() {
     removeEmails(email.messageId);
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
-      await emailService.action(email.messageId, action);
+      const { data } = await emailService.action(email.messageId, action);
       plan.settle(email.messageId);
+      if (data?.status === 'already') {
+        // It had already left the inbox (from another device, or a click
+        // just before): nothing moved, so nothing to count or undo.
+        toast.success('Ce mail avait déjà quitté la boîte de réception.');
+        return;
+      }
       bumpGamify(1);
       undoToast(email.messageId, action, action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
     } catch (err) {
@@ -950,9 +956,9 @@ function Inbox() {
       try {
         await emailService.action(email.messageId, action);
         toast.success(actionMeta(action).past, { duration: 1800 });
-      } catch {
+      } catch (err) {
         if (rollback) patchEmail(email.messageId, rollback);
-        toast.error("L'action a échoué");
+        toast.error(apiError(err, "L'action a échoué"));
       }
       return;
     }

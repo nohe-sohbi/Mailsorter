@@ -294,6 +294,11 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 			break
 		}
 		if err := h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, id), inverse, ""); err != nil {
+			if errors.Is(err, errAlreadyBack) {
+				// Another "Annuler" brought it back a moment ago and recorded it.
+				restored++
+				continue
+			}
 			if errors.Is(err, errNotWhereLeft) || errors.Is(err, errUndoExpired) {
 				gone++
 			} else {

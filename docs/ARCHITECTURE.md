@@ -48,6 +48,11 @@ syncInbox(compte)
        -> si autoApplyRules : première règle qui correspond, expéditeurs protégés épargnés,
           action par internal/mailbox, entrée au journal (source "rule")
   -> IMAP : les 100 messages les plus récents de INBOX, lus en PEEK (aucun \Seen posé)
+       -> UID SEARCH de toute la boîte : le numéro de chaque mail qui y est encore
+       -> mirror.Judge sur la copie : un mail que la boîte n'a plus part, quel que soit
+          son âge ; un mail que Mailsorter a rangé reste caché 30 jours pour "Annuler" ;
+          un déplacement en cours ou postérieur à la lecture attend la synchro suivante
+       -> les propositions de l'IA sur ce qui est parti passent "moot" (hors du tri proposé)
        -> upsert dans emails avec le dossier, qui fait partie de l'identité d'un UID
        -> aucune règle : rulesApplied vaut 0
   -> { synced, total, rulesApplied }

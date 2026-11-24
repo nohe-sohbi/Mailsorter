@@ -575,3 +575,37 @@ func TestHasSaysWhetherTheMessageIsStillThere(t *testing.T) {
 		t.Errorf("Has(%s) after the move = %v, %v; want false", ref, there, err)
 	}
 }
+
+// After a server renumbers a folder, a stored number may name another mail:
+// with a Message-ID, MoveTo moves only the mail that carries it.
+func TestMoveToChecksTheMessageID(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	raw := "From: a@example.com\r\nSubject: Tagged\r\nMessage-ID: <tagged@example.com>\r\n\r\nBody.\r\n"
+	cmd := c.c.Append("INBOX", int64(len(raw)), nil)
+	if _, err := cmd.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := cmd.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.selected = ""
+	tagged := mailbox.InFolder("INBOX", fmtUID(data.UID))
+	other := mailbox.InFolder("INBOX", appendMessage(t, c, "INBOX"))
+
+	if _, err := c.MoveTo(context.Background(), other, mailbox.FolderArchive, "<tagged@example.com>"); !errors.Is(err, ErrMessageGone) {
+		t.Fatalf("MoveTo of another mail's number with this Message-ID = %v, want ErrMessageGone", err)
+	}
+	if n := countIn(t, c, "Archive"); n != 0 {
+		t.Fatalf("Archive holds %d mails, want 0: the wrong mail moved", n)
+	}
+	if _, err := c.MoveTo(context.Background(), tagged, mailbox.FolderArchive, "<tagged@example.com>"); err != nil {
+		t.Fatalf("MoveTo of the right mail = %v", err)
+	}
+	if n := countIn(t, c, "Archive"); n != 1 {
+		t.Errorf("Archive holds %d mails, want 1", n)
+	}
+}

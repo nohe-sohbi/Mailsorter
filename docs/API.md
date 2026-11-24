@@ -399,7 +399,11 @@ archive and trash folders and read and star are flags.
 over IMAP, a move of a message that already left the inbox: toward where
 Mailsorter put it (a second click from a screen left open), while another
 request is moving it (two key presses at once), or after another mail client
-moved it. It answers `200` and records nothing. A move elsewhere (`delete` on
+moved it. It answers `200` with `"status": "already"` and records nothing, so the
+screen does not announce a move that did not happen. `read`, `unread`, `star`
+and `unstar` over IMAP answer `404` "Ce mail n'est plus dans votre boîte de
+réception." when the message has left the inbox (the server would accept the
+change on a number that names nothing). A move elsewhere (`delete` on
 a mail Mailsorter archived) moves it from where it is, and "Annuler" still
 finds it. `read` and `unread` over IMAP also change the stored copy, so the
 list shows them at once. `unarchive`
@@ -1093,7 +1097,10 @@ still render, but cannot be searched.
 
 #### POST /api/activity/undo
 
-Gmail API only: `501` over IMAP.
+Gmail API and IMAP. On IMAP a moved message is fetched back from where
+Mailsorter put it, and a read change is reversed only while the message is
+still in the inbox (`404` "Ce mail n'est plus dans votre boîte de réception."
+otherwise).
 
 Reverses one recorded action by replaying its inverse Gmail mutation
 (`archive` -> `unarchive`, `delete` / `trash` -> `untrash`, `read` -> `unread`).
