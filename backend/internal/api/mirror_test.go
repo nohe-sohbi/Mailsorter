@@ -18,8 +18,11 @@ func filterFor(query string) bson.M {
 	return mirrorFilter("u@example.com", crit, mirrorNow)
 }
 
-// The query the SPA sends is the contract; this is what it becomes.
+// The query the SPA sends is the contract; this is what it becomes. Every
+// filter also skips a message an action just moved out of the inbox
+// (leftInbox, see mirroredIMAP), whatever the query.
 func TestMirrorFilterTranslatesTheQueriesTheAppSends(t *testing.T) {
+	notLeft := bson.M{"$ne": true}
 	cases := []struct {
 		name  string
 		query string
@@ -28,18 +31,19 @@ func TestMirrorFilterTranslatesTheQueriesTheAppSends(t *testing.T) {
 		{
 			name:  "the default query",
 			query: "in:inbox",
-			want:  bson.M{"userId": "u@example.com", "folder": "INBOX"},
+			want:  bson.M{"userId": "u@example.com", "leftInbox": notLeft, "folder": "INBOX"},
 		},
 		{
 			name:  "the unread chip",
 			query: "in:inbox is:unread",
-			want:  bson.M{"userId": "u@example.com", "folder": "INBOX", "isRead": false},
+			want:  bson.M{"userId": "u@example.com", "leftInbox": notLeft, "folder": "INBOX", "isRead": false},
 		},
 		{
 			name:  "the today chip",
 			query: "in:inbox newer_than:1d",
 			want: bson.M{
 				"userId":       "u@example.com",
+				"leftInbox":    notLeft,
 				"folder":       "INBOX",
 				"receivedDate": bson.M{"$gte": mirrorNow.Add(-24 * time.Hour)},
 			},
@@ -48,14 +52,15 @@ func TestMirrorFilterTranslatesTheQueriesTheAppSends(t *testing.T) {
 			name:  "a sender",
 			query: "from:linkedin.com",
 			want: bson.M{
-				"userId": "u@example.com",
-				"from":   bson.M{"$regex": "linkedin\\.com", "$options": "i"},
+				"userId":    "u@example.com",
+				"leftInbox": notLeft,
+				"from":      bson.M{"$regex": "linkedin\\.com", "$options": "i"},
 			},
 		},
 		{
 			name:  "no query at all still scopes to the user",
 			query: "",
-			want:  bson.M{"userId": "u@example.com"},
+			want:  bson.M{"userId": "u@example.com", "leftInbox": notLeft},
 		},
 	}
 	for _, tc := range cases {

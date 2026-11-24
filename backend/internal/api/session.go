@@ -226,44 +226,60 @@ const imapListLimit = 100
 // listing no longer shows, and the pending AI proposals about them (they would
 // point at a message that is not there). complete says whether the listing
 // covered the whole inbox; see mirror.StaleUIDs for what a partial one can
-// judge. Best effort: a failure is logged and the list stays as it was.
+// judge. A row an action flagged as gone (mirroredIMAP) goes too, unless the
+// listing still shows it, in which case it is simply unflagged. Best effort:
+// a failure is logged and the list stays as it was.
 func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed []models.Email, complete bool) {
 	folder := string(mailbox.FolderInbox)
 	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder},
-		options.Find().SetProjection(bson.M{"messageId": 1}))
+		options.Find().SetProjection(bson.M{"messageId": 1, "leftInbox": 1}))
 	if err != nil {
 		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
 		return
 	}
 	var rows []struct {
 		MessageID string `bson:"messageId"`
+		LeftInbox bool   `bson:"leftInbox"`
 	}
 	if err := cur.All(ctx, &rows); err != nil {
 		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
 		return
 	}
-	stored := make([]string, 0, len(rows))
-	for _, r := range rows {
-		stored = append(stored, r.MessageID)
-	}
 	seen := make([]string, 0, len(listed))
+	shown := make(map[string]bool, len(listed))
 	for _, e := range listed {
 		seen = append(seen, e.MessageID)
+		shown[e.MessageID] = true
 	}
-	// Rows an action already moved out of the inbox (mirroredIMAP) served the
-	// history entry written right after it; the sync is where they go.
-	if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": bson.M{"$ne": folder}}); err != nil {
-		log.Printf("imap sync: drop the messages %s moved out of the inbox: %v", userEmail, err)
+	stored := make([]string, 0, len(rows))
+	var gone, back []string
+	for _, r := range rows {
+		stored = append(stored, r.MessageID)
+		if r.LeftInbox {
+			if shown[r.MessageID] {
+				back = append(back, r.MessageID)
+			} else {
+				gone = append(gone, r.MessageID)
+			}
+		}
 	}
-	stale := mirror.StaleUIDs(stored, seen, complete)
-	if len(stale) == 0 {
+	gone = append(gone, mirror.StaleUIDs(stored, seen, complete)...)
+	if len(back) > 0 {
+		if _, err := h.db.Emails().UpdateMany(ctx,
+			bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": back}},
+			bson.M{"$unset": bson.M{"leftInbox": ""}},
+		); err != nil {
+			log.Printf("imap sync: unflag messages still in the inbox of %s: %v", userEmail, err)
+		}
+	}
+	if len(gone) == 0 {
 		return
 	}
-	if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": stale}}); err != nil {
-		log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(stale), userEmail, err)
+	if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": gone}}); err != nil {
+		log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(gone), userEmail, err)
 		return
 	}
-	if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": stale}}); err != nil {
+	if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": gone}}); err != nil {
 		log.Printf("imap sync: drop proposals about messages that left the inbox of %s: %v", userEmail, err)
 	}
 }
@@ -273,9 +289,11 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 // local copy the list is served from. Without it, an archived message stayed
 // listed until a sync, and with no sync reconciliation, for good.
 //
-// The row is re-foldered rather than deleted: the history entry written right
-// after the action still reads the sender and subject from it. The next sync
-// deletes it (dropStaleInbox).
+// The row is flagged (leftInbox) rather than deleted or re-foldered: the
+// history entry written right after the action still reads the sender and
+// subject from it, and its (folder, UID) pair keeps naming what it named. The
+// list and the counts skip flagged rows; the next sync deletes them
+// (dropStaleInbox).
 type mirroredIMAP struct {
 	client    *imap.Client
 	h         *Handler
@@ -287,10 +305,9 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 		return err
 	}
 	if mailbox.LeavesInbox(mut) && ref.Folder == string(mailbox.FolderInbox) {
-		op, _ := mailbox.IMAPOpFor(mut)
 		if _, err := m.h.db.Emails().UpdateOne(ctx,
 			bson.M{"userId": m.userEmail, "folder": ref.Folder, "messageId": ref.ID},
-			bson.M{"$set": bson.M{"folder": string(op.To)}},
+			bson.M{"$set": bson.M{"leftInbox": true}},
 		); err != nil {
 			log.Printf("imap: message %s left the inbox of %s but stays in its copy: %v", ref.ID, m.userEmail, err)
 		}

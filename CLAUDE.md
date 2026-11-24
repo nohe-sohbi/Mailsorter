@@ -101,8 +101,8 @@ Rules for the sentences in this project:
 backend/
   cmd/server/            main: config -> db -> indexes -> services -> router -> serve
   internal/api/          the ONLY I/O layer: handlers, routes, middleware, schedulers
-  internal/{account,activity,digest,egress,mailbox,mailer,metrics,protect,
-            provider,rules,schedule,search,snooze,unsubscribe}/
+  internal/{account,activity,digest,egress,mailbox,mailer,metrics,mirror,
+            protect,provider,rules,schedule,search,snooze,unsubscribe}/
                          pure logic, no I/O, heavily unit-tested
   internal/{ai,billing,gmail,imap}/  outbound clients (AI providers, Stripe, Gmail, IMAP)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
@@ -200,6 +200,7 @@ in its package doc:
 | `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
+| `mirror` | Which messages of the local copy of an IMAP inbox are no longer in it, given what a listing just returned (a capped listing judges only its own range) | `StaleUIDs` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML, the HTML in the instance's look (classic or Grand Hotel, email-safe) | `Digest`, `Render`, `RenderStyle`, `Style*` |
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
