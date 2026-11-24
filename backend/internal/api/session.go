@@ -218,7 +218,9 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 
 		if _, uErr := h.db.Emails().UpdateOne(ctx,
 			bson.M{"messageId": email.MessageID, "userId": userEmail},
-			bson.M{"$set": email},
+			// syncedAt tells a sync running at the same time that this row
+			// was just written from a fresher listing than its own.
+			bson.M{"$set": email, "$currentDate": bson.M{"syncedAt": true}},
 			options.Update().SetUpsert(true),
 		); uErr != nil {
 			failed++
@@ -313,10 +315,14 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, present 
 		}
 	}
 	if len(gone) > 0 {
-		// Only rows still as they were read: one claimed for a move since is
-		// left to that move.
+		// Only rows still as they were judged: one claimed for a move since is
+		// left to that move, and one another sync stored since this one
+		// started listing is left to that sync.
 		if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": gone},
-			"$or": []bson.M{{"leftInbox": bson.M{"$ne": true}}, {"leftAt": bson.M{"$lt": listedAt}}}}); err != nil {
+			"$or": []bson.M{
+				{"leftInbox": bson.M{"$ne": true}, "syncedAt": bson.M{"$not": bson.M{"$gte": listedAt}}},
+				{"leftInbox": true, "leftAt": bson.M{"$lt": listedAt}},
+			}}); err != nil {
 			log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(gone), userEmail, err)
 			failed = true
 		} else if !h.markProposalsMoot(ctx, userEmail, gone) {
