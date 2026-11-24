@@ -552,6 +552,14 @@ func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedR
 		if m.recordedIn(ctx, ref, dest) {
 			return errAlreadyOut
 		}
+		// Otherwise another mail client moved it: forget where Mailsorter
+		// had put it, as "Annuler" does.
+		if _, uErr := m.h.db.Emails().UpdateOne(ctx,
+			bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID, "movedTo.folder": row.MovedTo.Folder, "movedTo.uid": row.MovedTo.UID},
+			bson.M{"$unset": bson.M{"movedTo": ""}},
+		); uErr != nil {
+			log.Printf("imap: message %s of %s is not where it was put, and that is not recorded: %v", ref.ID, m.userEmail, uErr)
+		}
 		return errNotWhereLeft
 	}
 	if err != nil {
@@ -742,8 +750,11 @@ func (m mirroredIMAP) putBackOnce(ctx context.Context, ref mailbox.Ref, row move
 	if errors.Is(err, imap.ErrMessageGone) {
 		// Not where Mailsorter put it: another mail client moved it, back to
 		// the inbox or elsewhere. Mailsorter did not bring it back, so it
-		// does not say so.
-		release()
+		// does not say so, and it forgets where it had put it: the history
+		// stops offering "Annuler", and the next sync drops the row.
+		if _, uErr := m.h.db.Emails().UpdateOne(ctx, filter, bson.M{"$unset": bson.M{"movedTo": "", "restoringAt": ""}}); uErr != nil {
+			log.Printf("imap: message %s of %s is not where it was put, and that is not recorded: %v", ref.ID, m.userEmail, uErr)
+		}
 		return errNotWhereLeft
 	}
 	if err != nil {
