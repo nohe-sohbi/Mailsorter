@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -295,6 +296,8 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 		if err := h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, id), inverse, ""); err != nil {
 			if errors.Is(err, errNotWhereLeft) {
 				gone++
+			} else {
+				log.Printf("batch-undo: message %s of %s not put back: %v", id, userEmail, err)
 			}
 			continue
 		}

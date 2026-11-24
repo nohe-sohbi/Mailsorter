@@ -272,7 +272,7 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 		shown[e.MessageID] = true
 	}
 	stored := make([]string, 0, len(rows))
-	var gone, back []string
+	var gone, back, hidden []string
 	now := time.Now()
 	for _, r := range rows {
 		if !r.LeftInbox {
@@ -284,6 +284,15 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 			back = append(back, r.MessageID)
 		case r.MovedTo.Folder == "" || now.Sub(r.LeftAt) > undoWindow:
 			gone = append(gone, r.MessageID)
+		default:
+			hidden = append(hidden, r.MessageID)
+		}
+	}
+	// A message kept hidden for "Annuler" is out of the inbox all the same:
+	// a pending AI proposal about it would invite tidying it a second time.
+	if len(hidden) > 0 {
+		if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": hidden}}); err != nil {
+			log.Printf("imap sync: drop proposals about messages moved out of the inbox of %s: %v", userEmail, err)
 		}
 	}
 	gone = append(gone, mirror.StaleUIDs(stored, seen, complete)...)
@@ -311,6 +320,11 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 // Mailsorter put it: another mail client moved or deleted it since, or nothing
 // recorded where it went. Nothing moved; the user is told.
 var errNotWhereLeft = errors.New("api: the message is no longer where Mailsorter put it")
+
+// errAlreadyOut is moving out of the inbox a message Mailsorter already moved
+// out. Nothing happened: callers answer success without counting it or
+// writing it in the history.
+var errAlreadyOut = errors.New("api: the message already left the inbox")
 
 // notWhereLeftMessage is what the user reads for errNotWhereLeft.
 const notWhereLeftMessage = "Ce mail n'est plus là où Mailsorter l'avait rangé."
@@ -354,8 +368,9 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 	if findErr == nil && row.LeftInbox {
 		// Already moved out by Mailsorter (a second click from a stale tab, a
 		// proposal still pending): nothing to do, and above all nothing to
-		// overwrite, or "Annuler" would forget where the message is.
-		return nil
+		// overwrite, or "Annuler" would forget where the message is. Said so,
+		// so the caller neither counts nor records an action nothing did.
+		return errAlreadyOut
 	}
 
 	landed, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
@@ -392,8 +407,12 @@ func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow
 	uid := row.MovedTo.UID
 	if uid == "" && row.HeaderMessageID != "" {
 		// The server did not say where it landed when it left: look for it
-		// there by its Message-ID header now.
-		uid = m.client.FindByMessageID(row.MovedTo.Folder, row.HeaderMessageID)
+		// there by its Message-ID header now. A failed lookup is not "gone".
+		found, err := m.client.FindByMessageID(row.MovedTo.Folder, row.HeaderMessageID)
+		if err != nil {
+			return err
+		}
+		uid = found
 	}
 	if uid == "" {
 		return errNotWhereLeft

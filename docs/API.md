@@ -545,7 +545,7 @@ exist. At most 200 ids per request.
 
 #### POST /api/emails/batch-undo
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP (where a label has no inverse).
 
 Reverse a batch the client just applied. Separate from the per-entry history undo
 because the client already holds the exact ids, which is what makes undoing a
@@ -568,6 +568,14 @@ stores no label name, so it would have nothing to remove.
 **Response:** `200 OK`
 ```json
 { "restored": 1, "total": 1 }
+```
+
+Over IMAP each message is fetched back from where Mailsorter moved it, by the
+number it had in the inbox. When another mail client moved some of them
+meanwhile, the others still come back, and the answer says why those did not:
+
+```json
+{ "restored": 2, "total": 3, "notWhereLeft": 1, "message": "Ce mail n'est plus là où Mailsorter l'avait rangé." }
 ```
 
 **Error Responses:**

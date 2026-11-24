@@ -233,6 +233,13 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
 		return
 	}
+	if errors.Is(err, errAlreadyOut) {
+		// The mail was already tidied by hand: the proposal is moot. It
+		// leaves the plan, and nothing is counted or recorded.
+		h.dropMootProposal(ctx, objectID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already"})
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "L'action n'a pas pu être appliquée : "+err.Error())
 		return
@@ -323,6 +330,12 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		labelID, applyErr := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 		suggestion.LabelID = labelID
 
+		if errors.Is(applyErr, errAlreadyOut) {
+			// Already tidied by hand: not applied, not failed, and the moot
+			// proposal leaves the plan.
+			h.dropMootProposal(ctx, objectID)
+			continue
+		}
 		if errors.Is(applyErr, errNoLabelsOnIMAP) {
 			// Left pending, neither applied nor failed: nothing went wrong,
 			// the mailbox simply has no labels.
@@ -816,6 +829,14 @@ func (h *Handler) getSmartLabelNames(ctx context.Context, userEmail string) ([]s
 		names[i] = l.Name
 	}
 	return names, nil
+}
+
+// dropMootProposal removes a pending proposal about a mail that already left
+// the inbox. Best effort: a failure is logged, and the next sync drops it.
+func (h *Handler) dropMootProposal(ctx context.Context, id primitive.ObjectID) {
+	if _, err := h.db.AISuggestions().DeleteOne(ctx, bson.M{"_id": id, "status": "pending"}); err != nil {
+		log.Printf("ai: drop the moot proposal %s: %v", id.Hex(), err)
+	}
 }
 
 // errNoLabelsOnIMAP is what applying a "label" verdict to an IMAP mailbox

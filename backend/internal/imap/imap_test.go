@@ -534,10 +534,10 @@ func TestFindByMessageIDFindsTheMessageAgain(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	appendWithMessageID(t, c, "Archive", "<other@example.com>")
 	want := appendWithMessageID(t, c, "Archive", "<wanted@example.com>")
-	if got := c.FindByMessageID("Archive", "<wanted@example.com>"); got != want {
-		t.Errorf("FindByMessageID = %q, want %q", got, want)
+	if got, err := c.FindByMessageID("Archive", "<wanted@example.com>"); err != nil || got != want {
+		t.Errorf("FindByMessageID = %q, %v, want %q", got, err, want)
 	}
-	if got := c.FindByMessageID("Archive", "<absent@example.com>"); got != "" {
-		t.Errorf("FindByMessageID on an absent id = %q, want empty", got)
+	if got, err := c.FindByMessageID("Archive", "<absent@example.com>"); err != nil || got != "" {
+		t.Errorf("FindByMessageID on an absent id = %q, %v, want empty", got, err)
 	}
 }

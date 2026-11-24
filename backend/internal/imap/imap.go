@@ -290,27 +290,30 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 		}
 	}
 	if landed.ID == "" && headerMessageID != "" {
-		landed.ID = c.FindByMessageID(dest, headerMessageID)
+		// The move happened either way; a failed lookup only means the new
+		// UID stays unknown, which the caller handles.
+		landed.ID, _ = c.FindByMessageID(dest, headerMessageID)
 	}
 	return landed, nil
 }
 
 // FindByMessageID returns the highest UID in folder whose Message-ID header
-// is id, or "" when none or on error. It is how a message is found again
-// after a move when the server did not say where it landed.
-func (c *Client) FindByMessageID(folder, id string) string {
+// is id, "" when there is none, and an error when the server could not be
+// asked. It is how a message is found again after a move when the server did
+// not say where it landed.
+func (c *Client) FindByMessageID(folder, id string) (string, error) {
 	if err := c.selectFolder(folder); err != nil {
-		return ""
+		return "", err
 	}
 	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{
 		Header: []imapv2.SearchCriteriaHeaderField{{Key: "Message-ID", Value: id}},
 	}, nil).Wait()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("imap: search %q by Message-ID: %w", folder, err)
 	}
 	uids := res.AllUIDs()
 	if len(uids) == 0 {
-		return ""
+		return "", nil
 	}
 	best := uids[0]
 	for _, u := range uids[1:] {
@@ -318,7 +321,7 @@ func (c *Client) FindByMessageID(folder, id string) string {
 			best = u
 		}
 	}
-	return strconv.FormatUint(uint64(best), 10)
+	return strconv.FormatUint(uint64(best), 10), nil
 }
 
 // storeFlags issues the add and the remove as separate STORE commands, because

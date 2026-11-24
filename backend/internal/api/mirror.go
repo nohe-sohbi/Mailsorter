@@ -47,20 +47,21 @@ func (e errUnsupportedQuery) Error() string {
 	return "api: query terms a stored mailbox cannot answer: " + strings.Join(e.terms, " ")
 }
 
+// notLeftInbox is the filter every read of the stored mailbox that shows or
+// counts what is IN the inbox carries: a message Mailsorter moved out stays
+// stored for up to 30 days (undoWindow), hidden, so "Annuler" knows where it
+// went (mirroredIMAP), and must not be listed, counted, grouped by sender or
+// acted on as if it were still there. Reads that resolve an identity for the
+// history do not.
+var notLeftInbox = bson.M{"$ne": true}
+
 // mirrorFilter turns a parsed query into the lookup that answers it.
 //
 // Anything the query could not express is the caller's problem, not this
 // function's: it is handed a Criteria that is already only the answerable part.
-// notLeftInbox is the filter every read of the stored mailbox that shows or
-// counts what is IN the inbox carries: a message Mailsorter moved out stays
-// stored for a while, hidden, so "Annuler" knows where it went (mirroredIMAP),
-// and must not be listed, counted, grouped by sender or acted on as if it
-// were still there. Reads that resolve an identity for the history do not.
-var notLeftInbox = bson.M{"$ne": true}
-
 func mirrorFilter(userEmail string, crit search.Criteria, now time.Time) bson.M {
-	// leftInbox: a message an action just moved out of the inbox, kept until
-	// the next sync for the history entry that reads it (mirroredIMAP).
+	// leftInbox: a message Mailsorter moved out of the inbox, kept hidden so
+	// "Annuler" can bring it back (mirroredIMAP, undoWindow).
 	filter := bson.M{"userId": userEmail, "leftInbox": notLeftInbox}
 
 	if crit.Folder != "" {

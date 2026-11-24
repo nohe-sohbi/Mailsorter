@@ -430,7 +430,9 @@ function Inbox() {
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
-        toast.error(apiError(err, "Impossible d'annuler."));
+        // The one failure worth its own words: another mail client moved the
+        // mail meanwhile (404 with the reason). Anything else stays generic.
+        toast.error(err?.response?.status === 404 ? apiError(err, "Impossible d'annuler.") : "Impossible d'annuler");
       }
     });
   };
@@ -824,15 +826,18 @@ function Inbox() {
               // A mail another mail client moved meanwhile does not come back:
               // the server says so, and the screen does not claim a full undo.
               let reason = '';
+              let missing = 0;
               for (let i = 0; i < applied.length; i += BATCH_LIMIT) {
                 const { data: undone } = await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
                 if (undone?.message) reason = undone.message;
+                missing += Math.max(0, (undone?.total || 0) - (undone?.restored || 0));
               }
               if (reason) toast.error(reason);
+              else if (missing) toast.error(`${missing} email${plural(missing)} n'${missing > 1 ? 'ont' : 'a'} pas pu être remis.`);
               else toast.success('Action annulée');
               fetchData({ forceRefresh: true, sync: false });
-            } catch (err) {
-              toast.error(apiError(err, "Impossible d'annuler."));
+            } catch {
+              toast.error("Impossible d'annuler");
             }
           });
         } else {
