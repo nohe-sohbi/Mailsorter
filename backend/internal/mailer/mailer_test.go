@@ -107,6 +107,38 @@ func TestBuildKeepsEveryLineShort(t *testing.T) {
 	}
 }
 
+// The caller hands Build the identifier, and Build writes it where a mail
+// program reads it. Without one, there is no Message-ID header at all.
+func TestBuildWritesTheMessageID(t *testing.T) {
+	const id = "<0123abcd@exemple.fr>"
+	msg, _ := readBuilt(t, Build(Message{From: "me@exemple.fr", To: "me@exemple.fr", Subject: "s", Text: "t", HTML: "h", ID: id}))
+	if got := msg.Header.Get("Message-ID"); got != id {
+		t.Errorf("Message-ID = %q, want %q", got, id)
+	}
+
+	if raw := Build(Message{From: "me@exemple.fr", To: "me@exemple.fr", Subject: "s", Text: "t", HTML: "h"}); bytes.Contains(raw, []byte("Message-ID:")) {
+		t.Errorf("Build without an ID wrote a Message-ID header:\n%s", raw)
+	}
+}
+
+func TestMessageIDTakesTheDomainOfTheAddress(t *testing.T) {
+	cases := []struct{ name, address, want string }{
+		{"an address", "moi@orange.fr", "<u1@orange.fr>"},
+		{"capitals and a subdomain", "Moi@Mail.Exemple.FR", "<u1@Mail.Exemple.FR>"},
+		{"the last @ wins", `"a@b"@exemple.fr`, "<u1@exemple.fr>"},
+		{"a header break after the domain", "moi@exemple.fr>\r\nBcc: autre", "<u1@exemple.frBccautre>"},
+		{"no domain", "moi@", "<u1@mailsorter.invalid>"},
+		{"no @ at all", "moi", "<u1@mailsorter.invalid>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MessageID("u1", tc.address); got != tc.want {
+				t.Errorf("MessageID(%q, %q) = %q, want %q", "u1", tc.address, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestForGmailIsBase64URLOfTheMessage(t *testing.T) {
 	raw := Build(Message{From: "me@example.com", To: "me@example.com", Subject: "Récap ?", Text: "t", HTML: "h"})
 	encoded := ForGmail(raw)

@@ -1,8 +1,10 @@
 // Package mailer writes the daily recap as an email, and decides, purely, when
 // a recurring daily message is due.
 //
-// It deliberately holds no mail client, no clock and no I/O: Build turns a
-// subject + text/HTML bodies into an RFC 5322 message, ForGmail encodes that
+// It deliberately holds no mail client, no clock, no randomness and no I/O:
+// Build turns a subject + text/HTML bodies into an RFC 5322 message, MessageID
+// writes the identifier of one from a unique part the caller draws, ForGmail
+// encodes that
 // message the way Gmail's send API takes it (base64url), and DueAt answers
 // "should today's digest go out yet?" given the last send time and a target
 // hour. The message itself is the same on both transports: the Gmail API
@@ -16,6 +18,7 @@ import (
 	"encoding/base64"
 	"mime"
 	"mime/quotedprintable"
+	"strings"
 	"time"
 )
 
@@ -34,6 +37,36 @@ type Message struct {
 	// Date is the Date header, the one header besides From that RFC 5322
 	// requires. Left zero, the message has none: the caller owns the clock.
 	Date time.Time
+	// ID is the Message-ID header, as MessageID writes it. Left empty, the
+	// message has none: the caller owns the randomness.
+	ID string
+}
+
+// fallbackIDDomain is the right-hand side of a Message-ID when the address
+// has no usable domain: a name reserved never to resolve (RFC 2606).
+const fallbackIDDomain = "mailsorter.invalid"
+
+// MessageID is the identifier of a message sent from address: unique, drawn
+// by the caller, on the left, and the address's domain on the right, the way
+// a mail program writes one (RFC 5322, 3.6.4). Only the characters of a
+// domain name are kept, so whatever the address holds, the header stays one
+// line.
+func MessageID(unique, address string) string {
+	domain := ""
+	if at := strings.LastIndex(address, "@"); at >= 0 {
+		domain = strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-':
+				return r
+			}
+			return -1
+		}, address[at+1:])
+	}
+	domain = strings.Trim(domain, ".-")
+	if domain == "" {
+		domain = fallbackIDDomain
+	}
+	return "<" + unique + "@" + domain + ">"
 }
 
 // Build assembles a multipart/alternative email (plain text + HTML), in the
@@ -46,6 +79,9 @@ func Build(m Message) []byte {
 	var b bytes.Buffer
 	if !m.Date.IsZero() {
 		b.WriteString("Date: " + m.Date.Format(time.RFC1123Z) + "\r\n")
+	}
+	if m.ID != "" {
+		b.WriteString("Message-ID: " + m.ID + "\r\n")
 	}
 	b.WriteString("From: " + m.From + "\r\n")
 	b.WriteString("To: " + m.To + "\r\n")
