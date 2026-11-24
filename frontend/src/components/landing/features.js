@@ -95,8 +95,14 @@ export function canApplyVerdict(action, isImap) {
 // (backend/internal/ai/prompts.go), sent to whichever provider the instance
 // runs, which can be a model on the same machine.
 export const AI_READS = "L'IA ne voit que l'expéditeur, l'objet et au plus 200 caractères du message.";
-export const AI_EGRESS =
-  "Avec un modèle local, rien ne sort de l'instance. Avec une IA en ligne, cet extrait part chez son fournisseur.";
+// Where that excerpt goes. An instance run at home may use a local model; the
+// hosted service uses Mistral AI (its deployment forwards MISTRAL_* only), or
+// the provider of a key the user plugged in.
+export function aiEgress(selfHosted) {
+  return selfHosted
+    ? "Avec un modèle local, rien ne sort de l'instance. Avec une IA en ligne, cet extrait part chez son fournisseur."
+    : "Cet extrait part chez Mistral AI, l'IA du service en ligne, ou chez le fournisseur dont vous avez branché votre propre clé.";
+}
 
 // "a", "a et b", "a, b et c".
 export function joinFr(items) {

@@ -154,4 +154,12 @@ func TestOpenAIOfficialHost(t *testing.T) {
 	if NewOpenAIClient("k", "m", "http://localhost:1234/v1/chat/completions").official {
 		t.Error("a local server is not OpenAI's API")
 	}
+	for _, u := range []string{"https://eu.api.openai.com/v1/chat/completions", "https://API.OPENAI.COM/v1/chat/completions"} {
+		if !NewOpenAIClient("k", "m", u).official {
+			t.Errorf("%s is OpenAI's API (a regional host, or any case)", u)
+		}
+	}
+	if NewOpenAIClient("k", "m", "https://api.openai.com.evil.example/v1").official {
+		t.Error("a host that only starts like OpenAI's is not OpenAI's API")
+	}
 }

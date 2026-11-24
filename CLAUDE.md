@@ -67,8 +67,9 @@ Rules for the sentences in this project:
    `api` package talks to Mongo, the mailboxes (Gmail, IMAP), the AI providers or
    Stripe. Never put a `bson.M` or an `http.Request` in a pure package.
 2. **Fail closed on security, fail fast on config.** `config.Validate()` refuses to boot
-   on a missing, short (under 32 characters) or known example `ENCRYPTION_KEY`, and on
-   an unknown `EDITION` or `UI_THEME`. The auth middleware strips a client-supplied
+   on a missing, short (under 32 characters) or known example `ENCRYPTION_KEY` (the
+   one an earlier README showed only warns: refusing it would strand instances
+   already running on it), and on an unknown `EDITION` or `UI_THEME`. The auth middleware strips a client-supplied
    `X-User-Email` before re-setting it itself. Preserve that posture in every change.
 3. **Never silently drop an error.** The audit that produced `BACKLOG.md` found two
    P1 bugs that were both a swallowed error (`date, _ = time.Parse(...)`) or a wrong
@@ -596,7 +597,7 @@ which reads none of it by itself.
 
 | Var | Required | Notes |
 |---|---|---|
-| `ENCRYPTION_KEY` | yes | No default. Boot **refuses** it missing, under 32 characters, or set to a known example (the `.env.example` placeholder, the README's placeholder, and the old built-in default, which `docker-compose.yml` still falls back to when the variable is unset). The example an earlier README showed (`une-chaine-aleatoire-...`) is accepted with a startup warning: boot took it before, and refusing it would stop an instance whose only way out loses every stored secret. It seals every stored credential and signs the sessions; changing it after the fact logs everyone out and makes every stored secret unreadable |
+| `ENCRYPTION_KEY` | yes | No default. Boot **refuses** it missing, under 32 characters, or set to a known example (the `.env.example` placeholder, the README's placeholder, and the old built-in default; `docker-compose.yml` passes it through with no fallback). The example an earlier README showed (`une-chaine-aleatoire-...`) is accepted with a startup warning: boot took it before, and refusing it would stop an instance whose only way out loses every stored secret. It seals every stored credential and signs the sessions; changing it after the fact logs everyone out and makes every stored secret unreadable |
 | `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REDIRECT_URL` | optional | Needed for the Gmail API route and the Google sign-in; without them a Gmail address still connects over IMAP. One OAuth app for the whole instance. Env is the source of truth; the `gmail_config` document is a read-only legacy fallback. Must be a **Web application** client, not Desktop |
 | `MISTRAL_API_KEY`, `MISTRAL_MODEL`, `MISTRAL_MAX_RETRIES` | one AI provider is needed for the AI features | defaults `mistral-small-latest`, 2 extra retries. Mistral is first in the fallback order |
 | `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | optional | default model `gpt-6-luna`. `OPENAI_BASE_URL` is the full chat completions URL, for any OpenAI-compatible server (llama.cpp, LM Studio, vLLM); the key must not be empty even when that server ignores it. Second in the order |

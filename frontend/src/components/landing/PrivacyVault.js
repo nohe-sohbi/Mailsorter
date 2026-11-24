@@ -2,7 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import Vault from '../../ui/hotel/Vault';
 import FloorHeading from './FloorHeading';
-import { AI_EGRESS, AI_READS, canPromise } from './features';
+import { aiEgress, AI_READS, canPromise } from './features';
 import './PrivacyVault.css';
 
 // Three facts, each checked against the code: the model only sees the sender,
@@ -11,7 +11,7 @@ import './PrivacyVault.css';
 // bodies included on the Gmail path (models.Email.Body), which the privacy
 // policy states too; a rule the user wrote can trash, hence "sans votre
 // accord" rather than "sans vous demander".
-export default function PrivacyVault({ floorNo, isConfigured }) {
+export default function PrivacyVault({ floorNo, isConfigured, selfHosted }) {
   const undo = canPromise('undo', isConfigured);
   return (
     <section className="hl-section" id="confidentialite" data-floor="confidentialite" aria-labelledby="hl-privacy-title">
@@ -28,7 +28,7 @@ export default function PrivacyVault({ floorNo, isConfigured }) {
               <b aria-hidden="true">I</b>
               <h3>On lit</h3>
               <p>
-                {AI_READS} Jamais le message entier, jamais les pièces jointes. {AI_EGRESS}
+                {AI_READS} Jamais le message entier, jamais les pièces jointes. {aiEgress(selfHosted)}
               </p>
             </div>
             <div className="hl-vplq">

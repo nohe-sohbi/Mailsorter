@@ -120,8 +120,9 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
 }
 
 // `labelsOk` is false on a mailbox with no labels (IMAP, or not known yet):
-// "Étiqueter" is then not offered for a new action. An action that already
-// labels (an imported rule) keeps its choice, so the list can still show it.
+// "Étiqueter" and "Mettre en favori" are then not offered for a new action.
+// An action that already does one (an imported rule) keeps its choice, so the
+// list can still show it.
 function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, labelsOk }) {
   const [rule, setRule] = useState(initial);
   const toast = useToast();
@@ -151,11 +152,15 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
   // Actions already chosen can't be picked again (except "label", which can
   // repeat with different names), which keeps the combo meaningful.
   const usedTypes = new Set(rule.actions.map((a) => a.type));
-  const offered = (type, current) =>
-    type === 'label' ? labelsOk || current === 'label' : type === current || !usedTypes.has(type);
+  // The star is as Gmail-only as the label: an IMAP mailbox keeps none.
+  const gmailOnly = (type) => type === 'label' || type === 'star';
+  const offered = (type, current) => {
+    if (gmailOnly(type) && !labelsOk && current !== type) return false;
+    return type === 'label' || type === current || !usedTypes.has(type);
+  };
   // What "+ Ajouter une action" adds: a label, which can repeat, or else the
   // first action not chosen yet.
-  const nextType = labelsOk ? 'label' : ACTION_TYPES.find((type) => type !== 'label' && !usedTypes.has(type));
+  const nextType = labelsOk ? 'label' : ACTION_TYPES.find((type) => !gmailOnly(type) && !usedTypes.has(type));
   const addAction = () =>
     setRule((r) => ({ ...r, actions: [...r.actions, { type: nextType, labelName: '' }] }));
   const removeAction = (i) =>
@@ -282,7 +287,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
           {rule.actions.map((a, i) => (
             <div key={i} className="flex flex-wrap items-start gap-2">
               <select className="select w-auto flex-none" value={a.type} onChange={(e) => setActionType(i, e.target.value)}>
-                {ACTION_TYPES.filter((type) => type !== 'label' || offered(type, a.type)).map((type) => (
+                {ACTION_TYPES.filter((type) => !gmailOnly(type) || offered(type, a.type)).map((type) => (
                   <option key={type} value={type} disabled={!offered(type, a.type)}>
                     {actionMeta(type).label}
                   </option>

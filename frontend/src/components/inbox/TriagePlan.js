@@ -73,7 +73,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   // applied: neither is offered as an action there (landing/features.js).
   // The same rule as the other screens: a mailbox not known yet, or whose
   // answer failed, is treated as one that cannot (`fullFeatures`).
-  const { fullFeatures } = useMailbox();
+  const { fullFeatures, failed: mailboxFailed } = useMailbox();
   const canApply = useCallback((g) => canApplyVerdict(g.action, !fullFeatures), [fullFeatures]);
   const [applyingAll, setApplyingAll] = useState(false);
   const [ruling, setRuling] = useState(null);
@@ -271,6 +271,9 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
     totals,
     canApply,
     rulesAvailable: fullFeatures,
+    // The mailbox could not be asked what it is: an action held back is then
+    // "unavailable for now", not "not possible on this mailbox".
+    mailboxFailed,
     applyingAll,
     ruling,
     ruled,
@@ -353,7 +356,11 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
                     <Tag size={12} /> {group.labelName}
                   </span>
                 )}
-                {!applicable && <span className="chip bg-ink-100 py-0.5 text-ink-600">{IMAP_UNAVAILABLE}</span>}
+                {!applicable && (
+                  <span className="chip bg-ink-100 py-0.5 text-ink-600">
+                    {plan.mailboxFailed ? 'Indisponible pour le moment.' : IMAP_UNAVAILABLE}
+                  </span>
+                )}
                 {applicable && !group.sure && (
                   <span className="chip bg-caution-50 py-0.5 text-caution-700" title="L'IA n'est pas sûre d'elle sur au moins un de ces emails">
                     <Alert size={12} /> À vérifier
@@ -584,7 +591,7 @@ function TriagePlan({ plan, onOpenEmail }) {
               {held.length > 0 && (
                 <div className={cn(tidy.length > 0 && 'border-t border-hairline')}>
                   <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
-                    Pas encore possible sur cette boîte · {totals.held}
+                    {plan.mailboxFailed ? 'Indisponible pour le moment' : 'Pas encore possible sur cette boîte'} · {totals.held}
                   </h3>
                   <ul className="divide-y divide-[rgb(var(--hairline))]">{heldShown.map(row)}</ul>
                   {heldShown.length < held.length && (

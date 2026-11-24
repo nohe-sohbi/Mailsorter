@@ -268,7 +268,7 @@ Trois axes majeurs, dans la cadence du repo : une feature qui **rend le contrôl
 
 ## Checklist de déploiement (tenue à jour)
 
-- [ ] `cp .env.example .env`, puis renseigner `EDITION` (`hosted` pour le service géré ; sinon `self-hosted`, la valeur par défaut) et `ENCRYPTION_KEY` (32 caractères au moins ; le serveur refuse de démarrer sans elle ou sur une valeur d'exemple).
+- [ ] `cp .env.example .env`, puis renseigner `EDITION` (`hosted` pour le service géré ; sinon `self-hosted`, la valeur par défaut) et `ENCRYPTION_KEY` (32 caractères au moins ; le serveur refuse de démarrer sans elle ou sur une valeur d'exemple, sauf celle d'une ancienne version du README, seulement signalée).
 - [ ] L'IA : `MISTRAL_API_KEY`, seule variable d'IA que transmet `docker-compose.yml`. OpenAI, Anthropic et Ollama passent par `compose.local.yml` (`make up`) ou `make backend`.
 - [ ] (Optionnel) API Gmail : `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REDIRECT_URL`, et l'URI de prod dans les *Authorized redirect URIs* du client OAuth. Sans eux, une adresse Gmail se branche par IMAP. Les routes OAuth ne lisent pas l'édition : renseignées sur le service géré, elles y ouvrent la connexion Google, et donc l'API Gmail.
 - [ ] CORS backend : domaine de prod présent dans `ALLOWED_ORIGINS` (variable d'env, séparée par des virgules ; défauts localhost + `mailsorter.sohbi.dev` si vide), aucun rebuild requis.

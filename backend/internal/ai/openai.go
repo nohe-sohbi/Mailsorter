@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -94,9 +95,16 @@ func (c *OpenAIClient) AnalyzeSender(senderEmail string, emails []models.Email, 
 	return parseSenderAnalysis(response)
 }
 
+// isOpenAIHost says whether baseURL is OpenAI's own API: api.openai.com, or
+// one of its regional hosts (eu.api.openai.com, us.api.openai.com...), which
+// data residency uses.
 func isOpenAIHost(baseURL string) bool {
 	u, err := url.Parse(baseURL)
-	return err == nil && u.Hostname() == "api.openai.com"
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "api.openai.com" || strings.HasSuffix(host, ".api.openai.com")
 }
 
 // openAIReasoningModels names OpenAI's reasoning models (gpt-5 onward, the o

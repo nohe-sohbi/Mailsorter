@@ -81,7 +81,7 @@ Les règles déterministes ne font pas partie de ce flux : elles tournent à la 
 - **Tentatives de connexion.** `register`, `login` et `auth/mailbox` partagent un limiteur bien plus strict que le global : environ une tentative toutes les 3 secondes, 5 d'avance, par adresse du visiteur et par adresse email. Le limiteur global est de 20 requêtes par seconde (40 d'avance), par compte ou par adresse du visiteur. Cette adresse vient de `X-Real-IP`, posé par nginx, et n'est crue que d'un pair privé ou local.
 - **Entrées.** Corps JSON plafonnés à 1 Mio, erreurs dans une enveloppe JSON unique, en-têtes de sécurité sur chaque réponse, origines CORS limitées à `ALLOWED_ORIGINS`.
 - **Requêtes sortantes.** Le désabonnement en un clic, dont l'adresse vient d'un email reçu, passe par `internal/egress` : `https` seulement, adresse publique vérifiée au moment de la connexion, chaque redirection rejugée. L'adresse d'un fournisseur d'IA saisie dans les Réglages n'est contrôlée que sur sa forme, à l'enregistrement et au test.
-- **Configuration.** Le serveur refuse de démarrer sans `ENCRYPTION_KEY`, sous 32 caractères ou sur une valeur d'exemple connue, et sur une valeur d'`EDITION` ou d'`UI_THEME` qu'il ne connaît pas.
+- **Configuration.** Le serveur refuse de démarrer sans `ENCRYPTION_KEY`, sous 32 caractères ou sur une valeur d'exemple connue (celle d'une ancienne version du README est seulement signalée au démarrage : la refuser bloquerait les instances qui tournent déjà avec), et sur une valeur d'`EDITION` ou d'`UI_THEME` qu'il ne connaît pas.
 
 ## Tâches de fond
 

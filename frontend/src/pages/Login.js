@@ -12,7 +12,7 @@ import {
   Lock, Server, Undo, Mail, ChevronDown,
 } from '../ui/icons';
 import Spinner from '../ui/Spinner';
-import { AI_EGRESS, AI_READS, canConnect, canPromise, isGmailOnly } from '../components/landing/features';
+import { aiEgress, AI_READS, canConnect, canPromise, isGmailOnly } from '../components/landing/features';
 
 // Every claim of this landing holds on THIS instance. A feature only the Gmail
 // API offers is shown only when the instance has Google credentials, and then
@@ -96,7 +96,7 @@ function facts({ selfHosted, undo, autopilot }) {
   ];
 }
 
-function trust({ undo }) {
+function trust({ undo, selfHosted }) {
   return [
     {
       Icon: Lock,
@@ -106,7 +106,7 @@ function trust({ undo }) {
     {
       Icon: Sparkles,
       title: "Ce qui part à l'IA",
-      text: `L'expéditeur, le sujet et un extrait de 200 caractères, uniquement quand vous lancez une analyse. Jamais le contenu complet, jamais les pièces jointes. ${AI_EGRESS}`,
+      text: `L'expéditeur, le sujet et un extrait de 200 caractères, uniquement quand vous lancez une analyse. Jamais le contenu complet, jamais les pièces jointes. ${aiEgress(selfHosted)}`,
     },
     {
       Icon: Undo,
@@ -133,7 +133,7 @@ function faq({ selfHosted, billingOn, isConfigured, undo, rules, autopilot }) {
         selfHosted
           ? "chez le fournisseur d'IA configuré sur l'instance (qui peut être un modèle local), ou chez celui dont vous avez branché votre propre clé dans les réglages."
           : "chez Mistral AI, le fournisseur d'IA du service en ligne, ou chez celui dont vous avez branché votre propre clé dans les réglages."
-      }${selfHosted ? ` ${AI_EGRESS}` : ''}${
+      }${selfHosted ? ` ${aiEgress(true)}` : ''}${
         rules ? ` Les règles de tri, elles, ne font appel à aucune IA${selfHosted ? '' : ' et ne consomment aucun quota'}.` : ''
       }`,
     },
@@ -644,7 +644,7 @@ function Login() {
             ce qui est conservé, et ce qui part à l'IA.
           </p>
           <div className="mt-10 grid gap-4 sm:grid-cols-2">
-            {trust({ undo }).map(({ Icon, title, text }) => (
+            {trust({ undo, selfHosted }).map(({ Icon, title, text }) => (
               <div key={title} className="card p-6">
                 <span className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-positive-50 text-positive-600">
                   <Icon size={22} />

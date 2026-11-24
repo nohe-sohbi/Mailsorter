@@ -83,11 +83,12 @@ func (c *AnthropicClient) AnalyzeSender(senderEmail string, emails []models.Emai
 	return parseSenderAnalysis(response)
 }
 
-// anthropicThinkingModels names the Claude models that think before they
-// answer unless told otherwise (Haiku 5.5, Sonnet 5.5, Opus 5.5 think by
-// default) and that accept an effort level: the 4.6 generation onward, and
-// the Fable and Mythos lines. Older models (Haiku 4.5, Sonnet 4.5, ...)
-// refuse `output_config.effort` with a 400, so they get the plain request.
+// anthropicThinkingModels names the Claude models that accept an effort
+// level: the 4.6 generation onward, and the Fable and Mythos lines. The 5.x
+// models (Haiku 5.5, Sonnet 5.5, Opus 5.5) think before they answer unless
+// told otherwise; the 4.6 to 4.8 ones do not, and the low effort and the room
+// below cost them nothing. Older models (Haiku 4.5, Sonnet 4.5, ...) refuse
+// `output_config.effort` with a 400, so they get the plain request.
 var anthropicThinkingModels = regexp.MustCompile(`^claude-(?:(?:haiku|sonnet|opus)-(?:[5-9]|4-[6-9])|fable|mythos)`)
 
 // thinkingRoom is what a thinking model may spend before its answer. The
