@@ -610,3 +610,56 @@ func TestIDAtReadsTheMessageIDOfANumber(t *testing.T) {
 		t.Errorf("IDAt after the move: exists=%v, %v; want a number that names nothing", exists, err)
 	}
 }
+
+// appendWithID puts a message carrying a Message-ID in folder and returns its UID.
+func appendWithID(t *testing.T, c *Client, folder, subject, id string) string {
+	t.Helper()
+	raw := "From: a@example.com\r\nSubject: " + subject + "\r\nMessage-ID: <" + id + ">\r\n\r\nBody.\r\n"
+	cmd := c.c.Append(folder, int64(len(raw)), nil)
+	if _, err := cmd.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := cmd.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.selected = ""
+	return fmtUID(data.UID)
+}
+
+// A recorded number that now names another mail (a server that renumbered
+// its folders) must not move that mail: the right one is found by its
+// Message-ID, and when it is nowhere, nothing moves.
+func TestMoveRecordedNeverMovesAnotherMail(t *testing.T) {
+	ctx := context.Background()
+	c := newTestServer(t, standardMailboxes())
+	stranger := appendWithID(t, c, "Archive", "Stranger", "stranger@example.com")
+	ours := appendWithID(t, c, "Archive", "Ours", "ours@example.com")
+	oursID, _, err := c.IDAt("Archive", ours)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The recorded number names the stranger: ours is found by Message-ID.
+	landed, err := c.MoveRecorded(ctx, "Archive", stranger, mailbox.FolderInbox, oursID)
+	if err != nil {
+		t.Fatalf("MoveRecorded = %v", err)
+	}
+	if id, _, _ := c.IDAt("INBOX", landed.ID); id != oursID {
+		t.Errorf("the inbox received %q, want our mail %q", id, oursID)
+	}
+	if _, there, _ := c.IDAt("Archive", stranger); !there {
+		t.Error("the stranger left the archive: another mail was moved")
+	}
+
+	// Our mail is nowhere in the archive now: nothing moves, and it says so.
+	if _, err := c.MoveRecorded(ctx, "Archive", stranger, mailbox.FolderInbox, oursID); !errors.Is(err, ErrMessageGone) {
+		t.Errorf("MoveRecorded of a mail no longer there = %v, want ErrMessageGone", err)
+	}
+	if _, there, _ := c.IDAt("Archive", stranger); !there {
+		t.Error("the stranger left the archive on the second call")
+	}
+}

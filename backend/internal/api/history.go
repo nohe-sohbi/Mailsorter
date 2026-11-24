@@ -338,6 +338,9 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errLeftInbox):
 			writeError(w, http.StatusNotFound, leftInboxMessage)
 			return
+		case errors.Is(err, errUndoBusy):
+			writeError(w, http.StatusLocked, undoBusyMessage)
+			return
 		case errors.Is(err, errAlreadyBack):
 			// Another "Annuler" brought it back a moment ago, and marks the
 			// entry: nothing more to do or to record.

@@ -290,6 +290,11 @@ function History() {
       if (err.response?.status === 409) {
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true, undoable: false } : e)));
       }
+      // 404 = le mail n'est plus là où Mailsorter l'avait mis, ou l'action est
+      // trop ancienne : le serveur ne la propose plus, la ligne non plus.
+      if (err.response?.status === 404) {
+        setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undoable: false } : e)));
+      }
       toast.error(apiError(err, 'Annulation impossible.'));
     } finally {
       setUndoing(null);

@@ -666,6 +666,10 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "already", "action": req.Action})
 		return
 	}
+	if errors.Is(err, errUndoBusy) {
+		writeError(w, http.StatusLocked, undoBusyMessage)
+		return
+	}
 	if errors.Is(err, errAlreadyBack) {
 		// Another "Annuler" brought it back a moment ago and recorded it.
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})

@@ -335,6 +335,32 @@ func (c *Client) UIDs(folder string) (map[string]bool, error) {
 	return out, nil
 }
 
+// MoveRecorded moves the message Mailsorter recorded as uid in folder. When
+// its Message-ID is known, the number is checked first against the one the
+// server reports for it (IDAt): a server that renumbered its folders (a
+// migration, a rebuilt index) would otherwise hand back another mail. When
+// the number no longer names it, it is looked for by that Message-ID once;
+// not found, ErrMessageGone.
+func (c *Client) MoveRecorded(ctx context.Context, folder, uid string, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
+	if headerMessageID != "" {
+		id, exists, err := c.IDAt(folder, uid)
+		if err != nil {
+			return mailbox.Ref{}, err
+		}
+		if !exists || id != headerMessageID {
+			found, err := c.FindByMessageID(folder, headerMessageID)
+			if err != nil {
+				return mailbox.Ref{}, err
+			}
+			if found == "" {
+				return mailbox.Ref{}, ErrMessageGone
+			}
+			uid = found
+		}
+	}
+	return c.MoveTo(ctx, mailbox.InFolder(folder, uid), to, headerMessageID)
+}
+
 // IDAt returns the Message-ID of the message numbered uid in folder, as the
 // listing stores it (the envelope's, parsed by the same code), and whether
 // that number names a message at all.
