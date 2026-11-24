@@ -33,6 +33,9 @@ type Message struct {
 	models.Email
 	HTML        string
 	Attachments []Attachment
+	// InlineImages maps the cid of each picture the HTML draws to the part
+	// number the screen downloads it under, to show it in the text.
+	InlineImages map[string]string
 }
 
 // Fetch returns one message, bodies included.
@@ -97,6 +100,7 @@ func (c *Client) fetch(folder, uid string) (Message, error) {
 		log.Printf("imap: message uid %s in %q: %v", uid, folder, inside.skipped)
 	}
 	out.Attachments = inside.files
+	out.InlineImages = inside.inlineImages()
 	return out, nil
 }
 

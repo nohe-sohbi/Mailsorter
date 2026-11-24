@@ -316,7 +316,11 @@ func TestPartOf(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			part := partOf(parseHeader([]byte(tc.header + "\r\n")))
+			header, err := parseHeader([]byte(tc.header + "\r\n"))
+			if err != nil {
+				t.Fatalf("parseHeader(%q): %v", tc.header, err)
+			}
+			part := partOf(header)
 			var got Attachment
 			got.MimeType = part.MediaType
 			var ok bool
@@ -355,7 +359,7 @@ func TestFetchNumbersPartsTheWayIMAPDoes(t *testing.T) {
 	related := "Content-Type: multipart/related; boundary=\"rel\"\r\n" +
 		"\r\n" +
 		"--rel\r\n" + "Content-Type: text/html\r\n\r\n<img src=\"cid:logo@acme\">\r\n" +
-		"--rel\r\n" + "Content-Type: image/png; name=\"logo.png\"\r\nContent-ID: <logo@acme>\r\n\r\nPNG\r\n" +
+		"--rel\r\n" + "Content-Type: image/png\r\nContent-ID: <logo@acme>\r\n\r\nPNG\r\n" +
 		"--rel\r\n" + file("dans-related.pdf") + "\r\n" +
 		"--rel--"
 
@@ -381,7 +385,7 @@ func TestFetchNumbersPartsTheWayIMAPDoes(t *testing.T) {
 			want: map[string]string{"2": "a.pdf"},
 		},
 		{
-			name: "a file inside a related, beside an image the html shows",
+			name: "a file inside a related, beside an unnamed image the html shows",
 			raw:  mixed(related, file("b.pdf")),
 			want: map[string]string{"1.3": "dans-related.pdf", "2": "b.pdf"},
 		},
@@ -552,7 +556,7 @@ func newsletterMail() string {
 	related := "Content-Type: multipart/related; boundary=\"rel\"\r\n" +
 		"\r\n" +
 		"--rel\r\n" + "Content-Type: text/html; charset=utf-8\r\n\r\n" +
-		"<p>Bonjour</p><img src=\"cid:logo@acme\"><div style=\"background:url(cid:fond@acme)\">\r\n" +
+		"<p>Bonjour</p><img src=\"cid:logo@acme\"><div style=\"background:url(cid:fond@acme)\"><img src=\"cid:carte@acme\">\r\n" +
 		"--rel\r\n" + "Content-Type: image/png; name=\"logo.png\"\r\nContent-Disposition: inline; filename=\"logo.png\"\r\nContent-ID: <logo@acme>\r\n\r\nPNG-logo\r\n" +
 		"--rel\r\n" + "Content-Type: image/jpeg\r\nContent-ID: <fond@acme>\r\nContent-Disposition: attachment\r\n\r\nJPEG-fond\r\n" +
 		"--rel--"
@@ -566,17 +570,24 @@ func newsletterMail() string {
 	unnamed := "Content-Type: application/octet-stream\r\nContent-Disposition: attachment\r\n\r\nBYTES"
 	forwarded := "Content-Type: message/rfc822\r\n\r\n" +
 		"From: a@b.com\r\nSubject: Transfert\r\n\r\nLe mail d'origine.\r\n"
-	return mixed(related, gmailWeb, appleInline, photo, unnamed, forwarded)
+	// An unnamed picture the HTML does not point at, and an unnamed SVG it
+	// does: neither is a file, neither is drawn.
+	pixel := "Content-Type: image/gif\r\nContent-ID: <pixel@acme>\r\n\r\nGIF89a"
+	svg := "Content-Type: image/svg+xml\r\nContent-ID: <carte@acme>\r\n\r\n<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+	return mixed(related, gmailWeb, appleInline, photo, unnamed, forwarded, pixel, svg)
 }
 
 // The list and the download follow internal/attachment's rule, and agree:
 // what the reader lists is what the download serves, under the same name,
-// and what it does not list, the download does not serve.
+// and the pictures the HTML draws are served to the screen too; what it
+// neither lists nor draws, the download does not serve.
 func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := stored(t, c, newsletterMail())
 	forwarded := "From: a@b.com\r\nSubject: Transfert\r\n\r\nLe mail d'origine.\r\n"
 	want := []Attachment{
+		// Drawn in the text, and listed so it can be saved: it has a name.
+		{Part: "1.2", Filename: "logo.png", MimeType: "image/png", Size: int64(len("PNG-logo"))},
 		{Part: "2", Filename: "facture.pdf", MimeType: "application/pdf", Size: int64(len("%PDF-gmail"))},
 		{Part: "3", Filename: "devis.pdf", MimeType: "application/pdf", Size: int64(len("%PDF-apple"))},
 		{Part: "4", Filename: "photo.jpg", MimeType: "image/jpeg", Size: int64(len("JPEG-photo"))},
@@ -591,6 +602,12 @@ func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
 	if !reflect.DeepEqual(msg.Attachments, want) {
 		t.Errorf("Fetch(...).Attachments = %+v, want %+v", msg.Attachments, want)
 	}
+	// The logo and the background, unnamed and declared an attachment; not
+	// the SVG, which the HTML points at too.
+	wantImages := map[string]string{"logo@acme": "1.2", "fond@acme": "1.3"}
+	if !reflect.DeepEqual(msg.InlineImages, wantImages) {
+		t.Errorf("Fetch(...).InlineImages = %v, want %v", msg.InlineImages, wantImages)
+	}
 
 	for _, w := range want {
 		att, data, err := c.Attachment(context.Background(), "INBOX", uid, w.Part, testLimit)
@@ -602,9 +619,11 @@ func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
 			t.Errorf("Attachment(%q) = %+v (%d bytes), want %+v", w.Part, att, len(data), w)
 		}
 	}
-	// The two images the HTML shows (the logo, and the background,
-	// declared an attachment and unnamed), and the HTML itself.
-	for _, part := range []string{"1.2", "1.3", "1.1"} {
+	if att, data, err := c.Attachment(context.Background(), "INBOX", uid, "1.3", testLimit); err != nil || string(data) != "JPEG-fond" || att.MimeType != "image/jpeg" {
+		t.Errorf("Attachment(1.3, the background the HTML draws) = %+v %q, %v, want the picture", att, data, err)
+	}
+	// The HTML itself, a picture the HTML does not point at, an SVG it does.
+	for _, part := range []string{"1.1", "7", "8"} {
 		if _, data, err := c.Attachment(context.Background(), "INBOX", uid, part, testLimit); !errors.Is(err, ErrNoSuchAttachment) || data != nil {
 			t.Errorf("Attachment(%q) = %d bytes, %v, want ErrNoSuchAttachment", part, len(data), err)
 		}
@@ -612,22 +631,28 @@ func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
 }
 
 // The HTML that shows an image may come after it in the message: the image
-// is still not a file, in the list as in the download.
+// is still drawn rather than listed, and served for the screen to draw.
 func TestAnImageTheHTMLShowsAfterIt(t *testing.T) {
 	related := "Content-Type: multipart/related; boundary=\"rel\"\r\n" +
 		"\r\n" +
-		"--rel\r\n" + "Content-Type: image/png; name=\"logo.png\"\r\nContent-ID: <logo@acme>\r\n\r\nPNG\r\n" +
+		"--rel\r\n" + "Content-Type: image/png\r\nContent-ID: <logo@acme>\r\n\r\nPNG\r\n" +
 		"--rel\r\n" + "Content-Type: text/html\r\n\r\n<img src=\"cid:logo@acme\">\r\n" +
 		"--rel--"
 	c := newTestServer(t, standardMailboxes())
 	uid := stored(t, c, mixed(related, pdfPart()))
 
-	got := listed(t, c, uid)
-	if len(got) != 1 || got["2"].Filename != "Facture décembre.pdf" {
-		t.Errorf("Fetch(...).Attachments = %+v, want the PDF alone", got)
+	msg, err := c.Fetch(context.Background(), "INBOX", uid)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
 	}
-	if _, _, err := c.Attachment(context.Background(), "INBOX", uid, "1.1", testLimit); !errors.Is(err, ErrNoSuchAttachment) {
-		t.Errorf("Attachment(1.1) error = %v, want ErrNoSuchAttachment", err)
+	if len(msg.Attachments) != 1 || msg.Attachments[0].Part != "2" {
+		t.Errorf("Fetch(...).Attachments = %+v, want the PDF alone", msg.Attachments)
+	}
+	if !reflect.DeepEqual(msg.InlineImages, map[string]string{"logo@acme": "1.1"}) {
+		t.Errorf("Fetch(...).InlineImages = %v, want the logo under 1.1", msg.InlineImages)
+	}
+	if _, data, err := c.Attachment(context.Background(), "INBOX", uid, "1.1", testLimit); err != nil || string(data) != "PNG" {
+		t.Errorf("Attachment(1.1) = %q, %v, want the logo", data, err)
 	}
 }
 
@@ -639,7 +664,7 @@ func TestReadFileStopsAtTheLimit(t *testing.T) {
 	w := quotedprintable.NewWriter(&qp)
 	_, _ = w.Write(data)
 	_ = w.Close()
-	header := parseHeader([]byte("Content-Type: text/csv; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"))
+	header, _ := parseHeader([]byte("Content-Type: text/csv; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"))
 
 	got, err := readFile(header, bytes.NewReader(qp.Bytes()), int64(len(data)))
 	if err != nil || !bytes.Equal(got, data) {
@@ -648,7 +673,7 @@ func TestReadFileStopsAtTheLimit(t *testing.T) {
 	if got, err := readFile(header, bytes.NewReader(qp.Bytes()), int64(len(data))-1); !errors.Is(err, ErrAttachmentTooLarge) || got != nil {
 		t.Errorf("readFile(limit = its size - 1) = %d bytes, %v, want ErrAttachmentTooLarge and nothing", len(got), err)
 	}
-	broken := parseHeader([]byte("Content-Transfer-Encoding: base64\r\n\r\n"))
+	broken, _ := parseHeader([]byte("Content-Transfer-Encoding: base64\r\n\r\n"))
 	if got, err := readFile(broken, strings.NewReader("JVBERi0x!!!"), testLimit); err == nil || errors.Is(err, ErrAttachmentTooLarge) || got != nil {
 		t.Errorf("readFile(broken base64) = %d bytes, %v, want a decoding error", len(got), err)
 	}

@@ -213,7 +213,7 @@ in its package doc:
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `IMAPIsStarred`, `Folder*`, `Flag*`, and `MatchLabel` / `LabelKey`: a label the model proposed matched with one the user has (case, accents and a plural aside, never a part of a name) |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 | `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
-| `attachment` | Which parts of a mail the reader lists as its files, and under which name, on both transports: a named part, an unnamed one declared an attachment (`piece-jointe`) or a forwarded mail (`message.eml`), except an image the mail's HTML shows through `cid:`. And the cleaning of a file name (no directory, control or bidirectional control character), which the list and the download's `Content-Disposition` share. `ListedWithoutHTML` is the same rule read off a `BODYSTRUCTURE`, for the filter "Pièces jointes" (`imap/state.go`): an inline part with a `Content-ID` is taken for a picture the HTML draws | `Listed`, `ListedWithoutHTML`, `Part`, `ShownBy`, `Shown`, `SafeName`, `DispositionType`, `Unnamed`, `UnnamedMail` |
+| `attachment` | Which parts of a mail the reader lists as its files, and under which name, on both transports: a named part, an unnamed one declared an attachment (`piece-jointe`) or a forwarded mail (`message.eml`), except an image the mail's HTML shows through `cid:`. And the cleaning of a file name (no directory, control or bidirectional control character), which the list and the download's `Content-Disposition` share. `InlineImage` is a picture the HTML draws through `cid:` (raster types only, never SVG), which the reader returns as `inlineImages` and the download serves so the screen can draw it. `ListedWithoutHTML` is the rule read off a `BODYSTRUCTURE`, for the filter "Pièces jointes" (`imap/state.go`): an inline image with a `Content-ID` is taken for a picture the HTML draws; `WithoutHTMLVersion` is stored with each count, and a count made with another version is made again by the sync | `Listed`, `InlineImage`, `ListedWithoutHTML`, `WithoutHTMLVersion`, `Part`, `ShownBy`, `Shown`, `SafeName`, `DispositionType`, `Unnamed`, `UnnamedMail` |
 
 The outbound clients and primitives:
 
@@ -566,7 +566,11 @@ as a side effect of another change.
 - `track(event, props)` from `lib/analytics.js` for product events. Properties must carry
   no personal data: no email address, no sender, no subject. Counts and enum labels only.
   Never add a manual pageview: the tracker hooks the History API already.
-- Untrusted HTML (email bodies) goes through dompurify before rendering.
+- Untrusted HTML (email bodies) goes through dompurify before rendering. The
+  reader then puts object URLs in place of the `src="cid:..."` the server names
+  in `inlineImages` (pictures downloaded through the authenticated route), and
+  revokes them when it leaves the message: after the sanitizing, so nothing the
+  sender wrote picks an image's URL.
 
 ### Naming
 

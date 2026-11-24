@@ -102,3 +102,16 @@ func TestReadPartsDoesNotAskAgainForAMailThatIsGone(t *testing.T) {
 		t.Errorf("readParts sent %d FETCH commands (%d asking for sizes) for a mail that is not there, want 1", gotAll, got)
 	}
 }
+
+// A MIME header that does not read is empty, with the error readParts logs
+// under the message's UID and the part's number.
+func TestParseHeader(t *testing.T) {
+	header, err := parseHeader([]byte("Content-Type: image/png\r\nContent-ID: <logo@x>\r\n\r\n"))
+	if err != nil || header.Get("Content-Id") != "<logo@x>" {
+		t.Errorf("parseHeader(a header) = %v, %v, want it read", header.Header, err)
+	}
+	header, err = parseHeader([]byte("pas un en-tête\r\n\r\n"))
+	if err == nil || header.Get("Content-Type") != "" {
+		t.Errorf("parseHeader(no header) = %v, %v, want an empty header and an error", header.Header, err)
+	}
+}

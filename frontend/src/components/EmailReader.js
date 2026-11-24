@@ -45,11 +45,33 @@ const formatBytes = (n) => {
   return `${(n / (1024 * 1024)).toFixed(1)} Mo`;
 };
 
+// The pictures a mail's HTML draws through cid: URLs name a part of the mail,
+// which no browser resolves. The server says which part each cid is
+// (inlineImages); the reader downloads them through the authenticated route
+// and puts object URLs in their place. cidKey keys a cid: reference the way
+// the server keys it: unescaped, without angle brackets, in lower case.
+const cidKey = (ref) => {
+  let id = ref;
+  try {
+    id = decodeURIComponent(ref);
+  } catch {
+    id = ref;
+  }
+  return id.trim().replace(/^</, '').replace(/>$/, '').trim().toLowerCase();
+};
+
+// Only pictures a browser shows without running anything, the types the
+// server serves for this: anything else is not put in the text, an SVG least
+// of all, a document that can carry script.
+const DRAWN_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/bmp']);
+
 // Sanitising is not optional here: the body is attacker-controlled HTML. On top
 // of DOMPurify's default stripping, every surviving link is forced to open in a
 // new tab with rel="noopener" so a marketing email can never navigate the app
-// away from itself or reach back through window.opener.
-function sanitize(html) {
+// away from itself or reach back through window.opener. drawn maps a cid to
+// the object URL of the picture downloaded for it, put in place after the
+// sanitising, so nothing the sender wrote decides what URL an image gets.
+function sanitize(html, drawn = {}) {
   const clean = DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'object', 'embed'],
@@ -65,6 +87,11 @@ function sanitize(html) {
   doc.querySelectorAll('img').forEach((img) => {
     img.setAttribute('loading', 'lazy');
     img.setAttribute('referrerpolicy', 'no-referrer');
+    const src = img.getAttribute('src') || '';
+    if (/^cid:/i.test(src)) {
+      const url = drawn[cidKey(src.slice(4))];
+      if (url) img.setAttribute('src', url);
+    }
   });
   return doc.body.firstChild?.innerHTML || '';
 }
@@ -108,6 +135,7 @@ function EmailReader({
   const [loadError, setLoadError] = useState('');
   const [downloading, setDownloading] = useState(null);
   const [labelsById, setLabelsById] = useState(null);
+  const [drawn, setDrawn] = useState({});
   const loadSeqRef = useRef(0);
   // Held in a ref so loadMessage can stay a stable callback.
   const onReadRef = useRef(onRead);
@@ -160,6 +188,34 @@ function EmailReader({
       loadSeqRef.current += 1;
     };
   }, [messageId, loadMessage]);
+
+  // The pictures the HTML draws: downloaded once the message is loaded, each
+  // into an object URL that the text shows in place of its cid:, and freed
+  // when the reader leaves the message (or the message is loaded again). A
+  // picture that does not come stays as the mail wrote it.
+  const inlineImages = full?.inlineImages;
+  useEffect(() => {
+    setDrawn({});
+    const entries = Object.entries(inlineImages || {});
+    if (!messageId || entries.length === 0) return undefined;
+    let left = false;
+    const urls = [];
+    entries.forEach(([cid, id]) => {
+      emailService
+        .downloadAttachment(messageId, id)
+        .then(({ data }) => {
+          if (left || !DRAWN_TYPES.has(String(data?.type || '').toLowerCase())) return;
+          const url = URL.createObjectURL(data);
+          urls.push(url);
+          setDrawn((prev) => ({ ...prev, [cid]: url }));
+        })
+        .catch(() => {});
+    });
+    return () => {
+      left = true;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [messageId, inlineImages]);
 
   // Label names are per-account and rarely change; fetch once for the session.
   // A mailbox without labels (IMAP): nothing to ask.
@@ -249,7 +305,7 @@ function EmailReader({
   };
 
   const name = extractName(merged.from) || 'Expéditeur inconnu';
-  const html = full?.bodyHtml ? sanitize(full.bodyHtml) : null;
+  const html = full?.bodyHtml ? sanitize(full.bodyHtml, drawn) : null;
   const text = full?.body || '';
   const visibleLabels = (merged.labelIds || []).filter((l) => !SYSTEM_LABELS.has(l));
 

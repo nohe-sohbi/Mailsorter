@@ -467,6 +467,7 @@ to display.
   "attachments": [
     { "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481, "attachmentId": "1" }
   ],
+  "inlineImages": { "logo@acme.com": "0.2" },
   "labelIds": ["INBOX"],
   "isRead": true
 }
@@ -480,9 +481,11 @@ be absent.
 else `name` of `Content-Type`) is a file; so is an unnamed part declared
 `Content-Disposition: attachment`, listed as `piece-jointe`, and an unnamed
 forwarded mail (`message/rfc822`), listed as `message.eml`. The one exception
-is an image the HTML in `bodyHtml` shows through a `cid:` URL, whatever its
-disposition. A `Content-ID`, an `X-Attachment-Id` or an inline disposition
-alone hides nothing. `filename` is cleaned before it is sent: no directory,
+is an image without a name that the HTML in `bodyHtml` shows through a `cid:`
+URL, whatever its disposition: the reader draws it in the text (see
+`inlineImages`), and a newsletter's pictures do not become chips named after
+nothing. A named one is listed too, so it can be saved. A `Content-ID`, an
+`X-Attachment-Id` or an inline disposition alone hides nothing. `filename` is cleaned before it is sent: no directory,
 no control character, no quote, no bidirectional control (U+061C, U+200E,
 U+200F, U+202A to U+202E, U+2066 to U+2069), the same name the download's
 `Content-Disposition` carries.
@@ -493,13 +496,24 @@ disposition: the files attached from Gmail's web interface (each one carries a
 `Content-ID` and an `X-Attachment-Id`), a PDF Apple Mail sends inline and an
 image no HTML shows were missing from the list, and are now in it.
 
+`inlineImages` maps the `cid:` of each picture the HTML draws to the id the
+download route serves it under, on both transports (`attachment.InlineImage`):
+a part of a type a browser draws without running anything (PNG, JPEG, GIF,
+WebP, BMP; never SVG, a document that can carry script) whose `Content-ID` a
+`cid:` URL of the HTML points at. The key is the `Content-ID` as the URL
+names it: %-unescaped, without its angle brackets, in lower case. No browser
+resolves `cid:`, so the SPA downloads each picture through the route below,
+puts an object URL in place of the `src="cid:..."` after the HTML is
+sanitized, and frees the object URLs when the reader leaves the message.
+
 `attachmentId` is what the download route below takes back: the file's part
 number in the message, on both transports (`"1"`, `"0.2"` over the Gmail API,
 `"2"`, `"1.3"` over IMAP). Over the Gmail API it is not Gmail's own
 attachment id, which nothing promises to stay the same from one
 `messages.get` to the next; a message that is a single file, which Gmail
 gives no part number, has `"payload"`. A Gmail part whose data travels inline
-in the message payload has no `attachmentId` and is not downloadable.
+in the message payload is downloadable too: the route serves it from the
+message.
 
 On a mailbox reached over IMAP the fetch PEEKS: it reads the message without
 setting `\Seen`, so opening a message stays distinct from reading it and only
@@ -548,12 +562,15 @@ a Gmail attachment id sent by a screen opened before part numbers were handed
 out, is served only while the fresh copy still gives a file that id.
 
 Only a part of the named message may be served: an id the message does not
-carry is a 404, never a passthrough to Gmail.
+carry is a 404, never a passthrough to Gmail. The parts served are the files
+the reader lists and the pictures its HTML draws (`inlineImages`), on both
+transports: a picture of another type, or one the HTML does not point at, is
+not served unless it is a listed file.
 
 Over IMAP the file is inside the message. The route reads the message the
 way the reader does (its description, the headers of its parts, its HTML and
 the parts' decoded sizes, never a file) and serves the part only when the
-reader's list has a file under `attachmentId`. A file over 30 MiB once
+reader's list has a file under `attachmentId`, or `inlineImages` a picture. A file over 30 MiB once
 decoded is a 413 before a byte of it is read: on the server's measure
 (`BINARY.SIZE`), or, without one, when its stored size cannot fit. Then it
 fetches that part alone with `BODY.PEEK[part]` (saving a file does not mark the
@@ -580,9 +597,9 @@ SPA downloads through the API client and hands the browser an object URL.
 **Error Responses:**
 - `400 Bad Request`: Missing message or attachment id
 - `401 Unauthorized`: Missing or expired session
-- `404 Not Found`: This message carries no such attachment ("Pièce jointe
-  introuvable" over the Gmail API, "Cette pièce jointe est introuvable dans ce
-  mail." over IMAP), or the message is no longer in the mailbox, moved or
+- `404 Not Found`: This message carries no such attachment ("Cette pièce
+  jointe est introuvable dans ce mail.", on both transports), or the message
+  is no longer in the mailbox, moved or
   deleted from another mail client since the list showed it ("Ce mail n'est
   plus dans votre boîte : la pièce jointe ne peut plus être téléchargée.", on
   both transports)
@@ -942,13 +959,17 @@ Two consequences worth knowing:
   which the next syncs complete. A message carries a file when one of its
   parts is a file by the rule the reader lists files with (see
   `GET /api/emails/{id}`), read without the HTML, which the structure does not
-  carry: a part with a `Content-ID` that is not declared
-  `Content-Disposition: attachment` is taken for a picture the HTML draws
+  carry: an image with a `Content-ID` that is not declared
+  `Content-Disposition: attachment` is taken for a picture the HTML draws, and
+  does not count, named or not: the paper clip a mail program shows
   (`attachment.ListedWithoutHTML`). Two kinds of image are decided otherwise
-  than in the reader, the only ones the HTML tells apart: an image with a
-  `Content-ID`, not declared an attachment, that the HTML does not draw (the
-  reader lists it, the filter does not count it), and an image declared an
-  attachment that the HTML draws (the reader hides it, the filter counts it).
+  than in the reader: a named image with a `Content-ID`, not declared an
+  attachment (the reader lists it, to save it, whether the HTML draws it or
+  not; the filter does not count it), and an unnamed image declared an
+  attachment that the HTML draws (the reader draws it and lists no chip; the
+  filter counts it). The count is stored with the version of that rule
+  (`hasAttachmentsRule`, `attachment.WithoutHTMLVersion`): a message counted
+  with an older one, or before the version was kept, is read again, once.
   Until it is read, a message does not match `has:attachment`. A message whose structure
   the server describes in a way that cannot be parsed, even alone (the batch
   it is in fails, the connection is opened again and the batch read by

@@ -66,10 +66,11 @@ func TestAttachmentContentType(t *testing.T) {
 	}
 }
 
-// listAttachments must publish an id the download can take back (the part
-// number, never Gmail's own handle, which is kept for the download alone) and
-// must keep ignoring the inline images a newsletter references.
-func TestListAttachmentsExposesAttachmentID(t *testing.T) {
+// The reader must publish an id the download can take back (the part
+// number, never Gmail's own handle, which is kept for the download alone),
+// keep the unnamed images a newsletter draws out of the list, and say where
+// they go in the text.
+func TestReadGmailPartsExposesIDs(t *testing.T) {
 	msg := &gmailapi.Message{Payload: &gmailapi.MessagePart{
 		MimeType: "multipart/mixed",
 		Parts: []*gmailapi.MessagePart{
@@ -86,12 +87,12 @@ func TestListAttachmentsExposesAttachmentID(t *testing.T) {
 			},
 			{
 				PartId:   "2",
-				Filename: "logo.png",
 				MimeType: "image/png",
 				Headers:  []*gmailapi.MessagePartHeader{{Name: "Content-ID", Value: "<logo>"}},
 				Body:     &gmailapi.MessagePartBody{AttachmentId: "att-2", Size: 10},
 			},
 			{
+				// Its bytes travel with the message: served from there.
 				PartId:   "3",
 				Filename: "petit.txt",
 				MimeType: "text/plain",
@@ -101,29 +102,43 @@ func TestListAttachmentsExposesAttachmentID(t *testing.T) {
 		},
 	}}
 
-	got := listAttachments(msg, `<img src="cid:logo">`)
+	parts := readGmailParts(msg, `<img src="cid:logo">`)
+	got := parts.files
 	if len(got) != 2 {
-		t.Fatalf("listAttachments returned %d parts, want the two real attachments: %#v", len(got), got)
+		t.Fatalf("readGmailParts listed %d parts, want the two files: %#v", len(got), got)
 	}
 	if got[0].AttachmentID != "1" || got[0].gmailID != "att-1" || got[0].Size != 2048 {
 		t.Errorf("attachment = %#v, want id 1 (Gmail's att-1 kept aside) and size 2048", got[0])
 	}
-	// Its bytes travel in the payload: nothing to download, so no id.
-	if got[1].Filename != "petit.txt" || got[1].AttachmentID != "" {
-		t.Errorf("attachment = %#v, want petit.txt without an id", got[1])
+	if got[1].Filename != "petit.txt" || got[1].AttachmentID != "3" || got[1].inlineData != "eA" {
+		t.Errorf("attachment = %#v, want petit.txt under 3, its bytes from the message", got[1])
+	}
+	if images := parts.inlineImages(); !reflect.DeepEqual(images, map[string]string{"logo": "2"}) {
+		t.Errorf("inline images = %v, want the logo under 2", images)
+	}
+	if body, _ := json.Marshal(messageView{InlineImages: parts.inlineImages()}); !strings.Contains(string(body), `"inlineImages":{"logo":"2"}`) {
+		t.Errorf("the reader sends %s, want the screen's key inlineImages", body)
 	}
 	if body, _ := json.Marshal(got[0]); strings.Contains(string(body), "att-1") {
 		t.Errorf("the reader sends %s: Gmail's handle must not reach the screen", body)
 	}
 
-	for _, id := range []string{"2", "att-2"} {
-		if _, ok := findAttachment(got, id); ok {
-			t.Errorf("findAttachment(%q) found an inline part: it must not be downloadable", id)
-		}
+	// The logo is served by its number, for the screen; never by Gmail's
+	// handle, which no reader ever handed out for it.
+	if a, ok := parts.find("2"); !ok || a.gmailID != "att-2" {
+		t.Errorf("find(\"2\") = %#v, %v, want the logo", a, ok)
+	}
+	if _, ok := parts.find("att-2"); ok {
+		t.Error("find(\"att-2\") found the logo by Gmail's handle")
 	}
 	for _, id := range []string{"1", "att-1"} {
-		if a, ok := findAttachment(got, id); !ok || a.Filename != "facture.pdf" {
-			t.Errorf("findAttachment(%q) = %#v, %v, want facture.pdf", id, a, ok)
+		if a, ok := parts.find(id); !ok || a.Filename != "facture.pdf" {
+			t.Errorf("find(%q) = %#v, %v, want facture.pdf", id, a, ok)
+		}
+	}
+	for _, id := range []string{"0", "9", ""} {
+		if a, ok := parts.find(id); ok {
+			t.Errorf("find(%q) = %#v, want nothing", id, a)
 		}
 	}
 }
@@ -174,7 +189,8 @@ func TestAttachmentRouteDoesNotShadowMessageRoutes(t *testing.T) {
 // Over the Gmail API the files follow the rule IMAP follows
 // (attachment.Listed). It used to hide every part with a Content-ID, an
 // X-Attachment-Id or an inline disposition: the file attached from Gmail's
-// web interface and the PDF Apple Mail sends inline were not shown.
+// web interface and the PDF Apple Mail sends inline were not shown. A named
+// image the HTML draws is listed as well, to be saved.
 func TestListAttachmentsFollowsTheSharedRule(t *testing.T) {
 	header := func(name, value string) *gmailapi.MessagePartHeader {
 		return &gmailapi.MessagePartHeader{Name: name, Value: value}
@@ -205,12 +221,14 @@ func TestListAttachmentsFollowsTheSharedRule(t *testing.T) {
 		},
 	}}
 
-	got := listAttachments(msg, `<p>Bonjour</p><img src="cid:logo@acme">`)
+	got := readGmailParts(msg, `<p>Bonjour</p><img src="cid:logo@acme">`).files
 	var names []string
 	for _, a := range got {
 		names = append(names, a.Filename+" ("+a.AttachmentID+")")
 	}
 	want := []string{
+		// Drawn in the text, and listed so it can be saved: it has a name.
+		"logo.png (logo)",
 		"facture.pdf (gmail-web)",
 		"devis.pdf (apple-inline)",
 		"photo.jpg (photo)",

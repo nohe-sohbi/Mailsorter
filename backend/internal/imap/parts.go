@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 
@@ -63,20 +64,42 @@ type contents struct {
 	plain, html string
 	// files are the parts the reader lists as files, in the message's order.
 	files []Attachment
-	// leafOf is the leaf of each file, by part number.
+	// images are the pictures the HTML draws through cid:, by cid: the parts
+	// the screen shows in the text (attachment.InlineImage).
+	images map[string]Attachment
+	// leafOf is the leaf of each file and of each image, by part number.
 	leafOf map[string]leaf
 	// skipped names the files left out of the list, and why.
 	skipped error
 }
 
-// file is the file listed under part number, and its leaf.
-func (c *contents) file(number string) (Attachment, leaf, bool) {
+// servable is the part the download serves under part number, and its leaf:
+// a file the reader lists, or a picture the HTML draws.
+func (c *contents) servable(number string) (Attachment, leaf, bool) {
 	for _, f := range c.files {
 		if f.Part == number {
 			return f, c.leafOf[number], true
 		}
 	}
+	for _, img := range c.images {
+		if img.Part == number {
+			return img, c.leafOf[number], true
+		}
+	}
 	return Attachment{}, leaf{}, false
+}
+
+// inlineImages is the cid of each picture the HTML draws, to the part number
+// the screen downloads it under.
+func (c *contents) inlineImages() map[string]string {
+	if len(c.images) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(c.images))
+	for cid, img := range c.images {
+		out[cid] = img.Part
+	}
+	return out
 }
 
 // readParts reads, of the message uid in folder that structure describes,
@@ -126,14 +149,20 @@ func (c *Client) readParts(folder, uid string, structure imapv2.BodyStructure, w
 	}
 
 	for i := range leaves {
-		leaves[i].header = parseHeader(msg.FindBodySection(headers[i]))
+		header, err := parseHeader(msg.FindBodySection(headers[i]))
+		if err != nil {
+			// The part then says nothing about itself and is no file: the
+			// mail still opens, with the rest.
+			log.Printf("imap: message uid %s in %q, part %s: its MIME header does not read: %v", uid, folder, leaves[i].number, err)
+		}
+		leaves[i].header = header
 		if n, ok := msg.FindBinarySectionSize(leaves[i].path); ok {
 			leaves[i].size, leaves[i].exact = int64(n), true
 		} else {
 			leaves[i].size = estimatedSize(int64(leaves[i].desc.Size), leaves[i].desc.Encoding)
 		}
 	}
-	out := &contents{leafOf: map[string]leaf{}}
+	out := &contents{leafOf: map[string]leaf{}, images: map[string]Attachment{}}
 	if plainSection != nil {
 		out.plain = decodeText(leaves[plainAt].header, msg.FindBodySection(plainSection))
 	}
@@ -145,6 +174,12 @@ func (c *Client) readParts(folder, uid string, structure imapv2.BodyStructure, w
 	var skipped []error
 	for _, l := range leaves {
 		part := partOf(l.header)
+		if cid, ok := attachment.InlineImage(part, shown); ok {
+			if _, err := transferDecoded(l.header, strings.NewReader("")); err == nil {
+				out.images[cid] = Attachment{Part: l.number, Filename: attachment.SafeName(part.Filename, attachment.Unnamed), MimeType: part.MediaType, Size: l.size}
+				out.leafOf[l.number] = l
+			}
+		}
 		name, ok := attachment.Listed(part, shown)
 		if !ok {
 			continue
@@ -232,13 +267,14 @@ func partNumber(path []int) string {
 }
 
 // parseHeader reads a MIME header as a section returns it. One that does not
-// parse is empty: the part then says nothing about itself, and is no file.
-func parseHeader(raw []byte) gomessage.Header {
+// parse is empty, with the error: the part then says nothing about itself,
+// and is no file.
+func parseHeader(raw []byte) (gomessage.Header, error) {
 	h, err := textproto.ReadHeader(bufio.NewReader(bytes.NewReader(raw)))
 	if err != nil {
-		return gomessage.Header{}
+		return gomessage.Header{}, err
 	}
-	return gomessage.Header{Header: h}
+	return gomessage.Header{Header: h}, nil
 }
 
 // decodeText is a text part read from raw, its stored bytes, decoded from its

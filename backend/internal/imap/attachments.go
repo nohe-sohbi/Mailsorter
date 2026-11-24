@@ -68,7 +68,8 @@ type Attachment struct {
 // longer in folder is ErrMessageGone.
 //
 // The message is read the way the reader reads it (readParts), so the part
-// number is served only when the reader lists a file under it. A file the
+// number is served only when the reader lists a file under it, or a picture
+// the HTML draws (the screen downloads those to show them in the text). A file the
 // server measures over limit is refused before a byte of it is read. Then the
 // file alone is fetched, as it arrives rather than into memory, through the
 // limit: no more than limit+1 bytes of it are ever held.
@@ -102,7 +103,7 @@ func (c *Client) attachment(folder, uid, part string, limit int64) (Attachment, 
 	if err != nil {
 		return Attachment{}, nil, err
 	}
-	file, l, ok := inside.file(part)
+	file, l, ok := inside.servable(part)
 	if !ok {
 		return Attachment{}, nil, ErrNoSuchAttachment
 	}

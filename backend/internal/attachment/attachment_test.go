@@ -55,27 +55,36 @@ func TestListed(t *testing.T) {
 			wantName: "facture.pdf",
 		},
 		{
-			name: "an image the HTML shows",
-			part: Part{Filename: "logo.png", MediaType: "image/png", Disposition: "inline", ContentID: "<logo@acme>"},
+			// Drawn in the text, and listed so it can be saved.
+			name:     "a named image the HTML shows",
+			part:     Part{Filename: "logo.png", MediaType: "image/png", Disposition: "inline", ContentID: "<logo@acme>"},
+			wantOK:   true,
+			wantName: "logo.png",
 		},
 		{
-			name: "an image the HTML shows, without a disposition",
-			part: Part{Filename: "logo.png", MediaType: "image/png", ContentID: "<logo@acme>"},
-		},
-		{
-			name: "an image the HTML shows, declared an attachment",
-			part: Part{Filename: "pied.png", MediaType: "image/png", Disposition: "attachment", ContentID: "<pied@acme>"},
-		},
-		{
-			name: "an image the HTML shows as a CSS background",
-			part: Part{Filename: "fond.jpg", MediaType: "image/jpeg", ContentID: "<fond@acme>"},
-		},
-		{
-			name: "an image the HTML shows, its reference %-escaped and in another case",
-			part: Part{Filename: "banniere.png", MediaType: "IMAGE/PNG", ContentID: "<banniere@acme>"},
+			name:     "a named image the HTML shows, declared an attachment",
+			part:     Part{Filename: "pied.png", MediaType: "image/png", Disposition: "attachment", ContentID: "<pied@acme>"},
+			wantOK:   true,
+			wantName: "pied.png",
 		},
 		{
 			name: "an unnamed image the HTML shows",
+			part: Part{MediaType: "image/png", Disposition: "inline", ContentID: "<logo@acme>"},
+		},
+		{
+			name: "an unnamed image the HTML shows, without a disposition",
+			part: Part{MediaType: "image/png", ContentID: "<logo@acme>"},
+		},
+		{
+			name: "an unnamed image the HTML shows as a CSS background",
+			part: Part{MediaType: "image/jpeg", ContentID: "<fond@acme>"},
+		},
+		{
+			name: "an unnamed image the HTML shows, its reference %-escaped and in another case",
+			part: Part{MediaType: "IMAGE/PNG", ContentID: "<banniere@acme>"},
+		},
+		{
+			name: "an unnamed image the HTML shows, declared an attachment",
 			part: Part{MediaType: "image/gif", Disposition: "attachment", ContentID: "<logo@acme>"},
 		},
 		{
@@ -172,7 +181,7 @@ func TestListedWithoutHTML(t *testing.T) {
 }
 
 // The filter and the reader agree on every part but the two kinds of image
-// only the HTML tells apart.
+// written in ListedWithoutHTML's comment.
 func TestListedWithoutHTMLAgreesWithTheReader(t *testing.T) {
 	parts := []Part{
 		{MediaType: "text/plain"},
@@ -181,26 +190,54 @@ func TestListedWithoutHTMLAgreesWithTheReader(t *testing.T) {
 		{Filename: "devis.pdf", MediaType: "application/pdf", Disposition: "inline", ContentID: "<logo@x>"},
 		{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: "inline"},
 		{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: "attachment", ContentID: "<f_2>"},
-		{Filename: "logo.png", MediaType: "image/png", Disposition: "inline", ContentID: "<logo@x>"},
+		{MediaType: "image/png", Disposition: "inline", ContentID: "<logo@x>"},
 		{MediaType: "message/rfc822"},
 		{MediaType: "application/octet-stream", Disposition: "attachment"},
 	}
-	// An HTML that shows the logo, as the guess assumes: no difference.
-	shown := ShownBy(`<img src="cid:logo@x">`)
-	for _, p := range parts {
-		_, reader := Listed(p, shown)
-		if filter := ListedWithoutHTML(p); filter != reader {
-			t.Errorf("for %+v the filter says %v and the reader %v", p, filter, reader)
+	for _, html := range []string{"", `<img src="cid:logo@x">`} {
+		shown := ShownBy(html)
+		for _, p := range parts {
+			_, reader := Listed(p, shown)
+			if filter := ListedWithoutHTML(p); filter != reader {
+				t.Errorf("for %+v (HTML %q) the filter says %v and the reader %v", p, html, filter, reader)
+			}
 		}
 	}
-	// The two differences, written in ListedWithoutHTML's comment.
-	unreferenced := Part{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: "inline", ContentID: "<photo@iphone>"}
-	if _, reader := Listed(unreferenced, ShownBy("<p>x</p>")); !reader || ListedWithoutHTML(unreferenced) {
-		t.Errorf("an inline image with a Content-ID the HTML does not show: reader %v, filter %v, want true and false", reader, ListedWithoutHTML(unreferenced))
+	// The two differences.
+	for _, html := range []string{"<p>x</p>", `<img src="cid:logo@x">`} {
+		named := Part{Filename: "logo.png", MediaType: "image/png", Disposition: "inline", ContentID: "<logo@x>"}
+		if _, reader := Listed(named, ShownBy(html)); !reader || ListedWithoutHTML(named) {
+			t.Errorf("a named image with a Content-ID, not declared an attachment (HTML %q): reader %v, filter %v, want true and false", html, reader, ListedWithoutHTML(named))
+		}
 	}
-	referenced := Part{Filename: "pied.png", MediaType: "image/png", Disposition: "attachment", ContentID: "<pied@x>"}
-	if _, reader := Listed(referenced, ShownBy(`<img src="cid:pied@x">`)); reader || !ListedWithoutHTML(referenced) {
-		t.Errorf("an image declared an attachment that the HTML shows: reader %v, filter %v, want false and true", reader, ListedWithoutHTML(referenced))
+	drawn := Part{MediaType: "image/png", Disposition: "attachment", ContentID: "<pied@x>"}
+	if _, reader := Listed(drawn, ShownBy(`<img src="cid:pied@x">`)); reader || !ListedWithoutHTML(drawn) {
+		t.Errorf("an unnamed image declared an attachment that the HTML shows: reader %v, filter %v, want false and true", reader, ListedWithoutHTML(drawn))
+	}
+}
+
+// The pictures the screen draws in the text: an image type a browser shows
+// without running anything, that the HTML points at.
+func TestInlineImage(t *testing.T) {
+	shown := ShownBy(`<img src="cid:logo@acme"><img src="cid:Photo%40iPhone"><img src="cid:carte@acme"><img src="cid:devis@acme">`)
+	cases := []struct {
+		name    string
+		part    Part
+		wantCID string
+		wantOK  bool
+	}{
+		{"a logo", Part{MediaType: "image/png", ContentID: "<logo@acme>"}, "logo@acme", true},
+		{"a named photo, declared an attachment", Part{Filename: "IMG_0001.JPG", MediaType: "image/jpeg", Disposition: "attachment", ContentID: "<photo@iphone>"}, "photo@iphone", true},
+		{"an image the HTML does not point at", Part{MediaType: "image/png", ContentID: "<autre@acme>"}, "", false},
+		{"an image without a Content-ID", Part{Filename: "photo.jpg", MediaType: "image/jpeg"}, "", false},
+		{"an SVG, which can carry script", Part{MediaType: "image/svg+xml", ContentID: "<carte@acme>"}, "", false},
+		{"a PDF the HTML points at is no picture", Part{MediaType: "application/pdf", ContentID: "<devis@acme>"}, "", false},
+	}
+	for _, tc := range cases {
+		cid, ok := InlineImage(tc.part, shown)
+		if cid != tc.wantCID || ok != tc.wantOK {
+			t.Errorf("InlineImage(%s) = %q, %v, want %q, %v", tc.name, cid, ok, tc.wantCID, tc.wantOK)
+		}
 	}
 }
 

@@ -58,9 +58,11 @@ type Part struct {
 //     else. Any other part without a name is not listed: it is the text of
 //     the mail in one form or another, and a chip named after nothing would
 //     only be noise.
-//   - Except an image the mail's HTML shows through a cid: URL, whatever its
-//     disposition: listing those turns a newsletter into a row of logo.png
-//     chips. A Content-ID alone hides nothing, and neither does an
+//   - Except an image the mail's HTML shows through a cid: URL without a name
+//     of its own, whatever its disposition: the screen draws it in the text
+//     (InlineImage), and listing those turns a newsletter into a row of
+//     chips named after nothing. A named one is listed too, so it can be
+//     saved. A Content-ID alone hides nothing, and neither does an
 //     X-Attachment-Id or an inline disposition: Gmail's web interface puts a
 //     Content-ID on every file it attaches, Apple Mail sends a PDF inline,
 //     and hiding them hid the very file the mail was sent for.
@@ -78,7 +80,7 @@ func Listed(p Part, shown Shown) (string, bool) {
 		return "", false
 	case p.Filename == "" && DispositionType(p.Disposition) != "attachment" && !forwarded:
 		return "", false
-	case strings.HasPrefix(mediaType, "image/") && shown.Has(p.ContentID):
+	case strings.HasPrefix(mediaType, "image/") && p.Filename == "" && shown.Has(p.ContentID):
 		return "", false
 	}
 	fallback := Unnamed
@@ -88,28 +90,62 @@ func Listed(p Part, shown Shown) (string, bool) {
 	return SafeName(p.Filename, fallback), true
 }
 
+// WithoutHTMLVersion numbers the rule ListedWithoutHTML follows. A count
+// stored with an older one, or with none, was made by another rule and is
+// made again (the sync's completeInboxStructure). Raise it with any change to
+// what ListedWithoutHTML counts.
+//
+//   - 1, never written: a part marked attachment, or a named file that is
+//     neither text nor has a Content-ID.
+//   - 2: the reader's rule, read without the HTML.
+const WithoutHTMLVersion = 2
+
 // ListedWithoutHTML says whether p counts as a file of its mail when the
 // mail's HTML is not read: what the filter "Pièces jointes" decides from the
 // server's description of a message (its BODYSTRUCTURE), which lists the
-// parts but not what the HTML points at.
+// parts but not what the HTML points at. It is the paper clip a mail program
+// shows.
 //
-// It is Listed, with one guess in place of the HTML: a part with a
+// It is Listed, with one guess in place of the HTML: an image with a
 // Content-ID that its sender did not declare an attachment (inline, or no
-// disposition at all) is taken for one the HTML shows. So the filter agrees
-// with the reader on every part but two kinds of image, which only the HTML
-// tells apart: an image with a Content-ID, not declared an attachment, that
-// the HTML does not point at (the reader lists it, the filter does not count
-// it), and an image declared an attachment that the HTML does point at (the
-// reader hides it, the filter counts it).
+// disposition at all) is taken for a picture the HTML draws, and does not
+// count, named or not. So the filter agrees with the reader on every part
+// but two kinds of image: a named image with a Content-ID, not declared an
+// attachment (the reader lists it, to save it, whether the HTML draws it or
+// not; the filter does not count it), and an unnamed image declared an
+// attachment that the HTML draws (the reader draws it in the text and lists
+// no chip for it; the filter counts it).
 func ListedWithoutHTML(p Part) bool {
-	shown := Shown{}
-	if DispositionType(p.Disposition) != "attachment" {
-		if id := contentID(p.ContentID); id != "" {
-			shown[id] = true
-		}
+	mediaType := strings.ToLower(strings.TrimSpace(p.MediaType))
+	if strings.HasPrefix(mediaType, "image/") && contentID(p.ContentID) != "" && DispositionType(p.Disposition) != "attachment" {
+		return false
 	}
-	_, ok := Listed(p, shown)
+	_, ok := Listed(p, nil)
 	return ok
+}
+
+// drawnTypes are the images the screen draws in the text of a mail: the
+// pictures a browser shows without running anything. Not SVG, a document
+// that can carry script, which the screen would hand to the page.
+var drawnTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/jpg":  true,
+	"image/gif":  true,
+	"image/webp": true,
+	"image/bmp":  true,
+}
+
+// InlineImage says whether p is a picture the mail's HTML draws through a
+// cid: URL, which the screen shows in the text, and under which cid, as
+// Shown keys it. Only a type in drawnTypes: the download serves such a part
+// to the screen whatever its name, and only because the HTML points at it.
+func InlineImage(p Part, shown Shown) (string, bool) {
+	mediaType := strings.ToLower(strings.TrimSpace(p.MediaType))
+	if !drawnTypes[mediaType] || !shown.Has(p.ContentID) {
+		return "", false
+	}
+	return contentID(p.ContentID), true
 }
 
 // DispositionType is the type of a Content-Disposition value alone

@@ -25,9 +25,9 @@ import (
 // the server hold an arbitrary allocation.
 const maxAttachmentBytes = 30 << 20 // 30 MiB
 
-// attachmentNotInMailIMAP is the answer to a download of a file the mail on
-// an IMAP mailbox does not have.
-const attachmentNotInMailIMAP = "Cette pièce jointe est introuvable dans ce mail."
+// attachmentMissingMessage is the answer to a download of a file the mail does
+// not have, on both transports.
+const attachmentMissingMessage = "Cette pièce jointe est introuvable dans ce mail."
 
 // DownloadAttachment streams one attachment of one message back to the caller.
 //
@@ -71,7 +71,8 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 
 // downloadAttachmentGmail is the Gmail half of DownloadAttachment.
 //
-// The id is the part number the reader listed. The message is read again,
+// The id is the part number the reader listed, a file or a picture the HTML
+// draws (the screen downloads those to show them in the text). The message is read again,
 // fresh, and the bytes are asked for under the attachment id Gmail gives that
 // part in this copy: an id from an earlier copy is not trusted to still name
 // them. An id that is no part number, sent by a screen opened before the
@@ -91,9 +92,9 @@ func (h *Handler) downloadAttachmentGmail(w http.ResponseWriter, gmailClient *gm
 	// named. The list is the reader's, HTML included, so a part the reader
 	// does not offer is not served either.
 	_, html := gmail.GetEmailBodies(msg)
-	att, ok := findAttachment(listAttachments(msg, html), attachmentID)
+	att, ok := readGmailParts(msg, html).find(attachmentID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Pièce jointe introuvable")
+		writeError(w, http.StatusNotFound, attachmentMissingMessage)
 		return
 	}
 	if att.Size > maxAttachmentBytes {
@@ -101,7 +102,13 @@ func (h *Handler) downloadAttachmentGmail(w http.ResponseWriter, gmailClient *gm
 		return
 	}
 
-	data, err := h.gmailService.GetAttachment(gmailClient, messageID, att.gmailID)
+	var data []byte
+	if att.gmailID != "" {
+		data, err = h.gmailService.GetAttachment(gmailClient, messageID, att.gmailID)
+	} else {
+		// Bytes Gmail sent with the message: already in hand.
+		data, err = gmail.DecodeAttachmentData(att.inlineData)
+	}
 	if err != nil {
 		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
 		return
@@ -130,7 +137,7 @@ func (h *Handler) downloadAttachmentIMAP(ctx context.Context, w http.ResponseWri
 	att, data, err := session.imapc.Attachment(ctx, ref.Folder, ref.ID, attachmentID, maxAttachmentBytes)
 	switch {
 	case errors.Is(err, imap.ErrNoSuchAttachment):
-		writeError(w, http.StatusNotFound, attachmentNotInMailIMAP)
+		writeError(w, http.StatusNotFound, attachmentMissingMessage)
 		return
 	case errors.Is(err, imap.ErrAttachmentTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "Pièce jointe trop volumineuse")
