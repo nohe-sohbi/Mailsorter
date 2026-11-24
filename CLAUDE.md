@@ -220,7 +220,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
+| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). Folder names go through the personal namespace read at connect (`namespace.go`, NAMESPACE when announced): the user reads them without the prefix and with `/` between levels ("INBOX.Projets.Maison" on Courier reads "Projets/Maison"), a folder Mailsorter makes goes under the prefix with the server's delimiter, and the special ones are known by name under the prefix too. The AI analysis is told `OwnFolders` as the existing labels. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
 | `smtpsend` | Hands one message to the sending server of an IMAP mailbox: the daily recap on that transport. Implicit TLS (465) or STARTTLS (587), never cleartext (a STARTTLS route whose server does not offer it is refused before the password is sent), certificate verified against the system roots, AUTH PLAIN, 30 s bound. `ErrAuth` (credentials refused: 535, or 534 5.7.9), `ErrBlocked` (sign-in blocked for where it came from, the password being right: 534 5.7.14) and `ErrUnreachable` are typed; any other 534 is none of them |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
@@ -550,7 +550,9 @@ as a side effect of another change.
 - A test that needs the same harness but proves wiring rather than a sentence
   (what a sync does with an answer a real server gives, what a handler reads in a
   real database) is a `TestAcceptance_*` under the same tag, in a file of its own
-  (`wiring_imap_test.go`): not in the report, run by
+  (`wiring_imap_test.go`, and `wiring_filing_test.go` for filing into folders over
+  IMAP: what the model is told, the shield at analysis, "unlabel" right after
+  "Appliquer", the direct "label" without a folder): not in the report, run by
   `scripts/scenarios.sh -run '^TestAcceptance'` and by its own CI step.
 
 ### React
@@ -872,9 +874,10 @@ Do not duplicate these into this file. Point at them.
   `ApplySuggestion` and `ApplyBatch`, the undo (`UndoAction`, `BatchUndo`) and
   `GetLabels`. Over IMAP a label is a folder: a `label` verdict files the mail in
   the folder of that name (`mailbox.IMAPOpFor`, made if missing), out of the inbox
-  like an archive, undone like one (`activity.InverseOnFolders`), shielded like one
-  for a protected sender in a batch (`allowsOn`), and `GetLabels` lists the user's
-  own folders. Everything else (rules apply and preview, snooze and its wake
+  like an archive, undone like one (`activity.InverseOnFolders`, and "unlabel" on
+  the single-message action right after), shielded like one for a protected
+  sender at analysis and in a batch (`allowsOn`), and `GetLabels` lists the
+  user's own folders. Everything else (rules apply and preview, snooze and its wake
   sweeper, unsubscribe, attachments, smart labels, batch action, bulk by sender)
   refuses: 11 call sites of `gmailClientFor`. Three more are the Gmail branch of a
   ported handler (`GetLabels`, `UndoAction`, `BatchUndo`), and one, in

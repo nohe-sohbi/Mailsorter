@@ -28,7 +28,12 @@ import {
   Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard, BellOff, Star, Filter,
 } from '../ui/icons';
 
-const isReversible = (a) => a === 'archive' || a === 'delete';
+// The verb "Annuler" sends right after an action, for each action it can
+// undo. A label is one only over IMAP, where it filed the mail in a folder:
+// "unlabel" brings it back to the inbox from there. Over the Gmail API the
+// single-message route has no label to take off.
+const UNDO_VERB = { archive: 'unarchive', delete: 'untrash', label: 'unlabel' };
+const isReversible = (a, folders = false) => a === 'archive' || a === 'delete' || (folders && a === 'label');
 
 // The four non-removing actions and how each one shows in the list before the
 // server has answered. Their inverses double as the rollback when it refuses.
@@ -433,7 +438,7 @@ function Inbox() {
     }
     toast.action(message, 'Annuler', async () => {
       try {
-        await emailService.action(messageId, action === 'archive' ? 'unarchive' : 'untrash');
+        await emailService.action(messageId, UNDO_VERB[action]);
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
@@ -668,7 +673,7 @@ function Inbox() {
       const msg = `${actionMeta(act, { folders: isImap }).past}${
         act === 'label' ? labelPlace(suggestion.labelName, { folders: isImap }) : ''
       }`;
-      if (isReversible(act)) undoToast(suggestion.emailId, act, msg);
+      if (isReversible(act, isImap)) undoToast(suggestion.emailId, act, msg);
       else toast.success(msg);
     } catch (err) {
       // Undo the optimism. Without this the suggestion vanished for good while

@@ -413,11 +413,15 @@ a mail Mailsorter archived) moves it from where it is, and "Annuler" still
 finds it. `read`, `unread`, `star` and `unstar` over IMAP also change the
 stored copy, so the list and its filters (`is:unread`, `is:starred`) show them
 at once. `unarchive`
-and `untrash` are what "Annuler" sends right after an action: they mark the
-most recent matching forward entry `undone` and record the reversal (source
-`undo`), as `POST /api/activity/undo` does.
+and `untrash` are what "Annuler" sends right after an action, and over IMAP
+`unlabel` after an AI proposal filed the mail in a folder: they mark the most
+recent matching forward entry (`archive`, `delete`, `label`) `undone` and record
+the reversal (source `undo`), as `POST /api/activity/undo` does. This route
+carries no folder or label name, so `label` answers `400` "Cette action demande
+le nom d'un dossier ou d'une étiquette, que cette route ne reçoit pas.", and so
+does `unlabel` over the Gmail API.
 
-Over IMAP, `unarchive` / `untrash` take the number the message had in the inbox
+Over IMAP, `unarchive` / `untrash` / `unlabel` take the number the message had in the inbox
 (the one the client holds) and fetch it back from where Mailsorter moved it;
 the list shows it again at once, under the inbox's new number. A message another
 mail client moved or deleted since answers `404` "Ce mail n'est plus là où
@@ -430,7 +434,7 @@ and the shortcuts can express the same things one message at a time.
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Missing `messageId` or unsupported `action`
+- `400 Bad Request`: Missing `messageId`, unsupported `action`, or `label` (and over the Gmail API `unlabel`), which need a name this route does not carry
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
 - `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: the mailbox refused the action
@@ -689,8 +693,9 @@ Brings the email back to the inbox immediately, marked unread.
 
 A per-user safety net: while a sender (full address or whole domain, subdomains
 included) is protected, no automated pass (AI suggestion, deterministic rule,
-sender auto-pilot or bulk action) may archive, trash or delete their mail.
-Non-destructive actions (label, star, mark read) are unaffected.
+sender auto-pilot or bulk action) may archive, trash or delete their mail, nor,
+over IMAP where a label is a folder, file it into one. Actions that leave the
+mail in the inbox (a Gmail label, star, mark read) are unaffected.
 
 ### List protected senders
 
@@ -1485,9 +1490,13 @@ knows, and the rest goes to the configured AI provider in batches of 8, falling
 back to one email at a time when a batch answer does not line up. The caller's
 own provider is tried first when they set one, then the instance's, in
 priority order, the next one on a transient error. A destructive verdict on a
-protected sender is downgraded to `keep`. One pending suggestion is stored per
-email, replacing a pending one for the same email; only model calls count
-toward the quota.
+protected sender is downgraded to `keep`, and so is, over IMAP, a `label`
+verdict, which files the mail out of the inbox there. The model is told the
+user's existing labels so it reuses them: the labels Mailsorter made over the
+Gmail API, the user's own folders over IMAP (as `GET /api/labels` lists them),
+and a proposed name close to one of them is stored as that one. One pending
+suggestion is stored per email, replacing a pending one for the same email;
+only model calls count toward the quota.
 
 **Request body:**
 ```json
@@ -1569,14 +1578,17 @@ only, so it answers on both transports; `404` when no stored email matches.
 
 Apply a single suggestion to the mailbox, through the caller's transport, mark
 it `applied`, and log it (source `ai`). A `keep` verdict moves nothing. A
-destructive verdict on a protected sender was already downgraded to `keep` when
-the suggestion was created; this route does not check the list again
-(`apply-batch` does).
+destructive verdict on a protected sender (over IMAP, a `label` too) was
+already downgraded to `keep` when the suggestion was created; this route does
+not check the list again (`apply-batch` does).
 
 Over IMAP, `archive`, `delete`, `keep` and `label` apply. A label is a folder
 there: a `label` verdict moves the mail out of the inbox into the folder named
 like the label (`labelName`), made (and subscribed) when the mailbox does not
-have it, found whatever its case when it does, and undoable like an archive.
+have it, under the personal namespace prefix when the server has one
+(`INBOX.Factures` on Courier), found whatever its case when it does, and
+undoable like an archive: right after, `POST /api/emails/action` with
+`unlabel` brings it back.
 The history line carries the folder's name (`labelName`). A label that names a
 folder that is not the user's own (the inbox, the archive, the trash, sent
 mail, drafts, junk) answers `422` "Mailsorter ne classe pas de mail dans ce
@@ -2134,11 +2146,15 @@ user's own folders.
 
 Over IMAP a folder stands for a label, so the answer lists the folders in the
 same shape, `{ "id", "name", "type": "user" }`, with the folder's full name as
-both id and name (`"Projets/Maison"` for a folder inside another), sorted. Not
-listed: the inbox, the special folders (archive, trash, sent mail, drafts,
-junk, and Gmail's All Mail, Starred and Important), known by their special-use
-attribute or, when the server marks none for that kind, by their usual names,
-and a folder that cannot hold mail.
+both id and name (`"Projets/Maison"` for a folder inside another), sorted. The
+name is the one the user reads: without the personal namespace prefix the
+server announces (NAMESPACE: `INBOX.` on Courier and some Cyrus servers), with
+`/` between levels whatever the server's delimiter (`INBOX.Projets.Maison`
+reads `Projets/Maison`). Not listed: the inbox, the special folders (archive,
+trash, sent mail, drafts, junk, and Gmail's All Mail, Starred and Important),
+known by their special-use attribute or, when the server marks none for that
+kind, by their usual names (under the prefix too: `INBOX.Sent`), a folder
+outside the personal namespace, and a folder that cannot hold mail.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)

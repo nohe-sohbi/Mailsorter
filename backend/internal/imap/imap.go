@@ -87,6 +87,9 @@ type Client struct {
 	// session made since: what OwnFolders offers, and where filing looks for
 	// the folder it names before making it.
 	listed []folderInfo
+	// ns is where the user's own folders live on this server and how their
+	// names nest, read at connect.
+	ns namespace
 	// selected is the mailbox currently selected, so repeated actions in the
 	// same folder do not re-SELECT.
 	selected string
@@ -179,7 +182,8 @@ type folderInfo struct {
 	Attrs []string
 }
 
-// resolveFolders asks the server what it calls the folders the actions need.
+// resolveFolders asks the server what it calls the folders the actions need,
+// and where the user's own folders live (NAMESPACE, when the server has it).
 func (c *Client) resolveFolders() error {
 	listed, err := c.c.List("", "*", &imapv2.ListOptions{ReturnSpecialUse: true}).Collect()
 	if err != nil {
@@ -187,34 +191,59 @@ func (c *Client) resolveFolders() error {
 	}
 
 	infos := make([]folderInfo, 0, len(listed))
+	var listDelim rune
 	for _, data := range listed {
 		attrs := make([]string, 0, len(data.Attrs))
 		for _, a := range data.Attrs {
 			attrs = append(attrs, string(a))
 		}
 		infos = append(infos, folderInfo{Name: data.Mailbox, Attrs: attrs})
+		if listDelim == 0 || strings.EqualFold(data.Mailbox, string(mailbox.FolderInbox)) {
+			if data.Delim != 0 {
+				listDelim = data.Delim
+			}
+		}
 	}
 
+	var personal []imapv2.NamespaceDescriptor
+	if c.c.Caps().Has(imapv2.CapNamespace) {
+		data, err := c.c.Namespace().Wait()
+		if err != nil {
+			// The folders are still usable as listed: without the prefix,
+			// a folder Mailsorter makes lands at the top, as before.
+			log.Printf("imap: the server announces NAMESPACE but did not answer it: %v", err)
+		} else {
+			personal = data.Personal
+		}
+	}
+
+	c.ns = personalNamespace(personal, listDelim)
 	c.listed = infos
 	c.folders = map[mailbox.Folder]string{mailbox.FolderInbox: "INBOX"}
 	for _, want := range []mailbox.Folder{mailbox.FolderArchive, mailbox.FolderTrash} {
-		if name, ok := pickFolder(want, infos); ok {
+		if name, ok := pickFolder(want, infos, c.ns); ok {
 			c.folders[want] = name
 		}
 	}
 	return nil
 }
 
-// OwnFolders returns the full name of every folder of the user's own, sorted:
-// the folders a mail can be filed into ("Factures", "Projets/Maison" for a
-// folder inside another), which is what a label is over IMAP. Not the inbox,
-// not a special folder, not a folder that cannot hold mail (notOwn).
+// OwnFolders returns every folder of the user's own, sorted, by the name the
+// user reads: the folders a mail can be filed into ("Factures",
+// "Projets/Maison" for a folder inside another), which is what a label is over
+// IMAP. Without the personal prefix and with "/" between levels, whatever the
+// server's own ("INBOX.Projets.Maison" reads "Projets/Maison"). Not the inbox,
+// not a special folder, not a folder that cannot hold mail or lies outside the
+// user's namespace (notOwn).
 func (c *Client) OwnFolders() []string {
-	skip := notOwn(c.listed)
+	skip := notOwn(c.listed, c.ns)
 	names := make([]string, 0, len(c.listed))
 	for _, f := range c.listed {
-		if !skip[f.Name] {
-			names = append(names, f.Name)
+		if skip[f.Name] {
+			continue
+		}
+		if shown, ok := c.ns.display(f.Name); ok {
+			names = append(names, shown)
 		}
 	}
 	sort.Strings(names)
@@ -223,8 +252,10 @@ func (c *Client) OwnFolders() []string {
 
 // Destination returns the server's name for where op moves a message: a
 // special folder by what it is (op.To), or one of the user's own folders by
-// its full name (op.Into), made on the server when it does not exist yet,
-// which is how filing into "Factures" works the first time.
+// the name the user reads (op.Into, as OwnFolders gives it), made on the
+// server when it does not exist yet, which is how filing into "Factures" works
+// the first time. It is made under the user's prefix, levels split by the
+// server's delimiter ("Projets/Maison" is "INBOX.Projets.Maison" on Courier).
 //
 // The folder the user already has is found by its exact name first, then by
 // the same name in another case: names are case-sensitive on most servers, but
@@ -243,20 +274,23 @@ func (c *Client) Destination(op mailbox.IMAPOp) (string, error) {
 	if want == "" {
 		return "", mailbox.ErrLabelRequired
 	}
-	skip := notOwn(c.listed)
+	skip := notOwn(c.listed, c.ns)
 	found := ""
-	for _, f := range c.listed {
-		if f.Name == want {
-			found = f.Name
-			break
-		}
-	}
-	if found == "" {
+	for _, exact := range []bool{true, false} {
 		for _, f := range c.listed {
-			if strings.EqualFold(f.Name, want) {
+			shown, ok := c.ns.display(f.Name)
+			if !ok {
+				// Outside the user's namespace: the inbox, a shared
+				// folder. Not filed into by the name the user reads.
+				shown = f.Name
+			}
+			if (exact && shown == want) || (!exact && strings.EqualFold(shown, want)) {
 				found = f.Name
 				break
 			}
+		}
+		if found != "" {
+			break
 		}
 	}
 	if found != "" {
@@ -265,11 +299,12 @@ func (c *Client) Destination(op mailbox.IMAPOp) (string, error) {
 		}
 		return found, nil
 	}
+	want = c.ns.serverName(want)
 	// Made under that name, would it be taken for a special folder? Then it
 	// is not made: the next listing would leave it out, and filing there
 	// again would be refused.
 	withIt := append(append(make([]folderInfo, 0, len(c.listed)+1), c.listed...), folderInfo{Name: want})
-	if notOwn(withIt)[want] {
+	if notOwn(withIt, c.ns)[want] {
 		return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, want)
 	}
 	if err := c.c.Create(want, nil).Wait(); err != nil {
@@ -623,21 +658,24 @@ var specialUses = []string{
 }
 
 // notOwn returns, among the server's folders, the full names of those that are
-// not the user's own: the inbox; a folder that cannot hold mail (\Noselect,
-// \NonExistent: a branch such as "[Gmail]"); a folder the server marks with a
-// special use; and, for a special folder the server marks NOWHERE, every folder
-// named like it (conventionalNames), the way pickFolder finds the archive and
-// the trash on a server silent about special use. A name match does not count
-// when the server marks that special folder elsewhere: the server is telling
-// the truth, and a user's own "Archives" next to Gmail's All Mail is the
-// user's.
+// not the user's own: the inbox; a folder outside the user's namespace (ns: a
+// shared one, on a server that keeps the user's under a prefix); a folder that
+// cannot hold mail (\Noselect, \NonExistent: a branch such as "[Gmail]"); a
+// folder the server marks with a special use; and, for a special folder the
+// server marks NOWHERE, every folder named like it (conventionalNames, matched
+// on the name the user reads, so "INBOX.Sent" is the sent mail under an
+// "INBOX." prefix), the way pickFolder finds the archive and the trash on a
+// server silent about special use. A name match does not count when the server
+// marks that special folder elsewhere: the server is telling the truth, and a
+// user's own "Archives" next to Gmail's All Mail is the user's.
 //
 // Pure, like pickFolder, because the choice is where the bugs live.
-func notOwn(infos []folderInfo) map[string]bool {
+func notOwn(infos []folderInfo, ns namespace) map[string]bool {
 	out := map[string]bool{}
 	marked := map[mailbox.Folder]bool{}
 	for _, f := range infos {
-		if strings.EqualFold(f.Name, string(mailbox.FolderInbox)) {
+		shown, inside := ns.display(f.Name)
+		if !inside || strings.EqualFold(f.Name, string(mailbox.FolderInbox)) || strings.EqualFold(shown, string(mailbox.FolderInbox)) {
 			out[f.Name] = true
 		}
 		for _, attr := range f.Attrs {
@@ -666,7 +704,7 @@ func notOwn(infos []folderInfo) map[string]bool {
 		}
 		for _, f := range infos {
 			for _, name := range names {
-				if strings.EqualFold(f.Name, name) {
+				if strings.EqualFold(ns.readName(f.Name), name) {
 					out[f.Name] = true
 				}
 			}
@@ -681,8 +719,9 @@ func notOwn(infos []folderInfo) map[string]bool {
 // the bugs live: an attribute match must beat a name match (a server that says
 // which folder is the archive is telling the truth, while a name that merely
 // looks like one may be a folder the user created), and a name match must not
-// be case-sensitive.
-func pickFolder(want mailbox.Folder, candidates []folderInfo) (string, bool) {
+// be case-sensitive. A name is matched as the user reads it (ns), so under an
+// "INBOX." prefix "INBOX.Trash" is the trash.
+func pickFolder(want mailbox.Folder, candidates []folderInfo, ns namespace) (string, bool) {
 	for _, f := range candidates {
 		for _, attr := range f.Attrs {
 			if strings.EqualFold(attr, string(want)) {
@@ -703,7 +742,7 @@ func pickFolder(want mailbox.Folder, candidates []folderInfo) (string, bool) {
 	}
 	for _, name := range conventionalNames[want] {
 		for _, f := range candidates {
-			if strings.EqualFold(f.Name, name) {
+			if strings.EqualFold(ns.readName(f.Name), name) {
 				return f.Name, true
 			}
 		}

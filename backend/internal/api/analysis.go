@@ -55,6 +55,13 @@ func (h *Handler) runAnalysis(
 	} else {
 		log.Printf("runAnalysis: openSession for %s: %v", userEmail, serr)
 	}
+	transport := h.analysisTransport(ctx, userEmail, session)
+	if session != nil && session.Transport == provider.TransportIMAP && session.imapc != nil {
+		// Over IMAP a label is a folder: the model is told the user's own
+		// folders, as it is told the Gmail labels Mailsorter made, so it
+		// files into "Factures" rather than invent "Facture" next to it.
+		existingLabels = session.imapc.OwnFolders()
+	}
 
 	emails := make([]models.Email, 0, len(emailIDs))
 	for _, id := range emailIDs {
@@ -166,7 +173,7 @@ func (h *Handler) runAnalysis(
 
 		key := analysisCacheKey(email.From, email.Subject)
 		if cached, ok := h.cacheLookup(ctx, key); ok {
-			cached = protectAnalysis(cached, email.From, protectedList)
+			cached = protectAnalysis(cached, email.From, protectedList, transport)
 			if s, inserted := h.persistSuggestion(ctx, userEmail, email, cached, existingLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
@@ -210,7 +217,7 @@ func (h *Handler) runAnalysis(
 			}
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(chunk[0].From, chunk[0].Subject), *single)
-			verdict := protectAnalysis(*single, chunk[0].From, protectedList)
+			verdict := protectAnalysis(*single, chunk[0].From, protectedList, transport)
 			if s, inserted := h.persistSuggestion(ctx, userEmail, chunk[0], verdict, existingLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
@@ -246,7 +253,7 @@ func (h *Handler) runAnalysis(
 
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(email.From, email.Subject), a)
-			a = protectAnalysis(a, email.From, protectedList)
+			a = protectAnalysis(a, email.From, protectedList, transport)
 			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, existingLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
@@ -268,11 +275,29 @@ func (h *Handler) runAnalysis(
 	return p, suggestions, nil
 }
 
-// protectAnalysis downgrades a destructive AI verdict to "keep" when the sender
-// is on the user's protected list, so a VIP's mail is never suggested for
-// archive/trash. Non-destructive verdicts (label/keep) pass through untouched.
-func protectAnalysis(a ai.EmailAnalysis, from string, protectedList []string) ai.EmailAnalysis {
-	if allows(a.Action, from, protectedList) {
+// analysisTransport is the transport the analysis shields protected senders
+// for: the session's, or, when it could not open, the one the account is on.
+// Unknown, it is the Gmail API's reading, where a label leaves the mail in
+// the inbox.
+func (h *Handler) analysisTransport(ctx context.Context, userEmail string, session *mailSession) provider.Transport {
+	if session != nil {
+		return session.Transport
+	}
+	transport, _, err := h.transportFor(ctx, userEmail)
+	if err != nil {
+		log.Printf("runAnalysis: which transport %s is on: %v", userEmail, err)
+		return ""
+	}
+	return transport
+}
+
+// protectAnalysis downgrades to "keep" a verdict that would take the mail of
+// a sender on the user's protected list out of the inbox, so a VIP's mail is
+// never suggested for archive/trash, nor, over IMAP where a label is a folder,
+// for filing (allowsOn): the plan does not propose what "Tout ranger" would
+// refuse. Other verdicts pass through untouched.
+func protectAnalysis(a ai.EmailAnalysis, from string, protectedList []string, transport provider.Transport) ai.EmailAnalysis {
+	if allowsOn(transport, a.Action, from, protectedList) {
 		return a
 	}
 	a.Action = "keep"

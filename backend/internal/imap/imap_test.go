@@ -399,13 +399,16 @@ func TestOwnFoldersLeavesOutTheSpecialFolders(t *testing.T) {
 // notOwn is where the choice lives, so it is pinned on its own, with what a
 // live in-memory server cannot send (special-use attributes, \Noselect).
 func TestNotOwn(t *testing.T) {
+	courier := namespace{prefix: "INBOX.", delim: '.'}
 	cases := []struct {
 		name    string
+		ns      namespace
 		folders []folderInfo
 		notOwn  []string
 	}{
 		{
 			name: "Gmail marks every special folder, so a label named like one is the user's",
+			ns:   namespace{delim: '/'},
 			folders: []folderInfo{
 				{Name: "INBOX"},
 				{Name: "[Gmail]", Attrs: []string{"\\Noselect", "\\HasChildren"}},
@@ -423,16 +426,27 @@ func TestNotOwn(t *testing.T) {
 		},
 		{
 			name: "a server silent about special use: the special folders by their names",
+			ns:   namespace{delim: '/'},
 			folders: []folderInfo{
 				{Name: "INBOX"}, {Name: "Archives"}, {Name: "Corbeille"}, {Name: "Éléments envoyés"},
 				{Name: "Brouillons"}, {Name: "Courrier indésirable"}, {Name: "Spam"}, {Name: "Factures"},
 			},
 			notOwn: []string{"INBOX", "Archives", "Corbeille", "Éléments envoyés", "Brouillons", "Courrier indésirable", "Spam"},
 		},
+		{
+			name: "under an INBOX. prefix the special folders are known by the name the user reads, and a shared folder is not the user's",
+			ns:   courier,
+			folders: []folderInfo{
+				{Name: "INBOX"}, {Name: "INBOX.Sent"}, {Name: "INBOX.Trash"}, {Name: "INBOX.Drafts"},
+				{Name: "INBOX.Junk"}, {Name: "INBOX.Archives"}, {Name: "INBOX.INBOX"},
+				{Name: "INBOX.Factures"}, {Name: "INBOX.Projets.Maison"}, {Name: "shared.Equipe"},
+			},
+			notOwn: []string{"INBOX", "INBOX.Sent", "INBOX.Trash", "INBOX.Drafts", "INBOX.Junk", "INBOX.Archives", "INBOX.INBOX", "shared.Equipe"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := notOwn(tc.folders)
+			got := notOwn(tc.folders, tc.ns)
 			want := map[string]bool{}
 			for _, n := range tc.notOwn {
 				want[n] = true
@@ -520,6 +534,7 @@ func TestPickFolder(t *testing.T) {
 		name       string
 		want       mailbox.Folder
 		candidates []folderInfo
+		ns         namespace
 		expect     string
 		why        string
 	}{
@@ -557,11 +572,18 @@ func TestPickFolder(t *testing.T) {
 			candidates: []folderInfo{{Name: "Archive"}, {Name: "[Gmail]/All Mail"}},
 			expect:     "[Gmail]/All Mail",
 		},
+		{
+			name:       "under an INBOX. prefix the trash is known by the name the user reads",
+			want:       mailbox.FolderTrash,
+			candidates: []folderInfo{{Name: "INBOX"}, {Name: "INBOX.Factures"}, {Name: "INBOX.Trash"}},
+			ns:         namespace{prefix: "INBOX.", delim: '.'},
+			expect:     "INBOX.Trash",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := pickFolder(tc.want, tc.candidates)
+			got, ok := pickFolder(tc.want, tc.candidates, tc.ns)
 			if !ok {
 				t.Fatalf("pickFolder(%q) found nothing, want %q", tc.want, tc.expect)
 			}
@@ -575,7 +597,7 @@ func TestPickFolder(t *testing.T) {
 		})
 	}
 
-	if _, ok := pickFolder(mailbox.FolderArchive, []folderInfo{{Name: "INBOX"}, {Name: "Projets"}}); ok {
+	if _, ok := pickFolder(mailbox.FolderArchive, []folderInfo{{Name: "INBOX"}, {Name: "Projets"}}, namespace{}); ok {
 		t.Error("pickFolder invented an archive folder out of unrelated names")
 	}
 }
@@ -785,5 +807,123 @@ func TestMoveRecordedNeverMovesAnotherMail(t *testing.T) {
 	}
 	if _, there, _ := c.IDAt("Archive", stranger); !there {
 		t.Error("the stranger left the archive on the second call")
+	}
+}
+
+// Where the user's own folders live: the first personal namespace the server
+// gives, its prefix completed with the delimiter, or, without NAMESPACE, no
+// prefix and the delimiter of the listing.
+func TestPersonalNamespace(t *testing.T) {
+	cases := []struct {
+		name      string
+		personal  []imapv2.NamespaceDescriptor
+		listDelim rune
+		want      namespace
+	}{
+		{"no NAMESPACE: the listing's delimiter", nil, '/', namespace{delim: '/'}},
+		{"most servers: no prefix", []imapv2.NamespaceDescriptor{{Delim: '/'}}, '/', namespace{delim: '/'}},
+		{"Courier: INBOX. and dots", []imapv2.NamespaceDescriptor{{Prefix: "INBOX.", Delim: '.'}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{"a prefix given without its delimiter gets it", []imapv2.NamespaceDescriptor{{Prefix: "INBOX", Delim: '.'}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{"no delimiter in the answer: the listing's", []imapv2.NamespaceDescriptor{{Prefix: "INBOX."}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{"the first personal namespace wins", []imapv2.NamespaceDescriptor{{Prefix: "INBOX.", Delim: '.'}, {Prefix: "Mail/", Delim: '/'}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := personalNamespace(tc.personal, tc.listDelim); got != tc.want {
+				t.Errorf("personalNamespace(%v, %q) = %+v, want %+v", tc.personal, tc.listDelim, got, tc.want)
+			}
+		})
+	}
+}
+
+// The name the user reads and the server's name, both ways: the prefix comes
+// off and goes back on, the server's delimiter reads "/" and is written back.
+func TestNamespaceNames(t *testing.T) {
+	courier := namespace{prefix: "INBOX.", delim: '.'}
+	plain := namespace{delim: '/'}
+	flat := namespace{}
+	shown := []struct {
+		ns     namespace
+		server string
+		want   string
+		inside bool
+	}{
+		{courier, "INBOX.Factures", "Factures", true},
+		{courier, "INBOX.Projets.Maison", "Projets/Maison", true},
+		{courier, "inbox.Factures", "Factures", true},
+		{courier, "INBOX", "INBOX", false},
+		{courier, "INBOX.", "INBOX.", false},
+		{courier, "shared.Equipe", "shared.Equipe", false},
+		{plain, "Projets/Maison", "Projets/Maison", true},
+		{plain, "INBOX", "INBOX", true},
+		{flat, "Factures", "Factures", true},
+	}
+	for _, tc := range shown {
+		if got, inside := tc.ns.display(tc.server); got != tc.want || inside != tc.inside {
+			t.Errorf("%+v.display(%q) = %q, %v; want %q, %v", tc.ns, tc.server, got, inside, tc.want, tc.inside)
+		}
+	}
+	made := []struct {
+		ns      namespace
+		display string
+		want    string
+	}{
+		{courier, "Factures", "INBOX.Factures"},
+		{courier, "Projets/Maison", "INBOX.Projets.Maison"},
+		{plain, "Projets/Maison", "Projets/Maison"},
+		{flat, "Factures", "Factures"},
+	}
+	for _, tc := range made {
+		if got := tc.ns.serverName(tc.display); got != tc.want {
+			t.Errorf("%+v.serverName(%q) = %q, want %q", tc.ns, tc.display, got, tc.want)
+		}
+		if back, inside := tc.ns.display(tc.ns.serverName(tc.display)); !inside || back != tc.display {
+			t.Errorf("%+v: %q made as %q reads back %q, %v", tc.ns, tc.display, tc.ns.serverName(tc.display), back, inside)
+		}
+	}
+}
+
+// The in-memory server answers NAMESPACE with no prefix and "/": the client
+// reads it at connect, and the folders keep the names the user knows.
+func TestConnectReadsTheNamespace(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	if c.ns != (namespace{delim: '/'}) {
+		t.Errorf("namespace read at connect = %+v, want no prefix and \"/\"", c.ns)
+	}
+}
+
+// On a server that keeps the user's folders under a prefix, the user reads
+// them without it, and a folder Mailsorter makes goes under it. The in-memory
+// server announces no prefix, so the one read at connect is replaced by the
+// one such a server would give, with its "/" delimiter.
+func TestFilingUnderAPersonalPrefix(t *testing.T) {
+	c := newTestServer(t, map[string][]imapv2.MailboxAttr{
+		"INBOX":          nil,
+		"INBOX/Sent":     nil,
+		"INBOX/Trash":    nil,
+		"INBOX/Factures": nil,
+		"Partage/Equipe": nil,
+	})
+	c.ns = namespace{prefix: "INBOX/", delim: '/'}
+
+	if got := c.OwnFolders(); !reflect.DeepEqual(got, []string{"Factures"}) {
+		t.Errorf("OwnFolders = %v, want [Factures]: no prefix, no special folder, no shared one", got)
+	}
+	if got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "factures"}); err != nil || got != "INBOX/Factures" {
+		t.Errorf("Destination(factures) = %q, %v; want the user's INBOX/Factures", got, err)
+	}
+	if got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "Sent"}); !errors.Is(err, ErrNotOwnFolder) {
+		t.Errorf("Destination(Sent) = %q, %v; want ErrNotOwnFolder for INBOX/Sent", got, err)
+	}
+
+	uid := appendMessage(t, c, "INBOX")
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: "Banque"}); err != nil {
+		t.Fatalf("label Banque: %v", err)
+	}
+	if n := countIn(t, c, "INBOX/Banque"); n != 1 {
+		t.Errorf("INBOX/Banque holds %d message(s), want the one filed under the prefix", n)
+	}
+	if got := c.OwnFolders(); !reflect.DeepEqual(got, []string{"Banque", "Factures"}) {
+		t.Errorf("OwnFolders after filing = %v, want [Banque Factures]", got)
 	}
 }

@@ -599,8 +599,14 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 }
 
 // reversedBy names, for each inverse a client sends right after an action, the
-// action as the ledger recorded it ("trash" is recorded as "delete").
-var reversedBy = map[string]string{"unarchive": "archive", "untrash": "delete"}
+// action as the ledger recorded it ("trash" is recorded as "delete"). "unlabel"
+// is what "Annuler" sends after a proposal filed a mail in a folder over IMAP.
+var reversedBy = map[string]string{"unarchive": "archive", "untrash": "delete", "unlabel": "label"}
+
+// labelRequiredMessage is what POST /api/emails/action answers for "label"
+// (and, over the Gmail API, "unlabel"), which need the name of a folder or a
+// label that route does not carry.
+const labelRequiredMessage = "Cette action demande le nom d'un dossier ou d'une étiquette, que cette route ne reçoit pas."
 
 // EmailAction performs a direct action on a single message, over whichever
 // transport the mailbox uses (archive, trash, mark read/unread), without going
@@ -643,6 +649,12 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
+		return
+	}
+	if errors.Is(err, mailbox.ErrLabelRequired) {
+		// This route takes no label nor folder name: classifying a mail goes
+		// through an AI proposal or the batch route, which carry one.
+		writeError(w, http.StatusBadRequest, labelRequiredMessage)
 		return
 	}
 	if errors.Is(err, errNotWhereLeft) {
