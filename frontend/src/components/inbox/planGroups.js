@@ -122,6 +122,9 @@ export function planTotals({ moves, keeps }, canApply = () => true) {
   const sureGroups = applicable.filter((g) => g.sure);
   return {
     moves: count(moves),
+    // What can actually be tidied here: the "à ranger" the header and the
+    // list announce, so they never promise more than "Ranger N" applies.
+    toTidy: count(applicable),
     keeps: count(keeps),
     byAction,
     sureGroups,

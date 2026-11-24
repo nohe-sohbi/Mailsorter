@@ -52,7 +52,18 @@ export function canConnectRoute(route, isConfigured) {
 // Whether a provider of GET /api/providers ({ key, name, routes }) can be
 // connected on this instance by at least one of its routes.
 export function canConnect(provider, isConfigured) {
-  return ((provider && provider.routes) || []).some((r) => canConnectRoute(r, isConfigured));
+  return ((provider && provider.routes) || []).some(
+    (r) => canConnectRoute(r, isConfigured) && (r.transport !== 'imap' || isRecognizable(provider))
+  );
+}
+
+// The server finds a mailbox's provider from the address's domain alone
+// (provider.Detect). A provider with no domain of its own, Google Workspace
+// on a company domain, is never recognized: its address falls back to the
+// generic entry, which has no server yet. So its IMAP route cannot be reached
+// with a password, whatever the catalog says about the route itself.
+function isRecognizable(provider) {
+  return Boolean(provider && provider.domains && provider.domains.length > 0);
 }
 
 // The provider's IMAP route, the one an address and an app password go
@@ -64,7 +75,7 @@ export function imapRouteOf(provider) {
 // Whether the address-and-password form can connect this provider: its IMAP
 // route, with its server known.
 export function canConnectByPassword(provider) {
-  return canConnectRoute(imapRouteOf(provider), false);
+  return isRecognizable(provider) && canConnectRoute(imapRouteOf(provider), false);
 }
 
 // Whether a verdict of the AI can be applied to this mailbox. Over IMAP a

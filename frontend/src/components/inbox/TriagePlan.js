@@ -561,7 +561,7 @@ function TriagePlan({ plan, onOpenEmail }) {
             <div className="border-t border-hairline">
               {groups.keeps.length > 0 && (
                 <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
-                  À ranger · {totals.moves}
+                  À ranger · {totals.toTidy}
                 </h3>
               )}
               <ul className="divide-y divide-[rgb(var(--hairline))]">{moves.map(row)}</ul>

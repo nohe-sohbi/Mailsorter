@@ -1432,7 +1432,7 @@ function Inbox() {
             stats
               ? [
                   `${formatNumber(stats.unreadCount)} non lu${stats.unreadCount > 1 ? 's' : ''}`,
-                  plan.totals.moves > 0 && `${plan.totals.moves} à ranger`,
+                  plan.totals.toTidy > 0 && `${plan.totals.toTidy} à ranger`,
                 ]
                   .filter(Boolean)
                   .join(', ')
