@@ -33,7 +33,7 @@ function Privacy() {
   return (
     <LegalLayout
       title="Politique de confidentialité"
-      updatedAt="19 septembre 2026"
+      updatedAt="24 novembre 2026"
       intro="Mailsorter lit votre boîte mail pour la trier. C'est un accès sensible, et cette page dit exactement ce qui est demandé à Google, ce qui est conservé, ce qui est envoyé à un tiers, et comment tout effacer."
     >
       <LegalSection n="1" title="Qui traite vos données">

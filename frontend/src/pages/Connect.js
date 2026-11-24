@@ -6,6 +6,7 @@ import { useConfirm } from '../ui/Confirm';
 import { useInstance } from '../contexts/InstanceContext';
 import { track } from '../lib/analytics';
 import { detectProvider, ProviderBriefing } from '../components/MailboxBriefing';
+import { imapRouteOf } from '../components/landing/features';
 import { Shield, Refresh, Trash, Check, Google, Sparkles, Inbox } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 import { useHotel } from '../ui/hotel/HotelTheme';
@@ -146,6 +147,9 @@ function Connect() {
   }, []);
 
   const detected = useMemo(() => detectProvider(providers, address), [providers, address]);
+  // A few providers (Infomaniak) have no app password: their IMAP route takes
+  // the mailbox password itself, and the form must not say the opposite.
+  const usualPassword = imapRouteOf(detected)?.auth === 'password';
   // The examples under the form's title are the providers it can connect,
   // read from the catalog: a name written here by hand promised Outlook, which
   // goes through an API Mailsorter does not use yet.
@@ -337,7 +341,7 @@ function Connect() {
               />
 
               <label htmlFor="mailbox-password" className="mt-4 block text-xs font-bold text-ink-700">
-                Mot de passe d'application
+                {usualPassword ? 'Mot de passe de la messagerie' : "Mot de passe d'application"}
               </label>
               <input
                 id="mailbox-password"
@@ -345,14 +349,16 @@ function Connect() {
                 required
                 autoComplete="new-password"
                 className="input mt-1.5 w-full text-sm"
-                placeholder="xxxx xxxx xxxx xxxx"
+                placeholder={usualPassword ? '' : 'xxxx xxxx xxxx xxxx'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={connecting}
                 aria-describedby="mailbox-password-help"
               />
               <p id="mailbox-password-help" className="mt-2 text-xs leading-relaxed text-muted">
-                Ce n'est pas le mot de passe habituel de votre messagerie. C'est un code spécifique généré dans l'espace sécurité de votre fournisseur, révocable sans affecter votre boîte.
+                {usualPassword
+                  ? "Ce fournisseur n'a pas de mot de passe d'application : c'est le mot de passe habituel de votre messagerie. Il est chiffré avant d'être enregistré."
+                  : "Ce n'est pas le mot de passe habituel de votre messagerie. C'est un code spécifique généré dans l'espace sécurité de votre fournisseur, révocable sans affecter votre boîte."}
               </p>
 
               <button

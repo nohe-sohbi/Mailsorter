@@ -27,6 +27,8 @@ const PLANS = [
     features: [
       '200 emails analysés / mois',
       'Tri IA + suggestions',
+      { label: 'Règles appliquées à chaque synchronisation', feature: 'rules' },
+      { label: 'Récap quotidien par email', feature: 'digest' },
       { label: 'Actions en masse par expéditeur', feature: 'sender' },
       { label: 'Auto-pilote par expéditeur', feature: 'sender' },
       'Raccourcis clavier pour vider votre boîte',
@@ -40,13 +42,12 @@ const PLANS = [
     cta: "Rejoindre la liste d'attente",
     highlight: true,
     features: [
+      'Tout le plan Gratuit',
       'Emails analysés illimités',
-      { label: 'Règles appliquées à chaque synchronisation', feature: 'rules' },
-      { label: 'Récap quotidien par email', feature: 'digest' },
       // Le multi-comptes demande un modèle `account` distinct du userId, qui
       // n'existe pas (docs/ROADMAP.md, "Reste à brancher"). La ligne reste,
       // marquée : la vendre sans le dire était la seule ligne fausse du plan.
-      { label: 'Plusieurs comptes Gmail', soon: true },
+      { label: 'Plusieurs boîtes mail', soon: true },
       'Support prioritaire',
     ],
   },

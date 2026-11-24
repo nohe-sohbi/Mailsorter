@@ -19,7 +19,7 @@ function Terms() {
   return (
     <LegalLayout
       title="Conditions d'utilisation"
-      updatedAt="19 septembre 2026"
+      updatedAt="24 novembre 2026"
       intro="Ce que Mailsorter s'engage à faire, ce que vous acceptez en l'utilisant, et ce sur quoi vous gardez la main."
     >
       <LegalSection n="1" title="Objet">
