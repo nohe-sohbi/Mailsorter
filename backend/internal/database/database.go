@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -142,9 +143,35 @@ func (d *Database) AISettings() *mongo.Collection {
 // sync reported success.
 var legacyEmailIndexes = []string{"messageId_1"}
 
-// EnsureIndexes creates the indexes that keep hot queries fast at scale.
+// AnalysisCacheVersion is the version every entry of analysis_cache carries
+// (and its key starts with, in internal/api). It changes when what a verdict
+// is made from changes: v2 is the prompt that lists no label of the user. The
+// cache is shared by every account and never expires, so entries of another
+// version are deleted at boot (dropStaleAnalysisCache): a verdict from the
+// prompt before could hold the name of one account's label or folder.
+const AnalysisCacheVersion = "v2"
+
+// dropStaleAnalysisCache deletes, in one request, every cached verdict that
+// does not carry AnalysisCacheVersion, those written before entries carried a
+// version included. They are never read again; this is what stops them from
+// being kept. A failure is logged: the boot goes on, and the next one tries
+// again.
+func (d *Database) dropStaleAnalysisCache(ctx context.Context) {
+	res, err := d.AnalysisCache().DeleteMany(ctx, bson.M{"version": bson.M{"$ne": AnalysisCacheVersion}})
+	if err != nil {
+		log.Printf("database: delete the analysis cache entries of other versions than %s: %v", AnalysisCacheVersion, err)
+		return
+	}
+	if res.DeletedCount > 0 {
+		log.Printf("database: deleted %d analysis cache entries of other versions than %s", res.DeletedCount, AnalysisCacheVersion)
+	}
+}
+
+// EnsureIndexes creates the indexes that keep hot queries fast at scale, and
+// drops from the shared analysis cache the verdicts of another version.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
+	d.dropStaleAnalysisCache(ctx)
 	var firstErr error
 	for _, name := range legacyEmailIndexes {
 		if _, err := d.Emails().Indexes().DropOne(ctx, name); err != nil && !isMissingIndex(err) && firstErr == nil {

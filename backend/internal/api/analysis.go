@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
@@ -407,15 +408,11 @@ func localMatchLabel(suggested string, existing []string) string {
 	return suggested
 }
 
-// analysisCacheVersion starts every cache key. It changes when what a verdict
-// was produced from changes, so verdicts written before are never served
-// again: v2 is the prompt that lists no label of the user. A verdict from the
-// prompt before could hold the name of one account's label or folder, and the
-// cache is shared by every account and never expires.
-const analysisCacheVersion = "v2"
-
+// analysisCacheKey starts with the cache version (database.AnalysisCacheVersion),
+// so a verdict written for another one is never served, even before the boot
+// that deletes it.
 func analysisCacheKey(from, subject string) string {
-	sum := sha256.Sum256([]byte(analysisCacheVersion + "|" + strings.ToLower(strings.TrimSpace(from)) + "|" + strings.ToLower(strings.TrimSpace(subject))))
+	sum := sha256.Sum256([]byte(database.AnalysisCacheVersion + "|" + strings.ToLower(strings.TrimSpace(from)) + "|" + strings.ToLower(strings.TrimSpace(subject))))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -437,6 +434,7 @@ func (h *Handler) cacheStore(ctx context.Context, key string, a ai.EmailAnalysis
 		bson.M{"key": key},
 		bson.M{"$set": bson.M{
 			"key":        key,
+			"version":    database.AnalysisCacheVersion,
 			"action":     a.Action,
 			"labelName":  a.LabelName,
 			"confidence": a.Confidence,

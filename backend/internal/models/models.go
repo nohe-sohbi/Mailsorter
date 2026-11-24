@@ -466,8 +466,11 @@ type AnalysisJob struct {
 // AnalysisCacheEntry memoizes an AI verdict for a (from, subject) fingerprint
 // so identical emails are never analyzed twice. Content-based, not user-scoped.
 type AnalysisCacheEntry struct {
-	ID         string    `bson:"_id,omitempty"`
-	Key        string    `bson:"key"`
+	ID  string `bson:"_id,omitempty"`
+	Key string `bson:"key"`
+	// Version is database.AnalysisCacheVersion when the verdict was written:
+	// an entry of another version is deleted at boot.
+	Version    string    `bson:"version"`
 	Action     string    `bson:"action"`
 	LabelName  string    `bson:"labelName"`
 	Confidence float64   `bson:"confidence"`

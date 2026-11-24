@@ -311,7 +311,7 @@ ran on a fresh Compose volume, never on CI, the scenarios or an existing databas
 
 Everything is scoped by `userId` (which is the user's email address) except `users`
 (keyed by `email`), `gmail_config` (one legacy instance-wide document),
-`analysis_cache`, keyed by `sha256(lower(from) + "|" + lower(subject))` and shared
+`analysis_cache`, keyed by `sha256(version + "|" + lower(from) + "|" + lower(subject))` and shared
 across all users on purpose, and `waitlist`, keyed by email, whose row carries the
 account's `userId` only when the signup was made while signed in.
 
@@ -790,8 +790,10 @@ Do not duplicate these into this file. Point at them.
   proposes is matched with the user's labels afterwards, per account
   (`mailbox.MatchLabel`; over IMAP `imap.Client.FilingName`, against the folders
   only, at the analysis and again when the filing is applied), and the cache keeps
-  the model's own verdict. Its key starts with `analysisCacheVersion`: change it
-  whenever what a verdict is made from changes, since the collection never expires.
+  the model's own verdict. Every entry carries `database.AnalysisCacheVersion`, which
+  also starts its key: change it whenever what a verdict is made from changes. The
+  collection never expires, so `EnsureIndexes` deletes at each boot, in one request,
+  every entry of another version (`dropStaleAnalysisCache`, a failure only logged).
 - **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so
   the deployment file binds nothing to the host. Local runs need `compose.local.yml` on
   top, which is what `make up` does. It is deliberately NOT named

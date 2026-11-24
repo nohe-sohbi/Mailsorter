@@ -1494,9 +1494,10 @@ protected sender is downgraded to `keep`, and so is, over IMAP, a `label`
 verdict, which files the mail out of the inbox there. The model is told
 nothing of the user's labels or folders: the prompt carries the sender, the
 subject and an excerpt cut at 200 characters, and the verdict goes into the
-cache every account shares, as the model gave it (its key is versioned, so a
-verdict cached when the prompt still listed the user's labels is never served
-again). The label it proposes is matched afterwards, for this account only,
+cache every account shares, as the model gave it (each entry carries a
+version, which also starts its key, so a verdict cached when the prompt still
+listed the user's labels is never served again, and is deleted at the next
+boot). The label it proposes is matched afterwards, for this account only,
 with the labels Mailsorter made over the Gmail API, or over IMAP with the
 user's own folders and nothing else: the same name once case, accents and a plural
 mark are set aside, never a part of a name ("Facture" is stored as the
