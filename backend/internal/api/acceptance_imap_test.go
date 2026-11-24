@@ -635,17 +635,36 @@ func (p *imapPerson) actAnswer(uid, action string) answer {
 // comes back (a double click, or the same mail in two tabs): two requests of
 // the single-message action, released at the same instant. It returns both
 // answers, whatever they are.
+func (p *imapPerson) actTwiceAtOnce(uid, action string) [2]answer {
+	p.app.t.Helper()
+	return p.twiceAtOnce("/api/emails/action", map[string]string{"messageId": uid, "action": action},
+		fmt.Sprintf("de l'action %q sur le mail n°%s", action, uid))
+}
+
+// undoFromHistoryTwiceAtOnce is "Annuler" on a line of the Historique screen
+// confirmed twice before the first answer comes back (a double click, or the
+// history open in two tabs): two POST /api/activity/undo on the same line,
+// released at the same instant. It returns both answers, whatever they are.
+func (p *imapPerson) undoFromHistoryTwiceAtOnce(line historyLine) [2]answer {
+	p.app.t.Helper()
+	return p.twiceAtOnce("/api/activity/undo", map[string]string{"id": line.ID},
+		fmt.Sprintf("de « Annuler » sur la ligne %q du mail n°%s", line.Action, line.MessageID))
+}
+
+// twiceAtOnce sends the same POST twice as this person, both requests
+// released at the same instant, and returns both answers, whatever they are.
+// what names the request in a failure.
 //
 // The two requests run on goroutines of their own, so they cannot go through
 // callAs, which stops the scenario on a network error: only the test's own
 // goroutine may do that. A network error is collected and reported from here,
 // once both have come back.
-func (p *imapPerson) actTwiceAtOnce(uid, action string) [2]answer {
+func (p *imapPerson) twiceAtOnce(path string, body interface{}, what string) [2]answer {
 	a := p.app
 	a.t.Helper()
-	raw, err := json.Marshal(map[string]string{"messageId": uid, "action": action})
+	raw, err := json.Marshal(body)
 	if err != nil {
-		a.fatalf("encodage de l'action %q sur le mail n°%s : %v", action, uid, err)
+		a.fatalf("encodage %s : %v", what, err)
 	}
 	var (
 		got  [2]answer
@@ -657,7 +676,7 @@ func (p *imapPerson) actTwiceAtOnce(uid, action string) [2]answer {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			req, err := http.NewRequest(http.MethodPost, a.server.URL+"/api/emails/action", bytes.NewReader(raw))
+			req, err := http.NewRequest(http.MethodPost, a.server.URL+path, bytes.NewReader(raw))
 			if err != nil {
 				errs[i] = err
 				return
@@ -684,7 +703,7 @@ func (p *imapPerson) actTwiceAtOnce(uid, action string) [2]answer {
 	wg.Wait()
 	for i, err := range errs {
 		if err != nil {
-			a.fatalf("la requête n°%d de l'action %q sur le mail n°%s de %s n'a pas abouti : %v", i+1, action, uid, p.email, err)
+			a.fatalf("la requête n°%d %s de %s n'a pas abouti : %v", i+1, what, p.email, err)
 		}
 	}
 	return got
@@ -925,6 +944,39 @@ func (p *imapPerson) onServer(folder string) []string {
 		subjects = append(subjects, m.subject)
 	}
 	return subjects
+}
+
+// seenOnServer says whether the mail with this subject in this folder of the
+// person's server is read there (the \Seen flag), as another mail program
+// shows it. Opened read-only and read from the flags, so looking marks
+// nothing read. A folder without that mail stops the scenario: a flag read on
+// nothing proves nothing.
+func (p *imapPerson) seenOnServer(folder, subject string) bool {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
+	}
+	uid := p.numberElsewhere(c, folder, subject)
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uid), &imapv2.FetchOptions{UID: true, Flags: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture des drapeaux du mail %q dans le dossier %s du serveur IMAP de %s : %v", subject, folder, p.email, err)
+	}
+	for _, m := range msgs {
+		if m.UID != uid {
+			continue
+		}
+		for _, f := range m.Flags {
+			if f == imapv2.FlagSeen {
+				return true
+			}
+		}
+		return false
+	}
+	a.fatalf("le serveur IMAP de %s ne donne pas les drapeaux du mail %q du dossier %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", p.email, subject, folder)
+	return false
 }
 
 // expectOnServer checks that this folder of the person's server holds a mail
