@@ -347,8 +347,9 @@ message's UID in it. See "Transports and what works on each".
 #### POST /api/emails/sync
 
 Mirror the 100 most recent messages of the inbox into the database, through
-the caller's transport. The background sync (`autoSyncEnabled`) runs the same
-code.
+the caller's transport. Over IMAP it also drops from the mirror the messages
+that have left the inbox since the last sync. The background sync
+(`autoSyncEnabled`) runs the same code.
 
 Over the Gmail API, when `autoApplyRules` is on, the deterministic rules run on
 each synced message (protected senders shielded, each action journaled with
@@ -808,9 +809,11 @@ Two consequences worth knowing:
   before it lists, and the background sync, for an account that turned it on,
   runs at most every 30 minutes, so the window is the one the inbox already had.
 - The mirror holds what the syncs stored: the 100 most recent inbox messages at
-  each sync, plus whatever earlier syncs kept. Nothing removes a row yet: a
-  message moved out of the inbox, by Mailsorter or by another mail client, keeps
-  its stored folder and stays in the listing.
+  each sync, plus older ones earlier syncs kept. A message Mailsorter archives
+  or deletes leaves the listing at once. Each sync also drops the messages that
+  are no longer in the inbox, whoever moved them, along with the pending AI
+  proposals about them; when the inbox holds more than 100 messages, only the
+  range the listing covered can be judged.
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 A query term the mirror cannot answer is **refused with 501, naming the term**,
