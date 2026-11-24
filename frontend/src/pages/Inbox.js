@@ -239,10 +239,12 @@ function Inbox() {
     addSuggestion, removeSuggestion, restoreSuggestions, markUnsubscribed,
   } = useEmails();
   const { selfHosted } = useInstance();
-  // Over IMAP reading, archiving, deleting, read and the star on one mail, the
-  // quick filters, the AI's proposals (a label proposal files the mail in its
-  // folder there) and undo work today. Every control the server would answer
-  // "not available" to is hidden, not disabled: one rule everywhere.
+  // Over IMAP reading, archiving, deleting, read and the star on one mail or a
+  // selection, the quick filters, the AI's proposals (a label proposal files the
+  // mail in its folder there), undo, the actions on a whole sender, its
+  // auto-pilot and unsubscribing work today. Every control the server would
+  // answer "not available" to is hidden, not disabled (the one rule, see
+  // IMAP_UNAVAILABLE in landing/features.js).
   // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
   // and stays false when that answer failed: a guess offers nothing the server
   // may refuse. `known` is for what works on both transports once the mailbox
@@ -981,8 +983,8 @@ function Inbox() {
       removeEmails(email.messageId);
       setSelectedEmail((prev) => (prev && prev.messageId === email.messageId ? { ...prev, ...optimistic } : prev));
     };
-    // Over IMAP the batch route does not exist yet (501), while the single
-    // action does read, unread and the star: that one is used there, and
+    // Over IMAP the single action is used: it says when the mail is no longer
+    // in the inbox (404), where the batch route only counts it as failed. And
     // whenever the mailbox is not known, since it works on both transports.
     // The stored copy of an IMAP inbox keeps the star, so it stays at the next
     // listing.
@@ -1179,7 +1181,12 @@ function Inbox() {
     try {
       const { data } = await subscriptionService.unsubscribe(messageId, alsoArchive);
       const archivedNote = data.archived ? ` · ${data.archived} email${data.archived > 1 ? 's' : ''} archivé${data.archived > 1 ? 's' : ''}` : '';
-      if (data.done) {
+      if (data.done && data.method === 'mailto') {
+        // Over IMAP the server wrote to the list's address itself, from the
+        // mailbox: the request has left, the list has not answered yet.
+        track('unsubscribe', { mode: 'sent' });
+        toast.success(`Demande de désabonnement envoyée${archivedNote}`);
+      } else if (data.done) {
         track('unsubscribe', { mode: 'oneclick' });
         toast.success(`Désabonné en un clic${archivedNote}`);
       } else if (data.url) {
@@ -1598,9 +1605,9 @@ function Inbox() {
             layout viewport to match: every fixed toast, "Annuler" included, was
             laid out off the bottom of the screen. */}
         <div className="inline-flex max-w-full overflow-x-auto rounded-xl border border-hairline bg-surface p-1 shadow-soft" role="tablist">
-          {/* The Abonnements tab exists to unsubscribe, which an IMAP mailbox
-              cannot do yet: the tab is hidden there rather than left as a list
-              with nothing to press. */}
+          {/* The Abonnements tab exists to unsubscribe: on a mailbox that could
+              not (GMAIL_ONLY), it would be hidden rather than left as a list
+              with nothing to press. Both transports can today. */}
           {[
             { id: 'emails', label: 'Emails', Icon: InboxIcon },
             { id: 'senders', label: `Expéditeurs · ${localSenders.length}`, Icon: Users },
@@ -1826,10 +1833,11 @@ function Inbox() {
                       <span>Trier un par un</span>
                     </button>
                     {/* The actions over a selection go through the batch
-                        route, which an IMAP mailbox cannot use yet: there, the
-                        selection is for "Trier un par un" and the AI only. */}
-                    {fullFeatures && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
-                  {fullFeatures && BULK_ACTIONS.map((key) => {
+                        route, on both transports once the mailbox is known.
+                        Labelling is the exception: an IMAP mailbox has no
+                        labels, so the button follows can('label'). */}
+                    {known && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
+                  {known && BULK_ACTIONS.filter((key) => key !== 'label' || can('label')).map((key) => {
                     const meta = actionMeta(key);
                     return (
                       <button
@@ -2134,9 +2142,10 @@ function Inbox() {
                           <prefMeta.Icon size={13} />
                           {prefMeta.label}
                         </span>
-                        {/* Applying by sender, by hand or at each sort, is
-                            Gmail-only for now: hidden over IMAP. */}
-                        {fullFeatures && (
+                        {/* The auto-pilot applies this verdict at each sort,
+                            on both transports, but a label has nothing to land
+                            on over IMAP: that one is not offered there. */}
+                        {known && canApplyVerdict(pref.defaultAction, !fullFeatures) && (
                         <button
                           onClick={() => handleToggleAutoApply(sender)}
                           aria-pressed={Boolean(pref.autoApply)}
@@ -2157,8 +2166,11 @@ function Inbox() {
                         Analyser
                       </button>
                     )}
-                    {fullFeatures && (
+                    {/* Archiving or deleting all of a sender's mail works on
+                        both transports; a rule is Gmail-only for now. */}
+                    {known && (
                     <div className="flex items-center gap-0.5">
+                      {can('rules') && (
                       <button
                         onClick={() => handleCreateSenderRule(sender)}
                         className="btn-ghost btn-sm btn-icon text-brand-600 hover:bg-brand-50"
@@ -2167,6 +2179,7 @@ function Inbox() {
                       >
                         <Bolt size={17} />
                       </button>
+                      )}
                       <button
                         onClick={() => handleApplyBulk(sender, 'archive')}
                         className="btn-ghost btn-sm btn-icon"

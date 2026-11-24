@@ -15,7 +15,7 @@ import PageHead from '../components/hotel/PageHead';
 import { initials } from '../components/hotel/avatar';
 import { useInstance } from '../contexts/InstanceContext';
 import { useMailbox } from '../contexts/EmailContext';
-import { AI_READS } from '../components/landing/features';
+import { AI_READS, canPromise } from '../components/landing/features';
 
 // Go zero-value dates come back as year 1, which would render as "1 janvier 1".
 // Treat anything before Mailsorter existed as "unknown" rather than printing it.
@@ -143,10 +143,11 @@ function Account() {
   // the way to the pricing page (which redirects away there) are the online
   // service's only.
   const { selfHosted } = useInstance();
-  // The auto-pilot runs on a mailbox reached through the Gmail API only (the
-  // IMAP analysis skips it), so it is named only there. Over IMAP a label is a
-  // folder: the week's filings read "Classé".
-  const { fullFeatures: autopilot, isImap } = useMailbox();
+  // The auto-pilot is named only where it runs: on a mailbox that has the
+  // `sender` feature (see GMAIL_ONLY), the Gmail API and IMAP alike today. Over
+  // IMAP a label is a folder: the week's filings read "Classé".
+  const { fullFeatures, isImap } = useMailbox();
+  const autopilot = canPromise('sender', fullFeatures);
   const [profile, setProfile] = useState(null);
   const [usage, setUsage] = useState(null);
   const [activity, setActivity] = useState(null);

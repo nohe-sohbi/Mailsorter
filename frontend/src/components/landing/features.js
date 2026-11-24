@@ -10,14 +10,9 @@
 // selection by hand, and the rules' "Étiqueter", still go through the Gmail
 // API: the screens keep those closed on `fullFeatures`, not on this list.
 // Each label carries its article, because it is used inside sentences.
-// `sender` is acting on a whole sender at once: archiving or deleting all of
-// its emails, and its auto-pilot (the AI's verdict applied by itself at each
-// analysis), which the IMAP analysis skips.
 export const GMAIL_ONLY = {
   rules: 'les règles',
   snooze: 'le report',
-  unsubscribe: 'le désabonnement',
-  sender: 'les actions par expéditeur',
 };
 
 export function isGmailOnly(feature) {
