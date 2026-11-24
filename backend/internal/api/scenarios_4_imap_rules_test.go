@@ -19,6 +19,12 @@ package api
 // it (the IMAP listing reads the envelope only): the sentence about it puts
 // the word in the body alone, never in the subject nor the sender.
 //
+// Two answers of Nohé's shape the rest. The rules a sync applies on its own
+// concern the mails that arrive, so a mail put back by "Annuler" after a rule
+// stays in the inbox through the syncs that follow. And a mail that leaves
+// the inbox takes a new number in its new folder, so a rule that ranges and
+// stars a mail must do both whichever comes first.
+//
 // Filing a mail into a folder by a rule ("Étiqueter Factures" over IMAP) is
 // not here: it comes with the filing of a mail into a folder.
 
@@ -223,7 +229,7 @@ func TestScenarios_IMAPRules(t *testing.T) {
 			},
 		},
 		{
-			phrase: "Sur une boîte IMAP, avec l'option « appliquer mes règles automatiquement » activée, un mail qui arrive et correspond à une règle est rangé dès la synchronisation qui le reçoit.",
+			phrase: "Sur une boîte IMAP, avec l'option « appliquer mes règles automatiquement » activée, un mail qui arrive et correspond à une règle est rangé dès la synchronisation qui le reçoit, et c'est noté dans l'historique.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				moi := app.imapPerson(imapInboxOwner)
@@ -237,7 +243,7 @@ func TestScenarios_IMAPRules(t *testing.T) {
 
 				// Two mails arrive, each concerned by a rule, then
 				// "Synchroniser".
-				moi.receive(shopOrder, travelOffer)
+				arrived := moi.receive(shopOrder, travelOffer)
 				moi.sync()
 
 				// Right after that sync: on the server, and on the screen.
@@ -250,6 +256,23 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				// The control: the mail no rule concerns stays where it was.
 				moi.expectOnServer(serverInbox, bankStatement.Subject)
 				moi.expectShows(first[0], bankStatement.Subject)
+
+				// The Historique screen: a line from the rules for each mail
+				// they ranged at that sync.
+				for _, c := range []struct {
+					uid     string
+					mail    incoming
+					rule    string
+					did     string
+					actions []string
+				}{
+					{arrived[0], shopOrder, "Archiver la boutique", "archivé", []string{"archive"}},
+					{arrived[1], travelOffer, "Jeter les offres de voyage", "mis à la corbeille", []string{"trash", "delete"}},
+				} {
+					if _, ok := ruleLineFor(moi, c.uid, c.actions...); !ok {
+						app.failf("l'historique de %s devrait noter que la règle « %s » a %s le mail n°%s %q à la synchronisation qui l'a reçu, il ne le note pas (lignes de ce mail : %s)", moi.email, c.rule, c.did, c.uid, c.mail.Subject, describeHistory(moi.historyLinesOf(c.uid)))
+					}
+				}
 			},
 		},
 		{
@@ -464,6 +487,98 @@ func TestScenarios_IMAPRules(t *testing.T) {
 					moi.expectNotOnServer(c.folder, c.mail.Subject, "« Annuler » l'a remis dans la boîte de réception")
 				}
 				// The control: the mail no rule concerns is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un mail que tu as remis dans ta boîte avec « Annuler » après une règle n'est pas rangé de nouveau par tes règles aux synchronisations suivantes, même avec l'option activée.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapInboxOwner)
+				moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", toArchive)
+				moi.rule("Jeter les offres de voyage", 2, rules.FieldFrom, rules.OpContains, "voyages.fr", toTrash)
+				moi.setAutoApplyRules(true)
+
+				// Two mails arrive and the rules range them at the sync that
+				// receives them.
+				arrived := moi.receive(shopOrder, travelOffer)
+				moi.sync()
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "une règle vient de l'archiver à la synchronisation qui l'a reçu")
+				moi.requireOnServer(serverTrash, travelOffer.Subject, "une règle vient de le mettre à la corbeille à la synchronisation qui l'a reçu")
+
+				// "Annuler" on each line of the Historique screen: the only
+				// "Annuler" a rule offers.
+				cases := []struct {
+					uid     string
+					mail    incoming
+					folder  string
+					what    string
+					actions []string
+				}{
+					{arrived[0], shopOrder, serverArchive, "l'archivage", []string{"archive"}},
+					{arrived[1], travelOffer, serverTrash, "la mise à la corbeille", []string{"trash", "delete"}},
+				}
+				for _, c := range cases {
+					line, ok := ruleLineFor(moi, c.uid, c.actions...)
+					if !ok {
+						app.fatalf("l'historique de %s ne montre pas %s du mail n°%s %q par une règle : il n'y a rien à annuler, le scénario ne prouve rien (lignes de ce mail : %s)", moi.email, c.what, c.uid, c.mail.Subject, describeHistory(moi.historyLinesOf(c.uid)))
+					}
+					if got := moi.undoFromHistory(line); got.code != http.StatusOK {
+						app.fatalf("« Annuler » dans l'historique sur %s du mail n°%s %q par une règle devrait répondre 200, le serveur a répondu %s : le mail n'est pas remis dans ta boîte, le scénario ne prouve rien", c.what, c.uid, c.mail.Subject, got)
+					}
+					moi.requireOnServer(serverInbox, c.mail.Subject, "« Annuler » vient de le remettre dans ta boîte de réception")
+				}
+
+				// The syncs that follow, the option still on. A mail that
+				// arrives between them is the control: the rules still range
+				// what arrives, so it is not their being off that leaves the
+				// two mails in the inbox.
+				moi.sync()
+				moi.receive(shopSale)
+				moi.sync()
+
+				for _, c := range cases {
+					why := "tu l'as remis dans ta boîte avec « Annuler » : les règles ne doivent pas le ranger de nouveau"
+					moi.expectOnServer(serverInbox, c.mail.Subject)
+					moi.expectNotOnServer(c.folder, c.mail.Subject, why)
+					moi.expectBackInInbox(c.mail.Subject, "deux synchronisations après « Annuler » sur "+c.what+" par une règle")
+				}
+				moi.expectOnServer(serverArchive, shopSale.Subject)
+				moi.expectNotOnServer(serverInbox, shopSale.Subject, "il est arrivé après « Annuler », la règle « Archiver la boutique » l'archive à la synchronisation qui le reçoit")
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, une règle qui range et met en favori fait les deux, quel que soit l'ordre de ses actions.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+				// The two orders: over IMAP the archive moves the mail to
+				// another folder, where the server numbers it anew, so the
+				// star must reach it there when it comes second.
+				moi.rule("Archiver puis suivre la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", toArchive, toStar)
+				moi.rule("Suivre puis archiver les voyages", 2, rules.FieldFrom, rules.OpContains, "voyages.fr", toStar, toArchive)
+
+				if got := moi.applyRules(); got.code != http.StatusOK {
+					app.failf("« Appliquer mes règles » sur la boîte IMAP de %s devrait répondre 200 et appliquer ses règles, le serveur a répondu %s", moi.email, got)
+				}
+
+				for _, c := range []struct {
+					uid  string
+					mail incoming
+					rule string
+				}{
+					{uids[1], shopOrder, "Archiver puis suivre la boutique"},
+					{uids[2], travelOffer, "Suivre puis archiver les voyages"},
+				} {
+					moi.expectOnServer(serverArchive, c.mail.Subject)
+					moi.expectNotOnServer(serverInbox, c.mail.Subject, "la règle « "+c.rule+" » l'a archivé")
+					moi.expectDoesNotShow(c.mail.Subject, "la règle « "+c.rule+" » l'a archivé")
+					if heldOnServer(moi, serverArchive, c.mail.Subject) && !moi.flaggedOnServer(serverArchive, c.mail.Subject) {
+						app.failf("le mail %q devrait être en favori dans le dossier %s du serveur IMAP de %s, puisque la règle « %s » l'archive et le met en favori : il y est, mais pas en favori", c.mail.Subject, serverArchive, moi.email, c.rule)
+					}
+				}
+				// The control: the mail no rule concerns stays where it was.
+				moi.expectOnServer(serverInbox, bankStatement.Subject)
 				moi.expectShows(uids[0], bankStatement.Subject)
 			},
 		},
