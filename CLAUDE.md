@@ -406,15 +406,21 @@ not answer gets the boot-error screen instead, which is a different branch.
   so the header drops its pricing entry and `/pricing` redirects instead of
   rendering a page with no offer. The SPA still hardcodes no provider: the connect
   surfaces render whatever `GET /api/providers` returns.
-- **A `Route.Note` in `internal/provider/catalog.go` is USER-FACING COPY.** It reads
-  like a developer note in the source and it is rendered verbatim on `/connect`, so
-  it follows the UI-string rule: French, accented, ASCII punctuation. The same goes
-  for a new `Blocker`: add its French sentence to `BLOCKER_COPY` in
-  `components/MailboxBriefing.js` or the screen silently drops it, which is worse
-  than showing nothing, because the blocker is the reason the connection is about
-  to fail. `/connect` is the one screen that renders it (the landing's sign-in
-  asks for an account password, not a mailbox credential): keep that table in this
-  one file, since two copies would drift.
+- **A `Route.Note` in `internal/provider/catalog.go` is never shown to the user.**
+  `GET /api/providers` sends it as `note`, but it is written for whoever maintains
+  the catalog (compliance, bandwidth, a pitch, some of it unaccented), and the SPA
+  does not render it. What a user must know before creating the password is said
+  again, in French, in `PROVIDER_TIPS` in `components/MailboxBriefing.js`, keyed by
+  the provider's key and rendered on `/connect` under the detected provider. When a
+  note says something the user has to act on (Orange's "clé d'accès", iCloud
+  showing the password only once), add or update its tip there, or the screen stays
+  silent about it. A tip only adds a sentence to a provider the server returned; it
+  never makes one appear. The same goes for a new `Blocker`: add its French
+  sentence to `BLOCKER_COPY` in the same file or the screen silently drops it,
+  which is worse than showing nothing, because the blocker is the reason the
+  connection is about to fail. `/connect` is the one screen that renders them (the
+  landing's sign-in asks for an account password, not a mailbox credential): keep
+  both tables in this one file, since two copies would drift.
 - Session identity lives in `localStorage` (`accessToken`, `userEmail`). Gamification
   state lives in `localStorage` too (`ui/streak.js`, key `mailsorter_gamify`), and so
   does whether the triage plan is folded (`mailsorter_plan_collapsed`), a per-browser

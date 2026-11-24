@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert } from '../ui/icons';
+import { Alert, Lock } from '../ui/icons';
 import { canConnectByPassword, imapLegend, imapRouteOf } from './landing/features';
 
 // What a mailbox route means, in French, in ONE place.
@@ -10,9 +10,11 @@ import { canConnectByPassword, imapLegend, imapRouteOf } from './landing/feature
 // no sentence is silently dropped, which is worse than showing nothing: the
 // blocker IS the reason the connection is about to fail.
 //
-// Nothing here knows a provider. It renders what GET /api/providers returned
+// Nothing here lists providers. It renders what GET /api/providers returned
 // and matches the typed domain against that same catalog, so a provider the
-// server offers and the screen hides, or the reverse, cannot happen.
+// server offers and the screen hides, or the reverse, cannot happen. The one
+// thing keyed by provider is PROVIDER_TIPS below, which only adds a sentence
+// to a provider the server returned.
 
 // BLOCKER_COPY translates the catalog's blocker vocabulary. These are
 // enumeration values, not providers: writing them out here does not recreate
@@ -34,6 +36,24 @@ const BLOCKER_COPY = {
   'own-cloud-project': "Ce chemin demande votre propre projet Google Cloud.",
   'datacenter-ip':
     "Ce fournisseur note les connexions selon leur origine et refuse parfois celles qui viennent d'un hébergeur. Si la connexion échoue sans raison visible, c'est la première piste.",
+};
+
+// What to know before creating the password, for the providers whose catalog
+// entry says something the user has to act on.
+//
+// The catalog's own note (Route.Note, sent as `note` by GET /api/providers) is
+// written for whoever maintains the catalog: compliance, bandwidth, a pitch,
+// half of it without accents. It is never shown. Its useful part is said again
+// here, for the user, keyed by the provider's key. A key the server does not
+// return is simply never read: this table does not make a provider appear.
+const PROVIDER_TIPS = {
+  orange:
+    "Chez Orange, ce mot de passe s'appelle une « clé d'accès ». Créez-la dans l'espace sécurité de votre compte Orange : ce n'est pas le mot de passe du compte, et c'est elle qu'il faut saisir ici.",
+  icloud:
+    "Apple n'affiche ce mot de passe qu'une seule fois, au moment où vous le créez : gardez la page ouverte et copiez-le tout de suite.",
+  yahoo: 'Chez Yahoo, ce mot de passe se crée dans la section des connexions externes de votre compte.',
+  proton:
+    'Proton passe par Proton Mail Bridge, installé sur la machine où tourne Mailsorter. Saisissez le mot de passe que Bridge affiche pour cette adresse, pas celui de votre compte Proton.',
 };
 
 function normalizeDomain(address) {
@@ -64,16 +84,22 @@ function notYetCopy(provider) {
   if (!route) {
     const viaMicrosoft = (provider.routes || []).some((r) => r.transport === 'graph');
     return viaMicrosoft
-      ? "Cette messagerie passe par l'API de Microsoft, que Mailsorter n'utilise pas encore. Elle ne se branche pas encore ici."
-      : "Cette messagerie ne se branche pas encore ici.";
+      ? "Cette messagerie passe par l'API de Microsoft, que Mailsorter n'utilise pas encore. Elle ne peut pas être branchée ici."
+      : 'Cette messagerie ne se branche pas encore ici.';
   }
-  return "Mailsorter ne connaît pas encore le serveur de cette messagerie, et ne sait pas encore le trouver seul : elle ne se branche pas encore ici.";
+  return 'Mailsorter ne connaît pas le serveur de cette messagerie et ne sait pas encore le trouver tout seul. Elle ne peut donc pas être branchée ici.';
 }
 
 // The briefing for the address being typed in the address-and-password form,
-// so it reads the provider's IMAP route, the one that form goes through. The
-// catalog's notes are not shown: they are written for whoever maintains it.
-function ProviderBriefing({ provider }) {
+// so it reads the provider's IMAP route, the one that form goes through, plus
+// what to know before creating the password (PROVIDER_TIPS).
+//
+// `googleOn` is the instance holding Google credentials, so the "Connecter avec
+// Google" button sits above the form. An address on a company's own domain may
+// be a Google Workspace mailbox, which the server cannot tell from the domain:
+// it lands on the generic entry, which cannot connect it, while that button
+// can. The generic entry says so.
+function ProviderBriefing({ provider, googleOn = false }) {
   if (!provider) return null;
 
   if (!canConnectByPassword(provider)) {
@@ -84,12 +110,19 @@ function ProviderBriefing({ provider }) {
           <span className="chip bg-ink-100 text-ink-600">Bientôt</span>
         </div>
         <p className="mt-3 text-sm leading-relaxed text-ink-600">{notYetCopy(provider)}</p>
+        {googleOn && provider.key === 'imap' && (
+          <p className="mt-3 text-sm leading-relaxed text-ink-600">
+            S'il s'agit d'une adresse Google Workspace (Gmail au nom de votre organisation), branchez-la avec le
+            bouton « Connecter avec Google » en haut de la page.
+          </p>
+        )}
       </div>
     );
   }
 
   const route = imapRouteOf(provider);
   const blockers = (route.blockers || []).filter((b) => BLOCKER_COPY[b]);
+  const tip = PROVIDER_TIPS[provider.key];
 
   return (
     <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-6">
@@ -99,6 +132,13 @@ function ProviderBriefing({ provider }) {
           {route.imap.host}:{route.imap.port}
         </span>
       </div>
+
+      {tip && (
+        <p className="mt-4 flex gap-2.5">
+          <Lock size={15} className="mt-0.5 shrink-0 text-brand-600" />
+          <span className="text-xs leading-relaxed text-ink-700">{tip}</span>
+        </p>
+      )}
 
       {blockers.length > 0 && (
         <ul className="mt-4 space-y-2.5">
@@ -122,4 +162,4 @@ function ProviderBriefing({ provider }) {
   );
 }
 
-export { BLOCKER_COPY, normalizeDomain, detectProvider, ProviderBriefing };
+export { BLOCKER_COPY, PROVIDER_TIPS, normalizeDomain, detectProvider, ProviderBriefing };
