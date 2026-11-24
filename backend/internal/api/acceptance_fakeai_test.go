@@ -46,11 +46,25 @@ func newFakeAI() *fakeAI {
 
 func (f *fakeAI) close() { f.server.Close() }
 
-// willSay sets the verdict the fake model gives every email from now on.
+// willSay sets the verdict the fake model gives every email from now on. It
+// names no label: a label left over from willLabel would ride along with an
+// "archive" verdict and be stored on that proposal.
 func (f *fakeAI) willSay(action string, confidence float64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.verdict.Action = action
+	f.verdict.LabelName = ""
+	f.verdict.Confidence = confidence
+}
+
+// willLabel makes the fake model propose to label every email from now on,
+// with the label it names: a "label" verdict without a name is not one a real
+// model gives (see the prompts in internal/ai/prompts.go).
+func (f *fakeAI) willLabel(name string, confidence float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verdict.Action = "label"
+	f.verdict.LabelName = name
 	f.verdict.Confidence = confidence
 }
 

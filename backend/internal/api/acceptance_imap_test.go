@@ -46,6 +46,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -447,4 +448,119 @@ func (p *imapPerson) expectDoesNotShow(subject, why string) {
 			a.failf("la boîte de réception de %s ne devrait pas montrer le mail %q (%s), elle le montre sous le n°%s", p.email, subject, why, m.MessageID)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The AI's triage plan, and the history, as this person sees them
+// ---------------------------------------------------------------------------
+
+// analyze is "Trier avec l'IA" on these mails, as this person, and expects the
+// analysis to go through: a scenario about what happens to a proposal proves
+// nothing if the AI made none.
+func (p *imapPerson) analyze(uids ...string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": uids})
+	if code != http.StatusOK {
+		a.fatalf("l'analyse par l'IA des mails n°%s de %s a répondu %d (attendu 200) : %v", strings.Join(uids, ", n°"), p.email, code, out)
+	}
+}
+
+// plan is the AI's triage plan as this person's inbox loads it
+// (GET /api/ai/suggestions): the proposals still waiting for an answer. It is
+// what the plan shows again after a refresh, so a proposal missing from it is
+// one the person can no longer apply or ignore.
+func (p *imapPerson) plan() []models.AISuggestion {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/ai/suggestions", nil)
+	if code != http.StatusOK {
+		a.fatalf("le plan de l'IA de %s ne s'affiche pas : GET /api/ai/suggestions a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var plan []models.AISuggestion
+	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+		a.fatalf("réponse de GET /api/ai/suggestions illisible pour %s : %v", p.email, err)
+	}
+	return plan
+}
+
+// inPlan reports whether the plan still shows this proposal.
+func (p *imapPerson) inPlan(id string) bool {
+	p.app.t.Helper()
+	for _, s := range p.plan() {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// proposalFor returns the proposal the plan shows for this mail, and fails
+// the scenario when it shows none.
+func (p *imapPerson) proposalFor(uid string) models.AISuggestion {
+	a := p.app
+	a.t.Helper()
+	for _, s := range p.plan() {
+		if s.EmailID == uid {
+			return s
+		}
+	}
+	a.fatalf("le plan de l'IA de %s ne propose rien pour le mail n°%s : le scénario ne prouve rien", p.email, uid)
+	return models.AISuggestion{}
+}
+
+// proposalStatus is what the database holds for a proposal ("pending",
+// "applied", "rejected"). Only for a failure message: it says why the plan no
+// longer shows a proposal.
+func (p *imapPerson) proposalStatus(id string) string {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Sprintf("identifiant %q illisible", id)
+	}
+	var s models.AISuggestion
+	if err := a.h.db.AISuggestions().FindOne(ctx, bson.M{"userId": p.email, "_id": oid}).Decode(&s); err != nil {
+		return fmt.Sprintf("introuvable (%v)", err)
+	}
+	return s.Status
+}
+
+// applyProposal is "Appliquer" on one proposal of the plan, as this person,
+// and returns the answer, whatever it is.
+func (p *imapPerson) applyProposal(id string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/apply", map[string]string{"suggestionId": id})
+	return answer{code: code, body: out}
+}
+
+// tidyAll is "Tout ranger" on these proposals of the plan, as this person, and
+// returns the answer, whatever it is.
+func (p *imapPerson) tidyAll(ids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/apply-batch", map[string]interface{}{"suggestionIds": ids})
+	return answer{code: code, body: out}
+}
+
+// history returns this person's action log for one mail, oldest first: what
+// their Historique screen lists for it. Scoped to this person, since another
+// person's mail may carry the same number.
+func (p *imapPerson) history(uid string) []models.ActionLog {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cur, err := a.h.db.ActionLog().Find(ctx, bson.M{"userId": p.email, "messageId": uid},
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}))
+	if err != nil {
+		a.fatalf("lecture de l'historique de %s : %v", p.email, err)
+	}
+	var rows []models.ActionLog
+	if err := cur.All(ctx, &rows); err != nil {
+		a.fatalf("lecture de l'historique de %s : %v", p.email, err)
+	}
+	return rows
 }
