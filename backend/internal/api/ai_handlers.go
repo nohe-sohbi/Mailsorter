@@ -262,9 +262,17 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		bson.M{"$set": appliedFields(suggestion, session.Transport)},
 	)
 	meta := h.identityIn(ctx, session, userEmail, suggestion.EmailID)
-	h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion, session.Transport))
+	filed := filedUnder(suggestion, session.Transport)
+	h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
+	answer := map[string]string{"status": "applied"}
+	if filed != "" {
+		// The name it was filed under, settled when applying: over IMAP the
+		// folder ("Factures"), which can differ from the name the proposal
+		// was stored with ("Facture"). The screen says this one.
+		answer["labelName"] = filed
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // ApplyBatch applies a list of AI suggestions in a single request.
@@ -303,6 +311,9 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	protectedList := h.protectedValues(ctx, userEmail)
 	applied := 0
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
+	// The name each applied filing went under, settled when applying (see
+	// ApplySuggestion), keyed by suggestion id.
+	labelNames := map[string]string{}
 	failed := 0
 	protectedSkipped := 0
 	// Why some failed, when the user can do something about it: each
@@ -365,7 +376,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			bson.M{"$set": appliedFields(suggestion, session.Transport)},
 		)
 		meta := identities[suggestion.EmailID]
-		h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion, session.Transport))
+		filed := filedUnder(suggestion, session.Transport)
+		h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
+		if filed != "" {
+			labelNames[id] = filed
+		}
 		applied++
 		appliedIDs = append(appliedIDs, id)
 	}
@@ -375,6 +390,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		"failed":           failed,
 		"total":            len(req.SuggestionIDs),
 		"appliedIds":       appliedIDs,
+		"labelNames":       labelNames,
 		"protectedSkipped": protectedSkipped,
 		// Lets the client offer "Annuler" only where it would work, the way
 		// batch-action already says so for a selection.

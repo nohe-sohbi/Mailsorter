@@ -171,7 +171,13 @@ func (d *Database) dropStaleAnalysisCache(ctx context.Context) {
 // drops from the shared analysis cache the verdicts of another version.
 // It is best-effort: a failure on one index does not block the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
-	d.dropStaleAnalysisCache(ctx)
+	// Last, under its own time: on a large cache that never expired, the
+	// deletion must not eat the time the indexes are given.
+	defer func() {
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		d.dropStaleAnalysisCache(dctx)
+	}()
 	var firstErr error
 	for _, name := range legacyEmailIndexes {
 		if _, err := d.Emails().Indexes().DropOne(ctx, name); err != nil && !isMissingIndex(err) && firstErr == nil {

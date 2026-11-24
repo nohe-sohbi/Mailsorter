@@ -372,8 +372,13 @@ func TestAcceptance_IMAPFilingSettlesTheNameWhenApplying(t *testing.T) {
 	moi.sync()
 	id := storedProposal(app, moi.email, uids[0], "Facture")
 
-	if got := moi.applyProposal(id); got.code != http.StatusOK {
+	got := moi.applyProposal(id)
+	if got.code != http.StatusOK {
 		t.Fatalf("Appliquer answered %s", got)
+	}
+	// The screen says where the mail went from this answer: the folder.
+	if name, _ := got.body["labelName"].(string); name != "Factures" {
+		t.Errorf("Appliquer answers the name %q, want the folder \"Factures\"", name)
 	}
 	moi.expectOnServer("Factures", electricityBill.Subject)
 	if moi.hasFolder("Facture") {
@@ -383,6 +388,27 @@ func TestAcceptance_IMAPFilingSettlesTheNameWhenApplying(t *testing.T) {
 	if name, _ := moi.historyLineSent(line.ID)["labelName"].(string); name != "Factures" {
 		t.Errorf("the history records the filing under %q, want the folder \"Factures\"", name)
 	}
+}
+
+// "Tout ranger" settles the name the same way, and says it per proposal: the
+// screen names the folder the mails went into, not the stored name.
+func TestAcceptance_IMAPFilingTidyAllAnswersTheFolder(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{theme: "hors rapport"})
+	moi := app.imapPerson(filingOwner)
+	moi.newFolderElsewhere("Factures")
+	uids := moi.receive(electricityBill)
+	moi.sync()
+	id := storedProposal(app, moi.email, uids[0], "Facture")
+
+	got := moi.tidyAll(id)
+	if got.code != http.StatusOK {
+		t.Fatalf("Tout ranger answered %s", got)
+	}
+	names, _ := got.body["labelNames"].(map[string]interface{})
+	if name, _ := names[id].(string); name != "Factures" {
+		t.Errorf("Tout ranger answers the names %v, want %q -> \"Factures\"", got.body["labelNames"], id)
+	}
+	moi.expectOnServer("Factures", electricityBill.Subject)
 }
 
 // "Tout ranger" gives the same reason as "Appliquer" for a filing it refuses:

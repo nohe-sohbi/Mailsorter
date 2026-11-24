@@ -672,7 +672,7 @@ function Inbox() {
       }
       // Over IMAP a label is a folder: "Classé dans « Factures »".
       const msg = `${actionMeta(act, { folders: isImap }).past}${
-        act === 'label' ? labelPlace(suggestion.labelName, { folders: isImap }) : ''
+        act === 'label' ? labelPlace(data?.labelName || suggestion.labelName, { folders: isImap }) : ''
       }`;
       if (isReversible(act, isImap)) undoToast(suggestion.emailId, act, msg);
       else toast.success(msg);

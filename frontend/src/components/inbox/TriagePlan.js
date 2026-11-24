@@ -54,14 +54,17 @@ const emailsCount = (n) => `${n} email${plural(n)}`;
 // "6 emails archivés", "8 emails gardés dans la boîte", "2 emails étiquetés
 // « Factures »" (over IMAP "2 emails classés dans « Factures »"), and "15
 // emails rangés" only when the verbs were mixed.
-function appliedMessage(groups, applied, folders) {
+// The place named is the one the server filed under (labelNames, by
+// suggestion id): over IMAP it settles the folder when applying, and a
+// proposal stored as « Facture » can land in « Factures ».
+function appliedMessage(groups, applied, folders, labelNames = {}) {
   const n = applied.length;
   const verbs = new Set(groups.map((g) => g.action));
   if (verbs.size > 1) return `${emailsCount(n)} rangé${plural(n)}`;
   const [verb] = verbs;
   if (verb === 'keep') return `${emailsCount(n)} gardé${plural(n)} dans la boîte`;
-  const g = groups[0];
-  const where = groups.length === 1 && verb === 'label' ? labelPlace(g.labelName, { folders }) : '';
+  const places = new Set(applied.map((s) => labelNames[idOf(s)] || s.labelName));
+  const where = verb === 'label' && places.size === 1 ? labelPlace([...places][0], { folders }) : '';
   return `${emailsCount(n)} ${pastParticiple(verb, n, { folders }).toLowerCase()}${where}`;
 }
 
@@ -176,11 +179,13 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
         toast.error(
           protectedSkipped
             ? 'Rien appliqué : ces expéditeurs sont protégés.'
-            : "Le tri n'a pas pu être appliqué. Réessayez."
+            : // The server says why when trying again would not help (a
+              // folder Mailsorter does not file into, too many new folders).
+              data?.message || "Le tri n'a pas pu être appliqué. Réessayez."
         );
         return;
       }
-      let message = appliedMessage(targets, applied, isImap);
+      let message = appliedMessage(targets, applied, isImap, data?.labelNames);
       if (protectedSkipped) message += ` · ${protectedSkipped} protégé${plural(protectedSkipped)} laissé${plural(protectedSkipped)} en place`;
       const movedSomething = applied.some((s) => canonicalAction(s.action) !== 'keep');
       // Only offered where batch-undo can actually do it (the server says so):
