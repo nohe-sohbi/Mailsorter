@@ -574,6 +574,11 @@ func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow
 		}
 		return nil
 	}
+	if time.Since(row.LeftAt) > undoWindow {
+		// The same window the history offers "Annuler" in, whether or not a
+		// sync has dropped the move yet.
+		return errUndoExpired
+	}
 	if row.MovedTo.Folder == "" {
 		return errNotWhereLeft
 	}
