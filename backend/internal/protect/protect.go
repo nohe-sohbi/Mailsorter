@@ -1,7 +1,9 @@
 // Package protect implements Mailsorter's safety net: a per-user list of
 // protected senders (VIP) whose emails must never be archived, trashed or
 // deleted by an automated triage pass, be it the AI, a deterministic rule, the
-// sender auto-pilot, or a bulk action.
+// sender auto-pilot, or a bulk action. On a mailbox made of folders (IMAP),
+// where a label is a folder, they are not filed into one either
+// (AllowedOnFolders).
 //
 // The whole package is pure (no I/O) so the guard logic can be tested
 // exhaustively. Callers load the user's protected values once and ask Allowed
@@ -37,6 +39,25 @@ var destructive = map[string]bool{
 // leave the email in place and are therefore never blocked.
 func IsDestructive(action string) bool {
 	return destructive[strings.ToLower(strings.TrimSpace(action))]
+}
+
+// ActionLabel is filing an email under a label.
+const ActionLabel = "label"
+
+// IsDestructiveOnFolders is IsDestructive for a mailbox made of folders (IMAP),
+// where a label is the folder of that name: labelling an email files it there,
+// out of the inbox, the way archiving does. So there it is shielded too.
+func IsDestructiveOnFolders(action string) bool {
+	return IsDestructive(action) || strings.ToLower(strings.TrimSpace(action)) == ActionLabel
+}
+
+// AllowedOnFolders is Allowed for a mailbox made of folders (IMAP): a
+// protected sender's email is not filed away there either.
+func AllowedOnFolders(action, from string, entries []string) bool {
+	if !IsDestructiveOnFolders(action) {
+		return true
+	}
+	return !Match(from, entries)
 }
 
 // Kind classifies a protected entry as a full address (contains "@" with a local

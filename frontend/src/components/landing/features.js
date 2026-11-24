@@ -1,18 +1,19 @@
 // What the landing may promise, in one place.
 //
 // GMAIL_ONLY lists the features still reachable only through the Gmail API:
-// over IMAP they answer 501 (see gmailClientFor in backend/internal/api), or,
-// for labels, have no equivalent at all (a message sits in one folder, see
-// internal/mailbox/imap.go), so the landing must not promise them to someone
-// who can only connect a mailbox. Porting a feature to IMAP is deleting its
-// line here: the corridor badges, the key-board legend, the hall, the demo and
-// the "Outlook" answer all follow.
+// over IMAP they answer 501 (see gmailClientFor in backend/internal/api), so
+// the landing must not promise them to someone who can only connect a
+// mailbox. Porting a feature to IMAP is deleting its line here: the corridor
+// badges, the key-board legend, the hall, the demo and the "Outlook" answer
+// all follow. Classifying left it: over IMAP the AI's proposal files the mail
+// in the folder of that name (internal/mailbox/imap.go). Classifying a
+// selection by hand, and the rules' "Étiqueter", still go through the Gmail
+// API: the screens keep those closed on `fullFeatures`, not on this list.
 // Each label carries its article, because it is used inside sentences.
 // `sender` is acting on a whole sender at once: archiving or deleting all of
 // its emails, and its auto-pilot (the AI's verdict applied by itself at each
 // analysis), which the IMAP analysis skips.
 export const GMAIL_ONLY = {
-  label: 'le classement',
   rules: 'les règles',
   snooze: 'le report',
   unsubscribe: 'le désabonnement',
@@ -28,12 +29,6 @@ export function isGmailOnly(feature) {
 export function canPromise(feature, isConfigured) {
   return Boolean(isConfigured) || !isGmailOnly(feature);
 }
-
-// The one sentence a screen shows where a Gmail-only control would have been,
-// for a mailbox connected over IMAP. The control itself is hidden, never shown
-// disabled: one rule everywhere, and this sentence only where a whole card or
-// a proposal would otherwise be left unexplained.
-export const IMAP_UNAVAILABLE = 'Pas encore disponible sur les boîtes IMAP.';
 
 // Whether one route of GET /api/providers
 // ({ transport, autodiscover, imap: { host, port } | null }) can be connected
@@ -78,13 +73,6 @@ export function imapRouteOf(provider) {
 // route, with its server known.
 export function canConnectByPassword(provider) {
   return isRecognizable(provider) && canConnectRoute(imapRouteOf(provider), false);
-}
-
-// Whether a verdict of the AI can be applied to this mailbox. Over IMAP a
-// "label" verdict has nothing to land on (a message sits in one folder) and
-// the server does nothing with it, so it is not offered as an action.
-export function canApplyVerdict(action, isImap) {
-  return !(isImap && action === 'label');
 }
 
 // What the model reads and where it goes, in the privacy vault's words, for

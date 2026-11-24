@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
 func TestProtectAnalysisDowngradesDestructive(t *testing.T) {
@@ -48,6 +49,25 @@ func TestAllowsWrapper(t *testing.T) {
 	}
 	if !allows("archive", "anyone@else.com", protectedList) {
 		t.Error("archive on unprotected sender should be allowed")
+	}
+}
+
+// Over IMAP a label files the mail into a folder, out of the inbox: the bulk
+// "Tout ranger" must not do that to a protected sender. Over the Gmail API the
+// mail stays in the inbox, and labelling stays allowed.
+func TestAllowsOnReadsALabelAsAMoveOverIMAP(t *testing.T) {
+	protectedList := []string{"vip@corp.com"}
+	if allowsOn(provider.TransportIMAP, "label", "VIP <vip@corp.com>", protectedList) {
+		t.Error("label on a protected sender over IMAP should not be allowed")
+	}
+	if !allowsOn(provider.TransportIMAP, "label", "anyone@else.com", protectedList) {
+		t.Error("label on an unprotected sender over IMAP should be allowed")
+	}
+	if !allowsOn(provider.TransportGmailAPI, "label", "vip@corp.com", protectedList) {
+		t.Error("label on a protected sender over the Gmail API should be allowed")
+	}
+	if allowsOn(provider.TransportGmailAPI, "archive", "vip@corp.com", protectedList) {
+		t.Error("archive on a protected sender over the Gmail API should not be allowed")
 	}
 }
 

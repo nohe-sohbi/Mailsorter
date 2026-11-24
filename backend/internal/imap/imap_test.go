@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -305,16 +306,141 @@ func TestApplyIsHarmlessWhenTheMessageIsAlreadyThere(t *testing.T) {
 	}
 }
 
-// Labelling has no IMAP equivalent, and the error has to say so in a way the
-// caller can tell apart from a failure, because the honest fix is to stop
-// offering it rather than to retry.
-func TestApplyReportsLabellingAsUnsupported(t *testing.T) {
+// A label over IMAP is the folder of that name: labelling files the message
+// there, out of the inbox, and makes the folder the first time. Read back off
+// the server, folders and counts, rather than trusting the command's reply.
+func TestApplyLabelFilesTheMessageIntoItsFolder(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendMessage(t, c, "INBOX")
 
-	err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: "Factures"})
-	if !errors.Is(err, mailbox.ErrNoIMAPEquivalent) {
-		t.Errorf("label over IMAP = %v, want mailbox.ErrNoIMAPEquivalent", err)
+	if err := c.Apply(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: "Factures"}); err != nil {
+		t.Fatalf("label Factures: %v", err)
+	}
+	if n := countIn(t, c, "Factures"); n != 1 {
+		t.Errorf("Factures holds %d message(s) after labelling, want 1", n)
+	}
+	if n := countIn(t, c, "INBOX"); n != 0 {
+		t.Errorf("INBOX holds %d message(s) after labelling, want 0", n)
+	}
+	if n := countIn(t, c, "Archive"); n != 0 {
+		t.Errorf("Archive holds %d message(s) after labelling, want 0: filed is not archived", n)
+	}
+	// Made subscribed: most mail programs show no other folder.
+	subscribed, err := c.c.List("", "Factures", &imapv2.ListOptions{SelectSubscribed: true}).Collect()
+	if err != nil || len(subscribed) != 1 {
+		t.Errorf("Factures subscribed = %v (%v), want it listed among the subscribed folders", subscribed, err)
+	}
+}
+
+// The user's own folder is found again rather than made twice, whatever the
+// case the label is spelled in, and a folder made in this session is found by
+// the next filing in it.
+func TestDestinationFindsTheUsersFolder(t *testing.T) {
+	mailboxes := standardMailboxes()
+	mailboxes["factures"] = nil
+	c := newTestServer(t, mailboxes)
+
+	got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "Factures"})
+	if err != nil || got != "factures" {
+		t.Errorf("Destination(Factures) with a folder \"factures\" = %q, %v; want the user's \"factures\"", got, err)
+	}
+	made, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "Banque"})
+	if err != nil || made != "Banque" {
+		t.Fatalf("Destination(Banque) = %q, %v; want it made", made, err)
+	}
+	if again, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "Banque"}); err != nil || again != "Banque" {
+		t.Errorf("Destination(Banque) a second time = %q, %v; want the folder just made", again, err)
+	}
+	if got := c.OwnFolders(); !reflect.DeepEqual(got, []string{"Banque", "factures"}) {
+		t.Errorf("OwnFolders = %v, want [Banque factures]", got)
+	}
+}
+
+// Filing never lands in a folder that has an action of its own: the inbox
+// (the message would be recorded as gone while it stays), the archive, the
+// trash or sent mail. Nothing is made under such a name either.
+func TestDestinationRefusesAFolderThatIsNotTheUsers(t *testing.T) {
+	c := newTestServer(t, map[string][]imapv2.MailboxAttr{
+		"INBOX":    nil,
+		"Archives": nil,
+		"Trash":    {imapv2.MailboxAttrTrash},
+		"Sent":     {imapv2.MailboxAttrSent},
+	})
+	for _, name := range []string{"INBOX", "inbox", "Archives", "trash", "Sent", "Brouillons"} {
+		if got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: name}); !errors.Is(err, ErrNotOwnFolder) {
+			t.Errorf("Destination(%q) = %q, %v; want ErrNotOwnFolder", name, got, err)
+		}
+	}
+	listed, err := c.c.List("", "Brouillons", nil).Collect()
+	if err != nil || len(listed) != 0 {
+		t.Errorf("a refused filing made the folder Brouillons: %v (%v)", listed, err)
+	}
+}
+
+// The folders a mail can be filed into, against a live server: the user's,
+// a folder inside another by its full name, and none of the special ones,
+// told by their names when the server does not mark them.
+func TestOwnFoldersLeavesOutTheSpecialFolders(t *testing.T) {
+	c := newTestServer(t, map[string][]imapv2.MailboxAttr{
+		"INBOX":          nil,
+		"Archive":        nil,
+		"Trash":          nil,
+		"Sent":           nil,
+		"Drafts":         nil,
+		"Junk":           nil,
+		"Projets":        nil,
+		"Projets/Maison": nil,
+	})
+	if got := c.OwnFolders(); !reflect.DeepEqual(got, []string{"Projets", "Projets/Maison"}) {
+		t.Errorf("OwnFolders = %v, want [Projets Projets/Maison]", got)
+	}
+}
+
+// notOwn is where the choice lives, so it is pinned on its own, with what a
+// live in-memory server cannot send (special-use attributes, \Noselect).
+func TestNotOwn(t *testing.T) {
+	cases := []struct {
+		name    string
+		folders []folderInfo
+		notOwn  []string
+	}{
+		{
+			name: "Gmail marks every special folder, so a label named like one is the user's",
+			folders: []folderInfo{
+				{Name: "INBOX"},
+				{Name: "[Gmail]", Attrs: []string{"\\Noselect", "\\HasChildren"}},
+				{Name: "[Gmail]/Tous les messages", Attrs: []string{"\\All"}},
+				{Name: "[Gmail]/Corbeille", Attrs: []string{"\\Trash"}},
+				{Name: "[Gmail]/Messages envoyés", Attrs: []string{"\\Sent"}},
+				{Name: "[Gmail]/Brouillons", Attrs: []string{"\\Drafts"}},
+				{Name: "[Gmail]/Spam", Attrs: []string{"\\Junk"}},
+				{Name: "[Gmail]/Suivis", Attrs: []string{"\\Flagged"}},
+				{Name: "[Gmail]/Important", Attrs: []string{"\\Important"}},
+				{Name: "Archives"},
+				{Name: "Factures"},
+			},
+			notOwn: []string{"INBOX", "[Gmail]", "[Gmail]/Tous les messages", "[Gmail]/Corbeille", "[Gmail]/Messages envoyés", "[Gmail]/Brouillons", "[Gmail]/Spam", "[Gmail]/Suivis", "[Gmail]/Important"},
+		},
+		{
+			name: "a server silent about special use: the special folders by their names",
+			folders: []folderInfo{
+				{Name: "INBOX"}, {Name: "Archives"}, {Name: "Corbeille"}, {Name: "Éléments envoyés"},
+				{Name: "Brouillons"}, {Name: "Courrier indésirable"}, {Name: "Spam"}, {Name: "Factures"},
+			},
+			notOwn: []string{"INBOX", "Archives", "Corbeille", "Éléments envoyés", "Brouillons", "Courrier indésirable", "Spam"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := notOwn(tc.folders)
+			want := map[string]bool{}
+			for _, n := range tc.notOwn {
+				want[n] = true
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("notOwn = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -515,14 +641,14 @@ func TestMoveToSaysWhereTheMessageLanded(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendWithMessageID(t, c, "INBOX", "<move-1@example.com>")
 
-	landed, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.FolderArchive, "<move-1@example.com>")
+	landed, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", uid), "Archive", "<move-1@example.com>")
 	if err != nil {
 		t.Fatalf("MoveTo: %v", err)
 	}
 	if landed.Folder != "Archive" || landed.ID == "" {
 		t.Fatalf("landed = %+v, want Archive with a UID", landed)
 	}
-	back, err := c.MoveTo(context.Background(), landed, mailbox.FolderInbox, "<move-1@example.com>")
+	back, err := c.MoveTo(context.Background(), landed, "INBOX", "<move-1@example.com>")
 	if err != nil {
 		t.Fatalf("MoveTo back: %v", err)
 	}
@@ -539,7 +665,7 @@ func TestMoveToSaysWhereTheMessageLanded(t *testing.T) {
 func TestMoveToReportsAMessageThatIsGone(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	appendWithMessageID(t, c, "INBOX", "<here@example.com>")
-	_, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", "999"), mailbox.FolderArchive, "")
+	_, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", "999"), "Archive", "")
 	if !errors.Is(err, ErrMessageGone) {
 		t.Errorf("MoveTo on a missing uid = %v, want ErrMessageGone", err)
 	}
@@ -566,7 +692,7 @@ func TestHasSaysWhetherTheMessageIsStillThere(t *testing.T) {
 	if there, err := c.Has(ref); err != nil || !there {
 		t.Fatalf("Has(%s) = %v, %v; want true", ref, there, err)
 	}
-	if _, err := c.MoveTo(context.Background(), ref, mailbox.FolderArchive, ""); err != nil {
+	if _, err := c.MoveTo(context.Background(), ref, "Archive", ""); err != nil {
 		t.Fatal(err)
 	}
 	if there, err := c.Has(ref); err != nil || there {
@@ -601,7 +727,7 @@ func TestIDAtReadsTheMessageIDOfANumber(t *testing.T) {
 	if otherID, _, _ := c.IDAt("INBOX", other); otherID == id {
 		t.Errorf("IDAt(other) = %q, the same as the tagged mail's", otherID)
 	}
-	if _, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", tagged), mailbox.FolderArchive, ""); err != nil {
+	if _, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", tagged), "Archive", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists, err := c.IDAt("INBOX", tagged); err != nil || exists {
@@ -642,7 +768,7 @@ func TestMoveRecordedNeverMovesAnotherMail(t *testing.T) {
 	}
 
 	// The recorded number names the stranger: ours is found by Message-ID.
-	landed, err := c.MoveRecorded(ctx, "Archive", stranger, mailbox.FolderInbox, oursID)
+	landed, err := c.MoveRecorded(ctx, "Archive", stranger, "INBOX", oursID)
 	if err != nil {
 		t.Fatalf("MoveRecorded = %v", err)
 	}
@@ -654,7 +780,7 @@ func TestMoveRecordedNeverMovesAnotherMail(t *testing.T) {
 	}
 
 	// Our mail is nowhere in the archive now: nothing moves, and it says so.
-	if _, err := c.MoveRecorded(ctx, "Archive", stranger, mailbox.FolderInbox, oursID); !errors.Is(err, ErrMessageGone) {
+	if _, err := c.MoveRecorded(ctx, "Archive", stranger, "INBOX", oursID); !errors.Is(err, ErrMessageGone) {
 		t.Errorf("MoveRecorded of a mail no longer there = %v, want ErrMessageGone", err)
 	}
 	if _, there, _ := c.IDAt("Archive", stranger); !there {

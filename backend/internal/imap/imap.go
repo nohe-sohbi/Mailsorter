@@ -23,6 +23,7 @@ import (
 	"log"
 	"mime"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,13 @@ var ErrNoSuchFolder = errors.New("imap: no mailbox matches the required special 
 // ErrMessageGone means the message a reference names is no longer in its
 // folder: another mail client moved it elsewhere or deleted it.
 var ErrMessageGone = errors.New("imap: the message is no longer in its folder")
+
+// ErrNotOwnFolder means a mail was to be filed into a folder that is not one
+// of the user's own: the inbox, a special folder (the archive, the trash, sent
+// mail, drafts, junk), or one that cannot hold mail. Those have actions of
+// their own, and filing there would archive or trash a mail under another name
+// (or, for the inbox, move it nowhere while it is recorded as gone).
+var ErrNotOwnFolder = errors.New("imap: not a folder of the user's own")
 
 // dialTimeout bounds the connection itself. Mail servers under load are slow to
 // accept, but a user waiting on a screen is not, and every caller here is on a
@@ -75,6 +83,10 @@ type Client struct {
 	// once at connect, because it costs a LIST and cannot change mid-session in
 	// any way that matters.
 	folders map[mailbox.Folder]string
+	// listed is every folder the server listed at connect, plus those this
+	// session made since: what OwnFolders offers, and where filing looks for
+	// the folder it names before making it.
+	listed []folderInfo
 	// selected is the mailbox currently selected, so repeated actions in the
 	// same folder do not re-SELECT.
 	selected string
@@ -183,6 +195,7 @@ func (c *Client) resolveFolders() error {
 		infos = append(infos, folderInfo{Name: data.Mailbox, Attrs: attrs})
 	}
 
+	c.listed = infos
 	c.folders = map[mailbox.Folder]string{mailbox.FolderInbox: "INBOX"}
 	for _, want := range []mailbox.Folder{mailbox.FolderArchive, mailbox.FolderTrash} {
 		if name, ok := pickFolder(want, infos); ok {
@@ -190,6 +203,95 @@ func (c *Client) resolveFolders() error {
 		}
 	}
 	return nil
+}
+
+// OwnFolders returns the full name of every folder of the user's own, sorted:
+// the folders a mail can be filed into ("Factures", "Projets/Maison" for a
+// folder inside another), which is what a label is over IMAP. Not the inbox,
+// not a special folder, not a folder that cannot hold mail (notOwn).
+func (c *Client) OwnFolders() []string {
+	skip := notOwn(c.listed)
+	names := make([]string, 0, len(c.listed))
+	for _, f := range c.listed {
+		if !skip[f.Name] {
+			names = append(names, f.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Destination returns the server's name for where op moves a message: a
+// special folder by what it is (op.To), or one of the user's own folders by
+// its full name (op.Into), made on the server when it does not exist yet,
+// which is how filing into "Factures" works the first time.
+//
+// The folder the user already has is found by its exact name first, then by
+// the same name in another case: names are case-sensitive on most servers, but
+// a user who keeps "factures" wants the mail there, not in a second folder
+// next to it. A name that is, or would be taken for, a folder that is not the
+// user's own answers ErrNotOwnFolder, and nothing is made.
+func (c *Client) Destination(op mailbox.IMAPOp) (string, error) {
+	if op.Into == "" {
+		name, ok := c.folders[op.To]
+		if !ok {
+			return "", fmt.Errorf("%w: %s", ErrNoSuchFolder, op.To)
+		}
+		return name, nil
+	}
+	want := strings.TrimSpace(op.Into)
+	if want == "" {
+		return "", mailbox.ErrLabelRequired
+	}
+	skip := notOwn(c.listed)
+	found := ""
+	for _, f := range c.listed {
+		if f.Name == want {
+			found = f.Name
+			break
+		}
+	}
+	if found == "" {
+		for _, f := range c.listed {
+			if strings.EqualFold(f.Name, want) {
+				found = f.Name
+				break
+			}
+		}
+	}
+	if found != "" {
+		if skip[found] {
+			return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, found)
+		}
+		return found, nil
+	}
+	// Made under that name, would it be taken for a special folder? Then it
+	// is not made: the next listing would leave it out, and filing there
+	// again would be refused.
+	withIt := append(append(make([]folderInfo, 0, len(c.listed)+1), c.listed...), folderInfo{Name: want})
+	if notOwn(withIt)[want] {
+		return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, want)
+	}
+	if err := c.c.Create(want, nil).Wait(); err != nil {
+		// Another connection may have made it a moment ago: the server then
+		// refuses, and the folder is there all the same.
+		again, lErr := c.c.List("", want, nil).Collect()
+		exists := false
+		for _, l := range again {
+			exists = exists || l.Mailbox == want
+		}
+		if lErr != nil || !exists {
+			return "", fmt.Errorf("imap: create folder %q: %w", want, err)
+		}
+	}
+	// Most mail programs show only the folders the account subscribes to: a
+	// folder made without it holds mail the user's phone never shows. The
+	// folder is made either way, so a refusal here is only logged.
+	if err := c.c.Subscribe(want).Wait(); err != nil {
+		log.Printf("imap: folder %q made, but not subscribed: %v", want, err)
+	}
+	c.listed = append(c.listed, folderInfo{Name: want})
+	return want, nil
 }
 
 // Client is a mailbox.Mailbox, asserted here so the contract is checked by the
@@ -228,9 +330,9 @@ func (c *Client) Apply(ctx context.Context, ref mailbox.Ref, m mailbox.Mutation)
 	case mailbox.IMAPFlagChange:
 		return c.storeFlags(set, op)
 	case mailbox.IMAPMove:
-		name, ok := c.folders[op.To]
-		if !ok {
-			return fmt.Errorf("%w: %s", ErrNoSuchFolder, op.To)
+		name, err := c.Destination(op)
+		if err != nil {
+			return err
 		}
 		if name == c.selected {
 			// Moving a message into the folder it is already in is a no-op the
@@ -246,14 +348,9 @@ func (c *Client) Apply(ctx context.Context, ref mailbox.Ref, m mailbox.Mutation)
 	return fmt.Errorf("imap: unsupported operation kind %v", op.Kind)
 }
 
-// FolderName is the server's name for a special folder, as resolved at login.
-func (c *Client) FolderName(role mailbox.Folder) (string, bool) {
-	name, ok := c.folders[role]
-	return name, ok
-}
-
-// MoveTo moves one message into the special folder `to` and says where it
-// landed: the server's name for that folder, and the message's new UID there.
+// MoveTo moves one message into the folder the server calls dest
+// (Destination says which) and says where it landed: that folder, and the
+// message's new UID there.
 //
 // The new UID comes from the server's answer to MOVE (COPYUID, which UIDPLUS
 // and IMAP4rev2 servers send). A server that does not send it is asked again
@@ -264,7 +361,7 @@ func (c *Client) FolderName(role mailbox.Folder) (string, bool) {
 // A message no longer in ref's folder answers ErrMessageGone, checked BEFORE
 // moving: a MOVE on a UID that does not exist answers OK and does nothing,
 // which is how undo used to "succeed" without anything coming back.
-func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
+func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, dest, headerMessageID string) (mailbox.Ref, error) {
 	if !ref.Scoped() {
 		return mailbox.Ref{}, fmt.Errorf("%w: an imap uid needs its folder, got %s", mailbox.ErrWrongRefKind, ref)
 	}
@@ -272,9 +369,8 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 	if err != nil {
 		return mailbox.Ref{}, err
 	}
-	dest, ok := c.folders[to]
-	if !ok {
-		return mailbox.Ref{}, fmt.Errorf("%w: %s", ErrNoSuchFolder, to)
+	if dest == "" {
+		return mailbox.Ref{}, fmt.Errorf("%w: no destination", ErrNoSuchFolder)
 	}
 	if err := c.selectFolder(ref.Folder); err != nil {
 		return mailbox.Ref{}, err
@@ -320,13 +416,14 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 	return landed, nil
 }
 
-// MoveRecorded moves the message Mailsorter recorded as uid in folder. When
+// MoveRecorded moves the message Mailsorter recorded as uid in folder into
+// the folder the server calls dest. When
 // its Message-ID is known, the number is checked first against the one the
 // server reports for it (IDAt): a server that renumbered its folders (a
 // migration, a rebuilt index) would otherwise hand back another mail. When
 // the number no longer names it, it is looked for by that Message-ID once;
 // not found, ErrMessageGone.
-func (c *Client) MoveRecorded(ctx context.Context, folder, uid string, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
+func (c *Client) MoveRecorded(ctx context.Context, folder, uid, dest, headerMessageID string) (mailbox.Ref, error) {
 	if headerMessageID != "" {
 		id, exists, err := c.IDAt(folder, uid)
 		if err != nil {
@@ -343,7 +440,7 @@ func (c *Client) MoveRecorded(ctx context.Context, folder, uid string, to mailbo
 			uid = found
 		}
 	}
-	return c.MoveTo(ctx, mailbox.InFolder(folder, uid), to, headerMessageID)
+	return c.MoveTo(ctx, mailbox.InFolder(folder, uid), dest, headerMessageID)
 }
 
 // IDAt returns the Message-ID of the message numbered uid in folder, as the
@@ -494,6 +591,88 @@ var conventionalNames = map[mailbox.Folder][]string{
 		"Corbeille", // French, including Gmail in French
 		"Papierkorb", "Cestino", "Papelera",
 	},
+	// No action moves a message to the three below: they are here so that
+	// the folders a mail can be filed into leave them out (notOwn).
+	mailbox.FolderSent: {
+		"[Gmail]/Sent Mail", "[Google Mail]/Sent Mail",
+		"Sent", "Sent Items", "Sent Messages", "Sent Mail",
+		"Envoyés", "Messages envoyés", "Éléments envoyés",
+		"Gesendet", "Gesendete Objekte", "Posta inviata", "Enviados", "Elementos enviados",
+	},
+	mailbox.FolderDrafts: {
+		"[Gmail]/Drafts", "[Google Mail]/Drafts",
+		"Drafts", "Brouillons",
+		"Entwürfe", "Bozze", "Borradores",
+	},
+	mailbox.FolderJunk: {
+		"[Gmail]/Spam", "[Google Mail]/Spam",
+		"Junk", "Junk E-mail", "Junk Email", "Spam", "Bulk Mail",
+		"Courrier indésirable", "Indésirables", "Pourriels",
+		"Junk-E-Mail", "Posta indesiderata", "Correo no deseado",
+	},
+}
+
+// specialUses are the RFC 6154 attributes (and \Important, RFC 8457) of the
+// folders that are not the user's own. \All, \Flagged and \Important are
+// Gmail's views of all, starred and important mail: filing there would not
+// file anything.
+var specialUses = []string{
+	string(mailbox.FolderArchive), string(mailbox.FolderTrash),
+	string(mailbox.FolderSent), string(mailbox.FolderDrafts), string(mailbox.FolderJunk),
+	"\\All", "\\Flagged", "\\Important",
+}
+
+// notOwn returns, among the server's folders, the full names of those that are
+// not the user's own: the inbox; a folder that cannot hold mail (\Noselect,
+// \NonExistent: a branch such as "[Gmail]"); a folder the server marks with a
+// special use; and, for a special folder the server marks NOWHERE, every folder
+// named like it (conventionalNames), the way pickFolder finds the archive and
+// the trash on a server silent about special use. A name match does not count
+// when the server marks that special folder elsewhere: the server is telling
+// the truth, and a user's own "Archives" next to Gmail's All Mail is the
+// user's.
+//
+// Pure, like pickFolder, because the choice is where the bugs live.
+func notOwn(infos []folderInfo) map[string]bool {
+	out := map[string]bool{}
+	marked := map[mailbox.Folder]bool{}
+	for _, f := range infos {
+		if strings.EqualFold(f.Name, string(mailbox.FolderInbox)) {
+			out[f.Name] = true
+		}
+		for _, attr := range f.Attrs {
+			if strings.EqualFold(attr, string(imapv2.MailboxAttrNoSelect)) || strings.EqualFold(attr, string(imapv2.MailboxAttrNonExistent)) {
+				out[f.Name] = true
+			}
+			for _, use := range specialUses {
+				if strings.EqualFold(attr, use) {
+					out[f.Name] = true
+				}
+			}
+			for role := range conventionalNames {
+				if strings.EqualFold(attr, string(role)) {
+					marked[role] = true
+				}
+			}
+			// Gmail's All Mail stands for the archive (pickFolder).
+			if strings.EqualFold(attr, "\\All") {
+				marked[mailbox.FolderArchive] = true
+			}
+		}
+	}
+	for role, names := range conventionalNames {
+		if marked[role] {
+			continue
+		}
+		for _, f := range infos {
+			for _, name := range names {
+				if strings.EqualFold(f.Name, name) {
+					out[f.Name] = true
+				}
+			}
+		}
+	}
+	return out
 }
 
 // pickFolder chooses the real mailbox name for a wanted special folder.

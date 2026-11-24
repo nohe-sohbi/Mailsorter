@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -234,8 +235,8 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 
 	labelID, err := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 	suggestion.LabelID = labelID
-	if errors.Is(err, errNoLabelsOnIMAP) {
-		writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
+	if errors.Is(err, imap.ErrNotOwnFolder) {
+		writeError(w, http.StatusUnprocessableEntity, notOwnFolderMessage)
 		return
 	}
 	if errors.Is(err, errAlreadyOut) {
@@ -260,7 +261,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		}},
 	)
 	meta := h.identityIn(ctx, session, userEmail, suggestion.EmailID)
-	h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
+	h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion))
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
@@ -330,9 +331,10 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Shield protected senders from a bulk "apply all" that would archive
-		// or trash their mail. The suggestion is left pending, untouched.
-		if len(protectedList) > 0 && !allows(suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
+		// Shield protected senders from a bulk "apply all" that would take
+		// their mail out of the inbox (archive, trash, and over IMAP filing
+		// into a folder). The suggestion is left pending, untouched.
+		if len(protectedList) > 0 && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
 			protectedSkipped++
 			continue
 		}
@@ -344,11 +346,6 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			// Already tidied by hand: not applied, not failed, and the moot
 			// proposal leaves the plan.
 			h.dropMootProposal(ctx, objectID)
-			continue
-		}
-		if errors.Is(applyErr, errNoLabelsOnIMAP) {
-			// Left pending, neither applied nor failed: nothing went wrong,
-			// the mailbox simply has no labels.
 			continue
 		}
 		if applyErr != nil {
@@ -365,7 +362,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			}},
 		)
 		meta := identities[suggestion.EmailID]
-		h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
+		h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filedUnder(suggestion))
 		applied++
 		appliedIDs = append(appliedIDs, id)
 	}
@@ -868,12 +865,19 @@ func (h *Handler) leftInbox(ctx context.Context, userEmail, messageID string) bo
 	return n > 0
 }
 
-// errNoLabelsOnIMAP is what applying a "label" verdict to an IMAP mailbox
-// answers: the transport has no labels (internal/mailbox/imap.go).
-var errNoLabelsOnIMAP = errors.New("labels are not available on an IMAP mailbox")
+// notOwnFolderMessage is what the user reads when a proposal names, as the
+// folder to file into, one that is not theirs (imap.ErrNotOwnFolder): the
+// inbox, the archive, the trash, sent mail, drafts or junk.
+const notOwnFolderMessage = "Mailsorter ne classe pas de mail dans ce dossier : c'est un dossier spécial de votre boîte."
 
-// noLabelsOnIMAPMessage is the sentence the user reads for errNoLabelsOnIMAP.
-const noLabelsOnIMAPMessage = "Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP."
+// filedUnder is the label a proposal filed its mail under, for the history:
+// its name on a "label", nothing otherwise.
+func filedUnder(s models.AISuggestion) string {
+	if s.Action == "label" {
+		return s.LabelName
+	}
+	return ""
+}
 
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
 	if action == "keep" {
@@ -886,10 +890,10 @@ func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession,
 	}
 	if action == "label" {
 		if session.Transport == provider.TransportIMAP {
-			// A message sits in one folder over IMAP: there is no label to
-			// add. Saying so keeps the suggestion pending and out of the
-			// history, instead of reporting an action nothing performed.
-			return "", errNoLabelsOnIMAP
+			// A message sits in one folder over IMAP, and the folder named
+			// like the label stands for it: the name is what the mutation
+			// carries (mailbox.IMAPOpFor), and the folder is made if missing.
+			return labelName, h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), action, labelName)
 		}
 		if labelID == "" && session.gmail != nil {
 			resolved, err := h.ensureLabel(ctx, session.gmail, userEmail, labelName)

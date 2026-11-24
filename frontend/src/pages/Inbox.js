@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useEmails, useMailbox, DEFAULT_QUERY } from '../contexts/EmailContext';
 import { useInstance } from '../contexts/InstanceContext';
 import { aiService, senderService, emailService, subscriptionService, protectService, labelService, searchService, apiError, aiError } from '../services/api';
-import { canApplyVerdict, canPromise } from '../components/landing/features';
+import { canPromise } from '../components/landing/features';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
@@ -15,7 +15,7 @@ import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
 import { useScrollLock } from '../ui/scrollLock';
-import { actionMeta, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
+import { actionMeta, labelPlace, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
 import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
@@ -235,9 +235,9 @@ function Inbox() {
   } = useEmails();
   const { selfHosted } = useInstance();
   // Over IMAP reading, archiving, deleting, read and the star on one mail, the
-  // quick filters, the AI's archive / delete / keep and undo work today. Every
-  // control the server would answer "not available" to is hidden, not
-  // disabled (the one rule, see IMAP_UNAVAILABLE in landing/features.js).
+  // quick filters, the AI's proposals (a label proposal files the mail in its
+  // folder there) and undo work today. Every control the server would answer
+  // "not available" to is hidden, not disabled: one rule everywhere.
   // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
   // and stays false when that answer failed: a guess offers nothing the server
   // may refuse. `known` is for what works on both transports once the mailbox
@@ -390,15 +390,13 @@ function Inbox() {
   // The hotel also puts each proposal on the row of the message it is about.
   // Not "keep": the plan has stopped treating it as a task (it moves nothing),
   // and a row offering to validate it would bring that task back.
-  // Nor a verdict this mailbox cannot apply (a label over IMAP): the plan says
-  // why, a row would only offer a "Valider" that does nothing.
   const suggestionByEmail = useMemo(() => {
     const map = new Map();
     suggestions.forEach((s) => {
-      if (s.action !== 'keep' && canApplyVerdict(s.action, !fullFeatures)) map.set(s.emailId, s);
+      if (s.action !== 'keep') map.set(s.emailId, s);
     });
     return map;
-  }, [suggestions, fullFeatures]);
+  }, [suggestions]);
 
   // Avatars: the classic fills, or the hotel's inked discs with initials.
   const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
@@ -666,7 +664,10 @@ function Inbox() {
         removeEmails(suggestion.emailId);
         setSelectedEmail((prev) => (prev?.messageId === suggestion.emailId ? null : prev));
       }
-      const msg = `${actionMeta(act).past}`;
+      // Over IMAP a label is a folder: "Classé dans « Factures »".
+      const msg = `${actionMeta(act, { folders: isImap }).past}${
+        act === 'label' ? labelPlace(suggestion.labelName, { folders: isImap }) : ''
+      }`;
       if (isReversible(act)) undoToast(suggestion.emailId, act, msg);
       else toast.success(msg);
     } catch (err) {
@@ -1398,9 +1399,6 @@ function Inbox() {
   const openEmailSuggestion = openEmail
     ? suggestions.find((s) => s.emailId === openEmail.messageId)
     : null;
-  // A verdict this mailbox cannot apply (a label over IMAP) is shown with its
-  // reason and "Ignorer", without the button that would do nothing.
-  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, !fullFeatures);
 
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
@@ -1426,10 +1424,8 @@ function Inbox() {
       aiSuggestion={openEmailSuggestion}
       onAiAnalyze={handleAiAnalyzeSingle}
       aiAnalyzing={aiAnalyzingId === openEmail.messageId}
-      suggestionUnavailable={!openSuggestionApplicable}
-      onApplySuggestion={
-        openSuggestionApplicable ? (triageMode ? handleTriageApplySuggestion : handleApplySuggestion) : undefined
-      }
+      folders={isImap}
+      onApplySuggestion={triageMode ? handleTriageApplySuggestion : handleApplySuggestion}
       onRejectSuggestion={handleRejectSuggestion}
       triage={
         triageMode && triageIds.length > 0
@@ -1441,7 +1437,10 @@ function Inbox() {
               onPrev: handleTriagePrev,
               onNext: handleTriageNext,
               onKeep: handleTriageKeep,
-              onLabel: can('label') ? () => setTriageLabeling(true) : undefined,
+              // Labelling by hand goes through the batch route, Gmail API
+              // only: closed over IMAP, where only the AI's proposal files a
+              // mail in a folder so far.
+              onLabel: fullFeatures ? () => setTriageLabeling(true) : undefined,
             }
           : null
       }

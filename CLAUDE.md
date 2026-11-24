@@ -199,7 +199,7 @@ in its package doc:
 | Package | Owns | Key entry points |
 |---|---|---|
 | `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset | `Matches`, `Validate`, `Preview`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
-| `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted | `Allowed`, `ActionArchive/Trash/Delete` |
+| `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted, nor, on IMAP where a label is a folder, auto-filed | `Allowed`, `AllowedOnFolders`, `ActionArchive/Trash/Delete/Label` |
 | `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
@@ -220,7 +220,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
+| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
 | `smtpsend` | Hands one message to the sending server of an IMAP mailbox: the daily recap on that transport. Implicit TLS (465) or STARTTLS (587), never cleartext (a STARTTLS route whose server does not offer it is refused before the password is sent), certificate verified against the system roots, AUTH PLAIN, 30 s bound. `ErrAuth` (credentials refused: 535, or 534 5.7.9), `ErrBlocked` (sign-in blocked for where it came from, the password being right: 534 5.7.14) and `ErrUnreachable` are typed; any other 534 is none of them |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
@@ -340,7 +340,7 @@ telling them to create a Google Cloud project that edition can never use.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
+| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because an IMAP mailbox does not get every feature (`GMAIL_ONLY`). Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
 | `/inbox` | `pages/Inbox.js` | The cockpit: triage, the AI's triage plan (`components/inbox/`), bulk apply, keyboard shortcuts (2288 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
@@ -869,20 +869,30 @@ Do not duplicate these into this file. Point at them.
   Ported so far: `syncInbox` (without rules), `EmailAction`, `GetEmails`, `GetEmail`
   and `GetMailboxStats`, which is the set that makes a connected mailbox usable at
   all, then the AI analysis (`runAnalysis`, without sender auto-pilot),
-  `ApplySuggestion` and `ApplyBatch`. A `label` verdict over IMAP is refused there by
-  `errNoLabelsOnIMAP` (501 on a single apply, left pending in a batch), never
-  reported as applied. Everything else (rules apply and preview, snooze and its wake
-  sweeper, unsubscribe, attachments, labels, smart labels, undo, batch action and
-  undo, bulk by sender) refuses: 14 call sites left. A 15th, in `deliverDigest`, is
-  the recap's Gmail API branch, which an IMAP mailbox never reaches: its recap
-  leaves through the mailbox's sending server (`sendThroughBox`, `internal/smtpsend`).
+  `ApplySuggestion` and `ApplyBatch`, the undo (`UndoAction`, `BatchUndo`) and
+  `GetLabels`. Over IMAP a label is a folder: a `label` verdict files the mail in
+  the folder of that name (`mailbox.IMAPOpFor`, made if missing), out of the inbox
+  like an archive, undone like one (`activity.InverseOnFolders`), shielded like one
+  for a protected sender in a batch (`allowsOn`), and `GetLabels` lists the user's
+  own folders. Everything else (rules apply and preview, snooze and its wake
+  sweeper, unsubscribe, attachments, smart labels, batch action, bulk by sender)
+  refuses: 11 call sites of `gmailClientFor`. Three more are the Gmail branch of a
+  ported handler (`GetLabels`, `UndoAction`, `BatchUndo`), and one, in
+  `deliverDigest`, is the recap's Gmail API branch, which an IMAP mailbox never
+  reaches: its recap leaves through the mailbox's sending server (`sendThroughBox`,
+  `internal/smtpsend`).
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
   `GMAIL_ONLY` (`frontend/src/components/landing/features.js`) lists what the
-  landing would otherwise promise and an IMAP mailbox cannot get, labels
-  (`label`) included: the Grand Hotel landing reads it to decide what it may
-  promise, and keeps promising nothing it cannot deliver. So porting a promised
-  feature to IMAP also means deleting its line there.
+  landing would otherwise promise and an IMAP mailbox cannot get: the Grand
+  Hotel landing reads it to decide what it may promise, and keeps promising
+  nothing it cannot deliver. So porting a promised feature to IMAP also means
+  deleting its line there, as `label` was once the AI's proposal could file into
+  a folder. Classifying a selection by hand (`LabelPicker` in `Inbox.js`) and the
+  rules' "Étiqueter" still go through the Gmail API: those screens stay closed
+  on `fullFeatures`, not on that list. On IMAP the screens word a label verdict
+  as a folder ("Classer dans « Factures »"): `actionMeta(action, { folders })`
+  and `labelPlace` in `ui/actions.js`, with `folders` from `useMailbox().isImap`.
 - **The visitor's address is `X-Real-IP`, and the backend believes it only from a
   private or loopback peer.** Every request arrives through nginx, so the TCP peer is
   always nginx; keying the limiters on it put every visitor in one bucket, and one

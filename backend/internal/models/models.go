@@ -389,6 +389,10 @@ type ActionLog struct {
 	// holds it, and resolved from the emails collection at read time otherwise.
 	Subject string `json:"subject,omitempty" bson:"subject,omitempty"`
 	From    string `json:"from,omitempty" bson:"from,omitempty"`
+	// LabelName is where a "label" entry filed the mail, so the history can
+	// say it: the label, or over IMAP the folder that stands for it. Absent
+	// on every other action, and on entries a path wrote without it.
+	LabelName string `json:"labelName,omitempty" bson:"labelName,omitempty"`
 	// Undone is set when the user reverses this entry from the action history
 	// (e.g. un-archiving a mail a rule archived). UndoneAt stamps when.
 	Undone    bool      `json:"undone,omitempty" bson:"undone,omitempty"`

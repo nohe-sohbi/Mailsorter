@@ -1,7 +1,6 @@
 package mailbox
 
 import (
-	"errors"
 	"fmt"
 )
 
@@ -13,6 +12,9 @@ import (
 //   - flags, a small set of per-message booleans (\Seen, \Flagged, ...)
 //   - folders, which a message belongs to exactly one of, so changing folder is
 //     a move rather than an addition
+//
+// So a label becomes the folder of that name: labelling a mail files it there,
+// out of the inbox, and taking the label off brings it back to the inbox.
 //
 // That is the whole reason this file exists rather than a second switch inside
 // the IMAP client. Over the Gmail API archiving is "remove the INBOX label";
@@ -55,6 +57,12 @@ const (
 	// FolderArchive and FolderTrash are special-use attributes, not names.
 	FolderArchive Folder = "\\Archive"
 	FolderTrash   Folder = "\\Trash"
+	// FolderSent, FolderDrafts and FolderJunk are special-use attributes too.
+	// No action moves a message there: they are named so that the folders a
+	// mail can be filed into (the user's own) can leave them out.
+	FolderSent   Folder = "\\Sent"
+	FolderDrafts Folder = "\\Drafts"
+	FolderJunk   Folder = "\\Junk"
 )
 
 // IMAPOp is a mutation expressed in IMAP's own terms.
@@ -62,17 +70,15 @@ type IMAPOp struct {
 	Kind      IMAPKind
 	AddFlags  []string
 	DropFlags []string
-	// To is the destination of an IMAPMove, and empty otherwise.
+	// To is the destination of an IMAPMove to a special folder, named by what
+	// it is, and empty otherwise.
 	To Folder
+	// Into is the destination of an IMAPMove into one of the user's own
+	// folders, named by its full name on the server ("Factures",
+	// "Projets/Maison"): filing, which is what a label is over IMAP. Empty
+	// otherwise. A move has exactly one of To and Into.
+	Into string
 }
-
-// ErrNoIMAPEquivalent is returned for an action plain IMAP cannot express.
-//
-// It is a distinct error because it is not a failure: it is a capability the
-// route does not have, which internal/provider already records as CapLabels.
-// A caller that gets this has offered the user something the connection cannot
-// do, and the honest fix is in the catalog or the screen, not a retry.
-var ErrNoIMAPEquivalent = errors.New("mailbox: action has no plain IMAP equivalent")
 
 // IMAPOpFor translates a mutation into the IMAP operation that performs it.
 //
@@ -82,8 +88,9 @@ var ErrNoIMAPEquivalent = errors.New("mailbox: action has no plain IMAP equivale
 // the two transports disagree, and this is where that disagreement is resolved.
 // Archiving and trashing are moves, so they are not reversible by re-running
 // the opposite flag change; their inverse is another move, back to the inbox.
-// And labelling has no equivalent at all, which is a capability answer rather
-// than an error to paper over.
+// Labelling is a move too, into the folder that stands for the label, and so is
+// taking the label off: a message sits in one folder, so leaving the label's
+// folder means going back to the inbox, whichever label it was.
 func IMAPOpFor(m Mutation) (IMAPOp, error) {
 	switch m.Action {
 	case ActionMarkRead:
@@ -104,8 +111,15 @@ func IMAPOpFor(m Mutation) (IMAPOp, error) {
 		// the TRASH label), which is exactly the kind of per-transport detail
 		// that stops at this file.
 		return IMAPOp{Kind: IMAPMove, To: FolderInbox}, nil
-	case ActionLabel, ActionUnlabel:
-		return IMAPOp{}, fmt.Errorf("%w: %q", ErrNoIMAPEquivalent, m.Action)
+	case ActionLabel:
+		// The label id is the folder's full name: that is what names a folder
+		// on the server, and what the user reads.
+		if m.LabelID == "" {
+			return IMAPOp{}, ErrLabelRequired
+		}
+		return IMAPOp{Kind: IMAPMove, Into: m.LabelID}, nil
+	case ActionUnlabel:
+		return IMAPOp{Kind: IMAPMove, To: FolderInbox}, nil
 	}
 	return IMAPOp{}, fmt.Errorf("%w: %q", ErrUnknownAction, m.Action)
 }
