@@ -939,10 +939,17 @@ Two consequences worth knowing:
   is in `is:starred` from the first sync.
 - And it reads the MIME structure (`BODYSTRUCTURE`, no message downloaded) of
   up to 500 stored inbox messages it has not read it for yet, newest first,
-  which the next syncs complete. A message carries a file when a part is
-  marked `Content-Disposition: attachment`, or is a named file that is neither
-  text nor a picture the HTML draws (a part with a `Content-ID`). Until it is
-  read, a message does not match `has:attachment`. A message whose structure
+  which the next syncs complete. A message carries a file when one of its
+  parts is a file by the rule the reader lists files with (see
+  `GET /api/emails/{id}`), read without the HTML, which the structure does not
+  carry: a part with a `Content-ID` that is not declared
+  `Content-Disposition: attachment` is taken for a picture the HTML draws
+  (`attachment.ListedWithoutHTML`). Two kinds of image are decided otherwise
+  than in the reader, the only ones the HTML tells apart: an image with a
+  `Content-ID`, not declared an attachment, that the HTML does not draw (the
+  reader lists it, the filter does not count it), and an image declared an
+  attachment that the HTML draws (the reader hides it, the filter counts it).
+  Until it is read, a message does not match `has:attachment`. A message whose structure
   the server describes in a way that cannot be parsed, even alone (the batch
   it is in fails, the connection is opened again and the batch read by
   halves), is logged, kept without an attachment and marked

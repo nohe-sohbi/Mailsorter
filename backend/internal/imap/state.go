@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	imapv2 "github.com/emersion/go-imap/v2"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 )
 
@@ -122,12 +123,13 @@ func (c *Client) Attachments(folder string, uids []string) (map[string]bool, err
 // hasAttachment says whether a message carries a file, read from its MIME
 // structure: the paper clip a mail program shows.
 //
-// Two shapes of mail look like attachments and are not. A newsletter sent in
-// text and HTML (multipart/alternative) carries the same text twice. And an
-// HTML mail draws its pictures from parts of its own, which it points to by
-// their Content-ID (cid:), sometimes under a file name (image001.png): the
-// reader leaves those out of its attachment list for the same reason
-// (attachment.Listed, on both transports).
+// A part is a file by the rule the reader lists files with
+// (internal/attachment), read without the HTML: a text in two versions
+// (multipart/alternative) is no file, and a part with a Content-ID not
+// declared an attachment is taken for a picture the HTML draws
+// (attachment.ListedWithoutHTML). The reader, which reads the HTML, lists an
+// image with a Content-ID that the HTML does not draw; the filter does not
+// count it.
 func hasAttachment(bs imapv2.BodyStructure) bool {
 	if bs == nil {
 		return false
@@ -149,14 +151,33 @@ func hasAttachment(bs imapv2.BodyStructure) bool {
 }
 
 // isAttachedPart is one part of the structure being a file attached to the
-// mail: marked so (Content-Disposition: attachment), or a named file that is
-// neither the text nor a picture the text draws.
+// mail, as attachment.ListedWithoutHTML decides it.
 func isAttachedPart(part *imapv2.BodyStructureSinglePart) bool {
-	if disp := part.Disposition(); disp != nil && strings.EqualFold(disp.Value, "attachment") {
-		return true
+	p := attachment.Part{Filename: structureName(part), MediaType: part.MediaType(), ContentID: part.ID}
+	if d := part.Disposition(); d != nil {
+		p.Disposition = d.Value
 	}
-	if part.Filename() == "" || part.ID != "" {
-		return false
+	return attachment.ListedWithoutHTML(p)
+}
+
+// structureName is a part's file name as the server describes it, in any of
+// the forms it may pass the parameter on (filename, filename*, name*0*...).
+// Only whether there is one counts for the filter, not how it reads.
+func structureName(part *imapv2.BodyStructureSinglePart) string {
+	if name := part.Filename(); name != "" {
+		return name
 	}
-	return !strings.EqualFold(part.Type, "text")
+	if d := part.Disposition(); d != nil {
+		for key, value := range d.Params {
+			if strings.HasPrefix(strings.ToLower(key), "filename") && value != "" {
+				return value
+			}
+		}
+	}
+	for key, value := range part.Params {
+		if strings.HasPrefix(strings.ToLower(key), "name") && value != "" {
+			return value
+		}
+	}
+	return ""
 }

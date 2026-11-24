@@ -88,6 +88,30 @@ func Listed(p Part, shown Shown) (string, bool) {
 	return SafeName(p.Filename, fallback), true
 }
 
+// ListedWithoutHTML says whether p counts as a file of its mail when the
+// mail's HTML is not read: what the filter "Pièces jointes" decides from the
+// server's description of a message (its BODYSTRUCTURE), which lists the
+// parts but not what the HTML points at.
+//
+// It is Listed, with one guess in place of the HTML: a part with a
+// Content-ID that its sender did not declare an attachment (inline, or no
+// disposition at all) is taken for one the HTML shows. So the filter agrees
+// with the reader on every part but two kinds of image, which only the HTML
+// tells apart: an image with a Content-ID, not declared an attachment, that
+// the HTML does not point at (the reader lists it, the filter does not count
+// it), and an image declared an attachment that the HTML does point at (the
+// reader hides it, the filter counts it).
+func ListedWithoutHTML(p Part) bool {
+	shown := Shown{}
+	if DispositionType(p.Disposition) != "attachment" {
+		if id := contentID(p.ContentID); id != "" {
+			shown[id] = true
+		}
+	}
+	_, ok := Listed(p, shown)
+	return ok
+}
+
 // DispositionType is the type of a Content-Disposition value alone
 // ("attachment", "inline"), in lower case, read before its first parameter
 // so a malformed parameter does not hide it.

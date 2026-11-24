@@ -141,8 +141,71 @@ func TestListed(t *testing.T) {
 	}
 }
 
-// Without HTML, no image is shown in the text, so none is hidden.
+// Without the HTML (the filter "Pièces jointes"), an inline part with a
+// Content-ID is taken for an image the HTML shows; everything else is
+// decided as the reader decides it.
 func TestListedWithoutHTML(t *testing.T) {
+	cases := []struct {
+		name string
+		part Part
+		want bool
+	}{
+		{"the text of the mail", Part{MediaType: "text/plain"}, false},
+		{"a named file", Part{Filename: "facture.pdf", MediaType: "application/pdf", Disposition: "attachment"}, true},
+		{"a named file without a disposition", Part{Filename: "photos.zip", MediaType: "application/zip"}, true},
+		{"a named text file", Part{Filename: "notes.txt", MediaType: "text/plain"}, true},
+		{"Apple Mail's inline PDF", Part{Filename: "devis.pdf", MediaType: "application/pdf", Disposition: "inline"}, true},
+		{"a named photo inline, without a Content-ID", Part{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: "inline"}, true},
+		{"an unnamed attachment", Part{MediaType: "application/octet-stream", Disposition: "attachment"}, true},
+		{"an unnamed forwarded mail", Part{MediaType: "message/rfc822"}, true},
+		{"a picture the HTML draws, inline", Part{Filename: "logo.png", MediaType: "image/png", Disposition: "inline", ContentID: "<logo@x>"}, false},
+		{"a picture the HTML draws, without a disposition", Part{Filename: "image001.png", MediaType: "image/png", ContentID: "<image001@x>"}, false},
+		{"a photo attached from Gmail's web interface", Part{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: `attachment; filename="photo.jpg"`, ContentID: "<f_abc>"}, true},
+		{"a PDF inline with a Content-ID is not a picture", Part{Filename: "devis.pdf", MediaType: "application/pdf", Disposition: "inline", ContentID: "<f_abc>"}, true},
+		{"an unnamed inline image", Part{MediaType: "image/png", Disposition: "inline"}, false},
+	}
+	for _, tc := range cases {
+		if got := ListedWithoutHTML(tc.part); got != tc.want {
+			t.Errorf("ListedWithoutHTML(%s: %+v) = %v, want %v", tc.name, tc.part, got, tc.want)
+		}
+	}
+}
+
+// The filter and the reader agree on every part but the two kinds of image
+// only the HTML tells apart.
+func TestListedWithoutHTMLAgreesWithTheReader(t *testing.T) {
+	parts := []Part{
+		{MediaType: "text/plain"},
+		{Filename: "facture.pdf", MediaType: "application/pdf", Disposition: "attachment", ContentID: "<f_1>"},
+		{Filename: "devis.pdf", MediaType: "application/pdf", Disposition: "inline"},
+		{Filename: "devis.pdf", MediaType: "application/pdf", Disposition: "inline", ContentID: "<logo@x>"},
+		{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: "inline"},
+		{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: "attachment", ContentID: "<f_2>"},
+		{Filename: "logo.png", MediaType: "image/png", Disposition: "inline", ContentID: "<logo@x>"},
+		{MediaType: "message/rfc822"},
+		{MediaType: "application/octet-stream", Disposition: "attachment"},
+	}
+	// An HTML that shows the logo, as the guess assumes: no difference.
+	shown := ShownBy(`<img src="cid:logo@x">`)
+	for _, p := range parts {
+		_, reader := Listed(p, shown)
+		if filter := ListedWithoutHTML(p); filter != reader {
+			t.Errorf("for %+v the filter says %v and the reader %v", p, filter, reader)
+		}
+	}
+	// The two differences, written in ListedWithoutHTML's comment.
+	unreferenced := Part{Filename: "photo.jpg", MediaType: "image/jpeg", Disposition: "inline", ContentID: "<photo@iphone>"}
+	if _, reader := Listed(unreferenced, ShownBy("<p>x</p>")); !reader || ListedWithoutHTML(unreferenced) {
+		t.Errorf("an inline image with a Content-ID the HTML does not show: reader %v, filter %v, want true and false", reader, ListedWithoutHTML(unreferenced))
+	}
+	referenced := Part{Filename: "pied.png", MediaType: "image/png", Disposition: "attachment", ContentID: "<pied@x>"}
+	if _, reader := Listed(referenced, ShownBy(`<img src="cid:pied@x">`)); reader || !ListedWithoutHTML(referenced) {
+		t.Errorf("an image declared an attachment that the HTML shows: reader %v, filter %v, want false and true", reader, ListedWithoutHTML(referenced))
+	}
+}
+
+// Without HTML, no image is shown in the text, so none is hidden.
+func TestListedForAMailWithoutHTML(t *testing.T) {
 	part := Part{Filename: "logo.png", MediaType: "image/png", Disposition: "inline", ContentID: "<logo@acme>"}
 	for _, shown := range []Shown{nil, ShownBy(""), ShownBy("<p>Bonjour</p>")} {
 		if name, ok := Listed(part, shown); !ok || name != "logo.png" {
