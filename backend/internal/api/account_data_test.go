@@ -18,13 +18,13 @@ var collectionAccessor = regexp.MustCompile(`\.DB\.Collection\("([^"]+)"\)`)
 // notUserScoped are the collections the catalog must NOT name, each for a stated
 // reason. Erasure in DeleteAccount is a DeleteMany on userId, so a collection
 // keyed any other way can only be handled by hand, and pretending otherwise would
-// report a deletion count of zero as a success. Expected to stay at four: a wrong
-// entry is the one failure no test can catch.
+// report a deletion count of zero as a success. Expected to stay at three: a wrong
+// entry is the one failure no test can catch. (waitlist left this list: a signup
+// made while signed in carries the account's userId, so the catalog covers it.)
 var notUserScoped = map[string]string{
 	"users":          "keyed by email, erased separately as the account record itself",
 	"gmail_config":   "instance-wide legacy fallback, one document for every user",
 	"analysis_cache": "shared across all users on purpose, keyed by sender and subject",
-	"waitlist":       "logged-out visitors, the email address is the identity",
 }
 
 // The inverse of TestEveryDatasetHasABackingCollection, which walks Datasets() and

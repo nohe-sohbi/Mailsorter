@@ -48,6 +48,8 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 		return h.db.MailAccounts()
 	case account.DatasetAISettings:
 		return h.db.AISettings()
+	case account.DatasetWaitlist:
+		return h.db.Waitlist()
 	}
 	return nil
 }

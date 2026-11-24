@@ -51,6 +51,11 @@ const (
 	// DatasetAISettings is the per-user AI provider override (BYOK), sealed key
 	// included. It missed this catalog, so a deleted account kept its key on disk.
 	DatasetAISettings Dataset = "aiSettings"
+	// DatasetWaitlist is a Pro waitlist signup made while signed in: the row
+	// then carries the account's userId. A visitor's signup carries none and
+	// stays out of reach, keyed by an address with no account behind it; a
+	// member's must leave with the account, as the deletion screen promises.
+	DatasetWaitlist Dataset = "waitlist"
 )
 
 // Datasets returns the canonical, stable list of user-owned data categories. The
@@ -71,6 +76,7 @@ func Datasets() []Dataset {
 		DatasetSavedSearches,
 		DatasetMailAccounts,
 		DatasetAISettings,
+		DatasetWaitlist,
 		// Last, because they are the bulkiest: the settings a user recognizes
 		// should come first in an export they open themselves.
 		DatasetLabels,
