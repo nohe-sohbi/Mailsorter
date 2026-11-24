@@ -139,14 +139,13 @@ All commands verified against this working copy.
 | Full stack, containers | `make up` (then `make logs`, `make down`) | app on :3000, API on :8080. Uses `docker-compose.yml` PLUS `compose.local.yml`, which publishes the host ports the deployment file omits. A bare `docker compose up` binds nothing |
 | Rebuild images | `make build` | `docker compose build` |
 | Nuke containers + volumes + node_modules + binaries | `make clean` | destructive |
-| Backend tests | `make test` (= `cd backend && go test ./...`) | 345 test functions, all green |
+| Backend tests | `make test` (= `cd backend && go test ./...`) | all green (the acceptance scenarios are separate, see below) |
 | Backend tests as CI runs them | `cd backend && go test -race ./...` | what `.github/workflows/ci.yml` runs |
 | Acceptance scenarios | `make scenarios` | runs `backend/scripts/scenarios.sh`: the scenarios against a throwaway MongoDB (Docker, or a downloaded `mongod` when there is no Docker), then prints the French report. CI runs it in the `scenarios` job and publishes the report as the job summary |
 | Backend vet + build | `cd backend && go vet ./... && go build ./...` | both clean |
-| Backend alone | `make backend` (build + run on :8080) or `cd backend && go run cmd/server/main.go` | needs a reachable Mongo |
+| Backend alone | `make backend` (build + run on :8080, exports `.env` first) or `cd backend && go run cmd/server/main.go` with `ENCRYPTION_KEY` exported | needs a reachable Mongo (`make up` publishes it on 127.0.0.1:27017) |
 | Frontend dev server | `make frontend` or `cd frontend && npm install && npm start` | :3000, proxies nothing, hits :8080 directly |
 | Frontend production build | `cd frontend && CI=false npm run build` | verified: "Compiled successfully" |
-| Everything local without Compose | `./dev-start.sh` | starts a throwaway `mailsorter-mongodb-dev` container, backend and frontend; needs `.env` |
 | Health | `curl -w "%{http_code}" http://localhost:8080/health` | 200 healthy, 503 when Mongo is unreachable |
 
 Notes that will bite you:

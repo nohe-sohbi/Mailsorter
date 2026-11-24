@@ -96,7 +96,7 @@ func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.db.SortingRules().InsertOne(ctx, rule)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to save rule")
+		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer la règle.")
 		return
 	}
 	if oid, ok := res.InsertedID.(primitive.ObjectID); ok {
@@ -395,7 +395,7 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.db.SortingRules().InsertOne(ctx, rule)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to save rule")
+		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer la règle.")
 		return
 	}
 	if oid, ok := res.InsertedID.(primitive.ObjectID); ok {

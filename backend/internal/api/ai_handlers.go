@@ -41,7 +41,7 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 
 	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
 	if !aiClient.Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		writeError(w, http.StatusServiceUnavailable, "Aucune IA n'est configurée sur cette instance.")
 		return
 	}
 
@@ -103,7 +103,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 
 	aiClient := h.resolveAnalyzer(r.Context(), userEmail)
 	if !aiClient.Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		writeError(w, http.StatusServiceUnavailable, "Aucune IA n'est configurée sur cette instance.")
 		return
 	}
 	if userEmail == "" {
@@ -184,7 +184,8 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ApplySuggestion applies a single AI suggestion to Gmail
+// ApplySuggestion applies a single AI suggestion to the user's mailbox, over
+// whichever transport it uses.
 func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -227,7 +228,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	labelID, err := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 	suggestion.LabelID = labelID
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "L'action n'a pas pu être appliquée : "+err.Error())
 		return
 	}
 

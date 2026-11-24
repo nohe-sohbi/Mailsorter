@@ -88,7 +88,7 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.resolveAnalyzer(r.Context(), userEmail).Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		writeError(w, http.StatusServiceUnavailable, "Aucune IA n'est configurée sur cette instance.")
 		return
 	}
 	if userEmail == "" {

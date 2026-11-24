@@ -19,7 +19,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// analysisBatchSize controls how many emails go into a single Mistral call.
+// analysisBatchSize controls how many emails go into a single model call,
+// whichever provider the registry picks.
 const analysisBatchSize = 8
 
 type analysisProgress struct {

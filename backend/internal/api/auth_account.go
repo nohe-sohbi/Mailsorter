@@ -53,7 +53,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	// bcrypt truncates input at 72 bytes. Enforce a maximum byte length to prevent
 	// CPU exhaustion DoS attacks and silent password truncation.
 	if len(password) > 72 {
-		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
+		writeError(w, http.StatusBadRequest, "Le mot de passe est trop long : 72 octets au plus (une lettre accentuée en compte deux).")
 		return
 	}
 
@@ -118,7 +118,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(password) > 72 {
-		writeError(w, http.StatusBadRequest, "Le mot de passe ne peut pas dépasser 72 caractères.")
+		writeError(w, http.StatusBadRequest, "Le mot de passe est trop long : 72 octets au plus (une lettre accentuée en compte deux).")
 		return
 	}
 

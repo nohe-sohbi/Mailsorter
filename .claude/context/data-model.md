@@ -452,8 +452,8 @@ not:
 reachable from the compose network. Credentials come from `MONGO_ROOT_USERNAME`
 and `MONGO_ROOT_PASSWORD` and are composed into
 `MONGODB_URI=mongodb://user:pass@mongodb:27017/mailsorter?authSource=admin` for
-the backend service. `dev-start.sh` runs a throwaway `mailsorter-mongodb-dev`
-container that DOES publish 27017 with hardcoded `admin` / `password`.
+the backend service. `make up` publishes 27017 on 127.0.0.1 only, for local
+tools (compose.local.yml).
 
 ## GDPR catalog
 

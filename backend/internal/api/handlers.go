@@ -594,8 +594,9 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 	return synced, len(messages), rulesApplied, nil
 }
 
-// EmailAction performs a direct action on a single Gmail message
-// (archive, trash, mark read/unread) without going through AI suggestions.
+// EmailAction performs a direct action on a single message, over whichever
+// transport the mailbox uses (archive, trash, mark read/unread), without going
+// through AI suggestions.
 func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -644,7 +645,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "L'action n'a pas pu être appliquée : "+err.Error())
 		return
 	}
 
@@ -693,7 +694,8 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 
 // Config endpoints
 
-// GetConfigStatus reports whether the instance holds usable Gmail credentials.
+// GetConfigStatus reports what this instance is: whether it holds usable Gmail
+// credentials, whether a mailbox can sign in, billing, edition and UI theme.
 //
 // It answers from the live OAuth client rather than from the database, so it
 // reflects what the server is actually able to do, whichever source those
