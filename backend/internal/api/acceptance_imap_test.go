@@ -832,6 +832,153 @@ func (p *imapPerson) expectSenderNotListed(addr, why string) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// A selection, a whole sender, and the auto-pilot
+//
+// The same screen actions as the helpers of acceptance_harness_test.go, as
+// this person: app.batchAction, app.archiveAllFrom and the others act as the
+// Gmail user of the scenario, whose session this person does not hold.
+// ---------------------------------------------------------------------------
+
+// onSelection is a button of the action bar on a selection of mails, as this
+// person (runBulk in Inbox.js): one POST /api/emails/batch-action with the
+// numbers the selected rows hold and the verb of the button ("archive",
+// "delete", "read"). It returns the answer, whatever it is.
+func (p *imapPerson) onSelection(action string, uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-action",
+		map[string]interface{}{"messageIds": uids, "action": action})
+	return answer{code: code, body: out}
+}
+
+// actOnSelection is onSelection, expecting the action to go through: a
+// sentence about what a selection action leaves behind proves nothing if the
+// action was refused. It returns the body of the answer.
+func (p *imapPerson) actOnSelection(action string, uids ...string) map[string]interface{} {
+	a := p.app
+	a.t.Helper()
+	got := p.onSelection(action, uids...)
+	if got.code != http.StatusOK {
+		a.fatalf("l'action %q sur la sélection des mails n°%s de %s a répondu %s (attendu 200)", action, strings.Join(uids, ", n°"), p.email, got)
+	}
+	return got.body
+}
+
+// doneInSelection is the numbers an answer of the action bar gives as done
+// ("applied"): the rows the screen counts as treated and takes off the list,
+// and the numbers its "Annuler" sends back.
+func doneInSelection(body map[string]interface{}) []string {
+	list, _ := body["applied"].([]interface{})
+	out := make([]string, 0, len(list))
+	for _, v := range list {
+		if id, ok := v.(string); ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// expectDoneInSelection checks that the answer of the action bar gives each
+// of these mails as done: a mail it leaves out is one the screen announces
+// as not treated, and one "Annuler" never sends back. what names the action.
+func (p *imapPerson) expectDoneInSelection(body map[string]interface{}, what string, uids ...string) {
+	a := p.app
+	a.t.Helper()
+	done := map[string]bool{}
+	for _, id := range doneInSelection(body) {
+		done[id] = true
+	}
+	for _, uid := range uids {
+		if !done[uid] {
+			a.failf("%s devrait compter le mail n°%s de %s parmi les mails traités, la réponse ne le compte pas (traités : n°%s)", what, uid, p.email, strings.Join(doneInSelection(body), ", n°"))
+		}
+	}
+}
+
+// undoSelection is "Annuler" in the message that follows an action on a
+// selection (runBulk in Inbox.js): POST /api/emails/batch-undo with the
+// numbers the action gave as done and the verb of the action. It returns the
+// answer, whatever it is.
+func (p *imapPerson) undoSelection(action string, uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-undo",
+		map[string]interface{}{"messageIds": uids, "action": action})
+	return answer{code: code, body: out}
+}
+
+// requireSenderCard returns the card of this person's Expéditeurs tab whose
+// sender has this address, and stops the scenario when the tab shows none:
+// there is then no button to press on it.
+func (p *imapPerson) requireSenderCard(addr string) senderCard {
+	a := p.app
+	a.t.Helper()
+	card, ok := p.senderCardOf(addr)
+	if !ok {
+		a.fatalf("l'onglet Expéditeurs de %s devrait montrer %s, il ne le montre pas (il montre : %s) : le scénario ne prouve rien", p.email, addr, describeSenders(p.sendersTab()))
+	}
+	return card
+}
+
+// archiveAllFrom is "Tout archiver" on the card of the Expéditeurs tab whose
+// sender has this address, as this person (handleApplyBulk in Inbox.js): the
+// sender as the card holds it, and the archive action. It expects the action
+// to go through and returns the body of the answer.
+func (p *imapPerson) archiveAllFrom(addr string) map[string]interface{} {
+	a := p.app
+	a.t.Helper()
+	card := p.requireSenderCard(addr)
+	code, out := a.callAs(p.token, http.MethodPost, "/api/ai/apply-bulk",
+		map[string]string{"senderEmail": card.SenderEmail, "action": "archive"})
+	if code != http.StatusOK {
+		a.fatalf("« Tout archiver » pour %s de %s a répondu %d (attendu 200) : %v", addr, p.email, code, out)
+	}
+	return out
+}
+
+// unsubscribeFrom is "Se désabonner" on this mail, as this person
+// (handleUnsubscribe in Inbox.js), with "et archiver ses mails" when
+// alsoArchive. It expects the unsubscribe to go through and returns the body
+// of the answer.
+func (p *imapPerson) unsubscribeFrom(uid string, alsoArchive bool) map[string]interface{} {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/unsubscribe",
+		map[string]interface{}{"messageId": uid, "alsoArchive": alsoArchive})
+	if code != http.StatusOK {
+		a.fatalf("« Se désabonner » sur le mail n°%s de %s a répondu %d (attendu 200) : %v", uid, p.email, code, out)
+	}
+	return out
+}
+
+// autopilot stores what the Expéditeurs tab saves when this person turns on
+// "Auto-pilote" for the sender of the card with this address: the sender as
+// the card holds it, the action, autoApply on. Written to the database, as
+// app.autopilot does for the Gmail user: the toggle only updates a preference
+// the analysis of a sender created, and that analysis is not what these
+// sentences are about. The card is read from the tab, so the mails must be
+// synced first: the IMAP listing writes the sender in its own way (with the
+// name in quotes), and a preference keyed otherwise would match no mail.
+func (p *imapPerson) autopilot(addr, action string) {
+	a := p.app
+	a.t.Helper()
+	card := p.requireSenderCard(addr)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.SenderPreferences().InsertOne(ctx, models.SenderPreference{
+		UserID:        p.email,
+		SenderEmail:   card.SenderEmail,
+		SenderDomain:  extractDomain(card.SenderEmail),
+		SenderName:    extractSenderName(card.SenderEmail),
+		AutoApply:     true,
+		DefaultAction: action,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		a.fatalf("activation du pilote automatique de %s pour %s : %v", p.email, addr, err)
+	}
+}
+
 // act is a button of an inbox row, as this person: the single-message action
 // (POST /api/emails/action), with the verb the row sends ("archive" for
 // "Archiver", "delete" for "Supprimer"). It expects the action to go through:

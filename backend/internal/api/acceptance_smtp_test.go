@@ -5,12 +5,13 @@ package api
 // The sending server of an IMAP mailbox: a fake SMTP server, running next to
 // the person's IMAP server of acceptance_imap_test.go.
 //
-// The daily recap is the one message Mailsorter writes on its own, and over
-// IMAP it leaves through the mailbox's own sending server, with the address
-// and the app password the person connected with. A sentence about the recap
-// is about what reached that server, so the harness runs one and keeps what
-// it took, the way the fake Gmail keeps the state of a mailbox, rather than
-// trusting what a handler says it sent.
+// The daily recap is a message Mailsorter writes on its own, and over IMAP it
+// leaves through the mailbox's own sending server, with the address and the
+// app password the person connected with. So does the unsubscribe mail to a
+// list that offers only an address (scenarios_3_imap_senders_test.go). A
+// sentence about either is about what reached that server, so the harness
+// runs one and keeps what it took, the way the fake Gmail keeps the state of
+// a mailbox, rather than trusting what a handler says it sent.
 //
 // It speaks the part of SMTP a mail program uses to hand over a message (RFC
 // 5321, with AUTH PLAIN from RFC 4954), over IMPLICIT TLS on 127.0.0.1, and
