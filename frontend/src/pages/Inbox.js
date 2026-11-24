@@ -416,11 +416,11 @@ function Inbox() {
   };
 
   // --- Undo helper ---------------------------------------------------------
-  // Not over IMAP: a moved message changes its id there, and putting it back
-  // is not written yet, so an "Annuler" would announce an undo that did nothing.
-  // Nor while the mailbox is not known.
+  // Works on both transports: over IMAP the server fetches the message back
+  // from where it put it, by the number it had here, and says so when another
+  // mail client moved it meanwhile. Not while the mailbox is not known yet.
   const undoToast = (messageId, action, message) => {
-    if (!fullFeatures) {
+    if (!known) {
       toast.success(message);
       return;
     }
@@ -430,7 +430,7 @@ function Inbox() {
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
-        toast.error("Impossible d'annuler");
+        toast.error(apiError(err, "Impossible d'annuler."));
       }
     });
   };

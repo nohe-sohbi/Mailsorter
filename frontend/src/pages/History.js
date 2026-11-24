@@ -100,10 +100,9 @@ function byDay(entries) {
   return days;
 }
 
-// What the right-hand side of a row says. `undoOk` is false over IMAP, where
-// the server cannot undo yet: the button is hidden there, and so is
-// "Définitif", which would say the action has no inverse when it has one on
-// Gmail. The page says why, once, above the list.
+// What the right-hand side of a row says. `undoOk` waits for the mailbox to be
+// known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
+// moved remembering where it went.
 function HotelRegister({ entries, undoing, onUndo, undoOk }) {
   return (
     <div className="card px-5 pb-4 pt-1 sm:px-7">
@@ -175,8 +174,8 @@ function History() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [undoing, setUndoing] = useState(null);
-  // Undo goes through the Gmail API only (the server answers 501 over IMAP).
-  const { isImap, fullFeatures: undoOk } = useMailbox();
+  // Undo works on both transports; it only waits for the mailbox to be known.
+  const { known: undoOk } = useMailbox();
 
   // Read inside async callbacks to tell whether the filter moved on since a
   // request was issued.
@@ -422,11 +421,7 @@ function History() {
               <span className="font-semibold text-ink-900">{entries.length}</span> action{plural} affichée{plural}
               {nextBefore ? ", l'historique continue plus bas" : ''}
             </p>
-            {undoOk ? (
-              <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>
-            ) : (
-              isImap && <p className="text-xs text-muted">Annuler une action n'est pas encore disponible sur les boîtes IMAP.</p>
-            )}
+            {undoOk && <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>}
           </div>
 
           {hotel ? (

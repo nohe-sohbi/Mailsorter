@@ -13,7 +13,6 @@
 // analysis), which the IMAP analysis skips.
 export const GMAIL_ONLY = {
   label: 'le classement',
-  undo: "l'annulation",
   rules: 'les règles',
   snooze: 'le report',
   unsubscribe: 'le désabonnement',
