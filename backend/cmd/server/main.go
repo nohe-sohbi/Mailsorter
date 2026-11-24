@@ -32,6 +32,9 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
 	}
+	for _, w := range cfg.Warnings() {
+		log.Printf("WARNING: %s", w)
+	}
 
 	// Initialize database
 	db, err := database.NewDatabase(cfg.MongoDBURI)

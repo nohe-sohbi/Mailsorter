@@ -25,7 +25,15 @@ var defaultAllowedOrigins = []string{
 var insecureEncryptionKeys = map[string]bool{
 	"default-dev-key-change-in-production":          true,
 	"change-this-to-a-secure-random-string-32chars": true,
-	// The example the README shows.
+	// The placeholder the README shows.
+	"collez-ici-une-cle-aleatoire-de-32-caracteres-minimum": true,
+}
+
+// publishedEncryptionKeys are examples an earlier README showed, which boot
+// accepted. An instance may well run on one, and refusing it now would stop
+// that instance with no good way out: a new key logs everyone out and makes
+// every stored secret unreadable. Boot accepts it and says so loudly.
+var publishedEncryptionKeys = map[string]bool{
 	"une-chaine-aleatoire-de-32-caracteres-minimum": true,
 }
 
@@ -118,6 +126,15 @@ func Load() *Config {
 		UITheme: UITheme(strings.ToLower(strings.TrimSpace(
 			getEnv("UI_THEME", string(UIThemeHotel))))),
 	}
+}
+
+// Warnings lists what boot accepts but the operator should fix.
+func (c *Config) Warnings() []string {
+	var w []string
+	if publishedEncryptionKeys[c.EncryptionKey] {
+		w = append(w, "ENCRYPTION_KEY is an example published in an earlier README: anyone who reads it can decrypt the secrets stored here. Changing it logs everyone out and makes the stored secrets unreadable (mailbox passwords, Google tokens, personal AI keys), so plan it: reconnect the mailboxes and re-enter the keys afterwards")
+	}
+	return w
 }
 
 // Validate enforces the invariants that must hold before the server starts.

@@ -98,7 +98,7 @@ Renseignez au minimum :
 
 ```env
 EDITION=self-hosted
-ENCRYPTION_KEY=une-chaine-aleatoire-de-32-caracteres-minimum
+ENCRYPTION_KEY=collez-ici-une-cle-aleatoire-de-32-caracteres-minimum
 
 # L'IA, au choix : un modèle local (voir "IA locale")
 OLLAMA_MODEL=qwen3.5:9b
