@@ -800,6 +800,10 @@ function Inbox() {
         for (let i = 0; i < ids.length; i += BATCH_LIMIT) chunks.push(ids.slice(i, i + BATCH_LIMIT));
 
         const applied = [];
+        // Mails that had already left the inbox (moved from the phone, or by
+        // another tab): nothing was done to them, but they are not in the
+        // inbox either, so they leave the list too.
+        const alreadyOut = [];
         let failed = 0;
         let protectedSkipped = 0;
         let reversible = false;
@@ -812,6 +816,7 @@ function Inbox() {
           try {
             const { data } = await emailService.batchAction(chunk, action, labelName);
             applied.push(...(data.applied || []));
+            alreadyOut.push(...(data.alreadyOut || []));
             failed += data.failed || 0;
             protectedSkipped += data.protectedSkipped || 0;
             reversible = reversible || Boolean(data.reversible);
@@ -837,15 +842,27 @@ function Inbox() {
           if (leavesList(action, activeQuery)) removeEmails(applied);
           else applied.forEach((id) => patchEmail(id, { isStarred: false }));
         }
+        if (alreadyOut.length) {
+          removeEmails(alreadyOut);
+          plan.settle(alreadyOut);
+        }
 
         setSelectedEmails([]);
 
         const parts = [`${applied.length} email${plural(applied.length)} ${pastParticiple(action, applied.length)}`];
         if (data.protectedSkipped)
           parts.push(`${data.protectedSkipped} protégé${plural(data.protectedSkipped)} ignoré${plural(data.protectedSkipped)}`);
+        if (alreadyOut.length)
+          parts.push(`${alreadyOut.length} déjà sorti${plural(alreadyOut.length)} de la boîte`);
         const message = parts.join(' · ');
 
-        if (applied.length === 0) {
+        if (applied.length === 0 && alreadyOut.length && !hardError) {
+          toast.info(
+            alreadyOut.length === 1
+              ? "Cet email n'était déjà plus dans la boîte de réception : il a été rangé ailleurs entre-temps."
+              : `${alreadyOut.length} emails n'étaient déjà plus dans la boîte de réception : ils ont été rangés ailleurs entre-temps.`
+          );
+        } else if (applied.length === 0) {
           toast.error(
             hardError
               ? hardError.response?.data?.trim?.() || "L'action groupée a échoué."
@@ -879,7 +896,7 @@ function Inbox() {
         } else {
           toast.success(message);
         }
-        if (data.failed && applied.length > 0) {
+        if (data.failed && (applied.length > 0 || alreadyOut.length > 0)) {
           toast.error(`${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`);
         }
       } catch (err) {
@@ -1183,12 +1200,18 @@ function Inbox() {
       const archivedNote = data.archived ? ` · ${data.archived} email${data.archived > 1 ? 's' : ''} archivé${data.archived > 1 ? 's' : ''}` : '';
       if (data.done && data.method === 'mailto') {
         // Over IMAP the server wrote to the list's address itself, from the
-        // mailbox: the request has left, the list has not answered yet.
+        // mailbox: the request has left, the list has not answered yet. The
+        // address is named: the person sees who was written to in their name.
         track('unsubscribe', { mode: 'sent' });
-        toast.success(`Demande de désabonnement envoyée${archivedNote}`);
+        toast.success(`Demande de désabonnement envoyée à ${data.sentTo}${archivedNote}`);
       } else if (data.done) {
         track('unsubscribe', { mode: 'oneclick' });
         toast.success(`Désabonné en un clic${archivedNote}`);
+      } else if (data.alreadySent) {
+        // Written less than a day ago: the server does not write again, and
+        // its message says so.
+        track('unsubscribe', { mode: 'already' });
+        toast.info(`${data.message}${archivedNote}`);
       } else if (data.url) {
         track('unsubscribe', { mode: 'url' });
         window.open(data.url, '_blank', 'noopener,noreferrer');
@@ -1198,6 +1221,9 @@ function Inbox() {
         window.location.href = data.mailto;
         toast.info('Email de désabonnement préparé');
       }
+      // What was not done (a mail that did not leave, mails not archived),
+      // in the server's words. Already shown above when it was sent before.
+      if (data.message && !data.alreadySent) toast.error(data.message);
       if (data.sender) markUnsubscribed(data.sender);
       if (alsoArchive || data.archived) fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
