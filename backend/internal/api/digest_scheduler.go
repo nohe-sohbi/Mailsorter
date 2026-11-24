@@ -13,6 +13,8 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/digest"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailer"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/smtpsend"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -103,8 +105,9 @@ func (h *Handler) sendOneDigest(ctx context.Context, userEmail string) {
 	}
 
 	if _, err := h.deliverDigest(ctx, userEmail, summary); err != nil {
-		// A missing gmail.send scope (user connected before the digest feature)
-		// surfaces here; they simply need to reconnect Gmail to grant it.
+		// On the Gmail API, a missing gmail.send scope (user connected before
+		// the digest feature) surfaces here; on IMAP, a sending server that
+		// refuses the app password. "Envoyer un test" says which, in words.
 		log.Printf("digest: send failed for %s: %v", userEmail, err)
 		return
 	}
@@ -121,30 +124,89 @@ func digestStyle() digest.Style {
 	return digest.StyleClassic
 }
 
-// deliverDigest renders a summary and sends it to the user through their own
-// Gmail. Shared by the scheduler and the "envoyer un test" button so a test
-// exercises the real delivery path, headers included, rather than a lookalike.
+// errSendThroughBox marks every failure of the IMAP half of deliverDigest, so
+// "Envoyer un test" answers none of them with the Gmail sentence. The causes
+// it has words for (no known sending server, a refused app password, a server
+// that does not answer) stay reachable under it with errors.Is.
+var errSendThroughBox = errors.New("api: the recap did not leave through the mailbox's sending server")
+
+// deliverDigest renders a summary and sends it to the user, from their own
+// mailbox: through their Gmail on the Gmail API, through their mailbox's
+// sending server on IMAP. Shared by the scheduler and the "envoyer un test"
+// button so a test exercises the real delivery path, headers included, rather
+// than a lookalike.
 func (h *Handler) deliverDigest(ctx context.Context, userEmail string, summary activity.Summary) (digest.Digest, error) {
-	d := digest.RenderStyle(summary, time.Now(), digestStyle())
+	now := time.Now()
+	d := digest.RenderStyle(summary, now, digestStyle())
+	recap := func(address string) []byte {
+		return mailer.Build(mailer.Message{
+			From:    address,
+			To:      address,
+			Subject: d.Subject,
+			Text:    d.Text,
+			HTML:    d.HTML,
+			Date:    now,
+		})
+	}
+
+	transport, account, err := h.transportFor(ctx, userEmail)
+	if err != nil {
+		return d, err
+	}
+	if transport == provider.TransportIMAP {
+		// From and to the mailbox's own address, which need not be the
+		// account's: the sending server takes a message only from the
+		// address it logged in as, and the mailbox is where the person reads.
+		if err := h.sendThroughBox(ctx, account, recap(account.Username)); err != nil {
+			return d, fmt.Errorf("%w: %w", errSendThroughBox, err)
+		}
+		return d, nil
+	}
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		return d, err
 	}
-
-	raw := mailer.BuildRaw(userEmail, userEmail, d.Subject, d.Text, d.HTML)
-	if err := h.gmailService.SendMessage(gmailClient, raw); err != nil {
+	if err := h.gmailService.SendMessage(gmailClient, mailer.ForGmail(recap(userEmail))); err != nil {
 		return d, fmt.Errorf("envoi du digest impossible: %w", err)
 	}
 	return d, nil
 }
 
+// writeDigestSendError answers a test send that did not leave. A dead Google
+// grant keeps its own answer (401, and "Reconnecter Gmail" in the UI). On
+// IMAP, every answer is about the mailbox's sending server, never Gmail, and
+// none is a 401: the SPA signs the person out on one before they read it.
+func writeDigestSendError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errReauthRequired):
+		writeAuthError(w, err)
+	case errors.Is(err, provider.ErrNoSendingServer):
+		writeError(w, http.StatusUnprocessableEntity,
+			"Mailsorter ne connaît pas le serveur d'envoi de cette boîte : le récap ne peut pas en partir.")
+	case errors.Is(err, smtpsend.ErrAuth):
+		writeError(w, http.StatusBadGateway,
+			"Le serveur d'envoi de votre boîte a refusé le mot de passe d'application.")
+	case errors.Is(err, smtpsend.ErrUnreachable):
+		writeError(w, http.StatusBadGateway,
+			"Le serveur d'envoi de votre boîte ne répond pas. Réessayez dans quelques minutes.")
+	case errors.Is(err, errSendThroughBox):
+		writeError(w, http.StatusBadGateway,
+			"Le récap n'a pas pu partir du serveur d'envoi de votre boîte. Réessayez dans quelques minutes.")
+	default:
+		writeError(w, http.StatusBadGateway,
+			"Envoi impossible. Reconnectez Gmail depuis la carte « Compte Gmail » pour réautoriser l'envoi.")
+	}
+}
+
 // SendTestDigest emails the caller their recap right now.
 //
 // The digest was the one feature nobody could verify: you turned it on, and
-// then waited a day to learn whether your Gmail grant still carried the send
-// scope. This closes that loop. It deliberately does NOT stamp
-// digestLastSentAt: a test must not consume the day's real digest.
+// then waited a day to learn whether delivery worked (on the Gmail API,
+// whether your grant still carried the send scope; on IMAP, whether your
+// sending server takes your app password). This closes that loop. It
+// deliberately does NOT stamp digestLastSentAt: a test must not consume the
+// day's real digest.
 //
 // An empty week is sent rather than skipped here (unlike the scheduler, which
 // has no reason to mail "0 emails triés" unprompted): the point of a test send
@@ -161,21 +223,15 @@ func (h *Handler) SendTestDigest(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := h.activitySummary(ctx, userEmail)
 	if err != nil {
+		log.Printf("digest test: activity summary failed for %s: %v", userEmail, err)
 		writeError(w, http.StatusInternalServerError, "Failed to load activity")
 		return
 	}
 
 	d, err := h.deliverDigest(ctx, userEmail, summary)
 	if err != nil {
-		// A dead Google grant is the single most likely cause, and it has its
-		// own remedy in the UI ("Reconnecter Gmail"), so it must not be flattened
-		// into a generic 500.
-		if errors.Is(err, errReauthRequired) {
-			writeAuthError(w, err)
-			return
-		}
-		writeError(w, http.StatusBadGateway,
-			"Envoi impossible. Reconnectez Gmail depuis la carte « Compte Gmail » pour réautoriser l'envoi.")
+		log.Printf("digest test: send failed for %s: %v", userEmail, err)
+		writeDigestSendError(w, err)
 		return
 	}
 

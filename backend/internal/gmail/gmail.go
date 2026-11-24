@@ -292,8 +292,9 @@ func (s *Service) ModifyMessage(gmailService *gmail.Service, messageID string, a
 	})
 }
 
-// SendMessage sends a pre-built RFC 2822, base64url-encoded message (see
-// internal/mailer.BuildRaw) as the authenticated user. Used for the daily digest.
+// SendMessage sends a pre-built RFC 5322, base64url-encoded message (see
+// internal/mailer.Build and ForGmail) as the authenticated user. Used for the
+// daily digest.
 func (s *Service) SendMessage(gmailService *gmail.Service, raw string) error {
 	return s.retryErr(func() error {
 		_, err := gmailService.Users.Messages.Send("me", &gmail.Message{Raw: raw}).Do()

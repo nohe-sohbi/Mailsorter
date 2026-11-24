@@ -11,6 +11,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/smtpsend"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -96,21 +97,37 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		UpdatedAt: now,
 	}
 
+	set := bson.M{
+		"provider":  account.Provider,
+		"transport": account.Transport,
+		"username":  account.Username,
+		"secret":    sealed,
+		"host":      account.Host,
+		"port":      account.Port,
+		"tls":       account.TLS,
+		"updatedAt": now,
+	}
+	update := bson.M{
+		"$set":         set,
+		"$setOnInsert": bson.M{"userId": userEmail, "createdAt": now},
+	}
+	// The sending server comes from the same route, so the recap leaves from
+	// the provider whose IMAP server was just proved. A route without one
+	// clears what a mailbox connected before may have left on the row.
+	if route.SMTP != nil {
+		account.SMTPHost = route.SMTP.Host
+		account.SMTPPort = route.SMTP.Port
+		account.SMTPTLS = string(route.SMTP.TLS)
+		set["smtpHost"] = account.SMTPHost
+		set["smtpPort"] = account.SMTPPort
+		set["smtpTls"] = account.SMTPTLS
+	} else {
+		update["$unset"] = bson.M{"smtpHost": "", "smtpPort": "", "smtpTls": ""}
+	}
+
 	if _, err := h.db.MailAccounts().UpdateOne(ctx,
 		bson.M{"userId": userEmail},
-		bson.M{
-			"$set": bson.M{
-				"provider":  account.Provider,
-				"transport": account.Transport,
-				"username":  account.Username,
-				"secret":    sealed,
-				"host":      account.Host,
-				"port":      account.Port,
-				"tls":       account.TLS,
-				"updatedAt": now,
-			},
-			"$setOnInsert": bson.M{"userId": userEmail, "createdAt": now},
-		},
+		update,
 		options.Update().SetUpsert(true),
 	); err != nil {
 		return models.MailAccount{}, fmt.Errorf("store mail account: %w", err)
@@ -249,9 +266,10 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 // openMailbox opens the caller's stored mailbox for work.
 //
 // It is the IMAP counterpart of getUserToken, and the only way the rest of the
-// app reaches a connection: nothing else reads the secret column. The caller
-// closes the client, one connection per unit of work, because an IMAP session
-// is stateful and cannot be shared between goroutines.
+// app reaches a connection: nothing else reads the secret column, but
+// sendThroughBox below, which logs in to the same mailbox's sending server.
+// The caller closes the client, one connection per unit of work, because an
+// IMAP session is stateful and cannot be shared between goroutines.
 func (h *Handler) openMailbox(ctx context.Context, userEmail string) (*imap.Client, error) {
 	var account models.MailAccount
 	if err := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&account); err != nil {
@@ -270,4 +288,29 @@ func (h *Handler) openMailbox(ctx context.Context, userEmail string) (*imap.Clie
 		Username: account.Username,
 		Password: password,
 	})
+}
+
+// sendThroughBox hands a message to the sending server of a mailbox reached
+// over IMAP, logged in with the address and the app password the mailbox was
+// connected with, from that address to that address: the daily recap, a
+// message the person sends to themselves. Here, beside openMailbox, because
+// those two are the only readers of the sealed app password.
+func (h *Handler) sendThroughBox(ctx context.Context, account models.MailAccount, message []byte) error {
+	server, err := provider.SendingServer(provider.Endpoint{
+		Host: account.SMTPHost,
+		Port: account.SMTPPort,
+		TLS:  provider.TLSMode(account.SMTPTLS),
+	}, account.Provider, Edition)
+	if err != nil {
+		return err
+	}
+	password, err := h.openSecret(account.Secret)
+	if err != nil {
+		return err
+	}
+	return smtpsend.Send(ctx, smtpsend.Credentials{
+		Endpoint: server,
+		Username: account.Username,
+		Password: password,
+	}, account.Username, []string{account.Username}, message)
 }

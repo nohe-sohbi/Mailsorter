@@ -20,13 +20,13 @@ Trois conteneurs, décrits par `docker-compose.yml` : `mongodb`, `backend` (port
 
 ## Briques
 
-**Backend (`backend/`).** `cmd/server` charge et valide la configuration, se connecte à MongoDB, crée les index, construit les clients (chiffrement, Gmail, IA, Stripe), monte les routes et sert, avec un arrêt propre sur SIGTERM. `internal/api` est la seule couche qui fait des entrées-sorties : gestionnaires HTTP, middlewares, boucles de fond. La logique de décision vit dans des paquets purs, sans I/O et testés à part : `rules`, `protect`, `snooze`, `search`, `schedule`, `activity`, `digest`, `mailer`, `account`, `metrics`, `provider`, `mailbox`, `egress`, `unsubscribe`. Les clients sortants sont `gmail`, `imap`, `ai` et `billing`.
+**Backend (`backend/`).** `cmd/server` charge et valide la configuration, se connecte à MongoDB, crée les index, construit les clients (chiffrement, Gmail, IA, Stripe), monte les routes et sert, avec un arrêt propre sur SIGTERM. `internal/api` est la seule couche qui fait des entrées-sorties : gestionnaires HTTP, middlewares, boucles de fond. La logique de décision vit dans des paquets purs, sans I/O et testés à part : `rules`, `protect`, `snooze`, `search`, `schedule`, `activity`, `digest`, `mailer`, `account`, `metrics`, `provider`, `mailbox`, `egress`, `unsubscribe`. Les clients sortants sont `gmail`, `imap`, `smtpsend`, `ai` et `billing`.
 
 **Frontend (`frontend/`).** Une SPA React 18 (Create React App et Tailwind), servie par nginx. Tous les appels HTTP passent par `src/services/api.js`. L'apparence (`UI_THEME`, "hotel" ou "classic") est lue au démarrage par `GET /api/config/status`.
 
 **Données.** Une base MongoDB `mailsorter`, une collection par usage, toutes déclarées dans `internal/database/database.go`. Les index sont créés au démarrage du backend par `EnsureIndexes`, seule source de vérité ; `mongo-init/` ne crée rien. Tout est rattaché à `userId`, l'adresse du compte, sauf `users` et `waitlist` (indexés sur l'adresse), `gmail_config` (ancienne configuration, en lecture seule) et `analysis_cache`, partagé entre tous les comptes et indexé sur `sha256(expéditeur|sujet)`.
 
-**Transports.** Une boîte est jointe soit par l'API Gmail (OAuth, avec le client Google de l'instance), soit par IMAP (go-imap v2, TLS ou STARTTLS, jamais en clair). Le serveur IMAP n'est jamais fourni par le client : il est lu dans le catalogue `internal/provider` d'après le domaine de l'adresse. Le transport est résolu à chaque requête (`transportFor`) : une ligne `mail_accounts` décide ; sans ligne, des jetons Google sur le compte veulent dire API Gmail ; sans l'un ni l'autre, la requête répond `428`. Une erreur de base de données fait échouer la requête, elle ne retombe jamais sur Gmail. Microsoft Graph figure au catalogue mais n'est pas implémenté.
+**Transports.** Une boîte est jointe soit par l'API Gmail (OAuth, avec le client Google de l'instance), soit par IMAP (go-imap v2, TLS ou STARTTLS, jamais en clair). Le serveur IMAP n'est jamais fourni par le client : il est lu dans le catalogue `internal/provider` d'après le domaine de l'adresse, comme le serveur d'envoi (SMTP) de la même route, enregistré avec la boîte et par lequel part le récap. Le transport est résolu à chaque requête (`transportFor`) : une ligne `mail_accounts` décide ; sans ligne, des jetons Google sur le compte veulent dire API Gmail ; sans l'un ni l'autre, la requête répond `428`. Une erreur de base de données fait échouer la requête, elle ne retombe jamais sur Gmail. Microsoft Graph figure au catalogue mais n'est pas implémenté.
 
 ## Entrer dans l'application
 
@@ -96,7 +96,7 @@ Quatre boucles, lancées par `NewHandler` : des goroutines avec des tickers, rel
 | --- | --- | --- |
 | Workers d'analyse | 3 workers, file de 256 jobs | Exécutent `analyze-async` ; une file pleine lance le job à part |
 | Réveil des reports | toutes les minutes | Ramène en boîte les emails reportés arrivés à échéance ; après 5 échecs, le report passe en échec |
-| Récap quotidien | toutes les 15 minutes, au plus un envoi par jour et par compte | Envoie le récap des 7 derniers jours à l'heure choisie (UTC, 0 = minuit ; sans choix, `DIGEST_HOUR_UTC`), par l'API Gmail du compte ; une semaine vide n'envoie rien |
+| Récap quotidien | toutes les 15 minutes, au plus un envoi par jour et par compte | Envoie le récap des 7 derniers jours à l'heure choisie (UTC, 0 = minuit ; sans choix, `DIGEST_HOUR_UTC`), de la boîte du compte à elle-même : par l'API Gmail, ou par le serveur d'envoi d'une boîte IMAP (`internal/smtpsend`, avec son mot de passe d'application) ; une semaine vide n'envoie rien |
 | Synchronisation de fond | passage toutes les 5 minutes, 30 minutes au moins entre deux synchronisations d'un compte | Synchronise les comptes qui l'ont activée |
 
 ## Observabilité
