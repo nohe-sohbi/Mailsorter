@@ -460,6 +460,73 @@ func (p *imapPerson) expectDoesNotShow(subject, why string) {
 	}
 }
 
+// sendersTab is this person's Expéditeurs tab: one card per sender, as
+// GET /api/senders lists them, each with the count of mails it shows.
+func (p *imapPerson) sendersTab() []senderCard {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/senders", nil)
+	if code != http.StatusOK {
+		a.fatalf("l'onglet Expéditeurs de %s ne s'affiche pas : GET /api/senders a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var cards []senderCard
+	if err := json.Unmarshal([]byte(raw), &cards); err != nil {
+		a.fatalf("réponse de GET /api/senders illisible pour %s : %v", p.email, err)
+	}
+	return cards
+}
+
+// senderCardOf returns the card of the Expéditeurs tab whose sender has this
+// address, and whether the tab shows one. By the address, because a card
+// holds the sender as the mail wrote it, name included ("Boutique"
+// <info@boutique.com>), and which way the IMAP listing quotes that name is
+// not what a sentence about the tab is about.
+func (p *imapPerson) senderCardOf(addr string) (senderCard, bool) {
+	p.app.t.Helper()
+	for _, c := range p.sendersTab() {
+		got := c.SenderEmail
+		if parsed, err := mail.ParseAddress(got); err == nil {
+			got = parsed.Address
+		}
+		if strings.EqualFold(got, addr) {
+			return c, true
+		}
+	}
+	return senderCard{}, false
+}
+
+// describeSenders is the Expéditeurs tab in a failure message.
+func describeSenders(cards []senderCard) string {
+	if len(cards) == 0 {
+		return "aucun expéditeur"
+	}
+	parts := make([]string, 0, len(cards))
+	for _, c := range cards {
+		parts = append(parts, fmt.Sprintf("%s (%d mail(s))", c.SenderEmail, c.EmailCount))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// expectSenderListed checks that the Expéditeurs tab shows this sender.
+func (p *imapPerson) expectSenderListed(addr string) {
+	a := p.app
+	a.t.Helper()
+	if _, ok := p.senderCardOf(addr); !ok {
+		a.failf("l'onglet Expéditeurs de %s devrait montrer %s, il ne le montre pas (il montre : %s)", p.email, addr, describeSenders(p.sendersTab()))
+	}
+}
+
+// expectSenderNotListed checks that the Expéditeurs tab no longer shows this
+// sender. why says why it should have left.
+func (p *imapPerson) expectSenderNotListed(addr, why string) {
+	a := p.app
+	a.t.Helper()
+	if c, ok := p.senderCardOf(addr); ok {
+		a.failf("l'onglet Expéditeurs de %s ne devrait plus montrer %s (%s), il le montre encore, avec %d mail(s)", p.email, addr, why, c.EmailCount)
+	}
+}
+
 // act is a button of an inbox row, as this person: the single-message action
 // (POST /api/emails/action), with the verb the row sends ("archive" for
 // "Archiver", "delete" for "Supprimer"). It expects the action to go through:

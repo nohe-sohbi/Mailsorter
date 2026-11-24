@@ -14,7 +14,8 @@ package api
 // The copy must also lose what left the inbox: a mail archived or deleted
 // from Mailsorter, or moved out by another mail program on the same mailbox,
 // is gone from the server's inbox, and a screen that still lists it offers to
-// act on a mail that is no longer there.
+// act on a mail that is no longer there. The inbox is one of those screens,
+// the Expéditeurs tab, which counts the mails of each sender, another.
 
 import (
 	"net/http"
@@ -35,6 +36,8 @@ var (
 	bankStatement = incoming{From: "Ma Banque <info@banque.fr>", Subject: "Votre relevé de compte"}
 	shopOrder     = incoming{From: "Boutique <info@boutique.com>", Subject: "Votre commande est expédiée"}
 	travelOffer   = incoming{From: "Voyages <promo@voyages.fr>", Subject: "Offre de la semaine"}
+	// shopInvoice is a second mail from the sender of shopOrder.
+	shopInvoice = incoming{From: "Boutique <info@boutique.com>", Subject: "Votre facture"}
 )
 
 // syncedIMAPInbox brings a person to where those sentences start: these mails
@@ -184,6 +187,35 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 				moi.sync()
 				moi.expectDoesNotShow(shopOrder.Subject, "tu l'as supprimé avant cette synchronisation")
 				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un expéditeur dont tu as rangé tous les mails n'apparaît plus dans l'onglet Expéditeurs, même après une synchronisation.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				const shop, bank = "info@boutique.com", "info@banque.fr"
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, shopInvoice)
+
+				// Where the sentence starts: the tab shows the shop, with
+				// its two mails. A sender never shown proves nothing once
+				// gone.
+				if card, ok := moi.senderCardOf(shop); !ok || card.EmailCount != 2 {
+					app.fatalf("après la synchronisation, l'onglet Expéditeurs de %s devrait montrer %s avec ses 2 mails, il montre : %s. Le scénario ne prouve rien", moi.email, shop, describeSenders(moi.sendersTab()))
+				}
+
+				// Both ways a row's button tidies a mail: "Archiver" on the
+				// first, "Supprimer" on the second.
+				moi.act(uids[1], "archive")
+				moi.act(uids[2], "delete")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver")
+				moi.requireOnServer(serverTrash, shopInvoice.Subject, "tu viens de le supprimer")
+
+				moi.expectSenderNotListed(shop, "tu viens d'archiver et de supprimer ses 2 mails")
+				moi.sync()
+				moi.expectSenderNotListed(shop, "tu as archivé et supprimé ses 2 mails avant cette synchronisation")
+				// The control: the sender nobody touched is still there.
+				// Without it, a tab emptied of everything would pass.
+				moi.expectSenderListed(bank)
 			},
 		},
 		{

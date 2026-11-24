@@ -100,6 +100,30 @@ func TestScenarios_SingleMessage(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur Gmail aussi, « Annuler » juste après avoir archivé un mail marque l'archivage annulé dans l'historique, qui ne propose plus de l'annuler.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
+				app.act(ids[0], "archive")
+				// Where the sentence starts: the history offers to undo the
+				// archive. A line never offered proves nothing once undone.
+				line := app.historyLineFor(ids[0], "archive")
+				what := "de l'archivage du mail " + app.describe(ids[0])
+				if line.Undone || !line.Undoable {
+					app.fatalf("juste après l'archivage, l'historique devrait proposer « Annuler » sur la ligne %s : elle est marquée annulée=%v, annulable=%v, le scénario ne prouve rien", what, line.Undone, line.Undoable)
+				}
+
+				// "Annuler" in the message that follows "Archiver", which
+				// sends "unarchive" (undoToast in Inbox.js).
+				if got := app.undoRightAfter(ids[0], "archive"); got.code != http.StatusOK {
+					app.fatalf("« Annuler » juste après l'archivage du mail %s devrait répondre 200, le serveur a répondu %s : le scénario ne prouve rien", app.describe(ids[0]), got)
+				}
+
+				// The Historique screen, opened next: the same line.
+				app.expectNoLongerUndoable(line, what)
+			},
+		},
+		{
 			phrase: "Quand tu reportes un mail, il quitte ta boîte de réception ; à l'heure prévue, il revient tout seul, marqué non lu.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
