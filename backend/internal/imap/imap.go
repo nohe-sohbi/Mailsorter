@@ -155,6 +155,12 @@ func (c *Client) Close() error {
 	return c.c.Close()
 }
 
+// Closed says whether the connection is gone: closed here, or by go-imap
+// on an answer it could not read. Nothing more can be asked on it.
+func (c *Client) Closed() bool {
+	return c.c == nil || c.c.State() == imapv2.ConnStateLogout
+}
+
 // folderInfo is one mailbox as the server described it.
 type folderInfo struct {
 	Name  string

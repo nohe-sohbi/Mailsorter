@@ -62,8 +62,10 @@ syncInbox(compte)
           lecture des drapeaux (flagsAt) ; l'upsert ne les écrit qu'à la création
        -> pièces jointes (BODYSTRUCTURE) des mails de la copie qui ne les ont pas encore,
           500 au plus par synchro, les plus récents d'abord, lues par lots coupés en deux
-          quand un lot échoue (connexion rouverte) ; un mail illisible seul est noté
-          structureUnreadable, sans pièce jointe, et n'est plus redemandé
+          quand la réponse d'un lot ne se lit pas (connexion rouverte, un budget par
+          phase) ; un mail illisible seul est noté structureUnreadable, sans pièce
+          jointe, et n'est plus redemandé ; un refus du serveur ou un délai ne conclut
+          rien sur aucun mail : la synchro répond une erreur, la suivante relit
        -> aucune règle : rulesApplied vaut 0
   -> { synced, total, rulesApplied }
 ```

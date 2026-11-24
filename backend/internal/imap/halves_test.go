@@ -3,20 +3,28 @@ package imap
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
 	"testing"
+
+	imapv2 "github.com/emersion/go-imap/v2"
 )
 
 // fakeFolder is a folder read through ReadInHalves without a server: a batch
-// holding a bad message fails whole, and closes the "connection" until it is
-// opened again, as go-imap does on an answer it cannot parse.
+// holding a bad message fails whole with the error go-imap gives an answer it
+// cannot parse, and closes the "connection" until it is opened again, as
+// go-imap does. A batch holding a refused message fails with that refusal
+// instead, the connection left open, as a server answering NO does.
 type fakeFolder struct {
 	bad     map[string]bool
+	refused map[string]error
 	closed  bool
 	reads   [][]string
 	reopens int
@@ -33,9 +41,12 @@ func (f *fakeFolder) read(uids []string) (map[string]string, error) {
 	}
 	out := map[string]string{}
 	for _, uid := range uids {
+		if err := f.refused[uid]; err != nil {
+			return nil, err
+		}
 		if f.bad[uid] {
 			f.closed = true
-			return nil, errors.New("in body-type-1part: expected string")
+			return nil, errors.New(`imap: read the parts of 2 messages in "INBOX": in response-data: in FETCH: in body-type-mpart: in body-type-1part: imapwire: expected string, got "("`)
 		}
 		out[uid] = "lu " + uid
 	}
@@ -183,6 +194,78 @@ func TestReadInHalvesLeavesTheRestWhenItMayNotReopen(t *testing.T) {
 	}
 }
 
+// A refusal of the server, or a time limit, on a message read alone says
+// nothing of it: no verdict, the reading stops there, the rest left for next
+// time, and the error is typed for the caller. A message marked unreadable on
+// a passing [UNAVAILABLE] would stay out of the filters for good.
+func TestReadInHalvesGivesNoVerdictOnARefusalOrATimeLimit(t *testing.T) {
+	unavailable := &imapv2.Error{Type: imapv2.StatusResponseTypeNo, Code: imapv2.ResponseCodeUnavailable, Text: "try again later"}
+	cases := map[string]error{
+		"NO [UNAVAILABLE]":          fmt.Errorf("imap: read the parts of 1 messages in %q: %w", "INBOX", unavailable),
+		"NO [LIMIT] (throttled)":    &imapv2.Error{Type: imapv2.StatusResponseTypeNo, Code: imapv2.ResponseCodeLimit, Text: "throttled"},
+		"SELECT refused":            fmt.Errorf("imap: select %q: %w", "INBOX", &imapv2.Error{Type: imapv2.StatusResponseTypeNo, Text: "mailbox busy"}),
+		"time limit":                fmt.Errorf("imap: read: %w", os.ErrDeadlineExceeded),
+		"connection reset mid-read": errors.New("in response: cannot read tag: read tcp 127.0.0.1:1->127.0.0.1:2: read: connection reset by peer"),
+	}
+	for name, refusal := range cases {
+		t.Run(name, func(t *testing.T) {
+			// 6 is refused, inside the second batch; 3 is bad, inside the
+			// first, so the reading is halving when the refusal comes.
+			f := &fakeFolder{bad: map[string]bool{"3": true}, refused: map[string]error{"6": refusal}, maxReopens: 20}
+			got, err := ReadInHalves(numbered(1, 10), 5, f.read, f.reopen)
+			if !errors.Is(err, ErrReadStopped) {
+				t.Fatalf("err = %v, want ErrReadStopped", err)
+			}
+			if _, ok := got.Unreadable["6"]; ok {
+				t.Error("6 marked unreadable on a refusal: it would stay out of the filters for good")
+			}
+			if _, ok := got.Unreadable["3"]; !ok {
+				t.Errorf("Unreadable = %v, want 3, whose answer could not be parsed", got.Unreadable)
+			}
+			left := map[string]bool{}
+			for _, u := range got.Left {
+				left[u] = true
+			}
+			for _, u := range numbered(6, 10) {
+				if !left[u] {
+					t.Errorf("Left = %v, want 6 to 10, not read and not judged", got.Left)
+					break
+				}
+			}
+			if got.Stopped == nil {
+				t.Error("Stopped = nil, want the refusal, for the log")
+			}
+		})
+	}
+}
+
+// What counts as an answer that could not be parsed, and what does not.
+func TestIsUnreadableAnswer(t *testing.T) {
+	timeout := &net.OpError{Op: "read", Err: os.ErrDeadlineExceeded}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nothing", nil, false},
+		{"a structure go-imap cannot parse", errors.New(`in body-type-1part: imapwire: expected string, got "("`), true},
+		{"the same, wrapped", fmt.Errorf("imap: read the parts: %w", errors.New("in FETCH: imapwire: expected ')'")), true},
+		{"a panic go-imap recovered while reading", errors.New("imapclient: panic reading response: index out of range"), true},
+		{"the server says NO", &imapv2.Error{Type: imapv2.StatusResponseTypeNo, Text: "no"}, false},
+		{"NO [UNAVAILABLE], wrapped", fmt.Errorf("imap: x: %w", &imapv2.Error{Type: imapv2.StatusResponseTypeNo, Code: imapv2.ResponseCodeUnavailable}), false},
+		{"BAD", &imapv2.Error{Type: imapv2.StatusResponseTypeBad, Text: "imapwire: quoted in a refusal"}, false},
+		{"a network time limit", timeout, false},
+		{"a deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), false},
+		{"a connection gone", io.ErrUnexpectedEOF, false},
+		{"a connection reset", errors.New("read tcp: connection reset by peer"), false},
+	}
+	for _, tc := range cases {
+		if got := IsUnreadableAnswer(tc.err); got != tc.want {
+			t.Errorf("IsUnreadableAnswer(%s: %v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
+	}
+}
+
 // corruptingProxy forwards connections to addr, and rewrites every
 // occurrence of from into to in what the server answers: a server that
 // describes one message in a way go-imap cannot read. It returns the address
@@ -261,13 +344,25 @@ func TestReadInHalvesAgainstAServerWithAnUnreadableStructure(t *testing.T) {
 		uids = append(uids, emails[i].MessageID)
 	}
 
-	// Where the test starts: the batch read whole fails. A proxy that
-	// corrupts nothing proves nothing.
-	if _, err := c.Attachments("INBOX", uids); err == nil {
+	// Where the test starts: the batch read whole fails, and the failure is
+	// one IsUnreadableAnswer recognises on this version of go-imap. A proxy
+	// that corrupts nothing proves nothing.
+	_, err = c.Attachments("INBOX", uids)
+	if err == nil {
 		t.Fatal("the batch with the corrupted structure was read whole: the test proves nothing")
 	}
+	if !IsUnreadableAnswer(err) {
+		t.Fatalf("go-imap's failure on an unparseable structure is not recognised by IsUnreadableAnswer: %v", err)
+	}
+	if !c.Closed() {
+		t.Error("the connection is still open after an answer go-imap could not parse: Closed() does not see it")
+	}
 
-	current := c
+	// The probe above closed it: start, as the sync does, on an open one.
+	current, err := dialTestClient(proxy)
+	if err != nil {
+		t.Fatalf("connect again through the proxy: %v", err)
+	}
 	reopens := 0
 	read := func(batch []string) (map[string]bool, error) { return current.Attachments("INBOX", batch) }
 	reopen := func() error {
@@ -304,5 +399,25 @@ func TestReadInHalvesAgainstAServerWithAnUnreadableStructure(t *testing.T) {
 	// And the connection left open works.
 	if _, err := current.Attachments("INBOX", []string{bySubject["Texte"]}); err != nil {
 		t.Errorf("the connection opened again does not answer: %v", err)
+	}
+}
+
+// A real refusal of a real server is not an unparseable answer: a SELECT the
+// server answers NO stops the reading without a verdict on any message.
+func TestReadInHalvesAgainstAServerThatRefuses(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	uid := appendMessage(t, c, "INBOX")
+	reopens := 0
+	got, err := ReadInHalves([]string{uid}, 10,
+		func(batch []string) (map[string]bool, error) { return c.Attachments("Nowhere", batch) },
+		func() error { reopens++; return nil })
+	if !errors.Is(err, ErrReadStopped) {
+		t.Fatalf("err = %v, want ErrReadStopped", err)
+	}
+	if len(got.Unreadable) != 0 || len(got.Left) != 1 || reopens != 0 {
+		t.Errorf("Unreadable = %v, Left = %v, %d reopens; want no verdict, the message left, no reopen", got.Unreadable, got.Left, reopens)
+	}
+	if c.Closed() {
+		t.Error("a refused SELECT closed the connection")
 	}
 }

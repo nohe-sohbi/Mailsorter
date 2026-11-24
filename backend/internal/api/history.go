@@ -308,10 +308,17 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if entry.Undone {
-		// Undone a moment ago by another "Annuler" (two tabs, two clicks):
-		// that one did what this one asks, so answer like it. Long after,
-		// it is a screen showing an old line: say it was already undone.
-		if !entry.UndoneAt.IsZero() && time.Since(entry.UndoneAt) < moveInFlight {
+		// Undone a moment ago by another "Annuler" (two tabs, two clicks),
+		// with nothing done to the mail since: that one did what this one
+		// asks, so answer like it. Otherwise it is a screen showing an old
+		// line: say it was already undone.
+		same, err := h.sameUndo(ctx, userEmail, entry, time.Now())
+		if err != nil {
+			log.Printf("history: entry %s of %s already undone, the actions since not read: %v", oid.Hex(), userEmail, err)
+			writeError(w, http.StatusInternalServerError, "Annulation impossible à vérifier, réessayez.")
+			return
+		}
+		if same {
 			inverse, _ := activity.Inverse(entry.Action)
 			writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
 			return
@@ -383,6 +390,62 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 	h.logActionMeta(ctx, userEmail, entry.MessageID, inverse, SourceUndo, entry.Subject, entry.From)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
+}
+
+// sameUndoWindow is how long after an "Annuler" another "Annuler" of the
+// same entry may be the same click seen twice (two tabs, a double click, a
+// request retried) and answered like it.
+const sameUndoWindow = 2 * time.Minute
+
+// recentUndo says whether an entry was undone recently enough, at now, for
+// another "Annuler" of it to be the same one.
+func recentUndo(undoneAt, now time.Time) bool {
+	return !undoneAt.IsZero() && !now.Before(undoneAt) && now.Sub(undoneAt) < sameUndoWindow
+}
+
+// sameUndo says whether an "Annuler" of an entry already undone is the same
+// one as the undo, to be answered like it: the undo is recent (recentUndo)
+// and nothing was done to the mail since. Undone, then archived again: a
+// screen left open on the old line is told the action was already undone,
+// never that it undid it.
+func (h *Handler) sameUndo(ctx context.Context, userEmail string, entry models.ActionLog, now time.Time) (bool, error) {
+	if !recentUndo(entry.UndoneAt, now) {
+		return false, nil
+	}
+	acted, err := h.actedOnSince(ctx, userEmail, entry.MessageID, entry.UndoneAt)
+	return !acted, err
+}
+
+// actedOnSince says whether the history holds an action on this mail since
+// that time, other than a reversal ("Annuler" records its own). Over IMAP a
+// mail "Annuler" brought back has a new number, which its stored row keeps
+// alongside the old one (restoredFrom): an action under either counts.
+func (h *Handler) actedOnSince(ctx context.Context, userEmail, messageID string, since time.Time) (bool, error) {
+	ids := []string{messageID}
+	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "restoredFrom": messageID},
+		options.Find().SetProjection(bson.M{"messageId": 1}))
+	if err != nil {
+		return false, fmt.Errorf("look for message %s put back: %w", messageID, err)
+	}
+	var rows []struct {
+		MessageID string `bson:"messageId"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return false, fmt.Errorf("look for message %s put back: %w", messageID, err)
+	}
+	for _, r := range rows {
+		ids = append(ids, r.MessageID)
+	}
+	n, err := h.db.ActionLog().CountDocuments(ctx, bson.M{
+		"userId":    userEmail,
+		"messageId": bson.M{"$in": ids},
+		"createdAt": bson.M{"$gt": since},
+		"source":    bson.M{"$ne": SourceUndo},
+	}, options.Count().SetLimit(1))
+	if err != nil {
+		return false, fmt.Errorf("count the actions on message %s since its undo: %w", messageID, err)
+	}
+	return n > 0, nil
 }
 
 // applyInverseAction maps an inverse action name onto the corresponding Gmail

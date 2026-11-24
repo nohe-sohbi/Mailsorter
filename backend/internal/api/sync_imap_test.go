@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func TestInboxUpsertWritesFalseFlagsOnANewRow(t *testing.T) {
 	}
 }
 
-// The reopen budget of one sync: syncReopens openings, then
+// The reopen budget of one phase of a sync: phaseReopens openings, then
 // imap.ErrReopenLimit, which ReadInHalves reads as "leave the rest for next
 // time" rather than as a lost mailbox. The test handler's datastore is
 // unreachable, so each opening fails, and is counted all the same.
@@ -85,13 +86,31 @@ func TestSessionReopenerStopsAtTheBudget(t *testing.T) {
 	h := newTestHandler(t)
 	session := &mailSession{h: h, userEmail: "u@example.com", imapc: &imap.Client{}}
 	reopen := h.sessionReopener(cancelledContext(), "u@example.com", session)
-	for i := 0; i < syncReopens; i++ {
+	// Each phase gets a reopener of its own: one spent leaves the next whole.
+	other := h.sessionReopener(cancelledContext(), "u@example.com", session)
+	for i := 0; i < phaseReopens; i++ {
 		if err := reopen(); err == nil || errors.Is(err, imap.ErrReopenLimit) {
 			t.Fatalf("reopen %d = %v, want the failure to open the mailbox", i+1, err)
 		}
 	}
 	if err := reopen(); !errors.Is(err, imap.ErrReopenLimit) {
 		t.Errorf("reopen past the budget = %v, want imap.ErrReopenLimit", err)
+	}
+	if err := other(); err == nil || errors.Is(err, imap.ErrReopenLimit) {
+		t.Errorf("the next phase's first reopen = %v, want an attempt (the failure to open the mailbox), not the limit", err)
+	}
+}
+
+// What ReadInHalves returns becomes a typed error of the sync, never a
+// success: a lost connection, or a mailbox that stopped answering.
+func TestHalvesErrorIsTyped(t *testing.T) {
+	lost := fmt.Errorf("%w: dial: refused", imap.ErrConnectionLost)
+	if err := halvesError("u@example.com", "read", lost); !errors.Is(err, errMailboxLost) {
+		t.Errorf("halvesError(lost connection) = %v, want errMailboxLost", err)
+	}
+	stopped := fmt.Errorf("%w: NO [UNAVAILABLE]", imap.ErrReadStopped)
+	if err := halvesError("u@example.com", "read", stopped); !errors.Is(err, errMailboxUnavailable) {
+		t.Errorf("halvesError(read stopped) = %v, want errMailboxUnavailable", err)
 	}
 }
 
@@ -109,6 +128,30 @@ func TestUIDLessOrdersAsNumbers(t *testing.T) {
 	for _, tc := range cases {
 		if got := uidLess(tc.a, tc.b); got != tc.want {
 			t.Errorf("uidLess(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// Another "Annuler" of an entry already undone is the same click only within
+// sameUndoWindow of the undo; a missing date or one in the future never is.
+func TestRecentUndo(t *testing.T) {
+	undone := time.Date(2026, 11, 24, 20, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		undoneAt time.Time
+		now      time.Time
+		want     bool
+	}{
+		{"at once", undone, undone.Add(200 * time.Millisecond), true},
+		{"just inside the window", undone, undone.Add(sameUndoWindow - time.Second), true},
+		{"at the end of the window", undone, undone.Add(sameUndoWindow), false},
+		{"long after", undone, undone.Add(time.Hour), false},
+		{"no date recorded", time.Time{}, undone, false},
+		{"a date ahead of the clock", undone.Add(time.Minute), undone, false},
+	}
+	for _, tc := range cases {
+		if got := recentUndo(tc.undoneAt, tc.now); got != tc.want {
+			t.Errorf("recentUndo(%s) = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

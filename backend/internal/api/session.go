@@ -226,13 +226,15 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 		synced++
 	}
 
-	// The connection may be opened again a few times between here and the
-	// end, when a FETCH answer it cannot read closes it (imap.ReadInHalves).
-	reopen := h.sessionReopener(ctx, userEmail, session)
-	starredErr := h.storeStarredOutsideList(ctx, userEmail, session, states, reopen)
+	// Each phase that reads by halves may open the connection again a few
+	// times, when a FETCH answer it cannot parse closes it
+	// (imap.ReadInHalves), with a budget of its own: a favorite whose
+	// envelope cannot be read, tried again at each sync, must not leave the
+	// structures with none.
+	starredErr := h.storeStarredOutsideList(ctx, userEmail, session, states, h.sessionReopener(ctx, userEmail, session))
 	// After every message is stored, so it covers them all.
 	stateErr := h.refreshInboxState(ctx, userEmail, states, statesAt)
-	structureErr := h.completeInboxStructure(ctx, userEmail, session, present, reopen)
+	structureErr := h.completeInboxStructure(ctx, userEmail, session, present, h.sessionReopener(ctx, userEmail, session))
 	if failed > 0 {
 		return synced, len(emails), fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
 	}
@@ -297,17 +299,35 @@ func inboxUpsert(email models.Email) (bson.M, error) {
 // not open it again. Its text is what the user is told.
 var errMailboxLost = errors.New("la connexion à votre boîte a été perdue pendant la synchronisation")
 
-// syncReopens bounds how many times one sync opens the connection again after
-// a FETCH answer it could not read. Finding one unreadable message among a
-// batch of 100 takes 8 (one per halving), so each sync finds at least one,
+// errMailboxUnavailable is a sync the mailbox stopped answering part of the
+// way: it refused a read ([UNAVAILABLE], [THROTTLED]), or ran out of time.
+// Nothing was concluded about any message; the next sync reads it again. Its
+// text is what the user is told.
+var errMailboxUnavailable = errors.New("votre boîte n'a pas répondu jusqu'au bout de la synchronisation, réessayez dans un instant")
+
+// halvesError is the sync's answer to what imap.ReadInHalves returned: a
+// connection that could not be opened again, or a read the server stopped.
+// Logged with what it was; what the user reads names neither.
+func halvesError(userEmail, what string, err error) error {
+	log.Printf("imap sync: %s of %s: %v", what, userEmail, err)
+	if errors.Is(err, imap.ErrReadStopped) {
+		return errMailboxUnavailable
+	}
+	return errMailboxLost
+}
+
+// phaseReopens bounds how many times one phase of a sync (the favorites
+// outside the list, the structures) opens the connection again after a FETCH
+// answer it could not parse. Finding one unreadable message among a batch of
+// 100 takes 8 (one per halving), so each phase finds at least one per sync,
 // and a mailbox where every message is unreadable costs a sync seconds, not
 // minutes.
-const syncReopens = 10
+const phaseReopens = 10
 
-// sessionReopener opens the session's connection again, syncReopens times at
-// most for this sync, then answers imap.ErrReopenLimit.
+// sessionReopener opens the session's connection again, phaseReopens times at
+// most for the phase it is made for, then answers imap.ErrReopenLimit.
 func (h *Handler) sessionReopener(ctx context.Context, userEmail string, session *mailSession) func() error {
-	left := syncReopens
+	left := phaseReopens
 	return func() error {
 		if left == 0 {
 			return imap.ErrReopenLimit
@@ -324,6 +344,16 @@ func (h *Handler) sessionReopener(ctx context.Context, userEmail string, session
 	}
 }
 
+// openForPhase opens the session's connection again before a phase reads,
+// when the one before left it closed: its last answer could not be parsed
+// and its own budget of reopens was spent.
+func openForPhase(session *mailSession, reopen func() error) error {
+	if !session.imapc.Closed() {
+		return nil
+	}
+	return reopen()
+}
+
 // readBatch is how many messages one FETCH of a sync reads, besides the
 // listing and the flags: the unit imap.ReadInHalves halves.
 const readBatch = 100
@@ -336,6 +366,9 @@ const starredPerSync = 500
 // does not hold: older than the page a sync lists, and never in it since
 // Mailsorter was connected. Without them the filter "Favoris" would show a
 // favorite of years ago only if it had once been among the 100 most recent.
+// One whose envelope cannot be parsed even alone is logged and not stored:
+// the next sync tries it again, alone once the others are stored, so it costs
+// one reopen of this phase's own budget, never the structures'.
 func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string, session *mailSession, states map[string]imap.State, reopen func() error) error {
 	folder := string(mailbox.FolderInbox)
 	stored, err := h.storedInboxUIDs(ctx, userEmail)
@@ -357,6 +390,9 @@ func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string,
 	if len(missing) > starredPerSync {
 		missing = missing[:starredPerSync]
 	}
+	if err := openForPhase(session, reopen); err != nil {
+		return halvesError(userEmail, "open the mailbox again to read the starred messages", err)
+	}
 	got, err := imap.ReadInHalves(missing, readBatch,
 		func(uids []string) (map[string]models.Email, error) { return session.imapc.Envelopes(folder, uids) },
 		reopen)
@@ -365,7 +401,7 @@ func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string,
 		log.Printf("imap sync: starred message uid %s of %s could not be read, not stored: %v", uid, userEmail, rErr)
 	}
 	if len(got.Left) > 0 {
-		log.Printf("imap sync: %d starred messages of %s left for the next sync, the connection may not be opened again: %v", len(got.Left), userEmail, got.Stopped)
+		log.Printf("imap sync: %d starred messages of %s left for the next sync: %v", len(got.Left), userEmail, got.Stopped)
 	}
 	failed := false
 	for _, email := range got.Read {
@@ -375,8 +411,7 @@ func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string,
 		}
 	}
 	if err != nil {
-		log.Printf("imap sync: read the starred messages of %s: %v", userEmail, err)
-		return errMailboxLost
+		return halvesError(userEmail, "read the starred messages", err)
 	}
 	if failed {
 		return errMirrorNotReconciled
@@ -498,9 +533,11 @@ const structurePerSync = 500
 // completeInboxStructure reads whether the stored inbox messages carry a file
 // (their MIME structure), for the filter "Pièces jointes", which is answered
 // from the copy. A row without hasAttachments has not been read yet; once
-// read it holds true or false. A message whose structure cannot be read even
-// alone is stored without an attachment and marked structureUnreadable: it
-// is logged, never asked again, and no longer fails the messages next to it.
+// read it holds true or false. A message whose structure cannot be parsed
+// even alone is stored without an attachment and marked structureUnreadable:
+// it is logged, never asked again, and no longer fails the messages next to
+// it. A refusal of the server or a time limit concludes nothing: the rest is
+// read at the next sync, and this one answers errMailboxUnavailable.
 // Only messages the inbox still holds (present): a number it no longer holds
 // names nothing.
 func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, session *mailSession, present map[string]bool, reopen func() error) error {
@@ -531,6 +568,9 @@ func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, 
 	if len(uids) == 0 {
 		return nil
 	}
+	if err := openForPhase(session, reopen); err != nil {
+		return halvesError(userEmail, "open the mailbox again to read the structures", err)
+	}
 	got, readErr := imap.ReadInHalves(uids, readBatch,
 		func(batch []string) (map[string]bool, error) { return session.imapc.Attachments(folder, batch) },
 		reopen)
@@ -547,7 +587,7 @@ func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, 
 			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": false, "structureUnreadable": true}}))
 	}
 	if len(got.Left) > 0 {
-		log.Printf("imap sync: the structure of %d messages of %s left for the next sync, the connection may not be opened again: %v", len(got.Left), userEmail, got.Stopped)
+		log.Printf("imap sync: the structure of %d messages of %s left for the next sync: %v", len(got.Left), userEmail, got.Stopped)
 	}
 	failed := false
 	if len(writes) > 0 {
@@ -557,8 +597,7 @@ func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, 
 		}
 	}
 	if readErr != nil {
-		log.Printf("imap sync: read the structure of the messages of %s: %v", userEmail, readErr)
-		return errMailboxLost
+		return halvesError(userEmail, "read the structures", readErr)
 	}
 	if failed {
 		return errMirrorNotReconciled

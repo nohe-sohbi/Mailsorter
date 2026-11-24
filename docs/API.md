@@ -868,12 +868,17 @@ Two consequences worth knowing:
   marked `Content-Disposition: attachment`, or is a named file that is neither
   text nor a picture the HTML draws (a part with a `Content-ID`). Until it is
   read, a message does not match `has:attachment`. A message whose structure
-  cannot be read even alone (the batch it is in fails, the connection is
-  opened again and the batch read by halves) is logged, kept without an
-  attachment and marked `structureUnreadable`, and not asked again; the
-  others are read. A connection that cannot be opened again fails the sync
-  with `500` "la connexion à votre boîte a été perdue pendant la
-  synchronisation".
+  the server describes in a way that cannot be parsed, even alone (the batch
+  it is in fails, the connection is opened again and the batch read by
+  halves), is logged, kept without an attachment and marked
+  `structureUnreadable`, and not asked again; the others are read. A starred
+  message whose envelope cannot be parsed is logged and tried again at the
+  next sync. Only an answer that cannot be parsed says something about a
+  message: a server that refuses a read (`NO`, `[UNAVAILABLE]`,
+  `[THROTTLED]`) or runs out of time concludes nothing, and the sync answers
+  `500` "votre boîte n'a pas répondu jusqu'au bout de la synchronisation,
+  réessayez dans un instant"; a connection that cannot be opened again,
+  `500` "la connexion à votre boîte a été perdue pendant la synchronisation".
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 The filters the inbox offers are all answered: `is:unread`, `is:read`,
@@ -1160,8 +1165,12 @@ The entry is marked `undone` and the reversal is itself appended to the ledger
 **Responses:** `200 { "status": "undone", "action": "unarchive" }`; `400` not
 reversible or an invalid id; `404` not found, or, on IMAP, "Ce mail n'est plus là
 où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
-entry stays not undone); `409` already undone (a request a moment after another one undid it answers `200` like it: two clicks, two tabs); `502` the provider refused the
-reversal. On IMAP a moved message stays recorded for 30 days after it left the
+entry stays not undone); `409` already undone, except that a request within
+2 minutes of another one that undid it, with nothing done to the mail since,
+answers `200` like it (two clicks, two tabs): once the mail was archived again,
+a screen left open on the old line gets `409`; `500` "Annulation impossible à
+vérifier, réessayez." when the actions since cannot be read; `502` the provider
+refused the reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette
 action est trop ancienne pour être annulée ici : retrouvez ce mail dans
 l'archive ou la corbeille de votre messagerie." and nothing moves.

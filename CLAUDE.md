@@ -547,6 +547,11 @@ as a side effect of another change.
   what the app does today, and the report lists it under "À corriger" until the
   change that fixes it rewrites it in place. They FAIL without `MAILSORTER_TEST_MONGO_URI`
   rather than skip. `go test ./...` without the tag does not see them.
+- A test that needs the same harness but proves wiring rather than a sentence
+  (what a sync does with an answer a real server gives, what a handler reads in a
+  real database) is a `TestAcceptance_*` under the same tag, in a file of its own
+  (`wiring_imap_test.go`): not in the report, run by
+  `scripts/scenarios.sh -run '^TestAcceptance'` and by its own CI step.
 
 ### React
 
@@ -748,13 +753,19 @@ Do not duplicate these into this file. Point at them.
   reads an answer whole: one message whose description it cannot parse fails the
   command AND closes the connection. Read as one batch, that message would fail
   its neighbours at every sync and empty the filter for good. So the sync's
-  batch reads (starred envelopes, structures) go through `ReadInHalves`: on a
-  failed batch it reopens the connection (`sessionReopener`, at most
-  `syncReopens` times a sync) and reads each half, down to the message alone. A
-  message unreadable alone is logged, and its structure is stored as
-  `hasAttachments: false, structureUnreadable: true`, never asked again. A
-  reopen that fails is the mailbox, not a message: `errMailboxLost`, never
-  swallowed. Out of reopens, the rest waits for the next sync.
+  batch reads (starred envelopes, structures) go through `ReadInHalves`: on an
+  answer that could not be parsed it reopens the connection (`sessionReopener`,
+  at most `phaseReopens` times per phase, each phase its own budget, and
+  `openForPhase` reopens one a phase before left closed) and reads each half,
+  down to the message alone. A message unreadable alone is logged, and its
+  structure is stored as `hasAttachments: false, structureUnreadable: true`,
+  never asked again. ONLY a parse failure is a verdict on a message
+  (`imap.IsUnreadableAnswer`: go-imap does not type it, the "imapwire:" of its
+  decoder marks it, and a test against the real client pins that): a refusal of
+  the server (`*imapv2.Error`, NO [UNAVAILABLE]), a time limit or a lost
+  connection stops the reading with no verdict (`ErrReadStopped`, the sync
+  answers `errMailboxUnavailable`), and a reopen that fails is
+  `errMailboxLost`. Out of reopens, the rest waits for the next sync.
 - **Free text from a query goes into a `$regex`, so it goes through `regexp.QuoteMeta`.**
   `containsInsensitive` in `mirror.go` is the only place a user-typed string becomes a
   pattern. Unescaped, a "(" is a syntax error that fails the whole listing and a "."
