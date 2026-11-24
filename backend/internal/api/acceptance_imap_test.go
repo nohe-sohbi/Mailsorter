@@ -854,6 +854,21 @@ func (p *imapPerson) actAnswer(uid, action string) answer {
 	return answer{code: code, body: out}
 }
 
+// protect is "Protéger" in the reader, as this person (handleProtect in
+// Inbox.js): POST /api/protected with the sender as the mail shows it, name
+// included, which the server reduces to the address. testApp.protect does the
+// same for the person on Gmail, who is not this one. It stops the scenario
+// when the server does not take it: a sentence about a protected sender proves
+// nothing about a sender that is not.
+func (p *imapPerson) protect(from string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/protected", map[string]string{"value": from})
+	if code != http.StatusCreated && code != http.StatusOK {
+		a.fatalf("« Protéger » l'expéditeur %q de %s a répondu %d (attendu 201) : %v : le scénario ne prouve rien", from, p.email, code, out)
+	}
+}
+
 // actTwiceAtOnce is a row's button clicked twice before the first answer
 // comes back (a double click, or the same mail in two tabs): two requests of
 // the single-message action, released at the same instant. It returns both

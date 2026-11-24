@@ -9,10 +9,12 @@ package api
 // the folder "Factures" of the mailbox, made if it is missing, and the mail
 // leaves the inbox the way an archive takes it out, and can be undone the
 // same way, since Mailsorter keeps track of where it put it. These sentences
-// say where the mail goes, what the history and "Annuler" make of it, and
-// which folders Mailsorter offers to file into. Each mailbox is a real IMAP
-// server over TLS (acceptance_imap_test.go); the model's opinion is faked
-// (acceptance_fakeai_test.go), everything Mailsorter does with it is real.
+// say where the mail goes, what the history and "Annuler" make of it, even
+// after a sync, that "Tout ranger" leaves a protected sender's mail in the
+// inbox rather than file it, and which folders Mailsorter offers to file
+// into. Each mailbox is a real IMAP server over TLS (acceptance_imap_test.go);
+// the model's opinion is faked (acceptance_fakeai_test.go), everything
+// Mailsorter does with it is real.
 //
 // A proposal can also outlive its point: the person files the mail by hand,
 // from its row, before answering the plan. Over IMAP that mail stays stored,
@@ -188,6 +190,54 @@ func TestScenarios_IMAPAI(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP, « Annuler » depuis l'historique sur un classement remet le mail dans ta boîte de réception, même après une synchronisation, et il n'est plus dans le dossier.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids, s := filingProposalOnIMAP(app)
+
+				// "Appliquer" on the proposal, then "Synchroniser". Whatever
+				// the answer: what the scenario starts from is the server.
+				got := moi.applyProposal(s.ID)
+				moi.sync()
+
+				// Where the sentence starts: the mail is in the folder, and
+				// the sync has dropped it from the copy of the inbox, so only
+				// the history still knows where it went.
+				if !moi.hasFolder(invoiceFolder) {
+					app.fatalf("« Appliquer » devrait avoir rangé le mail n°%s %q dans le dossier %q du serveur IMAP de %s, qui n'a pas de tel dossier (dossiers : %s ; le serveur a répondu %s) : le scénario ne prouve rien", uids[1], invoice.Subject, invoiceFolder, moi.email, strings.Join(moi.folders(), ", "), got)
+				}
+				moi.requireOnServer(invoiceFolder, invoice.Subject, "tu l'as classé")
+				if moi.shows(invoice.Subject) {
+					app.fatalf("après le classement puis une synchronisation, la boîte de réception de %s ne devrait plus montrer le mail %q : le scénario ne prouve rien", moi.email, invoice.Subject)
+				}
+
+				// "Annuler" on the line of the Historique screen, which it
+				// must still offer after the sync: History.js shows the
+				// button only on a line marked undoable.
+				line := moi.historyLineFor(uids[1], "label")
+				what := "du classement du mail n°" + uids[1] + " \"" + invoice.Subject + "\" dans \"" + invoiceFolder + "\""
+				if !line.Undoable {
+					app.failf("après une synchronisation, la ligne %s de l'historique de %s devrait proposer « Annuler », elle ne le propose pas (annulée=%v)", what, moi.email, line.Undone)
+				}
+				if undo := moi.undoFromHistory(line); undo.code != http.StatusOK {
+					app.failf("« Annuler » sur la ligne %s devrait répondre 200, le serveur a répondu %s", what, undo)
+				}
+
+				// The server, as another mail program sees it: back in the
+				// inbox, and out of the folder, if the folder is still there.
+				moi.expectOnServer(serverInbox, invoice.Subject)
+				if moi.hasFolder(invoiceFolder) {
+					moi.expectNotOnServer(invoiceFolder, invoice.Subject, "« Annuler » dans l'historique l'a remis dans ta boîte de réception")
+				}
+				// And the inbox screen, once it has read the server again.
+				moi.sync()
+				moi.expectBackInInbox(invoice.Subject, "après « Annuler » dans l'historique et une synchronisation")
+				// The control: the mail nobody touched is still there, under
+				// its number.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP, « Tout ranger » classe aussi les mails que l'IA propose de classer, et les compte comme rangés.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
@@ -263,6 +313,74 @@ func TestScenarios_IMAPAI(t *testing.T) {
 				}
 				moi.expectShows(uids[0], bankStatement.Subject)
 				moi.expectOnServer(serverInbox, bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, « Tout ranger » ne classe pas dans un dossier le mail d'un expéditeur protégé : il reste dans ta boîte de réception, et il n'est pas compté comme rangé.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapLabelOwner)
+				// The folder exists already, made on the phone: whatever
+				// Mailsorter does, "not in the folder" is read in a folder
+				// that is there.
+				moi.newFolderElsewhere(invoiceFolder)
+				mails := []incoming{invoice, shopInvoice}
+				uids := moi.receive(mails...)
+				moi.sync()
+
+				// Both invoices proposed to file in "Factures". The second
+				// one's sender stays unprotected: it is the control, without
+				// which a "Tout ranger" that files nothing at all would pass.
+				app.ai.willLabel(invoiceFolder, 0.95)
+				moi.analyze(uids...)
+				proposals := make([]models.AISuggestion, 0, len(uids))
+				for i, uid := range uids {
+					s := moi.proposalFor(uid)
+					if s.Action != "label" || s.LabelName != invoiceFolder {
+						app.fatalf("le plan de l'IA devrait proposer de classer dans %q le mail n°%s %q, il propose %q (dossier %q) : le scénario ne prouve rien", invoiceFolder, uid, mails[i].Subject, s.Action, s.LabelName)
+					}
+					proposals = append(proposals, s)
+				}
+				shielded, control := proposals[0], proposals[1]
+
+				// "Protéger" on the first invoice's sender, once the plan
+				// proposes to file it: the one way the plan holds a proposal
+				// to file a protected sender's mail, whatever the analysis
+				// makes of a sender protected beforehand.
+				moi.protect(invoice.From)
+
+				got := moi.tidyAll(shielded.ID, control.ID)
+				if got.code != http.StatusOK {
+					app.fatalf("« Tout ranger » devrait répondre 200 avec le compte des mails rangés, le serveur a répondu %s : le scénario ne prouve rien", got)
+				}
+				counted := map[string]bool{}
+				list, _ := got.body["appliedIds"].([]interface{})
+				for _, v := range list {
+					if id, ok := v.(string); ok {
+						counted[id] = true
+					}
+				}
+
+				// The protected sender's mail: still in the inbox on the
+				// server, not in the folder, still on the screen, and not
+				// counted.
+				why := "son expéditeur " + invoice.From + " est protégé"
+				moi.expectOnServer(serverInbox, invoice.Subject)
+				moi.expectNotOnServer(invoiceFolder, invoice.Subject, why)
+				moi.expectShows(uids[0], invoice.Subject)
+				if counted[shielded.ID] {
+					app.failf("« Tout ranger » compte parmi les mails rangés le mail n°%s %q, alors que %s et qu'il ne devait pas être classé", uids[0], invoice.Subject, why)
+				}
+
+				// The control: filed and counted.
+				if !counted[control.ID] {
+					app.failf("« Tout ranger » devrait compter parmi les mails rangés le mail n°%s %q, d'un expéditeur non protégé, que l'IA proposait de classer dans %q, il ne le compte pas (%v) : sans lui, le scénario ne prouve rien", uids[1], shopInvoice.Subject, invoiceFolder, got.body)
+				}
+				moi.expectOnServer(invoiceFolder, shopInvoice.Subject)
+				moi.expectNotOnServer(serverInbox, shopInvoice.Subject, "« Tout ranger » l'a classé dans "+invoiceFolder)
+				if n := app.number(got.body, "applied"); n != 1 {
+					app.failf("« Tout ranger » annonce %d mails rangés, alors que seul le mail n°%s %q pouvait l'être : le mail n°%s %q est d'un expéditeur protégé", n, uids[1], shopInvoice.Subject, uids[0], invoice.Subject)
+				}
 			},
 		},
 		{
