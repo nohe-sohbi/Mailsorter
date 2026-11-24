@@ -374,6 +374,24 @@ type incoming struct {
 	// Unsubscribe is the List-Unsubscribe header, e.g. "<mailto:stop@boutique.com>".
 	// Use a mailto link: an https one makes the server POST to the internet.
 	Unsubscribe string
+	// HTML, when set, is the mail's HTML version: the mail is then
+	// multipart/alternative, Body being its text version, the way most
+	// newsletters are sent. That is two versions of one text, not an
+	// attachment.
+	HTML string
+	// Attachment, when set, is a file the mail carries as a real attachment:
+	// the mail is then multipart/mixed, its text first, then the file with
+	// Content-Disposition: attachment.
+	Attachment *attachedFile
+}
+
+// attachedFile is a file attached to a mail. Its content is filler of Size
+// bytes: what a sentence about attachments or large mails looks at is that
+// the file is there and how much it weighs, never what it says.
+type attachedFile struct {
+	Name string // e.g. "facture.pdf"
+	Type string // e.g. "application/pdf"
+	Size int    // bytes, before the base64 a mail carries it in
 }
 
 // receive delivers mails to the Gmail inbox, unread, oldest first, and returns
@@ -391,6 +409,12 @@ func (a *testApp) receive(mails ...incoming) []string {
 		body := m.Body
 		if body == "" {
 			body = "Bonjour, ceci est le message " + subject + "."
+		}
+		// The fake Gmail keeps one text per message and no MIME parts. A mail
+		// delivered without its HTML version or its attachment would make a
+		// sentence about either pass or fail for a reason it does not name.
+		if m.HTML != "" || m.Attachment != nil {
+			a.fatalf("le faux Gmail ne sait pas déposer le mail %q avec sa version HTML ou sa pièce jointe : à ajouter dans acceptance_fakegmail_test.go avant d'écrire ce scénario", subject)
 		}
 		ids = append(ids, a.gmail.add(&fakeMessage{
 			from:            m.From,
