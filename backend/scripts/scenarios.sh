@@ -20,6 +20,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MONGO_VERSION=7.0.43
+# The open files the throwaway mongod may hold. A long theme creates one
+# database per scenario, and at the usual 1024 mongod aborts ("Too many open
+# files") before the theme ends.
+OPEN_FILES=64000
 report="${SCENARIO_REPORT:-$(mktemp "${TMPDIR:-/tmp}/scenarios.XXXXXX")}"
 cleanup=()
 on_exit() {
@@ -49,7 +53,8 @@ if [ -n "${MAILSORTER_TEST_MONGO_URI:-}" ]; then
 elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   port="$(free_port)"
   name="mailsorter-scenarios-$$"
-  docker run -d --rm --name "$name" -p "127.0.0.1:$port:27017" mongo:7 >/dev/null
+  docker run -d --rm --name "$name" --ulimit "nofile=$OPEN_FILES:$OPEN_FILES" \
+    -p "127.0.0.1:$port:27017" mongo:7 >/dev/null
   cleanup+=("docker rm -f $name >/dev/null 2>&1")
   wait_for "$port"
   uri="mongodb://127.0.0.1:$port"
@@ -71,6 +76,18 @@ else
     echo "Téléchargement de MongoDB $MONGO_VERSION (une seule fois)..." >&2
     mkdir -p "$cache"
     curl -fsSL "https://fastdl.mongodb.org/$dist.tgz" | tar xz -C "$cache"
+  fi
+  # mongod inherits this shell's limit (OPEN_FILES says why): raise the soft
+  # one, up to the hard one when the system caps it lower.
+  soft="$(ulimit -Sn)"
+  hard="$(ulimit -Hn)"
+  if [ "$soft" != unlimited ] && [ "$soft" -lt "$OPEN_FILES" ]; then
+    want="$OPEN_FILES"
+    if [ "$hard" != unlimited ] && [ "$hard" -lt "$want" ]; then want="$hard"; fi
+    ulimit -Sn "$want" 2>/dev/null || want="$soft"
+    if [ "$want" -lt "$OPEN_FILES" ]; then
+      echo "mongod ne pourra ouvrir que $want fichiers (le système refuse plus) : un long thème peut le faire tomber." >&2
+    fi
   fi
   port="$(free_port)"
   dbpath="$(mktemp -d "${TMPDIR:-/tmp}/scenarios-mongo.XXXXXX")"
