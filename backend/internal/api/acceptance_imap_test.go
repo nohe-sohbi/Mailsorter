@@ -898,18 +898,11 @@ func (p *imapPerson) history(uid string) []models.ActionLog {
 // ---------------------------------------------------------------------------
 
 // undoRightAfter is "Annuler" in the message that follows a row's "Archiver"
-// or "Supprimer" (undoToast in Inbox.js): the single-message action again, on
-// the number the mail had in the inbox, with the verb that undoes action
-// ("unarchive" after "archive", "untrash" otherwise). It returns the answer,
-// whatever it is.
+// or "Supprimer" (undoToast in Inbox.js), as this person, on the number the
+// mail had in the inbox. It returns the answer, whatever it is.
 func (p *imapPerson) undoRightAfter(uid, action string) answer {
 	p.app.t.Helper()
-	inverse := "untrash"
-	if action == "archive" {
-		inverse = "unarchive"
-	}
-	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": uid, "action": inverse})
-	return answer{code: code, body: out}
+	return p.app.undoRightAfterAs(p.token, uid, action)
 }
 
 // tidyUndo is one request of the "Annuler" that follows "Tout ranger": the
@@ -962,36 +955,11 @@ func (p *imapPerson) undoTidy(applied []models.AISuggestion) []tidyUndo {
 	return out
 }
 
-// historyLine is one line of the Historique screen, as GET /api/activity/log
-// hands it over: "undone" is what the screen shows as "Annulé".
-type historyLine struct {
-	ID        string `json:"id"`
-	MessageID string `json:"messageId"`
-	Action    string `json:"action"`
-	Source    string `json:"source"`
-	Subject   string `json:"subject"`
-	Undone    bool   `json:"undone"`
-	Undoable  bool   `json:"undoable"`
-}
-
 // historyScreen is this person's Historique screen: the first page it loads
 // (History.js, 50 lines), newest first.
 func (p *imapPerson) historyScreen() []historyLine {
-	a := p.app
-	a.t.Helper()
-	code, out := a.callAs(p.token, http.MethodGet, "/api/activity/log?limit=50", nil)
-	if code != http.StatusOK {
-		a.fatalf("l'historique de %s ne s'affiche pas : GET /api/activity/log a répondu %d : %v", p.email, code, out)
-	}
-	raw, err := json.Marshal(out["entries"])
-	if err != nil {
-		a.fatalf("réponse de GET /api/activity/log illisible pour %s : %v", p.email, err)
-	}
-	var lines []historyLine
-	if err := json.Unmarshal(raw, &lines); err != nil {
-		a.fatalf("réponse de GET /api/activity/log illisible pour %s : %v", p.email, err)
-	}
-	return lines
+	p.app.t.Helper()
+	return p.app.historyScreenAs(p.token, p.email)
 }
 
 // historyLineFor returns the newest line of the Historique screen for this
@@ -1036,4 +1004,12 @@ func (p *imapPerson) expectMarkedUndone(line historyLine, undone bool, what stri
 		return
 	}
 	a.failf("l'historique de %s ne montre plus la ligne %s", p.email, what)
+}
+
+// expectNoLongerUndoable checks, on this person's Historique screen as it
+// loads again, that this line shows "Annulé" and no longer offers "Annuler".
+// what names the line in a failure.
+func (p *imapPerson) expectNoLongerUndoable(line historyLine, what string) {
+	p.app.t.Helper()
+	p.app.expectNoLongerUndoableAs(p.token, p.email, line, what)
 }

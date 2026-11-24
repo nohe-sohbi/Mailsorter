@@ -80,6 +80,31 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP, « Annuler » juste après avoir archivé un mail marque l'archivage annulé dans l'historique, qui ne propose plus de l'annuler.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				moi.act(uids[1], "archive")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver")
+				// Where the sentence starts: the history offers to undo the
+				// archive. A line never offered proves nothing once undone.
+				line := moi.historyLineFor(uids[1], "archive")
+				what := "de l'archivage du mail n°" + uids[1] + " \"" + shopOrder.Subject + "\""
+				if line.Undone || !line.Undoable {
+					app.fatalf("juste après l'archivage, l'historique de %s devrait proposer « Annuler » sur la ligne %s : elle est marquée annulée=%v, annulable=%v, le scénario ne prouve rien", moi.email, what, line.Undone, line.Undoable)
+				}
+
+				// "Annuler" in the message that follows the row's "Archiver".
+				if got := moi.undoRightAfter(uids[1], "archive"); got.code != http.StatusOK {
+					app.fatalf("« Annuler » juste après l'archivage du mail n°%s %q devrait répondre 200, le serveur a répondu %s : le scénario ne prouve rien", uids[1], shopOrder.Subject, got)
+				}
+
+				// The Historique screen, opened next: the same line.
+				moi.expectNoLongerUndoable(line, what)
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP, « Annuler » après « Tout ranger » remet dans ta boîte de réception les mails rangés.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {

@@ -9,7 +9,10 @@ package api
 // confirmed by Nohé. His answer makes it validated (keep it) or rejected (a
 // bug: the change that fixes it replaces the sentence).
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestScenarios_SingleMessage(t *testing.T) {
 	playScenarios(t, "Ce que tu fais toi-même, mail par mail", []scenario{
@@ -70,6 +73,30 @@ func TestScenarios_SingleMessage(t *testing.T) {
 				app.undoLast(ids[0])
 				app.expectNotInTrash(ids[0])
 				app.expectInInbox(ids[0])
+			},
+		},
+		{
+			phrase: "Sur Gmail aussi, « Annuler » juste après avoir supprimé un mail marque la suppression annulée dans l'historique, qui ne propose plus de l'annuler.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				ids := app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
+				app.act(ids[0], "delete")
+				// Where the sentence starts: the history offers to undo the
+				// deletion. A line never offered proves nothing once undone.
+				line := app.historyLineFor(ids[0], "delete")
+				what := "de la suppression du mail " + app.describe(ids[0])
+				if line.Undone || !line.Undoable {
+					app.fatalf("juste après la suppression, l'historique devrait proposer « Annuler » sur la ligne %s : elle est marquée annulée=%v, annulable=%v, le scénario ne prouve rien", what, line.Undone, line.Undoable)
+				}
+
+				// "Annuler" in the message that follows "Supprimer", which
+				// sends "untrash" (undoToast in Inbox.js).
+				if got := app.undoRightAfter(ids[0], "delete"); got.code != http.StatusOK {
+					app.fatalf("« Annuler » juste après la suppression du mail %s devrait répondre 200, le serveur a répondu %s : le scénario ne prouve rien", app.describe(ids[0]), got)
+				}
+
+				// The Historique screen, opened next: the same line.
+				app.expectNoLongerUndoable(line, what)
 			},
 		},
 		{
