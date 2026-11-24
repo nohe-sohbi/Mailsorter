@@ -14,9 +14,11 @@ package api
 // server itself, as another mail program sees it (acceptance_imap_test.go).
 //
 // The history behind "Annuler" must stay true too: one line for one archive,
-// even sent twice at once, none for an archive that moved nothing, and no
-// "Annuler" on an action older than the 30 days Mailsorter keeps track of
-// where a mail went (undoWindow).
+// even sent twice at once, one undo for one "Annuler", even sent twice at
+// once, none for an archive or a deletion that moved nothing, and no
+// "Annuler" where it would give nothing back: on an action older than the 30
+// days Mailsorter keeps track of where a mail went (undoWindow), or on a mail
+// marked read that has left the inbox since.
 
 import (
 	"fmt"
@@ -34,6 +36,12 @@ const notWhereFiled = "Ce mail n'est plus là où Mailsorter l'avait rangé."
 
 // tooOldToUndo is what "Annuler" answers on an action older than 30 days.
 const tooOldToUndo = "Cette action est trop ancienne pour être annulée ici : retrouvez ce mail dans l'archive ou la corbeille de votre messagerie."
+
+// alreadyOut is the "status" a row's button answers, with a 200, when the
+// mail had already left the inbox and nothing was done: what the inbox screen
+// tells apart from "ok" to say the mail had already gone, rather than
+// announce a move that did not happen.
+const alreadyOut = "already"
 
 // ownFolder is a folder the person makes on their phone to file mail in.
 const ownFolder = "Commandes"
@@ -487,6 +495,91 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP, « Annuler » envoyé deux fois en même temps sur le même archivage remet le mail une seule fois dans ta boîte de réception, les deux réponses sont sans erreur, et l'historique ne montre qu'une annulation.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				// Two requests at once are a race the app can win by chance,
+				// so the sentence is tried on doubleUndos mails, one after
+				// the other, and must hold for each. The first mail is not
+				// touched: it is the control.
+				archived := numberedMails("La lettre de la semaine n°%d", doubleUndos)
+				moi, uids := syncedIMAPInbox(app, append([]incoming{bankStatement}, archived...)...)
+
+				var errored, notOnce, undos []string
+				for i, m := range archived {
+					uid := uids[i+1]
+					what := fmt.Sprintf("n°%s %q", uid, m.Subject)
+
+					// Each mail's five requests get the time the server's
+					// throttle needs to give them back (20 requests a second
+					// per person, rateLimiter in middleware.go), as in the
+					// sentence about two archives at once. The two "Annuler"
+					// themselves still leave together.
+					time.Sleep(300 * time.Millisecond)
+
+					// "Archiver" on its row, then "Annuler" in the message
+					// that follows, clicked twice before the first answer
+					// comes back (a double click, or the same message in two
+					// tabs): "unarchive" twice at once, on the number the row
+					// had in the inbox.
+					moi.act(uid, "archive")
+					moi.requireOnServer(serverArchive, m.Subject, "tu viens de l'archiver")
+					got := moi.actTwiceAtOnce(uid, "unarchive")
+					if got[0].code/100 != 2 || got[1].code/100 != 2 {
+						errored = append(errored, fmt.Sprintf("%s (%s, puis %s)", what, got[0], got[1]))
+					}
+
+					// Back once: in the inbox of the server, out of the
+					// archives, and on the inbox screen, which Inbox.js
+					// reloads once the undo answers, without a sync.
+					inInbox, inArchive, onScreen := 0, 0, 0
+					for _, s := range moi.onServer(serverInbox) {
+						if s == m.Subject {
+							inInbox++
+						}
+					}
+					for _, s := range moi.onServer(serverArchive) {
+						if s == m.Subject {
+							inArchive++
+						}
+					}
+					for _, row := range moi.inbox() {
+						if row.Subject == m.Subject {
+							onScreen++
+						}
+					}
+					if inInbox != 1 || inArchive != 0 || onScreen != 1 {
+						notOnce = append(notOnce, fmt.Sprintf("%s (dans la boîte de réception du serveur : %d fois, dans le dossier %s : %d fois, sur l'écran : %d fois)", what, inInbox, serverArchive, inArchive, onScreen))
+					}
+
+					// The Historique screen: one line "Annulation" (source
+					// undo) for this mail, whichever request wrote it.
+					var undoLines int
+					lines := moi.historyLinesOf(uid)
+					for _, l := range lines {
+						if l.Source == SourceUndo {
+							undoLines++
+						}
+					}
+					if undoLines != 1 {
+						undos = append(undos, fmt.Sprintf("%s (%d annulation(s) ; lignes : %s)", what, undoLines, describeHistory(lines)))
+					}
+				}
+
+				if len(errored) > 0 {
+					app.failf("« Annuler » envoyé deux fois en même temps sur le même archivage ne devrait répondre aucune erreur : une des deux requêtes en répond une pour %d des %d mails : %s", len(errored), len(archived), strings.Join(errored, " ; "))
+				}
+				if len(notOnce) > 0 {
+					app.failf("« Annuler » envoyé deux fois en même temps sur le même archivage devrait remettre le mail une seule fois dans la boîte de réception de %s, et plus dans le dossier %s : ce n'est pas le cas pour %d des %d mails : %s", moi.email, serverArchive, len(notOnce), len(archived), strings.Join(notOnce, " ; "))
+				}
+				if len(undos) > 0 {
+					app.failf("après « Annuler » envoyé deux fois en même temps sur le même archivage, l'historique de %s devrait montrer une seule annulation (une ligne de source %q) pour le mail : ce n'est pas le cas pour %d des %d mails : %s", moi.email, SourceUndo, len(undos), len(archived), strings.Join(undos, " ; "))
+				}
+				// The control: the mail nobody touched is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP, archiver depuis deux écrans restés ouverts un mail qu'un autre logiciel a déjà sorti de ta boîte de réception répond sans erreur les deux fois, et n'ajoute rien à l'historique.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
@@ -516,6 +609,49 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 					}
 				}
 
+				// The control: the mail nobody touched is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, « Supprimer » depuis un écran resté ouvert un mail qu'un autre logiciel a déjà sorti de ta boîte de réception ne le met pas à la corbeille, répond qu'il n'était plus dans ta boîte de réception, et n'ajoute rien à l'historique.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+
+				// The two ways a mail leaves an inbox from another mail
+				// program: archived on the phone (moved to the archives),
+				// and deleted for good. No "Synchroniser" after: the screen
+				// left open still shows the two rows.
+				moi.movedElsewhere(uids[1], serverArchive)
+				moi.deletedElsewhere(uids[2])
+
+				for _, c := range []struct {
+					uid, subject, how string
+				}{
+					{uids[1], shopOrder.Subject, "archivé"},
+					{uids[2], travelOffer.Subject, "supprimé définitivement"},
+				} {
+					// "Supprimer" on its row: "delete" (Inbox.js, directAction).
+					// The answer the screen reads: a 200 whose status says the
+					// mail had already gone, not "ok", which announces it moved
+					// to the trash.
+					got := moi.actAnswer(c.uid, "delete")
+					if got.code != http.StatusOK || got.body["status"] != alreadyOut {
+						app.failf("« Supprimer » depuis un écran resté ouvert sur le mail n°%s %q, qu'un autre logiciel a déjà %s, devrait répondre %d avec le statut %q (il n'était plus dans ta boîte de réception), le serveur a répondu %s", c.uid, c.subject, c.how, http.StatusOK, alreadyOut, got)
+					}
+					if lines := moi.historyLinesOf(c.uid); len(lines) > 0 {
+						app.failf("l'historique de %s ne devrait rien montrer pour le mail n°%s %q, qu'un autre logiciel avait déjà %s avant ton « Supprimer » : il montre %d ligne(s) (%s)", moi.email, c.uid, c.subject, c.how, len(lines), describeHistory(lines))
+					}
+				}
+
+				// Not in the trash: the one archived on the phone is still in
+				// the archives, where the other program put it, and the one
+				// deleted for good is nowhere.
+				why := "un autre logiciel l'avait sorti de ta boîte de réception avant ton « Supprimer »"
+				moi.expectOnServer(serverArchive, shopOrder.Subject)
+				moi.expectNotOnServer(serverTrash, shopOrder.Subject, why)
+				moi.expectNotOnServer(serverTrash, travelOffer.Subject, why)
 				// The control: the mail nobody touched is still there.
 				moi.expectShows(uids[0], bankStatement.Subject)
 			},
@@ -563,6 +699,76 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 				if !sawOld || !sawRecent {
 					app.failf("l'historique de %s devrait montrer les lignes de l'archivage des mails n°%s %q (il y a 31 jours) et n°%s %q (à l'instant) : il montre la première : %v, la seconde : %v", moi.email, uids[1], shopOrder.Subject, uids[2], travelOffer.Subject, sawOld, sawRecent)
 				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, l'historique ne propose plus « Annuler » sur un « marquer comme lu » dont le mail a quitté ta boîte de réception.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				mails := []incoming{bankStatement, shopOrder, travelOffer}
+				moi, uids := syncedIMAPInbox(app, mails...)
+
+				// "Marquer comme lu" on the three mails: over IMAP, the
+				// single-message action with "read" (flagAction in
+				// Inbox.js). act expects it to answer 200. The first mail
+				// stays in the inbox: it is the control.
+				for _, uid := range uids {
+					moi.act(uid, "read")
+				}
+				// Where the sentence starts: the three lines offer
+				// "Annuler". A line never offered proves nothing once its
+				// mail has left.
+				reads := make([]historyLine, len(uids))
+				for i, uid := range uids {
+					reads[i] = moi.historyLineFor(uid, "read")
+					if reads[i].Undone || !reads[i].Undoable {
+						app.fatalf("juste après « Marquer comme lu », l'historique de %s devrait proposer « Annuler » sur la ligne du mail n°%s %q : elle est marquée annulée=%v, annulable=%v, le scénario ne prouve rien", moi.email, uid, mails[i].Subject, reads[i].Undone, reads[i].Undoable)
+					}
+				}
+
+				// expectReadLines reads the Historique screen once, as it
+				// loads, and checks the "read" line of each mail: no
+				// "Annuler" on those whose mail has left the inbox (left
+				// says how), and "Annuler" still on the others, so a
+				// history that offers it on nothing does not pass.
+				expectReadLines := func(when string, left map[int]string) {
+					t.Helper()
+					shown := map[string]historyLine{}
+					for _, l := range moi.historyScreen() {
+						shown[l.ID] = l
+					}
+					for i, read := range reads {
+						what := fmt.Sprintf("du « marquer comme lu » du mail n°%s %q", uids[i], mails[i].Subject)
+						l, ok := shown[read.ID]
+						how, gone := left[i]
+						switch {
+						case !ok:
+							app.failf("%s, l'historique de %s ne montre plus la ligne %s", when, moi.email, what)
+						case gone && l.Undoable:
+							app.failf("%s, dans l'historique de %s, la ligne %s, %s, ne devrait plus proposer « Annuler », elle le propose encore", when, moi.email, what, how)
+						case !gone && !l.Undoable:
+							app.failf("%s, dans l'historique de %s, la ligne %s, resté dans ta boîte de réception, devrait toujours proposer « Annuler », elle ne le propose plus", when, moi.email, what)
+						}
+					}
+				}
+
+				// The two ways a mail leaves the inbox that Mailsorter
+				// knows of. First, "Archiver" on the row of the second
+				// mail, and the Historique screen opened right after.
+				moi.act(uids[1], "archive")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver")
+				archived := "que tu as archivé depuis"
+				expectReadLines("juste après l'archivage du mail n°"+uids[1], map[int]string{1: archived})
+
+				// Then the third mail, archived on the phone, which
+				// Mailsorter learns at the next sync: the Historique screen
+				// opened after it.
+				moi.movedElsewhere(uids[2], serverArchive)
+				moi.sync()
+				expectReadLines("après une synchronisation", map[int]string{
+					1: archived,
+					2: "qu'un autre logiciel a sorti depuis de ta boîte de réception",
+				})
 			},
 		},
 		{
@@ -635,3 +841,12 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 // error), so the scenario failed every time: one mail alone could pass by
 // chance.
 const doubleClicks = 12
+
+// doubleUndos is how many mails the sentence about "Annuler" sent twice at
+// once is tried on. When it was written one of the two requests answered an
+// error on each of the 12 mails in each of 7 runs: a 404 saying the mail is
+// no longer where Mailsorter filed it, or that the action is too old, or a
+// 500 where the test IMAP server (imapmemserver) answers the second move of
+// a mail already moved with an empty COPYUID its client cannot read. Twelve
+// stay, so a change that only narrows the race does not pass by chance.
+const doubleUndos = 12
