@@ -143,3 +143,24 @@ func TestRegistryWithUserOverride(t *testing.T) {
 		t.Errorf("expected fallback provider to be 'mistral', got %q", userReg.providers[1].config.Name)
 	}
 }
+
+// AI_FALLBACK_PROVIDER works by priority: the registry must try providers in
+// ascending Priority, whatever order the configs arrive in.
+func TestNewRegistryOrdersByPriority(t *testing.T) {
+	r := NewRegistry([]ProviderConfig{
+		{Name: "ollama", Model: "m", BaseURL: "http://127.0.0.1:1", Priority: 30, Enabled: true},
+		{Name: "openai", APIKey: "k", Priority: 10, Enabled: true},
+		{Name: "ollama", Model: "fallback", BaseURL: "http://127.0.0.1:2", Priority: 5, Enabled: true},
+		{Name: "mistral", APIKey: "k", Priority: 0, Enabled: true},
+	})
+	got := r.ProviderNames()
+	want := []string{"mistral", "ollama", "openai", "ollama"}
+	if len(got) != len(want) {
+		t.Fatalf("ProviderNames() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ProviderNames() = %v, want %v", got, want)
+		}
+	}
+}

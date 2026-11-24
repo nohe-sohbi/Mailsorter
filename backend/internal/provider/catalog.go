@@ -461,3 +461,25 @@ func Pick(key string, e Edition) (Route, error) {
 	}
 	return Route{}, ErrNotInEdition
 }
+
+// PickIMAP returns the route an address-and-app-password connection can use:
+// the first route of the provider that this edition offers, speaks IMAP, and
+// names its server. Pick answers "what is best here"; this answers "what can
+// a password connect to here". They differ for Gmail installed at home, where
+// the best route is the Gmail API (OAuth) but a user who did not create a
+// Google Cloud project still connects over IMAP with an app password.
+//
+// A route that only autodiscovers its server has no address to dial yet, so
+// it does not count.
+func PickIMAP(key string, e Edition) (Route, error) {
+	p, err := Lookup(key)
+	if err != nil {
+		return Route{}, err
+	}
+	for _, r := range p.Routes {
+		if r.Offers(e) && r.Transport == TransportIMAP && r.IMAP != nil {
+			return r, nil
+		}
+	}
+	return Route{}, ErrNotInEdition
+}

@@ -44,6 +44,18 @@ func (h *Handler) startDigestLoop() {
 	}()
 }
 
+// digestHourOf is the hour a user's digest goes out: the one they picked,
+// midnight included, or the server default when they never picked one (the
+// field is absent) or the stored value is out of range. The settings screen
+// and the scheduler both read it here, so what the screen shows is when the
+// digest actually leaves.
+func digestHourOf(stored *int) int {
+	if stored == nil || *stored < 0 || *stored > 23 {
+		return defaultDigestHour()
+	}
+	return *stored
+}
+
 // sendDueDigests emails each opted-in user their 7-day recap when it is due. It
 // is best-effort and resilient: a per-user failure is logged and skipped so one
 // bad account never stalls the rest. Every user that is due is stamped after the
@@ -68,10 +80,7 @@ func (h *Handler) sendDueDigests() {
 
 	now := time.Now()
 	for _, u := range users {
-		hour := u.DigestHourUTC
-		if hour <= 0 || hour > 23 {
-			hour = defaultDigestHour()
-		}
+		hour := digestHourOf(u.DigestHourUTC)
 		if !mailer.DueAt(u.DigestLastSentAt, now, hour) {
 			continue
 		}

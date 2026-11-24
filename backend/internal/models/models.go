@@ -28,10 +28,11 @@ type User struct {
 	AutoSyncEnabled bool      `json:"autoSyncEnabled" bson:"autoSyncEnabled,omitempty"`
 	LastAutoSyncAt  time.Time `json:"-" bson:"lastAutoSyncAt,omitempty"`
 	// Daily digest. When DigestEnabled is true, a background scheduler emails a
-	// recap of the last 7 days once a day at DigestHourUTC (0-23, UTC).
+	// recap of the last 7 days once a day at DigestHourUTC (0-23, UTC; nil
+	// when the user never picked one, which means the server default).
 	// DigestLastSentAt stamps the last attempt so we send at most once per day.
 	DigestEnabled    bool      `json:"digestEnabled" bson:"digestEnabled,omitempty"`
-	DigestHourUTC    int       `json:"digestHourUTC" bson:"digestHourUTC,omitempty"`
+	DigestHourUTC    *int      `json:"digestHourUTC,omitempty" bson:"digestHourUTC,omitempty"`
 	DigestLastSentAt time.Time `json:"-" bson:"digestLastSentAt,omitempty"`
 	CreatedAt        time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt" bson:"updatedAt"`

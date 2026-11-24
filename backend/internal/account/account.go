@@ -111,7 +111,7 @@ type Profile struct {
 	AutoApplyRules  bool      `json:"autoApplyRules"`
 	AutoSyncEnabled bool      `json:"autoSyncEnabled"`
 	DigestEnabled   bool      `json:"digestEnabled"`
-	DigestHourUTC   int       `json:"digestHourUTC"`
+	DigestHourUTC   *int      `json:"digestHourUTC,omitempty"` // nil: never picked, the server default applies
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }

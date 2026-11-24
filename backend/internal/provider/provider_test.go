@@ -298,3 +298,54 @@ func TestCapabilityHas(t *testing.T) {
 		t.Error("the empty capability set has nothing")
 	}
 }
+
+// PickIMAP answers what an address and an app password can connect to, in
+// each edition: the IMAP route with a server address, never the Gmail API,
+// Graph, or a route that would still have to discover its server.
+func TestPickIMAPFindsTheRouteAPasswordCanUse(t *testing.T) {
+	for _, e := range []Edition{EditionSelfHosted, EditionHosted} {
+		for _, key := range []string{KeyGmail, KeyOrange, KeyLaPoste, KeyICloud, KeyFastmail, KeyInfomaniak} {
+			route, err := PickIMAP(key, e)
+			if err != nil {
+				t.Errorf("PickIMAP(%q, %s) = %v, want an IMAP route", key, e, err)
+				continue
+			}
+			if route.Transport != TransportIMAP || route.IMAP == nil || route.IMAP.Host == "" {
+				t.Errorf("PickIMAP(%q, %s) = %s with endpoint %v, want IMAP with a host", key, e, route.Transport, route.IMAP)
+			}
+		}
+		for _, key := range []string{KeyOutlook, KeyMicrosoft} {
+			if _, err := PickIMAP(key, e); err == nil {
+				t.Errorf("PickIMAP(%q, %s) succeeded, want an error: it routes through Graph only", key, e)
+			}
+		}
+	}
+	// Installed at home, Gmail's best route is the API, yet a password still
+	// connects over IMAP: that is the whole point of PickIMAP.
+	if best, _ := Pick(KeyGmail, EditionSelfHosted); best.Transport != TransportGmailAPI {
+		t.Fatalf("Pick(gmail, self-hosted) = %s, want gmail-api (test premise)", best.Transport)
+	}
+	if r, err := PickIMAP(KeyGmail, EditionSelfHosted); err != nil || r.IMAP.Host != "imap.gmail.com" {
+		t.Errorf("PickIMAP(gmail, self-hosted) = %v / %v, want imap.gmail.com", r.IMAP, err)
+	}
+	// Proton goes through the local Bridge, offered only at home.
+	if _, err := PickIMAP(KeyProton, EditionHosted); err == nil {
+		t.Error("PickIMAP(proton, hosted) succeeded, want an error")
+	}
+	if _, err := PickIMAP(KeyProton, EditionSelfHosted); err != nil {
+		t.Errorf("PickIMAP(proton, self-hosted) = %v, want the Bridge route", err)
+	}
+	// Every route that only autodiscovers its server is refused.
+	for _, p := range catalog {
+		for _, r := range p.Routes {
+			if r.Transport != TransportIMAP || r.IMAP != nil {
+				continue
+			}
+			for _, e := range r.Editions {
+				if got, err := PickIMAP(p.Key, e); err == nil && got.IMAP == nil {
+					t.Errorf("PickIMAP(%q, %s) returned a route without a server", p.Key, e)
+				}
+			}
+		}
+	}
+}

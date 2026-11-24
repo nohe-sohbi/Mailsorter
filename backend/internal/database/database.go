@@ -167,6 +167,10 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.Usage(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "period", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Unsubscribes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Users(), mongo.IndexModel{Keys: bson.D{{Key: "stripeSubscriptionId", Value: 1}}, Options: options.Index().SetSparse(true)}},
+		// One account per address. Register checks then inserts, so this index
+		// is what actually stops two concurrent sign-ups from creating twins.
+		{d.Users(), mongo.IndexModel{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)}},
+		{d.Emails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "receivedDate", Value: -1}}}},
 		{d.SortingRules(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "priority", Value: 1}}}},
 		{d.ProtectedSenders(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "value", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Snoozes(), mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}, {Key: "wakeAt", Value: 1}}}},

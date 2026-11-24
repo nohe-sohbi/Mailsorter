@@ -96,19 +96,7 @@ func main() {
 
 	// Initialize AI provider registry (multi-provider with fallback).
 	// Backward compatible: MISTRAL_API_KEY still works as the primary.
-	var providerConfigs []ai.ProviderConfig
-	for _, pc := range cfg.AIProviderConfigs() {
-		providerConfigs = append(providerConfigs, ai.ProviderConfig{
-			Name:       pc.Name,
-			APIKey:     pc.APIKey,
-			Model:      pc.Model,
-			BaseURL:    pc.BaseURL,
-			MaxRetries: pc.MaxRetries,
-			Priority:   pc.Priority,
-			Enabled:    pc.Enabled,
-		})
-	}
-	aiRegistry := ai.NewRegistry(providerConfigs)
+	aiRegistry := ai.NewRegistry(cfg.AIProviderConfigs())
 	if aiRegistry.Available() {
 		log.Printf("AI providers initialized: %s", aiRegistry.ProviderName())
 	} else {
@@ -170,7 +158,7 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
-	log.Println("Shutdown signal received, draining connections…")
+	log.Println("Shutdown signal received, draining connections...")
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancelShutdown()

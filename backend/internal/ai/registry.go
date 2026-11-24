@@ -3,6 +3,7 @@ package ai
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 
@@ -33,12 +34,16 @@ type providerEntry struct {
 	analyzer Analyzer
 }
 
-// NewRegistry builds a registry from provider configs. Each config is turned
-// into a concrete Analyzer via newAnalyzer. Configs with Enabled=false or
-// missing credentials are silently skipped.
+// NewRegistry builds a registry from provider configs, tried in ascending
+// Priority (ties keep their given order). Each config is turned into a
+// concrete Analyzer via newAnalyzer. A config with Enabled=false is skipped;
+// one that cannot be built (missing key, unknown name) is skipped with a log
+// line.
 func NewRegistry(configs []ProviderConfig) *Registry {
+	ordered := append([]ProviderConfig(nil), configs...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Priority < ordered[j].Priority })
 	r := &Registry{}
-	for _, cfg := range configs {
+	for _, cfg := range ordered {
 		if !cfg.Enabled {
 			continue
 		}
@@ -52,7 +57,6 @@ func NewRegistry(configs []ProviderConfig) *Registry {
 	return r
 }
 
-// Available reports whether at least one provider is configured.
 // WithUserOverride returns a new Registry that prioritizes the user's custom
 // provider configuration (BYOK), falling back to the instance providers if
 // transient errors occur.
@@ -78,6 +82,7 @@ func (r *Registry) WithUserOverride(userCfg ProviderConfig) *Registry {
 	}
 }
 
+// Available reports whether at least one provider is configured.
 func (r *Registry) Available() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

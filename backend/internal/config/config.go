@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
@@ -24,6 +25,8 @@ var defaultAllowedOrigins = []string{
 var insecureEncryptionKeys = map[string]bool{
 	"default-dev-key-change-in-production":          true,
 	"change-this-to-a-secure-random-string-32chars": true,
+	// The example the README shows.
+	"une-chaine-aleatoire-de-32-caracteres-minimum": true,
 }
 
 // minEncryptionKeyLen is the minimum master-key length we accept. The key is
@@ -87,7 +90,7 @@ func Load() *Config {
 		GmailClientID:       getEnv("GMAIL_CLIENT_ID", ""),
 		GmailClientSecret:   getEnv("GMAIL_CLIENT_SECRET", ""),
 		GmailRedirectURL:    getEnv("GMAIL_REDIRECT_URL", "http://localhost:3000/auth/callback"),
-		EncryptionKey:       getEnv("ENCRYPTION_KEY", "default-dev-key-change-in-production"),
+		EncryptionKey:       getEnv("ENCRYPTION_KEY", ""),
 		MistralAPIKey:       getEnv("MISTRAL_API_KEY", ""),
 		MistralModel:        getEnv("MISTRAL_MODEL", "mistral-small-latest"),
 		MistralMaxRetries:   getEnvInt("MISTRAL_MAX_RETRIES", 2),
@@ -187,27 +190,12 @@ func getEnvList(key string, defaultValue []string) []string {
 	return out
 }
 
-// AIProviderConfigs builds the ordered list of AI provider configs from
-// environment variables. The primary provider is Mistral (backward-compatible),
-// with optional fallback providers.
-func (c *Config) AIProviderConfigs() []struct {
-	Name       string
-	APIKey     string
-	Model      string
-	BaseURL    string
-	MaxRetries int
-	Priority   int
-	Enabled    bool
-} {
-	type pc = struct {
-		Name       string
-		APIKey     string
-		Model      string
-		BaseURL    string
-		MaxRetries int
-		Priority   int
-		Enabled    bool
-	}
+// AIProviderConfigs builds the AI provider configs from environment
+// variables, each with its priority: Mistral first (backward-compatible),
+// then OpenAI, Anthropic and Ollama, and AI_FALLBACK_PROVIDER moves the one it
+// names right after the primary. ai.NewRegistry orders them by priority.
+func (c *Config) AIProviderConfigs() []ai.ProviderConfig {
+	type pc = ai.ProviderConfig
 	var configs []pc
 
 	// Primary: Mistral (backward-compatible, priority 0)
