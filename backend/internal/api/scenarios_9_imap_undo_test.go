@@ -304,7 +304,7 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 			},
 		},
 		{
-			phrase: "Sur une boîte IMAP, archiver de nouveau un mail déjà archivé ne change rien, et « Annuler » depuis l'historique le remet toujours dans ta boîte de réception.",
+			phrase: "Sur une boîte IMAP, archiver de nouveau un mail déjà archivé ne change rien, ni sur le serveur ni dans l'historique, et « Annuler » depuis l'historique le remet toujours dans ta boîte de réception.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
@@ -335,6 +335,11 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 				}
 				moi.expectNotOnServer(serverInbox, shopOrder.Subject, "tu l'as archivé deux fois")
 				moi.expectDoesNotShow(shopOrder.Subject, "tu l'as archivé deux fois")
+				// Nor in the history: the line of the first archive, and no
+				// line for a second one that moved nothing.
+				if lines := moi.historyLinesOf(uids[1]); len(lines) != 1 || lines[0].ID != line.ID {
+					app.failf("après le second archivage, l'historique de %s devrait montrer une seule ligne \"archive\" pour le mail n°%s %q, celle du premier archivage : il en montre %d (%s)", moi.email, uids[1], shopOrder.Subject, len(lines), describeHistory(lines))
+				}
 
 				if got := moi.undoFromHistory(line); got.code != http.StatusOK {
 					app.failf("« Annuler » sur la ligne %s, après un second archivage, devrait répondre 200, le serveur a répondu %s", what, got)

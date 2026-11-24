@@ -10,6 +10,11 @@ package api
 // the plan and the history show afterwards. Each mailbox is a real IMAP
 // server over TLS (acceptance_imap_test.go); the model's opinion is faked
 // (acceptance_fakeai_test.go), everything Mailsorter does with it is real.
+//
+// A proposal can also outlive its point: the person files the mail by hand,
+// from its row, before answering the plan. Over IMAP that mail stays stored,
+// hidden, so "Annuler" can bring it back; the last sentence says its proposal
+// does not stay with it.
 
 import (
 	"net/http"
@@ -139,6 +144,68 @@ func TestScenarios_IMAPAI(t *testing.T) {
 					if !moi.inPlan(s.ID) {
 						app.failf("après \"Tout ranger\", la proposition d'étiqueter %q le mail n°%s %q devrait rester en attente dans le plan de l'IA, elle n'y est plus (statut enregistré : %q)", s.LabelName, uids[i], mails[i].Subject, moi.proposalStatus(s.ID))
 					}
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, quand tu as déjà rangé à la main un mail que l'IA proposait de ranger, sa proposition quitte le tri proposé à la synchronisation suivante, et « Tout ranger » ne la compte pas.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, shopOrder, travelOffer)
+
+				// The AI proposes to archive both mails. The second one nobody
+				// touches: it is the control.
+				app.ai.willSay("archive", 0.95)
+				moi.analyze(uids...)
+				byHand := moi.proposalFor(uids[0])
+				control := moi.proposalFor(uids[1])
+				if byHand.Action != "archive" || control.Action != "archive" {
+					app.fatalf("le plan de l'IA devrait proposer d'archiver le mail n°%s %q et le mail n°%s %q, il propose %q et %q : le scénario ne prouve rien", uids[0], shopOrder.Subject, uids[1], travelOffer.Subject, byHand.Action, control.Action)
+				}
+
+				// "Archiver" on the row of the first mail, then "Synchroniser".
+				moi.act(uids[0], "archive")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver à la main")
+				moi.sync()
+
+				if moi.inPlan(byHand.ID) {
+					app.failf("après la synchronisation, la proposition d'archiver le mail n°%s %q, que tu as déjà archivé à la main, devrait avoir quitté le tri proposé de l'IA : elle y est encore (statut enregistré : %q)", uids[0], shopOrder.Subject, moi.proposalStatus(byHand.ID))
+				}
+				if !moi.inPlan(control.ID) {
+					app.failf("après la synchronisation, la proposition d'archiver le mail n°%s %q, que personne n'a touché, devrait rester dans le tri proposé de l'IA : elle n'y est plus (statut enregistré : %q)", uids[1], travelOffer.Subject, moi.proposalStatus(control.ID))
+				}
+
+				// "Tout ranger" on the plan as a screen loaded before the sync
+				// still shows it (a tab left open): both ids, as TriagePlan.js
+				// sends them. The control is there so that a "Tout ranger"
+				// that counts nothing at all cannot pass for one that leaves
+				// out the mail already archived.
+				got := moi.tidyAll(byHand.ID, control.ID)
+				if got.code != http.StatusOK {
+					app.fatalf("« Tout ranger » devrait répondre 200 avec le compte des mails rangés, le serveur a répondu %s : le scénario ne prouve rien", got)
+				}
+				counted := map[string]bool{}
+				list, _ := got.body["appliedIds"].([]interface{})
+				for _, v := range list {
+					if id, ok := v.(string); ok {
+						counted[id] = true
+					}
+				}
+				if !counted[control.ID] {
+					app.fatalf("« Tout ranger » devrait compter parmi les mails rangés le mail n°%s %q, que personne n'a touché, il ne le compte pas (%v) : le scénario ne prouve rien", uids[1], travelOffer.Subject, got.body)
+				}
+				if counted[byHand.ID] {
+					app.failf("« Tout ranger » compte parmi les mails rangés le mail n°%s %q, alors que tu l'avais déjà archivé à la main et qu'il n'a rien rangé de plus", uids[0], shopOrder.Subject)
+				}
+				if n := app.number(got.body, "applied"); n != 1 {
+					app.failf("« Tout ranger » annonce %d mails rangés, alors que seul le mail n°%s %q pouvait être rangé : le mail n°%s %q était déjà archivé à la main", n, uids[1], travelOffer.Subject, uids[0], shopOrder.Subject)
+				}
+
+				// The Historique screen: the archive by hand, and nothing from
+				// a "Tout ranger" that moved nothing.
+				lines := moi.historyLinesOf(uids[0])
+				if len(lines) != 1 || lines[0].Action != "archive" || lines[0].Source != SourceDirect {
+					app.failf("l'historique de %s devrait montrer une seule ligne pour le mail n°%s %q, ton archivage à la main (\"archive\", %s) : il en montre %d (%s)", moi.email, uids[0], shopOrder.Subject, SourceDirect, len(lines), describeHistory(lines))
 				}
 			},
 		},

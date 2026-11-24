@@ -1044,6 +1044,34 @@ func (p *imapPerson) historyLineFor(uid, action string) historyLine {
 	return historyLine{}
 }
 
+// historyLinesOf returns every line the Historique screen shows for the mail
+// with this number, newest first. For the sentences about an action that does
+// nothing: the screen must then show no line for it, so the scenario counts
+// them where the person reads them, not in the database.
+func (p *imapPerson) historyLinesOf(uid string) []historyLine {
+	p.app.t.Helper()
+	var lines []historyLine
+	for _, l := range p.historyScreen() {
+		if l.MessageID == uid {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// describeHistory is lines of the Historique screen in a failure message:
+// the action and where it came from (the Source* constants in ledger.go).
+func describeHistory(lines []historyLine) string {
+	if len(lines) == 0 {
+		return "aucune ligne"
+	}
+	parts := make([]string, 0, len(lines))
+	for _, l := range lines {
+		parts = append(parts, fmt.Sprintf("%q (%s)", l.Action, l.Source))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // undoFromHistory is "Annuler" on a line of the Historique screen (handleUndo
 // in History.js), once its confirmation is accepted. It returns the answer,
 // whatever it is.
