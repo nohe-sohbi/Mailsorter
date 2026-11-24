@@ -90,6 +90,8 @@ type Client struct {
 	// ns is where the user's own folders live on this server and how their
 	// names nest, read at connect.
 	ns namespace
+	// created counts the folders this connection made (maxNewFolders).
+	created int
 	// selected is the mailbox currently selected, so repeated actions in the
 	// same folder do not re-SELECT.
 	selected string
@@ -205,7 +207,7 @@ func (c *Client) resolveFolders() error {
 		}
 	}
 
-	var personal []imapv2.NamespaceDescriptor
+	var spaces imapv2.NamespaceData
 	if c.c.Caps().Has(imapv2.CapNamespace) {
 		data, err := c.c.Namespace().Wait()
 		if err != nil {
@@ -213,11 +215,11 @@ func (c *Client) resolveFolders() error {
 			// a folder Mailsorter makes lands at the top, as before.
 			log.Printf("imap: the server announces NAMESPACE but did not answer it: %v", err)
 		} else {
-			personal = data.Personal
+			spaces = *data
 		}
 	}
 
-	c.ns = personalNamespace(personal, listDelim)
+	c.ns = readNamespace(spaces, listDelim)
 	c.listed = infos
 	c.folders = map[mailbox.Folder]string{mailbox.FolderInbox: "INBOX"}
 	for _, want := range []mailbox.Folder{mailbox.FolderArchive, mailbox.FolderTrash} {
@@ -250,12 +252,23 @@ func (c *Client) OwnFolders() []string {
 	return names
 }
 
+// maxNewFolders is how many folders one connection, so one request, makes at
+// most: "Tout ranger" files up to 200 mails, and a model that names a new
+// folder for each would otherwise strew the mailbox with them. Past it, the
+// filing answers ErrTooManyNewFolders and the mail stays where it is.
+const maxNewFolders = 10
+
+// ErrTooManyNewFolders is a filing that would make one folder more than
+// maxNewFolders in the same request. Nothing moves; another request can.
+var ErrTooManyNewFolders = errors.New("imap: too many new folders for one request")
+
 // Destination returns the server's name for where op moves a message: a
 // special folder by what it is (op.To), or one of the user's own folders by
-// the name the user reads (op.Into, as OwnFolders gives it), made on the
-// server when it does not exist yet, which is how filing into "Factures" works
-// the first time. It is made under the user's prefix, levels split by the
-// server's delimiter ("Projets/Maison" is "INBOX.Projets.Maison" on Courier).
+// the name the user reads (op.Into, as OwnFolders and FilingName give it),
+// made on the server when it does not exist yet, which is how filing into
+// "Factures" works the first time. It is made under the user's prefix, levels
+// split by the server's delimiter ("Projets/Maison" is "INBOX.Projets.Maison"
+// on Courier), and only under a name newFolderName accepts.
 //
 // The folder the user already has is found by its exact name first, then by
 // the same name in another case: names are case-sensitive on most servers, but
@@ -274,59 +287,116 @@ func (c *Client) Destination(op mailbox.IMAPOp) (string, error) {
 	if want == "" {
 		return "", mailbox.ErrLabelRequired
 	}
+	if found, err := c.existing(want); err != nil || found != "" {
+		return found, err
+	}
+	name, err := c.newFolderName(want)
+	if err != nil {
+		return "", err
+	}
+	if found, err := c.existing(name); err != nil || found != "" {
+		return found, err
+	}
+	if c.created >= maxNewFolders {
+		return "", fmt.Errorf("%w: %q would be folder %d", ErrTooManyNewFolders, name, c.created+1)
+	}
+	server := c.ns.serverName(name)
+	if err := c.c.Create(server, nil).Wait(); err != nil {
+		// Another connection may have made it a moment ago: the server then
+		// refuses, and the folder is there all the same.
+		again, lErr := c.c.List("", server, nil).Collect()
+		exists := false
+		for _, l := range again {
+			exists = exists || l.Mailbox == server
+		}
+		if lErr != nil || !exists {
+			return "", fmt.Errorf("imap: create folder %q: %w", server, err)
+		}
+	}
+	c.created++
+	// Most mail programs show only the folders the account subscribes to: a
+	// folder made without it holds mail the user's phone never shows. The
+	// folder is made either way, so a refusal here is only logged.
+	if err := c.c.Subscribe(server).Wait(); err != nil {
+		log.Printf("imap: folder %q made, but not subscribed: %v", server, err)
+	}
+	c.listed = append(c.listed, folderInfo{Name: server})
+	return server, nil
+}
+
+// FilingName is the name, as the user reads it, of the folder a label the
+// model proposed files into, and makes nothing: the analysis stores it on the
+// proposal, so the plan shows, "Appliquer" files into and the history records
+// the same folder. One of the user's own folders when one is named alike
+// (mailbox.MatchLabel: case, accents and a plural set aside, never a part of
+// a name), or else the name Destination would make, cleaned (cleanName).
+// ErrNotOwnFolder for a special folder, ErrBadFolderName for a name no folder
+// is made under.
+func (c *Client) FilingName(label string) (string, error) {
+	want := strings.TrimSpace(label)
+	if want == "" {
+		return "", mailbox.ErrLabelRequired
+	}
+	own := c.OwnFolders()
+	if name, ok := mailbox.MatchLabel(want, own); ok {
+		return name, nil
+	}
+	if _, err := c.existing(want); err != nil {
+		return "", err
+	}
+	name, err := c.newFolderName(want)
+	if err != nil {
+		return "", err
+	}
+	if mine, ok := mailbox.MatchLabel(name, own); ok {
+		return mine, nil
+	}
+	return name, nil
+}
+
+// existing is the server's name of the folder the user reads as want (the
+// exact name, then the same in another case), "" when there is none, and
+// ErrNotOwnFolder when it is not the user's own.
+func (c *Client) existing(want string) (string, error) {
 	skip := notOwn(c.listed, c.ns)
-	found := ""
 	for _, exact := range []bool{true, false} {
 		for _, f := range c.listed {
 			shown, ok := c.ns.display(f.Name)
 			if !ok {
 				// Outside the user's namespace: the inbox, a shared
-				// folder. Not filed into by the name the user reads.
+				// folder. Matched by its own name, and refused below.
 				shown = f.Name
 			}
 			if (exact && shown == want) || (!exact && strings.EqualFold(shown, want)) {
-				found = f.Name
-				break
+				if skip[f.Name] {
+					return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, f.Name)
+				}
+				return f.Name, nil
 			}
 		}
-		if found != "" {
-			break
+	}
+	return "", nil
+}
+
+// newFolderName is the name, as the user reads it, of a folder Mailsorter may
+// make for the label want: cleaned (cleanName), and neither under a first
+// level that is not the user's own ("INBOX/Factures", "Trash/Factures",
+// "Sent/Old", a shared prefix) nor itself taken for one: the next listing
+// would leave it out, and filing there again would be refused.
+func (c *Client) newFolderName(want string) (string, error) {
+	name, err := c.ns.cleanName(want)
+	if err != nil {
+		return "", err
+	}
+	first := strings.SplitN(name, "/", 2)[0]
+	for _, candidate := range []string{first, name} {
+		server := c.ns.serverName(candidate)
+		withIt := append(append(make([]folderInfo, 0, len(c.listed)+1), c.listed...), folderInfo{Name: server})
+		if notOwn(withIt, c.ns)[server] {
+			return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, candidate)
 		}
 	}
-	if found != "" {
-		if skip[found] {
-			return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, found)
-		}
-		return found, nil
-	}
-	want = c.ns.serverName(want)
-	// Made under that name, would it be taken for a special folder? Then it
-	// is not made: the next listing would leave it out, and filing there
-	// again would be refused.
-	withIt := append(append(make([]folderInfo, 0, len(c.listed)+1), c.listed...), folderInfo{Name: want})
-	if notOwn(withIt, c.ns)[want] {
-		return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, want)
-	}
-	if err := c.c.Create(want, nil).Wait(); err != nil {
-		// Another connection may have made it a moment ago: the server then
-		// refuses, and the folder is there all the same.
-		again, lErr := c.c.List("", want, nil).Collect()
-		exists := false
-		for _, l := range again {
-			exists = exists || l.Mailbox == want
-		}
-		if lErr != nil || !exists {
-			return "", fmt.Errorf("imap: create folder %q: %w", want, err)
-		}
-	}
-	// Most mail programs show only the folders the account subscribes to: a
-	// folder made without it holds mail the user's phone never shows. The
-	// folder is made either way, so a refusal here is only logged.
-	if err := c.c.Subscribe(want).Wait(); err != nil {
-		log.Printf("imap: folder %q made, but not subscribed: %v", want, err)
-	}
-	c.listed = append(c.listed, folderInfo{Name: want})
-	return want, nil
+	return name, nil
 }
 
 // Client is a mailbox.Mailbox, asserted here so the contract is checked by the

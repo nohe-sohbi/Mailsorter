@@ -97,6 +97,9 @@ function EmailReader({
   // True on a mailbox connected over IMAP, where a label is a folder: the
   // verdict then reads "Classer dans « Factures »".
   folders = false,
+  // True while the verdict waits for the mailbox to be known (a label): the
+  // card says so, and the Inbox passes no onApplySuggestion.
+  suggestionHeld = false,
 }) {
   const toast = useToast();
   const hotel = useHotel();
@@ -475,6 +478,7 @@ function EmailReader({
                     </span>
                   )}
                   {aiSuggestion.reasoning && <p>{aiSuggestion.reasoning}</p>}
+                  {suggestionHeld && <p>Indisponible pour le moment.</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (
@@ -544,6 +548,7 @@ function EmailReader({
                   {aiSuggestion.reasoning && (
                     <p className="mt-0.5 text-sm leading-relaxed text-ink-700">{aiSuggestion.reasoning}</p>
                   )}
+                  {suggestionHeld && <p className="mt-1 text-xs text-muted">Indisponible pour le moment.</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (

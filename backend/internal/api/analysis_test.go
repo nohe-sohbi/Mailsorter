@@ -31,10 +31,11 @@ func TestLocalMatchLabel(t *testing.T) {
 		want      string
 	}{
 		{"newsletters", "Newsletters"}, // case-insensitive exact
-		{"Newsletter", "Newsletters"},  // substring (s ⊂ e)
+		{"Newsletter", "Newsletters"},  // the plural aside
 		{"Factures", "Factures"},       // exact
 		{"Voyages", "Voyages"},         // no match -> returned as-is
 		{"  travail ", "Travail"},      // trimmed + case
+		{"Trav", "Trav"},               // never a part of a name
 	}
 	for _, c := range cases {
 		if got := localMatchLabel(c.suggested, existing); got != c.want {

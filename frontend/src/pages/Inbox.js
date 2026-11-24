@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useEmails, useMailbox, DEFAULT_QUERY } from '../contexts/EmailContext';
 import { useInstance } from '../contexts/InstanceContext';
 import { aiService, senderService, emailService, subscriptionService, protectService, labelService, searchService, apiError, aiError } from '../services/api';
-import { canPromise } from '../components/landing/features';
+import { canApplyVerdict, canPromise } from '../components/landing/features';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
@@ -394,14 +394,15 @@ function Inbox() {
 
   // The hotel also puts each proposal on the row of the message it is about.
   // Not "keep": the plan has stopped treating it as a task (it moves nothing),
-  // and a row offering to validate it would bring that task back.
+  // and a row offering to validate it would bring that task back. Nor a label
+  // while the mailbox is not known: the plan says it waits.
   const suggestionByEmail = useMemo(() => {
     const map = new Map();
     suggestions.forEach((s) => {
-      if (s.action !== 'keep') map.set(s.emailId, s);
+      if (s.action !== 'keep' && canApplyVerdict(s.action, known)) map.set(s.emailId, s);
     });
     return map;
-  }, [suggestions]);
+  }, [suggestions, known]);
 
   // Avatars: the classic fills, or the hotel's inked discs with initials.
   const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
@@ -677,9 +678,15 @@ function Inbox() {
       else toast.success(msg);
     } catch (err) {
       // Undo the optimism. Without this the suggestion vanished for good while
-      // the email stayed exactly where it was.
+      // the email stayed exactly where it was. A 422 says why in the user's
+      // words (a folder Mailsorter does not file into); anything else stays
+      // generic.
       restoreSuggestions([suggestion]);
-      toast.error("Action impossible. L'email reste en place.");
+      toast.error(
+        err?.response?.status === 422
+          ? apiError(err, "Action impossible. L'email reste en place.")
+          : "Action impossible. L'email reste en place."
+      );
     }
   };
 
@@ -1404,6 +1411,9 @@ function Inbox() {
   const openEmailSuggestion = openEmail
     ? suggestions.find((s) => s.emailId === openEmail.messageId)
     : null;
+  // A label waits until the mailbox is known: shown with its reason and
+  // "Ignorer", without the button.
+  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, known);
 
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
@@ -1430,7 +1440,10 @@ function Inbox() {
       onAiAnalyze={handleAiAnalyzeSingle}
       aiAnalyzing={aiAnalyzingId === openEmail.messageId}
       folders={isImap}
-      onApplySuggestion={triageMode ? handleTriageApplySuggestion : handleApplySuggestion}
+      suggestionHeld={!openSuggestionApplicable}
+      onApplySuggestion={
+        openSuggestionApplicable ? (triageMode ? handleTriageApplySuggestion : handleApplySuggestion) : undefined
+      }
       onRejectSuggestion={handleRejectSuggestion}
       triage={
         triageMode && triageIds.length > 0

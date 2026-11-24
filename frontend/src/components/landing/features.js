@@ -75,6 +75,16 @@ export function canConnectByPassword(provider) {
   return isRecognizable(provider) && canConnectRoute(imapRouteOf(provider), false);
 }
 
+// Whether a verdict of the AI can be applied now. A label files the mail in a
+// folder over IMAP, out of the inbox, and adds a label over the Gmail API: the
+// screen says which ("Classer" or "Étiqueter") and offers "Annuler" after it
+// accordingly. Until the mailbox is known (`known` in useMailbox: still
+// loading, or the request failed), a label verdict waits, "Indisponible pour
+// le moment", rather than be worded and applied on a guess.
+export function canApplyVerdict(action, mailboxKnown) {
+  return action !== 'label' || Boolean(mailboxKnown);
+}
+
 // What the model reads and where it goes, in the privacy vault's words, for
 // every screen that sums it up in a line. Checked against the code: the prompt
 // carries the sender, the subject and a snippet cut at 200 characters

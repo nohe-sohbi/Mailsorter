@@ -144,14 +144,19 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get existing labels
-	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
-
-	// Analyze sender
-	analysis, err := aiClient.AnalyzeSender(req.SenderEmail, emails, existingLabels)
+	// The model is told nothing of the user's labels (see runAnalysis): the
+	// label it proposes is matched with the user's afterwards.
+	analysis, err := aiClient.AnalyzeSender(req.SenderEmail, emails, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to analyze sender: "+err.Error())
 		return
+	}
+	if analysis.SuggestedLabel != "" {
+		knownLabels, lErr := h.getSmartLabelNames(ctx, userEmail)
+		if lErr != nil {
+			log.Printf("analyze-sender: the labels of %s: %v", userEmail, lErr)
+		}
+		analysis.SuggestedLabel = localMatchLabel(analysis.SuggestedLabel, knownLabels)
 	}
 
 	// Extract domain from sender email
@@ -239,6 +244,10 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, notOwnFolderMessage)
 		return
 	}
+	if errors.Is(err, imap.ErrBadFolderName) {
+		writeError(w, http.StatusUnprocessableEntity, badFolderNameMessage)
+		return
+	}
 	if errors.Is(err, errAlreadyOut) {
 		// The mail was already tidied by hand: the proposal is moot. It
 		// leaves the plan, and nothing is counted or recorded.
@@ -304,6 +313,8 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
 	failed := 0
 	protectedSkipped := 0
+	// Why some failed, when the user can do something about it.
+	reason := ""
 
 	// Resolve every suggested email's identity once, up front, so each ledger
 	// entry can name the message it acted on without a lookup inside the loop.
@@ -348,6 +359,9 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			h.dropMootProposal(ctx, objectID)
 			continue
 		}
+		if errors.Is(applyErr, imap.ErrTooManyNewFolders) {
+			reason = tooManyNewFoldersMessage
+		}
 		if applyErr != nil {
 			failed++
 			continue
@@ -367,7 +381,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		appliedIDs = append(appliedIDs, id)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	answer := map[string]interface{}{
 		"applied":          applied,
 		"failed":           failed,
 		"total":            len(req.SuggestionIDs),
@@ -376,7 +390,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		// Lets the client offer "Annuler" only where it would work, the way
 		// batch-action already says so for a selection.
 		"reversible": batchUndoReaches(session.Transport),
-	})
+	}
+	if reason != "" {
+		answer["message"] = reason
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // ApplyBulk applies an action to all emails from a sender
@@ -869,6 +887,14 @@ func (h *Handler) leftInbox(ctx context.Context, userEmail, messageID string) bo
 // folder to file into, one that is not theirs (imap.ErrNotOwnFolder): the
 // inbox, the archive, the trash, sent mail, drafts or junk.
 const notOwnFolderMessage = "Mailsorter ne classe pas de mail dans ce dossier : c'est un dossier spécial de votre boîte."
+
+// badFolderNameMessage is what the user reads when a proposal names a folder
+// no folder is made under (imap.ErrBadFolderName).
+const badFolderNameMessage = "Mailsorter ne crée pas de dossier sous ce nom : il est trop long ou contient un caractère réservé."
+
+// tooManyNewFoldersMessage is why "Tout ranger" left mails in place once it
+// made imap.maxNewFolders new folders in one go.
+const tooManyNewFoldersMessage = "Mailsorter crée au plus 10 nouveaux dossiers à la fois : relancez le tri pour ranger les mails suivants."
 
 // filedUnder is the label a proposal filed its mail under, for the history:
 // its name on a "label", nothing otherwise.

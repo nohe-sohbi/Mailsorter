@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -46,7 +48,16 @@ func (h *Handler) runAnalysis(
 	suggestions := make([]models.AISuggestion, 0)
 	var lastErr error
 
-	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
+	// The model is told nothing of the user's labels or folders: its prompt
+	// carries what the public pages say it does (sender, subject, an excerpt),
+	// and its verdict goes into a cache every account shares. What it proposes
+	// is matched with the user's own here, after the fact (mailbox.MatchLabel):
+	// the Gmail labels Mailsorter made, or over IMAP the user's folders
+	// (fileVerdict).
+	knownLabels, lErr := h.getSmartLabelNames(ctx, userEmail)
+	if lErr != nil {
+		log.Printf("runAnalysis: the labels of %s: %v", userEmail, lErr)
+	}
 	protectedList := h.protectedValues(ctx, userEmail)
 
 	session, serr := h.openSession(ctx, userEmail)
@@ -56,12 +67,6 @@ func (h *Handler) runAnalysis(
 		log.Printf("runAnalysis: openSession for %s: %v", userEmail, serr)
 	}
 	transport := h.analysisTransport(ctx, userEmail, session)
-	if session != nil && session.Transport == provider.TransportIMAP && session.imapc != nil {
-		// Over IMAP a label is a folder: the model is told the user's own
-		// folders, as it is told the Gmail labels Mailsorter made, so it
-		// files into "Factures" rather than invent "Facture" next to it.
-		existingLabels = session.imapc.OwnFolders()
-	}
 
 	emails := make([]models.Email, 0, len(emailIDs))
 	for _, id := range emailIDs {
@@ -173,8 +178,8 @@ func (h *Handler) runAnalysis(
 
 		key := analysisCacheKey(email.From, email.Subject)
 		if cached, ok := h.cacheLookup(ctx, key); ok {
-			cached = protectAnalysis(cached, email.From, protectedList, transport)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, email, cached, existingLabels); inserted {
+			cached = fileVerdict(protectAnalysis(cached, email.From, protectedList, transport), session)
+			if s, inserted := h.persistSuggestion(ctx, userEmail, email, cached, knownLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -207,7 +212,7 @@ func (h *Handler) runAnalysis(
 
 		// When analyzing a single email, call AnalyzeEmail directly for maximum reliability.
 		if len(chunk) == 1 {
-			single, err := aiClient.AnalyzeEmail(chunk[0], existingLabels)
+			single, err := aiClient.AnalyzeEmail(chunk[0], nil)
 			if err != nil {
 				log.Printf("runAnalysis: AnalyzeEmail error for %s: %v", chunk[0].MessageID, err)
 				lastErr = err
@@ -217,8 +222,8 @@ func (h *Handler) runAnalysis(
 			}
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(chunk[0].From, chunk[0].Subject), *single)
-			verdict := protectAnalysis(*single, chunk[0].From, protectedList, transport)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, chunk[0], verdict, existingLabels); inserted {
+			verdict := fileVerdict(protectAnalysis(*single, chunk[0].From, protectedList, transport), session)
+			if s, inserted := h.persistSuggestion(ctx, userEmail, chunk[0], verdict, knownLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -228,7 +233,7 @@ func (h *Handler) runAnalysis(
 		}
 
 		var analyses []ai.EmailAnalysis
-		if res, err := aiClient.AnalyzeBatch(chunk, existingLabels); err == nil {
+		if res, err := aiClient.AnalyzeBatch(chunk, nil); err == nil {
 			analyses = res
 		} else {
 			log.Printf("runAnalysis: AnalyzeBatch failed (%v), falling back to AnalyzeEmail", err)
@@ -240,7 +245,7 @@ func (h *Handler) runAnalysis(
 			case analyses != nil && j < len(analyses):
 				a = analyses[j]
 			default:
-				single, err := aiClient.AnalyzeEmail(email, existingLabels)
+				single, err := aiClient.AnalyzeEmail(email, nil)
 				if err != nil {
 					log.Printf("runAnalysis: fallback AnalyzeEmail error for %s: %v", email.MessageID, err)
 					lastErr = err
@@ -253,8 +258,8 @@ func (h *Handler) runAnalysis(
 
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(email.From, email.Subject), a)
-			a = protectAnalysis(a, email.From, protectedList, transport)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, existingLabels); inserted {
+			a = fileVerdict(protectAnalysis(a, email.From, protectedList, transport), session)
+			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, knownLabels); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -309,6 +314,35 @@ func protectAnalysis(a ai.EmailAnalysis, from string, protectedList []string, tr
 	return a
 }
 
+// fileVerdict settles, over IMAP, where a "label" verdict files the mail: the
+// user's folder named alike, or the cleaned name of the folder Mailsorter
+// would make (imap.Client.FilingName), which the plan then shows and the
+// history records. A label naming a folder that is not the user's (the inbox,
+// a special folder, a shared one) or a name no folder is made under becomes
+// "keep": the plan proposes nothing "Appliquer" would refuse. Over the Gmail
+// API, or without a session, the verdict passes untouched.
+func fileVerdict(a ai.EmailAnalysis, session *mailSession) ai.EmailAnalysis {
+	if a.Action != "label" || session == nil || session.Transport != provider.TransportIMAP || session.imapc == nil {
+		return a
+	}
+	name, err := session.imapc.FilingName(a.LabelName)
+	switch {
+	case err == nil:
+		a.LabelName = name
+		return a
+	case errors.Is(err, imap.ErrNotOwnFolder):
+		a.Reasoning = "Le dossier proposé est un dossier spécial de votre boîte : le mail reste dans la boîte."
+	case errors.Is(err, imap.ErrBadFolderName), errors.Is(err, mailbox.ErrLabelRequired):
+		a.Reasoning = "Le nom de dossier proposé n'est pas utilisable : le mail reste dans la boîte."
+	default:
+		log.Printf("runAnalysis: where to file under %q: %v", a.LabelName, err)
+		return a
+	}
+	a.Action = "keep"
+	a.LabelName = ""
+	return a
+}
+
 // persistSuggestion resolves the label, inserts a pending suggestion and returns it.
 func (h *Handler) persistSuggestion(
 	ctx context.Context,
@@ -351,14 +385,12 @@ func (h *Handler) persistSuggestion(
 	return suggestion, true
 }
 
-// localMatchLabel maps a suggested label onto an existing one without an AI call.
+// localMatchLabel maps a suggested label onto an existing one without an AI
+// call: the one named alike (mailbox.MatchLabel: case, accents and a plural
+// aside, never a part of a name, so "Pro" does not take "Promotions").
 func localMatchLabel(suggested string, existing []string) string {
-	s := strings.ToLower(strings.TrimSpace(suggested))
-	for _, e := range existing {
-		le := strings.ToLower(strings.TrimSpace(e))
-		if le == s || strings.Contains(le, s) || strings.Contains(s, le) {
-			return e
-		}
+	if matched, ok := mailbox.MatchLabel(suggested, existing); ok {
+		return matched
 	}
 	return suggested
 }

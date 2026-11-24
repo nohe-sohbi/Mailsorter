@@ -1491,10 +1491,17 @@ back to one email at a time when a batch answer does not line up. The caller's
 own provider is tried first when they set one, then the instance's, in
 priority order, the next one on a transient error. A destructive verdict on a
 protected sender is downgraded to `keep`, and so is, over IMAP, a `label`
-verdict, which files the mail out of the inbox there. The model is told the
-user's existing labels so it reuses them: the labels Mailsorter made over the
-Gmail API, the user's own folders over IMAP (as `GET /api/labels` lists them),
-and a proposed name close to one of them is stored as that one. One pending
+verdict, which files the mail out of the inbox there. The model is told
+nothing of the user's labels or folders: the prompt carries the sender, the
+subject and an excerpt cut at 200 characters, and the verdict goes into the
+cache every account shares. The label it proposes is matched afterwards, for
+this account only, with the labels Mailsorter made over the Gmail API or the
+user's own folders over IMAP: the same name once case, accents and a plural
+mark are set aside, never a part of a name ("Facture" is stored as the
+existing "Factures", "Pro" does not take "Promotions"). Over IMAP the name
+stored is the folder's real one, cleaned as `POST /api/ai/apply` would make
+it, and a `label` naming the inbox, a special folder, a folder outside the
+user's namespace or a name no folder is made under becomes `keep`. One pending
 suggestion is stored per email, replacing a pending one for the same email;
 only model calls count toward the quota.
 
@@ -1564,6 +1571,8 @@ Poll an analysis job.
 Analyze up to 20 stored emails whose From contains the sender, and persist a
 `SenderPreference` (default action, auto-apply off). Reads the stored mailbox
 only, so it answers on both transports; `404` when no stored email matches.
+The model is told none of the user's labels; the label it proposes is matched
+afterwards with the user's, as `POST /api/ai/analyze` does.
 
 **Request body:** `{ "senderEmail": "news@acme.com" }`
 
@@ -1588,11 +1597,21 @@ like the label (`labelName`), made (and subscribed) when the mailbox does not
 have it, under the personal namespace prefix when the server has one
 (`INBOX.Factures` on Courier), found whatever its case when it does, and
 undoable like an archive: right after, `POST /api/emails/action` with
-`unlabel` brings it back.
+`unlabel` brings it back. A folder is made only under a name that holds no
+control character, no `*` or `%`, no empty level and no `.` or `..` level, at
+most 100 characters a level and 200 in all, whose first level is neither the
+inbox, nor a special folder, nor outside the user's namespace; the server's
+delimiter inside a level becomes `-` (`Amazon.fr` is `Amazon-fr` on a server
+whose delimiter is `.`), and that cleaned name is the folder's name, shown and
+recorded.
 The history line carries the folder's name (`labelName`). A label that names a
 folder that is not the user's own (the inbox, the archive, the trash, sent
 mail, drafts, junk) answers `422` "Mailsorter ne classe pas de mail dans ce
-dossier : c'est un dossier spécial de votre boîte." and nothing moves.
+dossier : c'est un dossier spécial de votre boîte." and nothing moves; a name
+no folder is made under answers `422` "Mailsorter ne crée pas de dossier sous
+ce nom : il est trop long ou contient un caractère réservé.". The analysis
+turns both into `keep` beforehand, so only a proposal stored before that
+reaches them.
 
 **Request body:** `{ "suggestionId": "662..." }`
 
@@ -1602,7 +1621,8 @@ tidied it by hand): nothing moves, nothing is recorded, and the proposal
 becomes `moot`.
 
 **Error Responses:** `400` invalid id; `404` no such suggestion for this caller;
-`422` over IMAP, a label naming a special folder; `428` no mailbox connected;
+`422` over IMAP, a label naming a special folder or a name no folder is made
+under; `428` no mailbox connected;
 `500` the mailbox refused the action.
 
 ### Apply many suggestions
@@ -1613,7 +1633,11 @@ Apply a list of suggestions in one request (one session, looped server-side),
 at most 200. Suggestions whose sender is protected are skipped for destructive
 actions and stay pending, counted in `protectedSkipped`. Over IMAP a `label`
 files the mail in a folder, out of the inbox, so it is one of them there: a
-protected sender's mail is not filed. A suggestion whose mail already left the
+protected sender's mail is not filed. One request makes at most 10 new
+folders over IMAP: a filing that would make one more counts in `failed`, the
+mail stays in the inbox, and the answer carries `message` "Mailsorter crée au
+plus 10 nouveaux dossiers à la fois : relancez le tri pour ranger les mails
+suivants.". A suggestion whose mail already left the
 inbox (tidied by hand, from a screen loaded before) is counted neither in
 `applied` nor in `failed`, and becomes `moot`; nor is a suggestion already
 `moot`.
@@ -2154,7 +2178,9 @@ reads `Projets/Maison`). Not listed: the inbox, the special folders (archive,
 trash, sent mail, drafts, junk, and Gmail's All Mail, Starred and Important),
 known by their special-use attribute or, when the server marks none for that
 kind, by their usual names (under the prefix too: `INBOX.Sent`), a folder
-outside the personal namespace, and a folder that cannot hold mail.
+outside the personal namespace (under the prefix of another user's or of a
+shared namespace, `Other Users/`, `Public/`, even when the personal prefix is
+empty), and a folder that cannot hold mail.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)

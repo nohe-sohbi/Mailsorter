@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"reflect"
 	"strconv"
@@ -812,27 +813,175 @@ func TestMoveRecordedNeverMovesAnotherMail(t *testing.T) {
 
 // Where the user's own folders live: the first personal namespace the server
 // gives, its prefix completed with the delimiter, or, without NAMESPACE, no
-// prefix and the delimiter of the listing.
-func TestPersonalNamespace(t *testing.T) {
+// prefix and the delimiter of the listing; and the prefixes of the other
+// users' and shared namespaces, which are not the user's.
+func TestReadNamespace(t *testing.T) {
+	type nd = imapv2.NamespaceDescriptor
 	cases := []struct {
 		name      string
-		personal  []imapv2.NamespaceDescriptor
+		data      imapv2.NamespaceData
 		listDelim rune
 		want      namespace
 	}{
-		{"no NAMESPACE: the listing's delimiter", nil, '/', namespace{delim: '/'}},
-		{"most servers: no prefix", []imapv2.NamespaceDescriptor{{Delim: '/'}}, '/', namespace{delim: '/'}},
-		{"Courier: INBOX. and dots", []imapv2.NamespaceDescriptor{{Prefix: "INBOX.", Delim: '.'}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
-		{"a prefix given without its delimiter gets it", []imapv2.NamespaceDescriptor{{Prefix: "INBOX", Delim: '.'}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
-		{"no delimiter in the answer: the listing's", []imapv2.NamespaceDescriptor{{Prefix: "INBOX."}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
-		{"the first personal namespace wins", []imapv2.NamespaceDescriptor{{Prefix: "INBOX.", Delim: '.'}, {Prefix: "Mail/", Delim: '/'}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{"no NAMESPACE: the listing's delimiter", imapv2.NamespaceData{}, '/', namespace{delim: '/'}},
+		{"most servers: no prefix", imapv2.NamespaceData{Personal: []nd{{Delim: '/'}}}, '/', namespace{delim: '/'}},
+		{"Courier: INBOX. and dots", imapv2.NamespaceData{Personal: []nd{{Prefix: "INBOX.", Delim: '.'}}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{"a prefix given without its delimiter gets it", imapv2.NamespaceData{Personal: []nd{{Prefix: "INBOX", Delim: '.'}}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{"no delimiter in the answer: the listing's", imapv2.NamespaceData{Personal: []nd{{Prefix: "INBOX."}}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{"the first personal namespace wins", imapv2.NamespaceData{Personal: []nd{{Prefix: "INBOX.", Delim: '.'}, {Prefix: "Mail/", Delim: '/'}}}, '.', namespace{prefix: "INBOX.", delim: '.'}},
+		{
+			"Dovecot: other users and shared folders beside an empty personal prefix",
+			imapv2.NamespaceData{Personal: []nd{{Delim: '/'}}, Other: []nd{{Prefix: "Other Users/", Delim: '/'}}, Shared: []nd{{Prefix: "Public", Delim: '/'}, {Prefix: "shared/", Delim: '/'}}},
+			'/',
+			namespace{delim: '/', others: []string{"Other Users/", "Public/", "shared/"}},
+		},
+		{
+			"an empty shared prefix, or the personal one again, is left out",
+			imapv2.NamespaceData{Personal: []nd{{Prefix: "INBOX.", Delim: '.'}}, Shared: []nd{{Delim: '.'}, {Prefix: "INBOX.", Delim: '.'}}},
+			'.',
+			namespace{prefix: "INBOX.", delim: '.'},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := personalNamespace(tc.personal, tc.listDelim); got != tc.want {
-				t.Errorf("personalNamespace(%v, %q) = %+v, want %+v", tc.personal, tc.listDelim, got, tc.want)
+			if got := readNamespace(tc.data, tc.listDelim); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("readNamespace(%+v, %q) = %+v, want %+v", tc.data, tc.listDelim, got, tc.want)
 			}
 		})
+	}
+}
+
+// A folder under another user's or a shared prefix is not the user's, even
+// with an empty personal prefix: nothing is filed there, nothing made there.
+func TestSharedFoldersAreNotTheUsers(t *testing.T) {
+	ns := namespace{delim: '/', others: []string{"Public/", "shared/"}}
+	folders := []folderInfo{{Name: "INBOX"}, {Name: "Factures"}, {Name: "Public/Annonces"}, {Name: "shared/alice/Equipe"}, {Name: "public/Bureau"}}
+	want := map[string]bool{"INBOX": true, "Public/Annonces": true, "shared/alice/Equipe": true, "public/Bureau": true}
+	if got := notOwn(folders, ns); !reflect.DeepEqual(got, want) {
+		t.Errorf("notOwn = %v, want %v", got, want)
+	}
+	c := &Client{listed: folders, ns: ns}
+	if got := c.OwnFolders(); !reflect.DeepEqual(got, []string{"Factures"}) {
+		t.Errorf("OwnFolders = %v, want [Factures]", got)
+	}
+	for _, name := range []string{"Public/Annonces", "shared/alice/Equipe", "Public/Nouveau", "shared/bob"} {
+		if got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: name}); !errors.Is(err, ErrNotOwnFolder) {
+			t.Errorf("Destination(%q) = %q, %v; want ErrNotOwnFolder", name, got, err)
+		}
+	}
+}
+
+// A name Mailsorter would make a folder under: refused when the protocol
+// reserves or cannot carry it, when a level is empty or climbs, when it is too
+// long, and when its first level is not the user's; the server's delimiter
+// inside a level becomes "-". No connection: none of it reaches the server.
+func TestNewFolderName(t *testing.T) {
+	listed := []folderInfo{{Name: "INBOX"}, {Name: "Trash"}, {Name: "Junk"}, {Name: "Sent"}, {Name: "Factures"}}
+	plain := &Client{listed: listed, ns: namespace{delim: '/'}}
+	dotted := &Client{listed: []folderInfo{{Name: "INBOX"}, {Name: "INBOX.Trash"}}, ns: namespace{prefix: "INBOX.", delim: '.'}}
+	cases := []struct {
+		name string
+		c    *Client
+		in   string
+		want string
+		err  error
+	}{
+		{"a plain name", plain, "Banque", "Banque", nil},
+		{"a nested one", plain, "Projets/Maison", "Projets/Maison", nil},
+		{"levels trimmed", plain, " Projets / Maison ", "Projets/Maison", nil},
+		{"under the trash", plain, "Trash/Factures", "", ErrNotOwnFolder},
+		{"under junk", plain, "Junk/x", "", ErrNotOwnFolder},
+		{"under sent mail", plain, "Sent/Old", "", ErrNotOwnFolder},
+		{"under the inbox", plain, "INBOX/Factures", "", ErrNotOwnFolder},
+		{"under the inbox, any case", plain, "inbox/Factures", "", ErrNotOwnFolder},
+		{"a special name", plain, "Drafts", "", ErrNotOwnFolder},
+		{"a trailing empty level", plain, "Factures/", "", ErrBadFolderName},
+		{"a leading empty level", plain, "/Factures", "", ErrBadFolderName},
+		{"an empty level inside", plain, "a//b", "", ErrBadFolderName},
+		{"a climbing level", plain, "a/../b", "", ErrBadFolderName},
+		{"a dot level", plain, "a/./b", "", ErrBadFolderName},
+		{"LIST wildcards", plain, "Fact*%", "", ErrBadFolderName},
+		{"a percent alone", plain, "100%", "", ErrBadFolderName},
+		{"a control character", plain, "Fact\x00ures", "", ErrBadFolderName},
+		{"a tab", plain, "Fact\tures", "", ErrBadFolderName},
+		{"3000 characters", plain, strings.Repeat("a", 3000), "", ErrBadFolderName},
+		{"a level of 101 characters", plain, strings.Repeat("a", 101), "", ErrBadFolderName},
+		{"201 characters in all", plain, strings.Repeat("a", 100) + "/" + strings.Repeat("b", 100), "", ErrBadFolderName},
+		{"the dot of a domain on a dotted server", dotted, "Amazon.fr", "Amazon-fr", nil},
+		{"a dot on a slashed server stays", plain, "Amazon.fr", "Amazon.fr", nil},
+		{"a level on a dotted server", dotted, "Projets/Maison", "Projets/Maison", nil},
+		{"the trash under the prefix", dotted, "Trash/Vieux", "", ErrNotOwnFolder},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.c.newFolderName(tc.in)
+			if tc.err != nil {
+				if !errors.Is(err, tc.err) {
+					t.Errorf("newFolderName(%q) = %q, %v; want %v", tc.in, got, err, tc.err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("newFolderName(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
+// What the analysis stores on a proposal: the user's folder named alike, the
+// cleaned new name, or a refusal for a special folder or a bad name.
+func TestFilingName(t *testing.T) {
+	c := &Client{
+		listed: []folderInfo{{Name: "INBOX"}, {Name: "Trash"}, {Name: "Factures"}, {Name: "Pro"}, {Name: "Impôts"}},
+		ns:     namespace{prefix: "", delim: '.'},
+	}
+	cases := []struct {
+		in   string
+		want string
+		err  error
+	}{
+		{"Facture", "Factures", nil},
+		{"factures", "Factures", nil},
+		{"Impots", "Impôts", nil},
+		{"Promotions", "Promotions", nil},
+		{"Amazon.fr", "Amazon-fr", nil},
+		{"Trash", "", ErrNotOwnFolder},
+		{"corbeille", "", ErrNotOwnFolder},
+		{"INBOX", "", ErrNotOwnFolder},
+		{"Fact*", "", ErrBadFolderName},
+	}
+	for _, tc := range cases {
+		got, err := c.FilingName(tc.in)
+		if tc.err != nil {
+			if !errors.Is(err, tc.err) {
+				t.Errorf("FilingName(%q) = %q, %v; want %v", tc.in, got, err, tc.err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("FilingName(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+}
+
+// One request makes at most maxNewFolders folders: past it, the filing is
+// refused and nothing more is made; a folder that exists is still found.
+func TestDestinationMakesAtMostTenFolders(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	for i := 1; i <= maxNewFolders; i++ {
+		name := fmt.Sprintf("Dossier %d", i)
+		if got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: name}); err != nil || got != name {
+			t.Fatalf("Destination(%q) = %q, %v; want it made", name, got, err)
+		}
+	}
+	if got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "Un de trop"}); !errors.Is(err, ErrTooManyNewFolders) {
+		t.Errorf("Destination(one more) = %q, %v; want ErrTooManyNewFolders", got, err)
+	}
+	if listed, err := c.c.List("", "Un de trop", nil).Collect(); err != nil || len(listed) != 0 {
+		t.Errorf("the folder past the limit was made: %v (%v)", listed, err)
+	}
+	if got, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "dossier 3"}); err != nil || got != "Dossier 3" {
+		t.Errorf("Destination(dossier 3) past the limit = %q, %v; want the folder made earlier", got, err)
 	}
 }
 
@@ -887,7 +1036,7 @@ func TestNamespaceNames(t *testing.T) {
 // reads it at connect, and the folders keep the names the user knows.
 func TestConnectReadsTheNamespace(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
-	if c.ns != (namespace{delim: '/'}) {
+	if !reflect.DeepEqual(c.ns, namespace{delim: '/'}) {
 		t.Errorf("namespace read at connect = %+v, want no prefix and \"/\"", c.ns)
 	}
 }
