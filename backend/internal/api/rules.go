@@ -228,6 +228,11 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	done := h.runRules(ctx, session, userEmail, emails, enabled, h.protectedValues(ctx, userEmail))
+	if session.Transport == provider.TransportIMAP {
+		// Judged here, a mail marked for the rules at a sync is not judged
+		// again there (a second star, a second line in the history).
+		h.unmarkJudged(ctx, userEmail, emails, done.failed)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"applied":          done.applied,
@@ -244,7 +249,10 @@ const previewSampleCap = 12
 // without touching the mailbox and without consuming quota. This lets users
 // see the blast radius of their ruleset (especially before enabling at-sync
 // autopilot) and build trust before any irreversible archive/trash happens.
-// It reads the same messages as ApplyRules (ruleCandidates).
+// It reads the same messages as ApplyRules (ruleCandidates). Over IMAP it
+// opens the mailbox only when a rule reads the text: the rest is in the copy.
+// It leaves out what a rule cannot do there (label), and a mail whose rule
+// would only do that.
 func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -263,20 +271,35 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.openSession(ctx, userEmail)
+	transport, _, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-	defer session.Close()
-
-	emails, err := h.ruleCandidates(ctx, session, userEmail, enabled)
+	var emails []models.Email
+	if transport == provider.TransportIMAP && !rules.ReadsText(enabled) {
+		emails, err = h.storedInboxCandidates(ctx, userEmail)
+	} else {
+		session, sErr := h.openSession(ctx, userEmail)
+		if sErr != nil {
+			writeAuthError(w, sErr)
+			return
+		}
+		defer session.Close()
+		emails, err = h.ruleCandidates(ctx, session, userEmail, enabled)
+	}
 	if err != nil {
 		writeCandidatesError(w, err)
 		return
 	}
 
-	items, hits := rules.Preview(emails, enabled)
+	var items []rules.PreviewItem
+	var hits []rules.RuleHits
+	if transport == provider.TransportIMAP {
+		items, hits = rules.PreviewWithout(emails, enabled, rules.ActionLabel)
+	} else {
+		items, hits = rules.Preview(emails, enabled)
+	}
 
 	samples := items
 	if len(samples) > previewSampleCap {
@@ -339,6 +362,17 @@ func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, user
 		return emails, nil
 	}
 
+	emails, err := h.storedInboxCandidates(ctx, userEmail)
+	if err != nil || !rules.ReadsText(ruleset) {
+		return emails, err
+	}
+	return h.withTexts(ctx, userEmail, session, emails)
+}
+
+// storedInboxCandidates is the stored copy of an IMAP inbox as a run of the
+// rules on demand judges it, without the text: the rulesScanLimit most recent
+// messages still in the inbox.
+func (h *Handler) storedInboxCandidates(ctx context.Context, userEmail string) ([]models.Email, error) {
 	cur, err := h.db.Emails().Find(ctx,
 		bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "leftInbox": notLeftInbox},
 		options.Find().SetSort(bson.D{{Key: "receivedDate", Value: -1}}).SetLimit(rulesScanLimit))
@@ -351,10 +385,32 @@ func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, user
 		log.Printf("rules: read the inbox copy of %s: %v", userEmail, err)
 		return nil, errInboxCopyUnread
 	}
-	if !rules.ReadsText(ruleset) {
-		return emails, nil
+	return emails, nil
+}
+
+// unmarkJudged unmarks for the rules (rulesDue) the stored IMAP messages a run
+// of the rules on demand judged without a failure. A failure is logged: the
+// next sync judges the mail once more.
+func (h *Handler) unmarkJudged(ctx context.Context, userEmail string, judged []models.Email, failed []string) {
+	skip := make(map[string]bool, len(failed))
+	for _, id := range failed {
+		skip[id] = true
 	}
-	return h.withTexts(ctx, userEmail, session, emails)
+	ids := make([]string, 0, len(judged))
+	for _, e := range judged {
+		if !skip[e.MessageID] {
+			ids = append(ids, e.MessageID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if _, err := h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "rulesDue": true, "messageId": bson.M{"$in": ids}},
+		bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": ""}},
+	); err != nil {
+		log.Printf("rules: %d mails of %s judged, not unmarked for the sync: %v", len(ids), userEmail, err)
+	}
 }
 
 // textBatch is how many messages one FETCH of their text reads
@@ -367,9 +423,11 @@ const textBatch = 20
 //
 // A message whose text cannot be read is left out, logged: judged without
 // it, "the body does not contain" would match it, and a rule archive it on a
-// text nobody read. One the inbox no longer holds is left out too. A read the
-// server stopped is an error: the rules do not judge half the inbox and say
-// nothing about the other half.
+// text nobody read. So is one whose text starts beyond what is read
+// (imap.Text.NotReached). One the inbox no longer holds is left out too. A
+// read the server stopped, or that ran out of the request's time (ctx,
+// checked at each batch), is an error: the rules do not judge half the inbox
+// and say nothing about the other half.
 func (h *Handler) withTexts(ctx context.Context, userEmail string, session *mailSession, emails []models.Email) ([]models.Email, error) {
 	if len(emails) == 0 {
 		return emails, nil
@@ -384,7 +442,7 @@ func (h *Handler) withTexts(ctx context.Context, userEmail string, session *mail
 		return nil, fmt.Errorf("open the mailbox again to read the texts: %w", err)
 	}
 	got, err := imap.ReadInHalves(uids, textBatch,
-		func(batch []string) (map[string]imap.Text, error) { return session.imapc.Texts(folder, batch) },
+		func(batch []string) (map[string]imap.Text, error) { return session.imapc.Texts(ctx, folder, batch) },
 		reopen)
 	if err != nil {
 		return nil, fmt.Errorf("read the text of the messages: %w", err)
@@ -399,6 +457,10 @@ func (h *Handler) withTexts(ctx context.Context, userEmail string, session *mail
 			if rErr, unreadable := got.Unreadable[e.MessageID]; unreadable {
 				log.Printf("rules: the text of message uid %s of %s cannot be read, no rule judges it: %v", e.MessageID, userEmail, rErr)
 			}
+			continue
+		}
+		if text.NotReached {
+			log.Printf("rules: the text of message uid %s of %s starts beyond what is read of it, no rule judges it", e.MessageID, userEmail)
 			continue
 		}
 		e.Body, e.Snippet = text.Body, text.Snippet
@@ -416,6 +478,8 @@ type rulesDone struct {
 	// protectedSkipped counts the messages a rule matched and did nothing to,
 	// their sender being protected.
 	protectedSkipped int
+	// failed lists the messages an action of their rule failed on (logged).
+	failed []string
 }
 
 // runRules applies the ruleset to these messages, on whichever transport the
@@ -432,7 +496,10 @@ func (h *Handler) runRules(ctx context.Context, session *mailSession, userEmail 
 		}
 		// A protected sender is shielded from destructive actions, but
 		// non-destructive actions in the same rule still run.
-		appliedActs, skipped := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
+		appliedActs, skipped, failed := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
+		if failed {
+			done.failed = append(done.failed, email.MessageID)
+		}
 		if len(appliedActs) == 0 {
 			if skipped {
 				done.protectedSkipped++
@@ -532,9 +599,9 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 // protected (VIP) sender shields against destructive actions only:
 // archive/trash are skipped, but a non-destructive action in the same rule
 // (label/star/markRead) still runs. It returns the action types actually
-// applied (for the ledger) and whether a destructive action was skipped for
-// protection.
-func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList []string, labelCache map[string]string) (applied []string, protectedSkip bool) {
+// applied (for the ledger), whether a destructive action was skipped for
+// protection, and whether an action failed (logged).
+func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList []string, labelCache map[string]string) (applied []string, protectedSkip, failed bool) {
 	ref := session.RefFor(ctx, email.MessageID)
 	for _, a := range rules.ApplyOrder(rules.EffectiveActions(rule)) {
 		if !allows(a.Type, email.From, protectedList) {
@@ -550,10 +617,11 @@ func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, 
 			// labels, or the message already left the inbox (moved by hand,
 			// or by another mail program, since it was read).
 		default:
+			failed = true
 			log.Printf("rules: %s on message %s of %s (rule %q): %v", a.Type, email.MessageID, userEmail, rule.Name, err)
 		}
 	}
-	return applied, protectedSkip
+	return applied, protectedSkip, failed
 }
 
 // applyOneAction performs a single rule action on one message.

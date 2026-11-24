@@ -362,14 +362,28 @@ Over IMAP, `500` when the mirror could not be brought in line with the inbox
 When `autoApplyRules` is on, the deterministic rules run at the sync
 (protected senders shielded, each action journaled with source `rule`), and
 `rulesApplied` counts the messages a rule acted on. Over the Gmail API they run
-on each synced message. Over IMAP they run on the messages that arrive: the
-ones this sync stores for the first time. A message the stored copy already
-held is not one, so turning the option on sorts nothing already in the inbox
-(`POST /api/rules/apply` does), and neither is a message coming back under a
-new number (put back by "Annuler", or by another mail program), which its
-Message-ID gives away. A rule on `body` or `snippet` reads the text of those
-messages from the server first. The listing, and that text, are read with
-PEEK, so syncing never marks a message read.
+on each synced message. Over IMAP they run on the messages that arrive. A
+listed message arrives when this sync stores it for the first time and its
+server received it (INTERNALDATE, to the second) no earlier than the later of
+two moments: the option turned on (stamped when it goes from off to on) and
+the mailbox connected (`mail_accounts.createdAt`). So turning the option on, or
+connecting a mailbox with the option on, sorts nothing already in the inbox
+(`POST /api/rules/apply` does). Nor is a message one whose Message-ID the
+stored copy holds under another number when the sync starts: a message put
+back by "Annuler" when the server did not say its new number, one Mailsorter
+moved out in the last 30 days and another mail program moved back, or one
+another program moved out and back between two syncs. One another program
+moved out, then back after a sync went by, is not recognized: that sync
+dropped it from the copy, and it is judged as a message that arrives if its
+INTERNALDATE allows it. An arrival is marked as it is stored, then judged. One
+whose text could not be read, or on which an action of its rule failed, stays
+marked: the sync answers `500` ("vos règles n'ont pas pu être appliquées à
+tous les nouveaux mails, la prochaine synchronisation réessaiera"), and the
+next syncs judge it again, 3 syncs in all, then give up (logged). A marked
+message that left the inbox meanwhile is not judged, nor counted. A rule on
+`body` or `snippet` reads the text of those messages from the server first.
+The listing, and that text, are read with PEEK, so syncing never marks a
+message read.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -1843,9 +1857,14 @@ IMAP"): a message moved out of the inbox is not there, and one that arrived
 since the last sync not yet. The copy keeps no text, so when an enabled rule
 has a condition on `body` or `snippet`, the text of those messages is read from
 the server, with PEEK (the messages stay unread), the first 256 KiB of each,
-20 messages a FETCH; a message whose text cannot be read is left out, and a
-read the server stops fails the request (`502`). A `label` action is skipped
-there (a message sits in one folder); the rule's other actions run.
+20 messages a FETCH, checking the request's time limit between two FETCHes.
+A message whose text cannot be read is left out, logged, and so is one larger
+than what is read in whose beginning no text part was found (a file before the
+text): judged on an empty text, "does not contain" would match it. A read the
+server stops, or that runs out of time, fails the request (`502`). A `label`
+action is skipped there (a message sits in one folder); the rule's other
+actions run. A mail judged by `apply` is no longer marked for the sync (see
+`POST /api/emails/sync`).
 
 A rule has the shape:
 
@@ -1984,7 +2003,11 @@ it: it runs the same matching function as `POST /api/rules/apply`.
 ```
 `samples` is capped server-side. When the user has no rules, `willApply` is `0`
 and the arrays are empty. It does not model the protected senders: `willApply`
-is what `apply` would at most act on. Errors as for `POST /api/rules/apply`.
+is what `apply` would at most act on. Over IMAP it leaves out the `label`
+actions, and does not count a message whose rule would only label it (that
+rule still wins it: it does not fall through to the next one); and it opens
+the mailbox only when a rule reads the text, the rest being in the stored
+copy. Errors as for `POST /api/rules/apply`.
 
 ### Reorder the ruleset
 

@@ -16,10 +16,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
@@ -229,14 +231,14 @@ func TestAcceptance_AutoRulesLeaveAMailMovedBackElsewhere(t *testing.T) {
 	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
 	moi.setAutoApplyRules(true)
 
-	moi.receive(shopOrder)
+	moi.arrive(shopOrder)
 	moi.sync()
 	moi.requireOnServer(serverArchive, shopOrder.Subject, "la règle vient de l'archiver à la synchronisation qui l'a reçu")
 
 	moi.movedFromElsewhere(serverArchive, shopOrder.Subject, serverInbox)
 	moi.requireOnServer(serverInbox, shopOrder.Subject, "un autre logiciel vient de le remettre dans la boîte de réception")
 	moi.sync()
-	moi.receive(shopSale)
+	moi.arrive(shopSale)
 	moi.sync()
 
 	why := "un autre logiciel l'a remis dans la boîte de réception : la règle ne doit pas le ranger de nouveau"
@@ -247,4 +249,222 @@ func TestAcceptance_AutoRulesLeaveAMailMovedBackElsewhere(t *testing.T) {
 	}
 	moi.expectOnServer(serverArchive, shopSale.Subject)
 	moi.expectNotOnServer(serverInbox, shopSale.Subject, "il est arrivé ensuite, la règle l'archive à la synchronisation qui le reçoit")
+}
+
+// archiveFolderGone deletes the archive folder of this person's server, from
+// another mail program: until it is back (newFolderElsewhere), archiving
+// fails there.
+func archiveFolderGone(moi *imapPerson) {
+	a := moi.app
+	a.t.Helper()
+	c := moi.otherProgram()
+	defer c.Close()
+	if err := c.Delete(serverArchive).Wait(); err != nil {
+		a.fatalf("suppression du dossier %s du serveur IMAP de %s : %v", serverArchive, moi.email, err)
+	}
+}
+
+// A sync whose rules could not range the mails that arrived (the archive is
+// refused) answers an error, and the next sync judges them again, once the
+// archive is back. A mail the person put away by hand in between is not
+// judged, nor counted.
+func TestAcceptance_AutoRulesJudgeAgainWhatTheyCouldNotRange(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+	moi.setAutoApplyRules(true)
+	archiveFolderGone(moi)
+
+	uids := moi.arrive(shopOrder, shopSale)
+	if code, out := moi.syncAnswer(); code == http.StatusOK {
+		app.failf("la synchronisation de %s, dont les règles n'ont pas pu archiver les mails arrivés, devrait répondre une erreur, elle a répondu 200 : %v", moi.email, out)
+	}
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	moi.expectShows(uids[0], shopOrder.Subject)
+
+	// Put in the trash by hand before the next sync.
+	moi.act(uids[1], "delete")
+	moi.newFolderElsewhere(serverArchive)
+
+	code, out := moi.syncAnswer()
+	if code != http.StatusOK {
+		app.fatalf("la synchronisation suivante de %s, l'archive revenue, devrait répondre 200, elle a répondu %d : %v", moi.email, code, out)
+	}
+	if n := app.number(out, "rulesApplied"); n != 1 {
+		app.failf("la synchronisation suivante de %s devrait compter 1 mail rangé par les règles (celui mis à la corbeille à la main n'est plus à juger), elle en compte %d", moi.email, n)
+	}
+	moi.expectOnServer(serverArchive, shopOrder.Subject)
+	moi.expectNotOnServer(serverInbox, shopOrder.Subject, "la synchronisation suivante l'a archivé")
+	if _, ok := ruleLineFor(moi, uids[0], "archive"); !ok {
+		app.failf("l'historique de %s devrait noter que la règle a archivé le mail %q à la synchronisation suivante : lignes %s", moi.email, shopOrder.Subject, describeHistory(moi.historyLinesOf(uids[0])))
+	}
+	moi.expectOnServer(serverTrash, shopSale.Subject)
+	moi.expectNotOnServer(serverArchive, shopSale.Subject, "tu l'as mis à la corbeille avant la synchronisation suivante")
+}
+
+// A mail its rule cannot range sync after sync is given up after maxRuleTries
+// syncs: the next ones answer 200, and leave it where it is, even once the
+// archive is back.
+func TestAcceptance_AutoRulesGiveUpAfterTries(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+	moi.setAutoApplyRules(true)
+	archiveFolderGone(moi)
+
+	uids := moi.arrive(shopOrder)
+	for i := 1; i <= maxRuleTries; i++ {
+		if code, out := moi.syncAnswer(); code == http.StatusOK {
+			app.failf("la synchronisation n°%d de %s, la règle échouant encore, devrait répondre une erreur, elle a répondu 200 : %v", i, moi.email, out)
+		}
+	}
+	moi.sync()
+	moi.newFolderElsewhere(serverArchive)
+	moi.sync()
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	moi.expectShows(uids[0], shopOrder.Subject)
+}
+
+// A mail the copy holds, which another mail program moves out and back
+// between two syncs: back in the inbox under a new number, it is not a mail
+// that arrives, even though Mailsorter never moved it, and the rules leave it
+// there; a mail that does arrive is ranged at the same sync.
+func TestAcceptance_AutoRulesLeaveAMailTheCopyHoldsUnderAnotherNumber(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	moi.setAutoApplyRules(true)
+	moi.arrive(shopOrder)
+	moi.sync()
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+
+	moi.movedFromElsewhere(serverInbox, shopOrder.Subject, serverTrash)
+	moi.movedFromElsewhere(serverTrash, shopOrder.Subject, serverInbox)
+	moi.arrive(shopSale)
+	moi.sync()
+
+	why := "la copie le tenait sous un autre numéro : ce n'est pas un mail qui arrive"
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	moi.expectNotOnServer(serverArchive, shopOrder.Subject, why)
+	if !moi.shows(shopOrder.Subject) {
+		app.failf("la boîte de réception de %s devrait montrer le mail %q (%s), elle ne le montre pas", moi.email, shopOrder.Subject, why)
+	}
+	moi.expectOnServer(serverArchive, shopSale.Subject)
+}
+
+// Over IMAP the preview reads the stored copy, without opening the mailbox
+// unless a rule reads the text: with the server out of reach it still
+// answers. It leaves out what a rule cannot do there (label), and a mail
+// whose rule would only label it.
+func TestAcceptance_IMAPPreviewReadsTheCopyAndLeavesOutTheLabel(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	moi.rule("Étiqueter la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com",
+		models.RuleAction{Type: rules.ActionLabel, LabelName: "Boutique"})
+	moi.rule("Lire et étiqueter les voyages", 2, rules.FieldFrom, rules.OpContains, "voyages.fr",
+		models.RuleAction{Type: rules.ActionLabel, LabelName: "Voyages"}, models.RuleAction{Type: rules.ActionMarkRead})
+
+	// The mailbox no longer answers: a port nothing listens on.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		app.fatalf("réservation d'un port : %v", err)
+	}
+	dead := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.MailAccounts().UpdateOne(ctx, bson.M{"userId": moi.email}, bson.M{"$set": bson.M{"port": dead}}); err != nil {
+		app.fatalf("boîte de %s rebranchée sur un port mort : %v", moi.email, err)
+	}
+
+	got := moi.previewRules()
+	if got.code != http.StatusOK {
+		app.fatalf("l'aperçu de %s, sans règle sur le texte, devrait se lire dans la copie sans ouvrir la boîte et répondre 200, il a répondu %s", moi.email, got)
+	}
+	subjects, announced := previewedMails(app, got)
+	if len(subjects) != 1 || subjects[0] != travelOffer.Subject || announced != 1 {
+		app.failf("l'aperçu de %s devrait montrer le seul mail %q (la règle de la boutique ne ferait qu'étiqueter), il montre %s et en annonce %d", moi.email, travelOffer.Subject, quotedList(subjects), announced)
+	}
+	samples, _ := got.body["samples"].([]interface{})
+	for _, v := range samples {
+		item, _ := v.(map[string]interface{})
+		acts, _ := item["actions"].([]interface{})
+		for _, a := range acts {
+			if act, _ := a.(map[string]interface{}); act["type"] == rules.ActionLabel {
+				app.failf("l'aperçu de %s montre l'action « Étiqueter » sur %v : elle ne s'applique pas sur une boîte IMAP", moi.email, item["subject"])
+			}
+		}
+		if item["action"] != rules.ActionMarkRead {
+			app.failf("l'aperçu de %s devrait annoncer « Marquer comme lu » pour %v, il annonce %v", moi.email, item["subject"], item["action"])
+		}
+	}
+
+	// A rule on the text needs the mailbox: then the preview cannot answer.
+	moi.rule("Remboursements", 3, rules.FieldBody, rules.OpContains, "remboursement", models.RuleAction{Type: rules.ActionArchive})
+	if got := moi.previewRules(); got.code == http.StatusOK {
+		app.failf("l'aperçu de %s, avec une règle sur le texte et la boîte injoignable, a répondu 200 : il aurait jugé le texte sans le lire (%v)", moi.email, got.body)
+	}
+}
+
+// A mail larger than what is read of it, whose text comes after a file: its
+// text is not read, so no rule on the text judges it, not even "does not
+// contain", which would range it on a text nobody read. A small mail without
+// the word is ranged.
+func TestAcceptance_RulesDoNotJudgeATextNotRead(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	const subject = "Le fichier d'abord"
+	file := strings.Repeat("QUJDRA==", 2<<15) // 512 KiB of base64, read stops inside it
+	raw := "From: Boutique <info@boutique.com>\r\nTo: " + moi.email + "\r\nSubject: " + subject + "\r\n" +
+		"Message-ID: <fichier-d-abord@scenarios.test>\r\nMIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"sep\"\r\n\r\n" +
+		"--sep\r\nContent-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\n" +
+		"Content-Transfer-Encoding: base64\r\n\r\n" + file + "\r\n" +
+		"--sep\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nVotre facture est jointe.\r\n--sep--\r\n"
+	if _, err := moi.mailbox.Append(serverInbox, bytes.NewReader([]byte(raw)), &imapv2.AppendOptions{Time: time.Now().Add(-time.Hour)}); err != nil {
+		app.fatalf("dépôt du gros mail dans la boîte IMAP de %s : %v", moi.email, err)
+	}
+	moi.receive(shopOrder)
+	moi.sync()
+	moi.rule("Sans remboursement", 1, rules.FieldBody, rules.OpNotContains, "remboursement", models.RuleAction{Type: rules.ActionArchive})
+
+	if got := moi.applyRules(); got.code != http.StatusOK {
+		app.fatalf("« Appliquer mes règles » sur la boîte IMAP de %s a répondu %s", moi.email, got)
+	}
+	moi.expectOnServer(serverInbox, subject)
+	moi.expectNotOnServer(serverArchive, subject, "son texte n'a pas été lu, la règle ne le juge pas")
+	moi.expectOnServer(serverArchive, shopOrder.Subject)
+}
+
+// The option counts from when it is turned on: the stamp moves when it goes
+// from off to on, not when it is saved on again.
+func TestAcceptance_AutoApplyRulesStampedWhenTurnedOn(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	stamp := func() time.Time {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var u models.User
+		if err := app.h.db.Users().FindOne(ctx, bson.M{"email": moi.email}).Decode(&u); err != nil {
+			app.fatalf("lecture du compte de %s : %v", moi.email, err)
+		}
+		return u.AutoApplyRulesSince
+	}
+	if !stamp().IsZero() {
+		app.fatalf("le compte de %s porte une date d'activation avant toute activation", moi.email)
+	}
+	moi.setAutoApplyRules(true)
+	first := stamp()
+	if first.IsZero() {
+		app.fatalf("activer l'option n'a pas noté quand elle l'a été, pour %s", moi.email)
+	}
+	time.Sleep(20 * time.Millisecond)
+	moi.setAutoApplyRules(true)
+	if again := stamp(); !again.Equal(first) {
+		app.failf("enregistrer l'option déjà activée a déplacé sa date d'activation de %v à %v", first, again)
+	}
+	moi.setAutoApplyRules(false)
+	moi.setAutoApplyRules(true)
+	if later := stamp(); !later.After(first) {
+		app.failf("couper puis réactiver l'option devrait noter une nouvelle date d'activation, elle reste %v (avant : %v)", later, first)
+	}
 }

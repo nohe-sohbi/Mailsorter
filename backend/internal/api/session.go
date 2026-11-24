@@ -16,6 +16,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
@@ -180,22 +181,35 @@ func writeTransportError(w http.ResponseWriter) {
 // automatiquement", apply the rules to the mails that arrived.
 //
 // The rules a sync applies on its own judge the mails that ARRIVE, where over
-// the Gmail API they judge every mail listed: a mail this sync stores for the
-// first time, which the copy did not know (see syncRulesFor and
-// rulesOnArrivals). So turning the option on leaves alone the mails already in
+// the Gmail API they judge every mail listed (see syncRules.arrival): a mail
+// this sync stores for the first time, received since the option counts, and
+// not one the copy holds under another number. So turning the option on, or
+// connecting a mailbox with the option on, leaves alone the mails already in
 // the inbox ("Appliquer maintenant" is how those are sorted), and a mail put
-// back by "Annuler" after a rule is not sorted again at the next sync.
+// back by "Annuler" after a rule is not sorted again at the next sync. An
+// arrival is marked (rulesDue) as it is stored, and judged until it is: a sync
+// that could not judge it answers an error, and the next one judges it again.
 func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *mailSession) (synced, total, rulesApplied int, err error) {
 	const folder = string(mailbox.FolderInbox)
 
-	// Read before the listing and before dropStaleInbox, which may drop the
-	// row of a mail that is coming back.
-	auto := h.syncRulesFor(ctx, userEmail)
+	auto := h.syncRulesFor(ctx, userEmail, session.account)
 
 	listedAt := time.Now()
 	emails, err := session.imapc.List(ctx, folder, imapListLimit)
 	if err != nil {
 		return 0, 0, 0, err
+	}
+	// Before dropStaleInbox, which may drop the row of a mail that left and
+	// is coming back.
+	comingBack := map[string]bool{}
+	if auto.on() {
+		comingBack, err = h.comingBack(ctx, userEmail, emails)
+		if err != nil {
+			// Not told apart, a mail the user put back could be sorted
+			// again: none of this sync's mails is marked for the rules.
+			log.Printf("imap sync: read which listed mails of %s the copy holds under another number, no mail of this sync is marked for the rules: %v", userEmail, err)
+			auto.markNone = true
+		}
 	}
 	// The listing reads the newest messages only; which of the older ones
 	// stored are still in the inbox, what another mail program changed on
@@ -220,28 +234,23 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	// mirror. So each failure is logged with what it was, the others are still
 	// stored, and the sync answers an error rather than a success.
 	failed := 0
-	var arrived []models.Email
 	for _, email := range emails {
 		if !present[email.MessageID] {
 			// Gone between the listing and the UID search: storing it would
 			// list it again until the next sync.
 			continue
 		}
-		inserted, sErr := h.storeInboxMessage(ctx, userEmail, email)
-		if sErr != nil {
+		// Marked only if the row is new: a mail the copy knew is not one.
+		if sErr := h.storeInboxMessage(ctx, userEmail, email, auto.arrival(email, comingBack)); sErr != nil {
 			failed++
 			log.Printf("imap sync: message uid %s in %s not stored: %v", email.MessageID, folder, sErr)
 			continue
 		}
 		synced++
-		if inserted && auto.on() && !auto.cameBack[email.HeaderMessageID] {
-			arrived = append(arrived, email)
-		}
 	}
 	// Right after they are stored, before the phases that may lose the
-	// connection: a mail judged at no sync is never judged, the next one
-	// knowing it already.
-	rulesApplied = h.rulesOnArrivals(ctx, userEmail, session, auto, arrived)
+	// connection.
+	rulesApplied, rulesErr := h.rulesOnArrivals(ctx, userEmail, session, auto)
 
 	// Each phase that reads by halves may open the connection again a few
 	// times, when a FETCH answer it cannot parse closes it
@@ -255,7 +264,7 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	if failed > 0 {
 		return synced, len(emails), rulesApplied, fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
 	}
-	for _, err := range []error{dropErr, starredErr, stateErr, structureErr} {
+	for _, err := range []error{dropErr, starredErr, stateErr, structureErr, rulesErr} {
 		if err != nil {
 			return synced, len(emails), rulesApplied, err
 		}
@@ -267,110 +276,266 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 const imapListLimit = 100
 
 // syncRules is what a sync needs to apply the rules on its own: the enabled
-// rules, the protected senders, and the Message-ID of each mail that may come
-// back into the inbox under a number the copy does not know (cameBackIDs).
-// Zero when the option is off, or the user has no enabled rule.
+// rules and the protected senders, zero when the option is off or the user
+// has no enabled rule, and since which date a mail is an arrival.
 type syncRules struct {
 	ruleset   []models.SortingRule
 	protected []string
-	cameBack  map[string]bool
+	// since is the later of when the option was turned on and when the
+	// mailbox was connected, to the second (INTERNALDATE has no finer): a
+	// mail received before was already in the inbox.
+	since time.Time
+	// markNone: this sync cannot tell an arrival from a mail coming back, so
+	// it marks none (the ones marked before are still judged).
+	markNone bool
 }
 
 // on says whether the rules run at this sync.
 func (r syncRules) on() bool { return len(r.ruleset) > 0 }
 
+// arrival says whether a listed mail is one the rules judge on their own, if
+// this sync stores it for the first time (storeInboxMessage marks a new row
+// only): received (INTERNALDATE) since the option counts, and not a mail the
+// copy holds under another number (comingBack).
+func (r syncRules) arrival(email models.Email, comingBack map[string]bool) bool {
+	return r.on() && !r.markNone && !email.ReceivedDate.Before(r.since) && !comingBack[email.MessageID]
+}
+
 // syncRulesFor reads what a sync of this user needs to apply the rules on its
-// own, when the option "appliquer mes règles automatiquement" is on. When it
-// cannot tell a mail that comes back from one that arrives, the rules do not
-// run at this sync: sorting again a mail the user just put back is worse than
-// leaving a new one for "Appliquer maintenant".
-func (h *Handler) syncRulesFor(ctx context.Context, userEmail string) syncRules {
-	if !h.autoApplyRulesEnabled(ctx, userEmail) {
+// own, when the option "appliquer mes règles automatiquement" is on. A user
+// row that cannot be read runs no rule at this sync: the mails it does not
+// mark are left for "Appliquer maintenant", and the ones marked before wait
+// for the next sync.
+func (h *Handler) syncRulesFor(ctx context.Context, userEmail string, account models.MailAccount) syncRules {
+	var user struct {
+		AutoApplyRules      bool      `bson:"autoApplyRules"`
+		AutoApplyRulesSince time.Time `bson:"autoApplyRulesSince"`
+	}
+	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail},
+		options.FindOne().SetProjection(bson.M{"autoApplyRules": 1, "autoApplyRulesSince": 1}),
+	).Decode(&user); err != nil {
+		if !errors.Is(err, mongo.ErrNoDocuments) {
+			log.Printf("imap sync: read whether the rules of %s run at the sync, they do not this time: %v", userEmail, err)
+		}
+		return syncRules{}
+	}
+	if !user.AutoApplyRules {
 		return syncRules{}
 	}
 	ruleset := h.enabledRules(ctx, userEmail)
 	if len(ruleset) == 0 {
 		return syncRules{}
 	}
-	cameBack, err := h.cameBackIDs(ctx, userEmail)
-	if err != nil {
-		log.Printf("imap sync: read which mails of %s may come back, the rules do not run at this sync: %v", userEmail, err)
-		return syncRules{}
-	}
-	return syncRules{ruleset: ruleset, protected: h.protectedValues(ctx, userEmail), cameBack: cameBack}
+	return syncRules{ruleset: ruleset, protected: h.protectedValues(ctx, userEmail), since: arrivalsSince(user.AutoApplyRulesSince, account.CreatedAt)}
 }
 
-// cameBackIDs is the Message-ID of each stored inbox message Mailsorter moved
-// out (kept for "Annuler", leftInbox) or put back (restoredFrom). A mail the
-// inbox lists under a number the copy does not know, carrying one of them, is
-// not a mail that arrives: it is one coming back, put back by "Annuler" when
+// arrivalsSince is from when a mail is an arrival: the later of when the
+// option was turned on and when the mailbox was connected (an option turned on
+// before Mailsorter stamped it is zero: the connection alone counts), to the
+// second, since INTERNALDATE has no finer.
+func arrivalsSince(optionOn, connected time.Time) time.Time {
+	since := optionOn
+	if connected.After(since) {
+		since = connected
+	}
+	return since.Truncate(time.Second)
+}
+
+// comingBack is, among the listed mails, the ones whose Message-ID the copy of
+// the inbox holds under another number when the sync starts, whatever the
+// state of that row: still in the inbox, moved out by Mailsorter (kept 30
+// days for "Annuler"), put back by "Annuler" (restoredFrom), or moved out by
+// another mail program since the last sync (its row goes at this sync). Such a
+// mail is not one that arrives: it is coming back, put back by "Annuler" when
 // the server did not say its new number, or moved back by another mail
-// program. The rules leave it where the user put it.
-func (h *Handler) cameBackIDs(ctx context.Context, userEmail string) (map[string]bool, error) {
+// program. A mail moved out by another program, then back after a sync went
+// by, is not recognized: that sync dropped its row.
+func (h *Handler) comingBack(ctx context.Context, userEmail string, listed []models.Email) (map[string]bool, error) {
+	out := map[string]bool{}
+	byHeader := map[string][]string{}
+	for _, e := range listed {
+		if e.HeaderMessageID != "" {
+			byHeader[e.HeaderMessageID] = append(byHeader[e.HeaderMessageID], e.MessageID)
+		}
+	}
+	if len(byHeader) == 0 {
+		return out, nil
+	}
+	ids := make([]string, 0, len(byHeader))
+	for id := range byHeader {
+		ids = append(ids, id)
+	}
 	cur, err := h.db.Emails().Find(ctx, bson.M{
 		"userId":          userEmail,
 		"folder":          string(mailbox.FolderInbox),
-		"headerMessageId": bson.M{"$nin": bson.A{nil, ""}},
-		"$or":             []bson.M{{"leftInbox": true}, {"restoredFrom": bson.M{"$exists": true}}},
-	}, options.Find().SetProjection(bson.M{"headerMessageId": 1}))
+		"headerMessageId": bson.M{"$in": ids},
+	}, options.Find().SetProjection(bson.M{"messageId": 1, "headerMessageId": 1}))
 	if err != nil {
 		return nil, err
 	}
 	var rows []struct {
+		MessageID       string `bson:"messageId"`
 		HeaderMessageID string `bson:"headerMessageId"`
 	}
 	if err := cur.All(ctx, &rows); err != nil {
 		return nil, err
 	}
-	out := make(map[string]bool, len(rows))
 	for _, r := range rows {
-		out[r.HeaderMessageID] = true
+		for _, uid := range byHeader[r.HeaderMessageID] {
+			if uid != r.MessageID {
+				out[uid] = true
+			}
+		}
 	}
 	return out, nil
 }
 
-// rulesOnArrivals applies the rules to the mails a sync stored for the first
-// time and that arrived (see syncInboxIMAP), and says how many a rule acted
-// on. Each action is written in the history like those of "Appliquer
-// maintenant" (runRules). A rule on the text reads it from the server first;
-// when that read fails, the rules judge none of them at this sync, and it is
-// logged: "Appliquer maintenant" still sorts them.
-func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session *mailSession, auto syncRules, arrived []models.Email) int {
-	if !auto.on() || len(arrived) == 0 {
-		return 0
+// errRulesNotApplied is a sync that could not judge every mail marked for the
+// rules (their text could not be read, an action failed): they stay marked,
+// and the next sync judges them again. Its text is what the user is told.
+var errRulesNotApplied = errors.New("vos règles n'ont pas pu être appliquées à tous les nouveaux mails, la prochaine synchronisation réessaiera")
+
+// maxRuleTries is how many syncs judge a marked mail before giving up on it
+// (logged): a failure that does not go away (a folder the server refuses)
+// must not fail every sync.
+const maxRuleTries = 3
+
+// rulesOnArrivals applies the rules to the mails marked for them (rulesDue):
+// the arrivals of this sync and of the syncs before that could not judge
+// them, still in the inbox and received since the option counts. It says how
+// many a rule acted on. Each action is written in the history like those of
+// "Appliquer maintenant" (runRules). A mail judged, or whose text cannot be
+// read (NotReached, unparseable: logged by withTexts), is unmarked; one whose
+// text read stopped or whose rule failed stays marked for the next sync,
+// maxRuleTries times at most, and the sync answers errRulesNotApplied.
+func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session *mailSession, auto syncRules) (int, error) {
+	if !auto.on() {
+		return 0, nil
 	}
+	due, claim, err := h.claimRulesDue(ctx, userEmail, auto.since)
+	if err != nil {
+		log.Printf("imap sync: take the mails of %s marked for the rules: %v", userEmail, err)
+		return 0, errRulesNotApplied
+	}
+	if len(due) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(due))
+	for _, e := range due {
+		ids = append(ids, e.MessageID)
+	}
+	judged := due
 	if rules.ReadsText(auto.ruleset) {
-		withText, err := h.withTexts(ctx, userEmail, session, arrived)
+		withText, err := h.withTexts(ctx, userEmail, session, due)
 		if err != nil {
-			log.Printf("imap sync: the text of %d mails that arrived for %s could not be read, no rule judged them: %v", len(arrived), userEmail, err)
-			return 0
+			log.Printf("imap sync: the text of %d mails of %s marked for the rules could not be read, judged at the next sync: %v", len(due), userEmail, err)
+			h.releaseRulesDue(ctx, userEmail, claim, nil, ids)
+			return 0, errRulesNotApplied
 		}
-		arrived = withText
+		judged = withText
 	}
-	return h.runRules(ctx, session, userEmail, arrived, auto.ruleset, auto.protected).applied
+	done := h.runRules(ctx, session, userEmail, judged, auto.ruleset, auto.protected)
+	failed := make(map[string]bool, len(done.failed))
+	for _, id := range done.failed {
+		failed[id] = true
+	}
+	var ok []string
+	for _, id := range ids {
+		if !failed[id] {
+			ok = append(ok, id)
+		}
+	}
+	h.releaseRulesDue(ctx, userEmail, claim, ok, done.failed)
+	if len(done.failed) > 0 {
+		return done.applied, errRulesNotApplied
+	}
+	return done.applied, nil
+}
+
+// claimRulesDue takes the mails this sync judges: marked for the rules, still
+// in the inbox, received since the option counts, and not held by another
+// sync running at the same time (a claim older than moveInFlight is one that
+// never ended). Of two syncs at once, one judges each mail.
+func (h *Handler) claimRulesDue(ctx context.Context, userEmail string, since time.Time) ([]models.Email, string, error) {
+	folder := string(mailbox.FolderInbox)
+	claim := primitive.NewObjectID().Hex()
+	now := time.Now()
+	if _, err := h.db.Emails().UpdateMany(ctx, bson.M{
+		"userId": userEmail, "folder": folder, "rulesDue": true, "leftInbox": notLeftInbox,
+		"receivedDate": bson.M{"$gte": since},
+		"$or": []bson.M{
+			{"rulesClaimAt": bson.M{"$exists": false}},
+			{"rulesClaimAt": bson.M{"$lt": now.Add(-moveInFlight)}},
+		},
+	}, bson.M{"$set": bson.M{"rulesClaim": claim, "rulesClaimAt": now}}); err != nil {
+		return nil, "", err
+	}
+	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim},
+		options.Find().SetSort(bson.D{{Key: "receivedDate", Value: -1}}))
+	if err != nil {
+		return nil, "", err
+	}
+	due := make([]models.Email, 0)
+	if err := cur.All(ctx, &due); err != nil {
+		return nil, "", err
+	}
+	return due, claim, nil
+}
+
+// releaseRulesDue ends a claim: the mails judged are unmarked; the ones that
+// failed stay marked for the next sync, with one try more, and are unmarked
+// once they reach maxRuleTries. A write that fails is logged: the mail is then
+// judged once more, or its claim expires (moveInFlight).
+func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, judged, failed []string) {
+	folder := string(mailbox.FolderInbox)
+	if len(judged) > 0 {
+		if _, err := h.db.Emails().UpdateMany(ctx,
+			bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim, "messageId": bson.M{"$in": judged}},
+			bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesClaim": "", "rulesClaimAt": ""}},
+		); err != nil {
+			log.Printf("imap sync: %d mails of %s judged by the rules, not unmarked: %v", len(judged), userEmail, err)
+		}
+	}
+	if len(failed) == 0 {
+		return
+	}
+	if _, err := h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim, "messageId": bson.M{"$in": failed}},
+		bson.M{"$unset": bson.M{"rulesClaim": "", "rulesClaimAt": ""}, "$inc": bson.M{"rulesTries": 1}},
+	); err != nil {
+		log.Printf("imap sync: %d mails of %s the rules could not judge, not released for the next sync: %v", len(failed), userEmail, err)
+		return
+	}
+	res, err := h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": failed}, "rulesTries": bson.M{"$gte": maxRuleTries}},
+		bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": ""}},
+	)
+	switch {
+	case err != nil:
+		log.Printf("imap sync: give up the rules on mails of %s after %d tries: %v", userEmail, maxRuleTries, err)
+	case res.ModifiedCount > 0:
+		log.Printf("imap sync: the rules gave up on %d mails of %s after %d tries (among %v)", res.ModifiedCount, userEmail, maxRuleTries, failed)
+	}
 }
 
 // storeInboxMessage writes a message the sync read in full (its envelope)
-// into the stored copy of the inbox, and says whether the copy did not hold
-// it until now.
-func (h *Handler) storeInboxMessage(ctx context.Context, userEmail string, email models.Email) (inserted bool, err error) {
+// into the stored copy of the inbox. rulesDue marks the row for the rules,
+// if the copy did not hold it until now (see syncRules.arrival).
+func (h *Handler) storeInboxMessage(ctx context.Context, userEmail string, email models.Email, rulesDue bool) error {
 	email.UserID = userEmail
 	// The folder is stored with the message because on IMAP it is half of
 	// its identity: without it the UID names nothing in particular.
 	email.Folder = string(mailbox.FolderInbox)
-	update, err := inboxUpsert(email)
+	update, err := inboxUpsert(email, rulesDue)
 	if err != nil {
-		return false, err
+		return err
 	}
-	res, err := h.db.Emails().UpdateOne(ctx,
+	_, err = h.db.Emails().UpdateOne(ctx,
 		bson.M{"messageId": email.MessageID, "userId": userEmail},
 		update,
 		options.Update().SetUpsert(true),
 	)
-	if err != nil {
-		return false, err
-	}
-	return res.UpsertedCount > 0, nil
+	return err
 }
 
 // inboxUpsert is the write that stores a message read by a sync.
@@ -379,8 +544,9 @@ func (h *Handler) storeInboxMessage(ctx context.Context, userEmail string, email
 // ($setOnInsert). On a row already stored they are refreshInboxState's,
 // which leaves alone a row Mailsorter changed after the flags were read
 // (flagsAt): written here, a star put on during the sync would be taken off
-// again by a listing read just before it, until the next sync.
-func inboxUpsert(email models.Email) (bson.M, error) {
+// again by a listing read just before it, until the next sync. So is the mark
+// for the rules (rulesDue): a mail the copy already holds is not an arrival.
+func inboxUpsert(email models.Email, rulesDue bool) (bson.M, error) {
 	raw, err := bson.Marshal(email)
 	if err != nil {
 		return nil, fmt.Errorf("encode message %s: %w", email.MessageID, err)
@@ -391,9 +557,13 @@ func inboxUpsert(email models.Email) (bson.M, error) {
 	}
 	delete(set, "isRead")
 	delete(set, "isStarred")
+	onInsert := bson.M{"isRead": email.IsRead, "isStarred": email.IsStarred}
+	if rulesDue {
+		onInsert["rulesDue"] = true
+	}
 	return bson.M{
 		"$set":         set,
-		"$setOnInsert": bson.M{"isRead": email.IsRead, "isStarred": email.IsStarred},
+		"$setOnInsert": onInsert,
 		// syncedAt tells a sync running at the same time that this row was
 		// just written from a fresher listing than its own.
 		"$currentDate": bson.M{"syncedAt": true},
@@ -510,7 +680,7 @@ func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string,
 	}
 	failed := false
 	for _, email := range got.Read {
-		if _, sErr := h.storeInboxMessage(ctx, userEmail, email); sErr != nil {
+		if sErr := h.storeInboxMessage(ctx, userEmail, email, false); sErr != nil {
 			log.Printf("imap sync: starred message uid %s of %s not stored: %v", email.MessageID, userEmail, sErr)
 			failed = true
 		}

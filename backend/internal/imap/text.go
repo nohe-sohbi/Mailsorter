@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -29,15 +30,25 @@ type Text struct {
 	Body string
 	// Snippet is the one-line preview the list would show, as Fetch makes it.
 	Snippet string
+	// NotReached is a message larger than what is read, in whose beginning
+	// no text part was found: a file before the text, for instance. Its text
+	// was not read, and Body is empty for that reason, not because the
+	// message has none: a rule must not judge it ("does not contain" would
+	// match a text nobody read).
+	NotReached bool
 }
 
 // Texts reads the text of these messages of folder, by UID, in one FETCH of
 // the first textBytes of each, peeked: the messages stay unread. A UID the
-// folder no longer holds is simply not in the answer.
+// folder no longer holds is simply not in the answer. A context already done
+// reads nothing: a caller reading batch after batch stops at the next one.
 //
 // A message go-imap cannot read fails the whole FETCH and closes the
 // connection with it: read a batch through ReadInHalves.
-func (c *Client) Texts(folder string, uids []string) (map[string]Text, error) {
+func (c *Client) Texts(ctx context.Context, folder string, uids []string) (map[string]Text, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("imap: read the text of %d messages in %q: %w", len(uids), folder, err)
+	}
 	out := make(map[string]Text, len(uids))
 	if len(uids) == 0 {
 		return out, nil
@@ -56,7 +67,8 @@ func (c *Client) Texts(folder string, uids []string) (map[string]Text, error) {
 		return nil, err
 	}
 	msgs, err := c.c.Fetch(set, &imapv2.FetchOptions{
-		UID: true,
+		UID:        true,
+		RFC822Size: true,
 		BodySection: []*imapv2.FetchItemBodySection{{
 			// Peek, as the listing does: BODY[] without it sets \Seen on
 			// every message read, and applying the rules would mark the
@@ -74,12 +86,17 @@ func (c *Client) Texts(folder string, uids []string) (map[string]Text, error) {
 		if !asked[m.UID] || len(m.BodySection) == 0 {
 			continue
 		}
+		uid := strconv.FormatUint(uint64(m.UID), 10)
 		plain, html := readBodies(wholeMessage(m), true)
+		if plain == "" && html == "" && m.RFC822Size > textBytes {
+			out[uid] = Text{NotReached: true}
+			continue
+		}
 		body := plain
 		if body == "" {
 			body = stripTags(html)
 		}
-		out[strconv.FormatUint(uint64(m.UID), 10)] = Text{Body: body, Snippet: snippet(plain, html)}
+		out[uid] = Text{Body: body, Snippet: snippet(plain, html)}
 	}
 	return out, nil
 }

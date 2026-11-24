@@ -83,3 +83,44 @@ func TestReadsText(t *testing.T) {
 		})
 	}
 }
+
+// Over IMAP a rule cannot label: the preview leaves the label out of what a
+// rule would do, and does not count a mail whose rule would only label it.
+// That mail stays its rule's, as applying it would: it does not fall through
+// to the next rule.
+func TestPreviewWithout(t *testing.T) {
+	newsletters := models.RuleAction{Type: ActionLabel, LabelName: "Newsletters"}
+	archive := models.RuleAction{Type: ActionArchive}
+	star := models.RuleAction{Type: ActionStar}
+	ruleset := []models.SortingRule{
+		{Name: "Étiqueter Acme", Enabled: true, MatchAll: true, Actions: []models.RuleAction{newsletters},
+			Conditions: []models.RuleCondition{{Field: FieldFrom, Operator: OpContains, Value: "acme"}}},
+		{Name: "Ranger la boutique", Enabled: true, MatchAll: true, Actions: []models.RuleAction{newsletters, star, archive},
+			Conditions: []models.RuleCondition{{Field: FieldFrom, Operator: OpContains, Value: "boutique"}}},
+		{Name: "Tout le reste", Enabled: true, MatchAll: true, Actions: []models.RuleAction{archive},
+			Conditions: []models.RuleCondition{{Field: FieldFrom, Operator: OpContains, Value: "@"}}},
+	}
+	emails := []models.Email{
+		{MessageID: "1", From: "news@acme.com", Subject: "Acme"},
+		{MessageID: "2", From: "info@boutique.com", Subject: "Boutique"},
+	}
+
+	items, hits := PreviewWithout(emails, ruleset, ActionLabel)
+	if len(items) != 1 || items[0].MessageID != "2" {
+		t.Fatalf("PreviewWithout(label) items = %+v, want only message 2 (message 1's rule only labels, and stays its rule's)", items)
+	}
+	want := []models.RuleAction{star, archive}
+	if !reflect.DeepEqual(items[0].Actions, want) || items[0].Action != ActionStar || items[0].LabelName != "" {
+		t.Errorf("PreviewWithout(label) item = %+v, want actions %v, primary star, no label", items[0], want)
+	}
+	if len(hits) != 1 || hits[0].RuleName != "Ranger la boutique" || hits[0].Matched != 1 || hits[0].Action != ActionStar || !reflect.DeepEqual(hits[0].Actions, want) {
+		t.Errorf("PreviewWithout(label) hits = %+v, want one tally for \"Ranger la boutique\", 1 mail, star then archive", hits)
+	}
+
+	// Nothing skipped: the preview as Preview gives it.
+	all, allHits := PreviewWithout(emails, ruleset)
+	plain, plainHits := Preview(emails, ruleset)
+	if !reflect.DeepEqual(all, plain) || !reflect.DeepEqual(allHits, plainHits) {
+		t.Errorf("PreviewWithout() = %+v %+v, want Preview's %+v %+v", all, allHits, plain, plainHits)
+	}
+}

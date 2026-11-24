@@ -337,9 +337,14 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
   );
 }
 
-function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplicate, onMove, reordering }) {
+// `labelsOff` is a mailbox where a rule cannot label (IMAP): a rule that
+// labels (an imported one, or one written on Gmail) says so, since its label
+// does nothing there.
+function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplicate, onMove, reordering, labelsOff }) {
   const actions = effectiveActions(rule);
   const meta = actionMeta(actions[0].type);
+  const labelLost = labelsOff && actions.some((a) => a.type === 'label');
+  const onlyLabels = labelLost && actions.every((a) => a.type === 'label');
   return (
     <div className="card flex items-start justify-between gap-4 p-5">
       <div className="min-w-0">
@@ -377,6 +382,13 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
             </span>
           ))}
         </p>
+        {labelLost && (
+          <p className="mt-1 text-xs font-medium text-caution-700">
+            {onlyLabels
+              ? "Sur cette boîte IMAP, cette règle ne fait rien : l'étiquette ne s'y applique pas."
+              : "Sur cette boîte IMAP, l'étiquette ne s'applique pas. Les autres actions, si."}
+          </p>
+        )}
         {rule.appliedCount > 0 && (
           <p className="mt-1 text-xs text-muted">Appliquée {rule.appliedCount} fois</p>
         )}
@@ -456,7 +468,7 @@ function Rules() {
   // folder. The quota is mentioned only where there is one. While the mailbox
   // is not known, the page describes what a rule says, never that it sorts by
   // itself (`rulesRun`).
-  const { known, fullFeatures } = useMailbox();
+  const { known, isImap, fullFeatures } = useMailbox();
   const rulesRun = known;
   const labelsOk = fullFeatures;
   const { selfHosted } = useInstance();
@@ -776,9 +788,13 @@ function Rules() {
               <ul className="mt-3 space-y-1.5 border-t border-hairline pt-3">
                 {(preview.samples || []).map((s, i) => (
                   <li key={i} className="flex items-center gap-2 text-xs text-ink-500">
-                    {effectiveActions(s).map((a, j) => (
-                      <span key={j} className={cn('chip shrink-0', actionMeta(a.type).chip)}>{actionMeta(a.type).label}</span>
-                    ))}
+                    {/* The server leaves the label out over IMAP already; the
+                        screen does not show it either way. */}
+                    {effectiveActions(s)
+                      .filter((a) => labelsOk || a.type !== 'label')
+                      .map((a, j) => (
+                        <span key={j} className={cn('chip shrink-0', actionMeta(a.type).chip)}>{actionMeta(a.type).label}</span>
+                      ))}
                     <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> · {s.from}</span>
                   </li>
                 ))}
@@ -864,6 +880,7 @@ function Rules() {
                 onDelete={() => remove(rule)}
                 onDuplicate={() => duplicate(rule)}
                 onMove={(delta) => move(rules.indexOf(rule), delta)}
+                labelsOff={isImap}
               />
             )
           )}

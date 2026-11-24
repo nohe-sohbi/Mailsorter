@@ -573,7 +573,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 
 		if len(autoRules) > 0 {
 			if match := rules.FirstMatch(email, autoRules); match != nil {
-				appliedActs, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
+				appliedActs, _, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
 				if len(appliedActs) > 0 {
 					rulesApplied++
 					byRule[match.Name]++

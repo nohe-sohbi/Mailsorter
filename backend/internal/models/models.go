@@ -20,6 +20,12 @@ type User struct {
 	// automatically over every freshly synced inbox: no extra click, no AI, no
 	// quota. Off by default so syncing never mutates Gmail unexpectedly.
 	AutoApplyRules bool `json:"autoApplyRules" bson:"autoApplyRules,omitempty"`
+	// AutoApplyRulesSince is when AutoApplyRules was last turned on (from
+	// off). Over IMAP a sync applies the rules on its own only to the mails
+	// received after it and after the mailbox was connected: the ones already
+	// in the inbox are "Appliquer maintenant"'s. Zero when it was turned on
+	// before Mailsorter stamped it.
+	AutoApplyRulesSince time.Time `json:"-" bson:"autoApplyRulesSince,omitempty"`
 	// AutoSyncEnabled, when true, lets a background scheduler periodically sync the
 	// user's inbox (and, if AutoApplyRules is on, run their rules) with no manual
 	// click, the hands-free path to "Inbox Zero, forever". LastAutoSyncAt stamps

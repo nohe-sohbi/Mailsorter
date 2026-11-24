@@ -321,6 +321,24 @@ func Preview(emails []models.Email, ruleset []models.SortingRule) ([]PreviewItem
 // PreviewAt is Preview evaluated at reference time `now`, so temporal rules can
 // be forecast deterministically.
 func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Time) ([]PreviewItem, []RuleHits) {
+	return previewAt(emails, ruleset, now, nil)
+}
+
+// PreviewWithout is Preview for a mailbox that cannot perform some action
+// types: a rule cannot label over IMAP, where a message sits in one folder.
+// Those actions are left out of each item and of the tally, and an email
+// whose rule is left with nothing to do is not counted: applying the rule
+// changes nothing there. It is still that rule's (first match wins), so it
+// does not fall through to the next one, exactly as applying it would not.
+func PreviewWithout(emails []models.Email, ruleset []models.SortingRule, skipped ...string) ([]PreviewItem, []RuleHits) {
+	skip := make(map[string]bool, len(skipped))
+	for _, a := range skipped {
+		skip[a] = true
+	}
+	return previewAt(emails, ruleset, time.Now(), skip)
+}
+
+func previewAt(emails []models.Email, ruleset []models.SortingRule, now time.Time, skip map[string]bool) ([]PreviewItem, []RuleHits) {
 	items := make([]PreviewItem, 0)
 	hits := make([]RuleHits, 0)
 	idx := map[string]int{} // rule name -> position in hits
@@ -331,6 +349,18 @@ func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Tim
 			continue
 		}
 		acts := EffectiveActions(*match)
+		if len(skip) > 0 {
+			kept := make([]models.RuleAction, 0, len(acts))
+			for _, a := range acts {
+				if !skip[a.Type] {
+					kept = append(kept, a)
+				}
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			acts = kept
+		}
 		primary, primaryLabel := primaryAction(acts)
 		items = append(items, PreviewItem{
 			MessageID: email.MessageID,
