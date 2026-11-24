@@ -118,8 +118,11 @@ const finalHint = (e, folders) =>
 
 // What a line says was done: the verb in the past, and for a label where it
 // filed the mail ("Classé dans « Factures »" over IMAP, where it is a folder).
-const pastOf = (e, folders) =>
-  `${actionMeta(e.action, { folders }).past}${e.action === 'label' ? labelPlace(e.labelName, { folders }) : ''}`;
+const placeOf = (e, folders) => (e.action === 'label' ? labelPlace(e.labelName, { folders }) : '');
+const pastOf = (e, folders) => `${actionMeta(e.action, { folders }).past}${placeOf(e, folders)}`;
+// Inside a sentence: the verb in lower case, the folder or label as the user
+// named it (« classé dans « Livraisons » », not « livraisons »).
+const pastInSentence = (e, folders) => `${actionMeta(e.action, { folders }).past.toLowerCase()}${placeOf(e, folders)}`;
 
 // What the right-hand side of a row says. `undoOk` waits for the mailbox to be
 // known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
@@ -143,7 +146,7 @@ function HotelRegister({ entries, undoing, onUndo, undoOk, folders }) {
                     <span className={identity.known ? undefined : 'italic text-muted'} title={identity.known ? identity.from : UNKNOWN_HINT}>
                       {who}
                     </span>{' '}
-                    <em>{pastOf(e, folders).toLowerCase()}</em>
+                    <em>{pastInSentence(e, folders)}</em>
                     <small>
                       {identity.sender && identity.known ? `${identity.title}. ` : ''}
                       {SOURCE_LABELS[e.source] || e.source}
