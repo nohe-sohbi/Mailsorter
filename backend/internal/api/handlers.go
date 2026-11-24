@@ -651,6 +651,10 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, notWhereLeftMessage)
 		return
 	}
+	if errors.Is(err, errUndoExpired) {
+		writeError(w, http.StatusNotFound, undoExpiredMessage)
+		return
+	}
 	if errors.Is(err, errAlreadyOut) {
 		// Mailsorter had already moved it out: nothing happened, so nothing
 		// is recorded. The client's request is satisfied all the same.

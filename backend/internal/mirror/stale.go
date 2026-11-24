@@ -3,41 +3,63 @@
 // reads and writes the copy, this package only says what it should hold.
 package mirror
 
-import "strconv"
+import "time"
 
-// StaleUIDs returns the stored UIDs that are no longer in the inbox, given the
-// UIDs a listing of that inbox just returned.
+// Row is a stored inbox message, as the sync judges it.
+type Row struct {
+	UID string
+	// Left is true once Mailsorter claimed the message for a move out of the
+	// inbox; LeftAt is when, and MovedTo the folder it landed in ("" while
+	// the move is on its way, or when the server never said).
+	Left    bool
+	LeftAt  time.Time
+	MovedTo string
+}
+
+// Rules are the time limits a judgement applies.
+type Rules struct {
+	// InFlight is how long a claimed row with no destination yet is left
+	// alone: the move it announces may still be on its way.
+	InFlight time.Duration
+	// UndoWindow is how long a message Mailsorter moved out stays stored,
+	// hidden, so "Annuler" knows where it went.
+	UndoWindow time.Duration
+}
+
+// Verdict says what the sync does with each stored row it judged.
+type Verdict struct {
+	Gone   []string // deleted: the message is not in the inbox any more
+	Back   []string // unflagged: the inbox still holds it
+	Hidden []string // kept for "Annuler", out of the list
+}
+
+// Judge brings the stored rows in line with the inbox: present is every UID
+// the inbox holds now, listedAt when the sync started reading it.
 //
-// A listing may cover only the most recent messages (complete is false when
-// it stopped at its limit). Then only stored UIDs at or above the smallest
-// listed one can be judged: the older ones were simply not looked at, and
-// dropping them would empty the list of anyone with a large inbox. A UID that
-// is not a number is never judged stale.
-func StaleUIDs(stored, listed []string, complete bool) []string {
-	seen := make(map[string]bool, len(listed))
-	var floor uint64
-	haveFloor := false
-	for _, id := range listed {
-		seen[id] = true
-		if n, err := strconv.ParseUint(id, 10, 32); err == nil && (!haveFloor || n < floor) {
-			floor, haveFloor = n, true
-		}
-	}
-	if !complete && !haveFloor {
-		return nil
-	}
-	var stale []string
-	for _, id := range stored {
-		if seen[id] {
+// A row Mailsorter flagged after listedAt was moved after the server
+// answered, so the answer says nothing about it; nor does it about a row
+// whose move is still in flight. Both wait for the next sync. A row the
+// inbox does not hold goes, however old it is: present covers the whole
+// inbox, not a page of it.
+func Judge(rows []Row, present map[string]bool, listedAt, now time.Time, r Rules) Verdict {
+	var v Verdict
+	for _, row := range rows {
+		if !row.Left {
+			if !present[row.UID] {
+				v.Gone = append(v.Gone, row.UID)
+			}
 			continue
 		}
-		n, err := strconv.ParseUint(id, 10, 32)
-		if err != nil {
-			continue
-		}
-		if complete || n >= floor {
-			stale = append(stale, id)
+		inFlight := row.MovedTo == "" && now.Sub(row.LeftAt) < r.InFlight
+		switch {
+		case inFlight || !row.LeftAt.Before(listedAt):
+		case present[row.UID]:
+			v.Back = append(v.Back, row.UID)
+		case row.MovedTo == "" || now.Sub(row.LeftAt) > r.UndoWindow:
+			v.Gone = append(v.Gone, row.UID)
+		default:
+			v.Hidden = append(v.Hidden, row.UID)
 		}
 	}
-	return stale
+	return v
 }

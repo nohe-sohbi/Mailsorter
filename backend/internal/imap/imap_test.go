@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -539,5 +540,38 @@ func TestFindByMessageIDFindsTheMessageAgain(t *testing.T) {
 	}
 	if got, err := c.FindByMessageID("Archive", "<absent@example.com>"); err != nil || got != "" {
 		t.Errorf("FindByMessageID on an absent id = %q, %v, want empty", got, err)
+	}
+}
+
+// UIDs answers for the whole folder, not a page of it: it is how the sync
+// tells which old stored messages are still in the inbox.
+func TestUIDsListsEveryMessageOfTheFolder(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	want := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		want[appendMessage(t, c, "INBOX")] = true
+	}
+	appendMessage(t, c, "Archive")
+	got, err := c.UIDs("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("UIDs(INBOX) = %v, want %v", got, want)
+	}
+}
+
+func TestHasSaysWhetherTheMessageIsStillThere(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	uid := appendMessage(t, c, "INBOX")
+	ref := mailbox.InFolder("INBOX", uid)
+	if there, err := c.Has(ref); err != nil || !there {
+		t.Fatalf("Has(%s) = %v, %v; want true", ref, there, err)
+	}
+	if _, err := c.MoveTo(context.Background(), ref, mailbox.FolderArchive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if there, err := c.Has(ref); err != nil || there {
+		t.Errorf("Has(%s) after the move = %v, %v; want false", ref, there, err)
 	}
 }

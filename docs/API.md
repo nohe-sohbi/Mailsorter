@@ -348,8 +348,11 @@ message's UID in it. See "Transports and what works on each".
 
 Mirror the 100 most recent messages of the inbox into the database, through
 the caller's transport. Over IMAP it also drops from the mirror the messages
-that have left the inbox since the last sync. The background sync
-(`autoSyncEnabled`) runs the same code.
+that have left the inbox since the last sync, however old: it asks the server
+for the UID of every message in the inbox (one `UID SEARCH`), not only the
+ones it listed. The background sync (`autoSyncEnabled`) runs the same code.
+Over IMAP, `500` when the mirror could not be brought in line with the inbox
+(the listing itself is stored).
 
 Over the Gmail API, when `autoApplyRules` is on, the deterministic rules run on
 each synced message (protected senders shielded, each action journaled with
@@ -393,10 +396,13 @@ archive and trash folders and read and star are flags.
 `action` is one of `archive`, `delete` (alias `trash`), `unarchive`, `untrash`,
 `read`, `unread`, `star`, `unstar`. Forward triage actions
 (`archive`/`delete`/`read`/`star`) are recorded in the action ledger, except,
-over IMAP, a move toward where Mailsorter already put the message (a second
-click from a screen left open): it answers `200` and records nothing. A move
-elsewhere (`delete` on a mail Mailsorter archived) moves it from where it is,
-and "Annuler" still finds it. `unarchive`
+over IMAP, a move of a message that already left the inbox: toward where
+Mailsorter put it (a second click from a screen left open), while another
+request is moving it (two key presses at once), or after another mail client
+moved it. It answers `200` and records nothing. A move elsewhere (`delete` on
+a mail Mailsorter archived) moves it from where it is, and "Annuler" still
+finds it. `read` and `unread` over IMAP also change the stored copy, so the
+list shows them at once. `unarchive`
 and `untrash` are what "Annuler" sends right after an action: they mark the
 most recent matching forward entry `undone` and record the reversal (source
 `undo`), as `POST /api/activity/undo` does.
@@ -833,10 +839,10 @@ Two consequences worth knowing:
   or deletes leaves the listing at once; it stays stored, hidden from every
   inbox read, for 30 days, which is how long "Annuler" can bring it back. Each
   sync drops the messages that are no longer in the inbox for another reason,
-  whoever moved them; when the inbox holds more than 100 messages, only the
-  range the listing covered can be judged. The pending AI proposals about a
-  message that left, either way, become `moot`: they leave the plan, and
-  applying one from a screen loaded before does nothing.
+  whoever moved them and however old they are. The pending AI proposals about
+  a message that left, either way, become `moot`: they leave the plan, and
+  applying one from a screen loaded before does nothing (`ApplySuggestion`
+  answers `{"status":"already"}`, `apply-batch` neither counts nor fails it).
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 A query term the mirror cannot answer is **refused with 501, naming the term**,
@@ -1041,7 +1047,9 @@ source `undo`) both appear.
 #### GET /api/activity/log?source=&limit=&before=&q=
 
 Returns the caller's most recent ledger entries, newest first. Each entry is
-flagged `undoable` (it has a clean inverse and has not been undone yet).
+flagged `undoable` (it has a clean inverse and has not been undone yet). On
+IMAP an archive or a delete is `undoable` only while Mailsorter knows where it
+put the message: 30 days, and never for a move made before it recorded that.
 
 **Query parameters:**
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
@@ -1099,7 +1107,9 @@ reversible or an invalid id; `404` not found, or, on IMAP, "Ce mail n'est plus l
 où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
 entry stays not undone); `409` already undone; `502` the provider refused the
 reversal. On IMAP a moved message stays recorded for 30 days after it left the
-inbox, which is how long the history can bring it back.
+inbox, which is how long the history can bring it back; past that, `404` "Cette
+action est trop ancienne pour être annulée ici : retrouvez ce mail dans
+l'archive ou la corbeille de votre messagerie." and nothing moves.
 
 ---
 

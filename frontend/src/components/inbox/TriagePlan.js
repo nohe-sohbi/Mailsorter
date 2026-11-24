@@ -162,6 +162,12 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       const protectedSkipped = data?.protectedSkipped || 0;
       const failed = data?.failed || 0;
       if (applied.length === 0) {
+        if (!protectedSkipped && !failed) {
+          // Nothing applied and nothing failed: every mail had already left
+          // the inbox (tidied by hand, or from another device).
+          toast.success(items.length > 1 ? 'Ces mails étaient déjà rangés.' : 'Ce mail était déjà rangé.');
+          return;
+        }
         toast.error(
           protectedSkipped
             ? 'Rien appliqué : ces expéditeurs sont protégés.'

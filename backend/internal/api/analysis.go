@@ -60,6 +60,11 @@ func (h *Handler) runAnalysis(
 	for _, id := range emailIDs {
 		var e models.Email
 		findErr := h.db.Emails().FindOne(ctx, bson.M{"messageId": id, "userId": userEmail}).Decode(&e)
+		if findErr == nil && session != nil && session.Transport == provider.TransportIMAP && h.leftInbox(ctx, userEmail, id) {
+			// Tidied since the screen was loaded: a proposal about it would
+			// invite tidying it a second time, and cost an analysis.
+			continue
+		}
 		if findErr == nil && (e.Snippet != "" || e.Body != "") {
 			emails = append(emails, e)
 			continue

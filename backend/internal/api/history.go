@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -110,9 +111,13 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 
 	h.resolveLogIdentities(ctx, userEmail, logs)
 
+	bringBack := h.imapMovesUndoable(ctx, userEmail, logs)
 	views := make([]actionLogView, 0, len(logs))
 	for _, l := range logs {
-		_, reversible := activity.Inverse(l.Action)
+		inverse, reversible := activity.Inverse(l.Action)
+		if bringBack != nil && (inverse == "unarchive" || inverse == "untrash") {
+			reversible = bringBack[l.MessageID]
+		}
 		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone})
 	}
 
@@ -124,6 +129,51 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": views, "nextBefore": nextBefore})
+}
+
+// imapMovesUndoable says, on an IMAP mailbox, which of these entries' messages
+// Mailsorter can still bring back: those whose stored copy records where the
+// move put them, within undoWindow. Past it the sync forgets the move, and a
+// move made before Mailsorter recorded destinations was never known. nil off
+// IMAP, where every move stays reversible.
+func (h *Handler) imapMovesUndoable(ctx context.Context, userEmail string, logs []models.ActionLog) map[string]bool {
+	transport, _, err := h.transportFor(ctx, userEmail)
+	if err != nil || transport != provider.TransportIMAP {
+		return nil
+	}
+	ids := make([]string, 0, len(logs))
+	for _, l := range logs {
+		if l.MessageID != "" {
+			ids = append(ids, l.MessageID)
+		}
+	}
+	can := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return can
+	}
+	cur, err := h.db.Emails().Find(ctx, bson.M{
+		"userId":         userEmail,
+		"folder":         string(mailbox.FolderInbox),
+		"messageId":      bson.M{"$in": ids},
+		"leftInbox":      true,
+		"movedTo.folder": bson.M{"$nin": []interface{}{"", nil}},
+		"leftAt":         bson.M{"$gte": time.Now().Add(-undoWindow)},
+	}, options.Find().SetProjection(bson.M{"messageId": 1}))
+	if err != nil {
+		// Offering "Annuler" on a move that cannot be brought back is a
+		// promise broken on click; hiding it for one page load is not.
+		log.Printf("history: which moves of %s can be undone: %v", userEmail, err)
+		return can
+	}
+	var rows []movedRow
+	if err := cur.All(ctx, &rows); err != nil {
+		log.Printf("history: which moves of %s can be undone: %v", userEmail, err)
+		return can
+	}
+	for _, r := range rows {
+		can[r.MessageID] = true
+	}
+	return can
 }
 
 // formatLogCursor encodes the (createdAt, _id) pair the next page starts after.
@@ -257,6 +307,9 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, errNotWhereLeft):
 			writeError(w, http.StatusNotFound, notWhereLeftMessage)
+			return
+		case errors.Is(err, errUndoExpired):
+			writeError(w, http.StatusNotFound, undoExpiredMessage)
 			return
 		case errors.Is(err, mailbox.ErrNoIMAPEquivalent):
 			writeTransportError(w)

@@ -386,7 +386,7 @@ type AISuggestion struct {
 	LabelID    string    `json:"labelId" bson:"labelId"`       // Gmail label ID (after creation/matching)
 	Confidence float64   `json:"confidence" bson:"confidence"` // 0.0 to 1.0
 	Reasoning  string    `json:"reasoning" bson:"reasoning"`   // AI explanation
-	Status     string    `json:"status" bson:"status"`         // "pending", "applied", "rejected"
+	Status     string    `json:"status" bson:"status"`         // "pending", "applied", "rejected", "moot" (the mail left the inbox some other way)
 	CreatedAt  time.Time `json:"createdAt" bson:"createdAt"`
 	AppliedAt  time.Time `json:"appliedAt,omitempty" bson:"appliedAt,omitempty"`
 }

@@ -286,6 +286,12 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 	}
 	data, err := c.c.Move(set, dest).Wait()
 	if err != nil {
+		// Another connection (a second click, another mail client) may have
+		// moved it between the check above and the MOVE: that is "gone",
+		// not a failure.
+		if again, sErr := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}, nil).Wait(); sErr == nil && len(again.AllUIDs()) == 0 {
+			return mailbox.Ref{}, ErrMessageGone
+		}
 		return mailbox.Ref{}, fmt.Errorf("imap: move to %q: %w", dest, err)
 	}
 	landed := mailbox.InFolder(dest, "")
@@ -306,6 +312,44 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 		landed.ID = id
 	}
 	return landed, nil
+}
+
+// UIDs returns the UID of every message in folder. A listing reads only the
+// newest messages; this is how the sync tells which of the older ones it
+// stored are still there, in one round trip whatever the size of the folder.
+func (c *Client) UIDs(folder string) (map[string]bool, error) {
+	// Re-selected, like a listing: the answer must reflect the folder now.
+	c.selected = ""
+	if err := c.selectFolder(folder); err != nil {
+		return nil, err
+	}
+	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("imap: list the uids of %q: %w", folder, err)
+	}
+	uids := res.AllUIDs()
+	out := make(map[string]bool, len(uids))
+	for _, u := range uids {
+		out[strconv.FormatUint(uint64(u), 10)] = true
+	}
+	return out, nil
+}
+
+// Has says whether the message ref names is in its folder now.
+func (c *Client) Has(ref mailbox.Ref) (bool, error) {
+	num, err := parseUID(ref.ID)
+	if err != nil {
+		return false, err
+	}
+	c.selected = ""
+	if err := c.selectFolder(ref.Folder); err != nil {
+		return false, err
+	}
+	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{imapv2.UIDSetNum(num)}}, nil).Wait()
+	if err != nil {
+		return false, fmt.Errorf("imap: look for uid %s in %q: %w", ref.ID, ref.Folder, err)
+	}
+	return len(res.AllUIDs()) > 0, nil
 }
 
 // FindByMessageID returns the highest UID in folder whose Message-ID header

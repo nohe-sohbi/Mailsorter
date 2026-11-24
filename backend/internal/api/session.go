@@ -183,14 +183,22 @@ func writeTransportError(w http.ResponseWriter) {
 func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *mailSession) (synced, total int, err error) {
 	const folder = string(mailbox.FolderInbox)
 
+	listedAt := time.Now()
 	emails, err := session.imapc.List(ctx, folder, imapListLimit)
+	if err != nil {
+		return 0, 0, err
+	}
+	// The listing reads the newest messages only; which of the older ones
+	// stored are still in the inbox, it cannot tell. One UID SEARCH can,
+	// whatever the size of the inbox.
+	present, err := session.imapc.UIDs(folder)
 	if err != nil {
 		return 0, 0, err
 	}
 	// Messages that left the inbox since the last sync (moved by Mailsorter,
 	// by the user's phone, by a filter on the server) must leave the copy the
 	// list is served from, or they show forever.
-	h.dropStaleInbox(ctx, userEmail, emails, len(emails) < imapListLimit)
+	dropErr := h.dropStaleInbox(ctx, userEmail, present, listedAt)
 
 	// A message that cannot be stored is not on the user's screen, and nothing
 	// else will ever tell them it exists: the listing is served from this
@@ -198,6 +206,11 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	// stored, and the sync answers an error rather than a success.
 	failed := 0
 	for _, email := range emails {
+		if !present[email.MessageID] {
+			// Gone between the listing and the UID search: storing it would
+			// list it again until the next sync.
+			continue
+		}
 		email.UserID = userEmail
 		// The folder is stored with the message because on IMAP it is half of
 		// its identity: without it the UID below names nothing in particular.
@@ -216,6 +229,9 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	}
 	if failed > 0 {
 		return synced, len(emails), fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
+	}
+	if dropErr != nil {
+		return synced, len(emails), dropErr
 	}
 	return synced, len(emails), nil
 }
@@ -240,76 +256,77 @@ type movedRow struct {
 	} `bson:"movedTo"`
 }
 
-// dropStaleInbox brings the local copy of the inbox in line with a listing
-// that just came back, and drops the pending AI proposals about what it
-// removes (they would point at a message that is not there).
+// moveInFlight is how long a row claimed for a move (flagged, no movedTo
+// yet) is left alone by the sync: the move it announces may still be on its
+// way to the server. Past it, a claim that never completed (a crash between
+// the claim and the move) is judged like any other row.
+const moveInFlight = 2 * time.Minute
+
+// errMirrorNotReconciled is a sync that read the mailbox but could not bring
+// the stored copy in line with it. Its text is what the user is told.
+var errMirrorNotReconciled = errors.New("la liste n'a pas pu être remise à jour avec votre boîte")
+
+// dropStaleInbox brings the local copy of the inbox in line with the server,
+// given the UIDs the inbox holds now (present) and when the listing started
+// (listedAt), and sets moot the pending AI proposals about what left.
 //
-//   - A message the listing no longer shows goes (mirror.StaleUIDs; complete
-//     says whether the listing covered the whole inbox).
+//   - A message no longer in the inbox goes, however old it is.
 //   - A message Mailsorter moved out (flagged by mirroredIMAP) stays, hidden
 //     from the list, for undoWindow, so "Annuler" knows where it went; after
-//     that, or when nothing says where it went, it goes. One the listing
-//     still shows is simply unflagged.
-//
-// Best effort: a failure is logged and the list stays as it was.
-func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed []models.Email, complete bool) {
+//     that, or when nothing says where it went, it goes. A row claimed for a
+//     move still on its way (moveInFlight) is left alone.
+//   - A flagged message the inbox still holds is unflagged, but only when it
+//     was flagged before the listing started: one flagged after was moved
+//     after the server answered, and is not back.
+func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, present map[string]bool, listedAt time.Time) error {
 	folder := string(mailbox.FolderInbox)
 	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder},
 		options.Find().SetProjection(bson.M{"messageId": 1, "leftInbox": 1, "leftAt": 1, "movedTo": 1}))
 	if err != nil {
 		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
-		return
+		return errMirrorNotReconciled
 	}
 	var rows []movedRow
 	if err := cur.All(ctx, &rows); err != nil {
 		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
-		return
+		return errMirrorNotReconciled
 	}
-	seen := make([]string, 0, len(listed))
-	shown := make(map[string]bool, len(listed))
-	for _, e := range listed {
-		seen = append(seen, e.MessageID)
-		shown[e.MessageID] = true
-	}
-	stored := make([]string, 0, len(rows))
-	var gone, back, hidden []string
-	now := time.Now()
+	judged := make([]mirror.Row, 0, len(rows))
 	for _, r := range rows {
-		if !r.LeftInbox {
-			stored = append(stored, r.MessageID)
-			continue
-		}
-		switch {
-		case shown[r.MessageID]:
-			back = append(back, r.MessageID)
-		case r.MovedTo.Folder == "" || now.Sub(r.LeftAt) > undoWindow:
-			gone = append(gone, r.MessageID)
-		default:
-			hidden = append(hidden, r.MessageID)
-		}
+		judged = append(judged, mirror.Row{UID: r.MessageID, Left: r.LeftInbox, LeftAt: r.LeftAt, MovedTo: r.MovedTo.Folder})
 	}
+	v := mirror.Judge(judged, present, listedAt, time.Now(), mirror.Rules{InFlight: moveInFlight, UndoWindow: undoWindow})
+	gone, back, hidden := v.Gone, v.Back, v.Hidden
+	var failed bool
 	// A message kept hidden for "Annuler" is out of the inbox all the same:
 	// a pending AI proposal about it would invite tidying it a second time.
-	if len(hidden) > 0 {
-		h.markProposalsMoot(ctx, userEmail, hidden)
+	if len(hidden) > 0 && !h.markProposalsMoot(ctx, userEmail, hidden) {
+		failed = true
 	}
-	gone = append(gone, mirror.StaleUIDs(stored, seen, complete)...)
 	if len(back) > 0 {
 		if _, err := h.db.Emails().UpdateMany(ctx,
-			bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": back}},
+			bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": back}, "leftAt": bson.M{"$lt": listedAt}},
 			bson.M{"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": ""}},
 		); err != nil {
 			log.Printf("imap sync: unflag messages still in the inbox of %s: %v", userEmail, err)
+			failed = true
 		}
 	}
-	if len(gone) == 0 {
-		return
+	if len(gone) > 0 {
+		// Only rows still as they were read: one claimed for a move since is
+		// left to that move.
+		if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": gone},
+			"$or": []bson.M{{"leftInbox": bson.M{"$ne": true}}, {"leftAt": bson.M{"$lt": listedAt}}}}); err != nil {
+			log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(gone), userEmail, err)
+			failed = true
+		} else if !h.markProposalsMoot(ctx, userEmail, gone) {
+			failed = true
+		}
 	}
-	if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": gone}}); err != nil {
-		log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(gone), userEmail, err)
-		return
+	if failed {
+		return errMirrorNotReconciled
 	}
-	h.markProposalsMoot(ctx, userEmail, gone)
+	return nil
 }
 
 // proposalMoot is the status of an AI proposal about a mail that left the
@@ -318,15 +335,17 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 // failed. The plan only lists pending proposals, so it leaves the plan.
 const proposalMoot = "moot"
 
-// markProposalsMoot sets the pending proposals about these messages moot.
-// Best effort: a failure is logged.
-func (h *Handler) markProposalsMoot(ctx context.Context, userEmail string, messageIDs []string) {
+// markProposalsMoot sets the pending proposals about these messages moot,
+// and says whether it could.
+func (h *Handler) markProposalsMoot(ctx context.Context, userEmail string, messageIDs []string) bool {
 	if _, err := h.db.AISuggestions().UpdateMany(ctx,
 		bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": messageIDs}},
 		bson.M{"$set": bson.M{"status": proposalMoot}},
 	); err != nil {
 		log.Printf("imap sync: set moot the proposals about %d messages of %s: %v", len(messageIDs), userEmail, err)
+		return false
 	}
+	return true
 }
 
 // errNotWhereLeft is "Annuler" on an IMAP message that is no longer where
@@ -341,6 +360,14 @@ var errAlreadyOut = errors.New("api: the message already left the inbox")
 
 // notWhereLeftMessage is what the user reads for errNotWhereLeft.
 const notWhereLeftMessage = "Ce mail n'est plus là où Mailsorter l'avait rangé."
+
+// errUndoExpired is "Annuler" on an IMAP move Mailsorter no longer knows the
+// destination of: older than undoWindow, or made before it recorded where
+// moves land. Nothing moved; the user is told where to look.
+var errUndoExpired = errors.New("api: the move is too old to be undone here")
+
+// undoExpiredMessage is what the user reads for errUndoExpired.
+const undoExpiredMessage = "Cette action est trop ancienne pour être annulée ici : retrouvez ce mail dans l'archive ou la corbeille de votre messagerie."
 
 // mirroredIMAP is the IMAP mailbox as handlers mutate it, keeping the local
 // copy of the inbox (what the list is served from) right.
@@ -364,10 +391,14 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 	if err != nil {
 		return err
 	}
-	if op.Kind != mailbox.IMAPMove {
-		return m.client.Apply(ctx, ref, mut)
-	}
 	inbox := string(mailbox.FolderInbox)
+	if op.Kind != mailbox.IMAPMove {
+		if err := m.client.Apply(ctx, ref, mut); err != nil {
+			return err
+		}
+		m.mirrorSeen(ctx, ref, op)
+		return nil
+	}
 	var row movedRow
 	findErr := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}).Decode(&row)
 	if findErr != nil && !errors.Is(findErr, mongo.ErrNoDocuments) {
@@ -381,76 +412,163 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 	if findErr == nil && row.LeftInbox {
 		return m.moveAgain(ctx, ref, row, op.To)
 	}
-
-	landed, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
-	if errors.Is(err, imap.ErrMessageGone) {
-		// Already out of the inbox: what the user asked for is true.
-		landed, err = mailbox.Ref{}, nil
-	}
-	if err != nil {
+	if ref.Folder != inbox || findErr != nil {
+		// Not a stored inbox message: nothing to keep right.
+		_, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
+		if errors.Is(err, imap.ErrMessageGone) {
+			return errAlreadyOut
+		}
 		return err
 	}
-	if ref.Folder == inbox && findErr == nil {
-		if _, err := m.h.db.Emails().UpdateOne(ctx,
-			bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID},
-			bson.M{"$set": bson.M{
-				"leftInbox": true,
-				"leftAt":    time.Now(),
-				"movedTo":   bson.M{"folder": landed.Folder, "uid": landed.ID},
-			}},
-		); err != nil {
-			log.Printf("imap: message %s left the inbox of %s but stays in its copy: %v", ref.ID, m.userEmail, err)
+
+	// Claim the row before the move: of two requests moving the same message
+	// at once (a second key press, a second tab), only the one whose claim
+	// lands moves it; the other is told it already left. The claim also hides
+	// it from the list at once, and tells a sync running meanwhile that a
+	// move is on its way.
+	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}
+	claim := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID, "leftInbox": notLeftInbox}
+	res, err := m.h.db.Emails().UpdateOne(ctx, claim, bson.M{
+		"$set":   bson.M{"leftInbox": true, "leftAt": time.Now()},
+		"$unset": bson.M{"movedTo": ""},
+	})
+	if err != nil {
+		return fmt.Errorf("claim message %s for a move: %w", ref.ID, err)
+	}
+	if res.MatchedCount == 0 {
+		return errAlreadyOut
+	}
+	landed, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
+	if errors.Is(err, imap.ErrMessageGone) {
+		// Another mail client took it out of the inbox first: nothing was
+		// done here. The row stays out of the list; with no destination, the
+		// next sync drops it.
+		return errAlreadyOut
+	}
+	if err != nil {
+		// Not moved: release the claim, so it is listed again.
+		if _, uErr := m.h.db.Emails().UpdateOne(ctx, filter, bson.M{"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": ""}}); uErr != nil {
+			log.Printf("imap: message %s of %s not moved, and its claim not released: %v", ref.ID, m.userEmail, uErr)
 		}
+		return err
+	}
+	if _, err := m.h.db.Emails().UpdateOne(ctx, filter,
+		bson.M{"$set": bson.M{"movedTo": bson.M{"folder": landed.Folder, "uid": landed.ID}}},
+	); err != nil {
+		log.Printf("imap: message %s of %s moved to %s, where it went is not recorded: %v", ref.ID, m.userEmail, landed.Folder, err)
 	}
 	return nil
 }
 
+// mirrorSeen carries a read or unread change into the stored copy the list
+// is served from, so the list shows it at once rather than at the next sync.
+// The server already changed; a failure here is only logged.
+func (m mirroredIMAP) mirrorSeen(ctx context.Context, ref mailbox.Ref, op mailbox.IMAPOp) {
+	var read *bool
+	for _, f := range op.AddFlags {
+		if f == mailbox.FlagSeen {
+			t := true
+			read = &t
+		}
+	}
+	for _, f := range op.DropFlags {
+		if f == mailbox.FlagSeen {
+			f := false
+			read = &f
+		}
+	}
+	if read == nil || ref.Folder != string(mailbox.FolderInbox) {
+		return
+	}
+	if _, err := m.h.db.Emails().UpdateOne(ctx,
+		bson.M{"userId": m.userEmail, "folder": ref.Folder, "messageId": ref.ID},
+		bson.M{"$set": bson.M{"isRead": *read}},
+	); err != nil {
+		log.Printf("imap: message %s of %s marked read=%v on the server, not in its copy: %v", ref.ID, m.userEmail, *read, err)
+	}
+}
+
 // moveAgain is moving out of the inbox a message Mailsorter already moved out
-// (a click from a screen left open). Toward where it already is, nothing
-// happens (errAlreadyOut: neither counted nor recorded). Toward elsewhere, a
-// "Supprimer" on a mail already archived for instance, it moves from where it
-// is, and the row records the new place, so "Annuler" still finds it.
+// (a click from a screen left open). Toward where it already is, or when the
+// move that took it out is still on its way or was done by another mail
+// client (no destination recorded), nothing happens (errAlreadyOut: neither
+// counted nor recorded). Toward elsewhere, a "Supprimer" on a mail already
+// archived for instance, it moves from where it is, and the row records the
+// new place, so "Annuler" still finds it.
 func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedRow, to mailbox.Folder) error {
 	dest, ok := m.client.FolderName(to)
 	if !ok {
 		return fmt.Errorf("%w: %s", imap.ErrNoSuchFolder, to)
 	}
-	if row.MovedTo.Folder == dest {
+	if row.MovedTo.Folder == "" || row.MovedTo.Folder == dest {
 		return errAlreadyOut
 	}
 	uid := row.MovedTo.UID
-	if uid == "" && row.MovedTo.Folder != "" && row.HeaderMessageID != "" {
+	if uid == "" && row.HeaderMessageID != "" {
 		found, err := m.client.FindByMessageID(row.MovedTo.Folder, row.HeaderMessageID)
 		if err != nil {
 			return err
 		}
 		uid = found
 	}
-	if row.MovedTo.Folder == "" || uid == "" {
+	if uid == "" {
 		return errNotWhereLeft
 	}
 	landed, err := m.client.MoveTo(ctx, mailbox.InFolder(row.MovedTo.Folder, uid), to, row.HeaderMessageID)
 	if errors.Is(err, imap.ErrMessageGone) {
+		// A second click may have moved it there already.
+		if m.recordedIn(ctx, ref, dest) {
+			return errAlreadyOut
+		}
 		return errNotWhereLeft
 	}
 	if err != nil {
 		return err
 	}
-	if _, err := m.h.db.Emails().UpdateOne(ctx,
-		bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID},
+	// Only over what was read: of two requests moving it on at once, the one
+	// that landed second does not overwrite where the first put it.
+	if res, err := m.h.db.Emails().UpdateOne(ctx,
+		bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID,
+			"movedTo.folder": row.MovedTo.Folder, "movedTo.uid": row.MovedTo.UID},
 		bson.M{"$set": bson.M{"leftAt": time.Now(), "movedTo": bson.M{"folder": landed.Folder, "uid": landed.ID}}},
 	); err != nil {
 		log.Printf("imap: message %s of %s moved to %s, copy not updated: %v", ref.ID, m.userEmail, landed.Folder, err)
+	} else if res.MatchedCount == 0 {
+		return errAlreadyOut
 	}
 	return nil
 }
 
+// recordedIn says whether the stored copy says the message is now in folder.
+func (m mirroredIMAP) recordedIn(ctx context.Context, ref mailbox.Ref, folder string) bool {
+	var now movedRow
+	err := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID}).Decode(&now)
+	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+		log.Printf("imap: read the copy of message %s of %s again: %v", ref.ID, m.userEmail, err)
+	}
+	return err == nil && now.MovedTo.Folder == folder
+}
+
 // putBack is "Annuler" for a message Mailsorter moved out of the inbox.
 func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow, findErr error) error {
-	if findErr == nil && !row.LeftInbox {
-		return nil // still in the inbox: nothing to bring back
+	if errors.Is(findErr, mongo.ErrNoDocuments) {
+		// Past the undo window the sync dropped what it knew of the move, and
+		// a move made before Mailsorter kept that is not known at all.
+		return errUndoExpired
 	}
-	if findErr != nil || row.MovedTo.Folder == "" {
+	if !row.LeftInbox {
+		// Stored as in the inbox: say so only if the server agrees, rather
+		// than announce a return that did not happen.
+		there, err := m.client.Has(ref)
+		if err != nil {
+			return err
+		}
+		if !there {
+			return errNotWhereLeft
+		}
+		return nil
+	}
+	if row.MovedTo.Folder == "" {
 		return errNotWhereLeft
 	}
 	uid := row.MovedTo.UID

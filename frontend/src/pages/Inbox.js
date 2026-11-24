@@ -642,7 +642,15 @@ function Inbox() {
     const act = suggestion.action;
     removeSuggestion(id);
     try {
-      await aiService.applySuggestion(id);
+      const { data } = await aiService.applySuggestion(id);
+      if (data?.status === 'already') {
+        // It had already left the inbox (tidied by hand, or from another
+        // device): nothing was done, so nothing to count or undo.
+        removeEmails(suggestion.emailId);
+        setSelectedEmail((prev) => (prev?.messageId === suggestion.emailId ? null : prev));
+        toast.success('Ce mail était déjà rangé.');
+        return;
+      }
       track('suggestion_applied', { action: act });
       bumpGamify(1);
       if (act !== 'keep') {

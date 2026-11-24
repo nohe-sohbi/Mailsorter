@@ -855,11 +855,17 @@ func (h *Handler) dropMootProposal(ctx context.Context, id primitive.ObjectID) {
 
 // leftInbox reports whether Mailsorter already moved this IMAP message out of
 // the inbox (mirroredIMAP flagged its stored copy).
+// A store that cannot answer reads as "still in the inbox": the action then
+// goes to the server, which knows.
 func (h *Handler) leftInbox(ctx context.Context, userEmail, messageID string) bool {
 	n, err := h.db.Emails().CountDocuments(ctx, bson.M{
 		"userId": userEmail, "folder": string(mailbox.FolderInbox), "messageId": messageID, "leftInbox": true,
 	})
-	return err == nil && n > 0
+	if err != nil {
+		log.Printf("ai: did message %s of %s leave the inbox: %v", messageID, userEmail, err)
+		return false
+	}
+	return n > 0
 }
 
 // errNoLabelsOnIMAP is what applying a "label" verdict to an IMAP mailbox
