@@ -44,6 +44,10 @@ var ErrAuth = errors.New("imap: authentication rejected")
 // a transient failure, and retrying cannot fix it.
 var ErrNoSuchFolder = errors.New("imap: no mailbox matches the required special folder")
 
+// ErrMessageGone means the message a reference names is no longer in its
+// folder: another mail client moved it elsewhere or deleted it.
+var ErrMessageGone = errors.New("imap: the message is no longer in its folder")
+
 // dialTimeout bounds the connection itself. Mail servers under load are slow to
 // accept, but a user waiting on a screen is not, and every caller here is on a
 // request path.
@@ -233,6 +237,87 @@ func (c *Client) Apply(ctx context.Context, ref mailbox.Ref, m mailbox.Mutation)
 		return nil
 	}
 	return fmt.Errorf("imap: unsupported operation kind %v", op.Kind)
+}
+
+// MoveTo moves one message into the special folder `to` and says where it
+// landed: the server's name for that folder, and the message's new UID there.
+//
+// The new UID comes from the server's answer to MOVE (COPYUID, which UIDPLUS
+// and IMAP4rev2 servers send). A server that does not send it is asked again
+// by the message's Message-ID header, when the caller knows it. A UID still
+// unknown after that comes back empty: the move happened, but the message
+// cannot be named in its new folder.
+//
+// A message no longer in ref's folder answers ErrMessageGone, checked BEFORE
+// moving: a MOVE on a UID that does not exist answers OK and does nothing,
+// which is how undo used to "succeed" without anything coming back.
+func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
+	if !ref.Scoped() {
+		return mailbox.Ref{}, fmt.Errorf("%w: an imap uid needs its folder, got %s", mailbox.ErrWrongRefKind, ref)
+	}
+	num, err := parseUID(ref.ID)
+	if err != nil {
+		return mailbox.Ref{}, err
+	}
+	dest, ok := c.folders[to]
+	if !ok {
+		return mailbox.Ref{}, fmt.Errorf("%w: %s", ErrNoSuchFolder, to)
+	}
+	if err := c.selectFolder(ref.Folder); err != nil {
+		return mailbox.Ref{}, err
+	}
+	set := imapv2.UIDSetNum(num)
+	found, err := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}, nil).Wait()
+	if err != nil {
+		return mailbox.Ref{}, fmt.Errorf("imap: look for uid %s in %q: %w", ref.ID, ref.Folder, err)
+	}
+	if len(found.AllUIDs()) == 0 {
+		return mailbox.Ref{}, ErrMessageGone
+	}
+	if dest == c.selected {
+		return ref, nil
+	}
+	data, err := c.c.Move(set, dest).Wait()
+	if err != nil {
+		return mailbox.Ref{}, fmt.Errorf("imap: move to %q: %w", dest, err)
+	}
+	landed := mailbox.InFolder(dest, "")
+	if data != nil {
+		if uids, ok := data.DestUIDs.(imapv2.UIDSet); ok {
+			if nums, ok := uids.Nums(); ok && len(nums) == 1 {
+				landed.ID = strconv.FormatUint(uint64(nums[0]), 10)
+			}
+		}
+	}
+	if landed.ID == "" && headerMessageID != "" {
+		landed.ID = c.findByMessageID(dest, headerMessageID)
+	}
+	return landed, nil
+}
+
+// findByMessageID returns the highest UID in folder whose Message-ID header
+// is id, or "" when none or on error.
+func (c *Client) findByMessageID(folder, id string) string {
+	if err := c.selectFolder(folder); err != nil {
+		return ""
+	}
+	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{
+		Header: []imapv2.SearchCriteriaHeaderField{{Key: "Message-ID", Value: id}},
+	}, nil).Wait()
+	if err != nil {
+		return ""
+	}
+	uids := res.AllUIDs()
+	if len(uids) == 0 {
+		return ""
+	}
+	best := uids[0]
+	for _, u := range uids[1:] {
+		if u > best {
+			best = u
+		}
+	}
+	return strconv.FormatUint(uint64(best), 10)
 }
 
 // storeFlags issues the add and the remove as separate STORE commands, because

@@ -12,6 +12,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -242,15 +243,38 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
-	if err != nil {
-		writeAuthError(w, err)
-		return
-	}
-
-	if err := h.applyInverseAction(gmailClient, entry.MessageID, inverse); err != nil {
-		writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
-		return
+	if transport, _, err := h.transportFor(ctx, userEmail); err == nil && transport == provider.TransportIMAP {
+		// On IMAP the inverse goes through the session: a moved message is
+		// fetched back from where Mailsorter put it (mirroredIMAP), by the
+		// number it had in the inbox, which is what the entry recorded.
+		session, err := h.openSession(ctx, userEmail)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		defer session.Close()
+		err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, entry.MessageID), inverse, "")
+		switch {
+		case errors.Is(err, errNotWhereLeft):
+			writeError(w, http.StatusNotFound, notWhereLeftMessage)
+			return
+		case errors.Is(err, mailbox.ErrNoIMAPEquivalent):
+			writeTransportError(w)
+			return
+		case err != nil:
+			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
+			return
+		}
+	} else {
+		gmailClient, err := h.gmailClientFor(ctx, userEmail)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		if err := h.applyInverseAction(gmailClient, entry.MessageID, inverse); err != nil {
+			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
+			return
+		}
 	}
 
 	h.db.ActionLog().UpdateOne(ctx,

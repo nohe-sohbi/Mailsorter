@@ -74,9 +74,14 @@ type Email struct {
 	// IMAP transport, where it is half of the message's identity: a UID means
 	// nothing without the folder it is a UID in. Empty on the Gmail API, whose
 	// message ids name a message on the account.
-	Folder       string    `json:"folder,omitempty" bson:"folder,omitempty"`
-	ReceivedDate time.Time `json:"receivedDate" bson:"receivedDate"`
-	IsRead       bool      `json:"isRead" bson:"isRead"`
+	Folder string `json:"folder,omitempty" bson:"folder,omitempty"`
+	// HeaderMessageID is the message's Message-ID header, set on the IMAP
+	// transport: the one name a message keeps when it moves to another folder
+	// and gets a new UID there, used to find it again when the server does not
+	// say where it landed.
+	HeaderMessageID string    `json:"-" bson:"headerMessageId,omitempty"`
+	ReceivedDate    time.Time `json:"receivedDate" bson:"receivedDate"`
+	IsRead          bool      `json:"isRead" bson:"isRead"`
 	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.
 	UnsubURL      string    `json:"unsubUrl,omitempty" bson:"unsubUrl,omitempty"`
 	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`

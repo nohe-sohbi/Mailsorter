@@ -643,6 +643,10 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		writeTransportError(w)
 		return
 	}
+	if errors.Is(err, errNotWhereLeft) {
+		writeError(w, http.StatusNotFound, notWhereLeftMessage)
+		return
+	}
 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "L'action n'a pas pu être appliquée : "+err.Error())
