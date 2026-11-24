@@ -954,7 +954,7 @@ function Settings() {
   // Over IMAP the daily recap and the rules at sync are not available yet:
   // the recap card is hidden, and the sync card does not promise the rules.
   // The Gmail card is for a mailbox connected through the Gmail API only.
-  const { mailbox, known, isGmail, fullFeatures } = useMailbox();
+  const { mailbox, known, failed, isGmail, fullFeatures } = useMailbox();
   const { isConfigured } = useInstance();
   const gmailCard = isGmail && isConfigured;
   const [settings, setSettings] = useState(null);
@@ -1036,7 +1036,7 @@ function Settings() {
 
       <AISettingsCard />
       {gmailCard && <GmailAccount address={mailbox?.username} />}
-      <MailboxAccount mailbox={mailbox} loading={!known} />
+      <MailboxAccount mailbox={mailbox} loading={!known && !failed} failed={failed} />
       <ProtectedSenders />
     </div>
   );
@@ -1048,7 +1048,9 @@ function Settings() {
 // Google offering them none.
 // The mailbox comes from the shared useMailbox() answer the rest of the screen
 // reads, rather than a second request of its own.
-function MailboxAccount({ mailbox, loading }) {
+// `failed`: the question could not be asked, which says nothing about the
+// mailbox, so the card does not claim there is none.
+function MailboxAccount({ mailbox, loading, failed }) {
   return (
     <div className="card animate-fade-up mt-6 p-7">
       <div className="mb-1 flex items-center gap-2">
@@ -1071,12 +1073,14 @@ function MailboxAccount({ mailbox, loading }) {
           <p className="text-xs font-bold uppercase tracking-wider text-ink-500">Branchée</p>
           <p className="mt-1 break-all font-mono text-sm text-ink-800">{mailbox.username}</p>
         </div>
+      ) : failed ? (
+        <p className="text-sm text-muted">La boîte branchée n'a pas pu être lue pour le moment.</p>
       ) : (
         <p className="text-sm text-muted">Aucune boîte branchée pour l'instant.</p>
       )}
 
       <Link to="/connect" className="btn-secondary mt-6">
-        {mailbox ? 'Gérer la boîte' : 'Brancher une boîte'} <ChevronRight size={16} />
+        {mailbox || failed ? 'Gérer la boîte' : 'Brancher une boîte'} <ChevronRight size={16} />
       </Link>
     </div>
   );

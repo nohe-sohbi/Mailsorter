@@ -4,6 +4,9 @@ import { emailService, aiService, senderService, subscriptionService, mailboxSer
 const EmailContext = createContext(null);
 
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+// How long a screen left open waits before asking again which mailbox this is,
+// after GET /api/mailbox failed.
+const MAILBOX_RETRY_MS = 30 * 1000;
 export const DEFAULT_QUERY = 'in:inbox';
 
 export function EmailProvider({ children }) {
@@ -237,24 +240,45 @@ export function EmailProvider({ children }) {
   // The mailbox this account reads (GET /api/mailbox), fetched once and only
   // when a screen asks for it through useMailbox(): this provider also sits
   // above the public pages, where there is no session to ask with. `undefined`
-  // means not known yet, `null` means no mailbox (or the call failed).
+  // means not known yet, `null` means no mailbox.
+  //
+  // A failed call is NOT an answer. It used to set `null`, which read as "no
+  // mailbox, so not IMAP" for the rest of the session: one passing outage and
+  // an IMAP user got the Gmail-only controls back until the next reload. So a
+  // failure leaves the mailbox unknown and raises `mailboxFailed`, and the
+  // question is asked again by the next screen that needs it, or after
+  // MAILBOX_RETRY_MS on the one still open.
   const [mailbox, setMailbox] = useState(undefined);
+  const [mailboxFailed, setMailboxFailed] = useState(false);
   const mailboxRequestRef = useRef(null);
+  const mailboxRetryRef = useRef(null);
+  // Only the latest request may answer: a forced reload (after a connect or a
+  // disconnect) must not be overwritten by a slower request about the mailbox
+  // as it was before.
+  const mailboxSeqRef = useRef(0);
   const loadMailbox = useCallback(({ force = false } = {}) => {
     if (mailboxRequestRef.current && !force) return mailboxRequestRef.current;
+    clearTimeout(mailboxRetryRef.current);
+    // A forced reload follows a change of mailbox: until it answers, what was
+    // known is no longer true.
+    if (force) setMailbox(undefined);
+    const seq = ++mailboxSeqRef.current;
     mailboxRequestRef.current = mailboxService
       .get()
       .then(({ data }) => {
+        if (seq !== mailboxSeqRef.current) return;
         setMailbox(data?.mailbox || null);
+        setMailboxFailed(false);
       })
       .catch(() => {
-        // Unknown is treated as "not IMAP", which is what every screen did
-        // before it could tell. A later screen gets to ask again.
+        if (seq !== mailboxSeqRef.current) return;
         mailboxRequestRef.current = null;
-        setMailbox(null);
+        setMailboxFailed(true);
+        mailboxRetryRef.current = setTimeout(() => loadMailbox(), MAILBOX_RETRY_MS);
       });
     return mailboxRequestRef.current;
   }, []);
+  useEffect(() => () => clearTimeout(mailboxRetryRef.current), []);
 
   const markUnsubscribed = useCallback((senderEmail) => {
     setSubscriptions((prev) =>
@@ -286,6 +310,7 @@ export function EmailProvider({ children }) {
     markUnsubscribed,
     isCacheValid,
     mailbox,
+    mailboxFailed,
     loadMailbox,
   };
 
@@ -343,15 +368,18 @@ export function useEmails() {
 // The connected mailbox and what it can do, for the signed-in screens. One
 // request per session, shared by every screen that asks.
 //
-// `isImap` is the one that changes the screens: over IMAP only reading and the
-// AI's archive / delete / keep work today, and every Gmail-only control is
-// hidden (see GMAIL_ONLY in components/landing/features.js).
-// `fullFeatures` is what a Gmail-only control checks: true once the answer is
-// in and the mailbox is not IMAP. Waiting for the answer costs a Gmail account
-// a fraction of a second; not waiting flashed controls at an IMAP user that
-// would answer "not available" once clicked.
+// `isImap` is true only once the server has said so: it is what a sentence
+// about IMAP checks ("pas encore disponible sur les boîtes IMAP").
+// `fullFeatures` is what a Gmail-only control checks (see GMAIL_ONLY in
+// components/landing/features.js): true once the answer is in and the mailbox
+// is not IMAP. While the answer is not in, or the request failed, it is false,
+// so a control the server may refuse is never offered on a guess.
+// `known` is the answer being in, `failed` the last request having failed,
+// and `settled` either of the two: what a screen waits for before drawing the
+// controls that depend on it (RequireMailbox in App.js), so they do not appear
+// or vanish under the user's eyes.
 export function useMailbox() {
-  const { mailbox, loadMailbox } = useEmails();
+  const { mailbox, mailboxFailed, loadMailbox } = useEmails();
   useEffect(() => {
     if (mailbox === undefined) loadMailbox();
   }, [mailbox, loadMailbox]);
@@ -360,6 +388,8 @@ export function useMailbox() {
   return {
     mailbox: mailbox || null,
     known,
+    failed: !known && mailboxFailed,
+    settled: known || mailboxFailed,
     transport: mailbox?.transport || null,
     isImap,
     isGmail: mailbox?.transport === 'gmail',

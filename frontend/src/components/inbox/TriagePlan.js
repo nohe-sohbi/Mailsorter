@@ -71,8 +71,10 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   const { suggestions, removeSuggestions, restoreSuggestions, removeEmails, fetchData } = useEmails();
   // Over IMAP a label verdict does nothing on the server, and rules are never
   // applied: neither is offered as an action there (landing/features.js).
-  const { isImap } = useMailbox();
-  const canApply = useCallback((g) => canApplyVerdict(g.action, isImap), [isImap]);
+  // The same rule as the other screens: a mailbox not known yet, or whose
+  // answer failed, is treated as one that cannot (`fullFeatures`).
+  const { fullFeatures } = useMailbox();
+  const canApply = useCallback((g) => canApplyVerdict(g.action, !fullFeatures), [fullFeatures]);
   const [applyingAll, setApplyingAll] = useState(false);
   const [ruling, setRuling] = useState(null);
   // Group keys a rule was created from in this visit, so the button says it is
@@ -268,7 +270,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
     groups,
     totals,
     canApply,
-    rulesAvailable: !isImap,
+    rulesAvailable: fullFeatures,
     applyingAll,
     ruling,
     ruled,

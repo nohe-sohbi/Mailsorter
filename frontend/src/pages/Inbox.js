@@ -230,8 +230,10 @@ function Inbox() {
   // Every control the server would answer "not available" to is hidden, not
   // disabled (the one rule, see IMAP_UNAVAILABLE in landing/features.js), and
   // undo is never offered: the server cannot put an IMAP message back yet.
-  // `fullFeatures` waits for the answer, so an IMAP user never sees them flash.
-  const { isImap, fullFeatures } = useMailbox();
+  // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
+  // and stays false when that answer failed: a guess offers nothing the server
+  // may refuse. `isImap` is only for what is said about IMAP.
+  const { isImap, known, fullFeatures } = useMailbox();
   const can = (feature) => canPromise(feature, fullFeatures);
   const quickFilters = QUICK_FILTERS.filter((f) => fullFeatures || !f.gmailOnly);
   const statCards = STAT_CARDS.filter((c) => fullFeatures || !c.gmailOnly);
@@ -323,9 +325,12 @@ function Inbox() {
   const readerIsOverlay = Boolean(selectedEmail) && isNarrow;
   useScrollLock(readerIsOverlay);
 
+  // Opened once the mailbox is known, not at mount: its levers depend on it,
+  // and a dialog opened on a guess grew from two levers to four, renumbering
+  // the hotel's plaques under the reader's eyes.
   useEffect(() => {
-    if (!localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
-  }, []);
+    if (known && !localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
+  }, [known]);
 
   // A selection is scoped to the list that produced it. Keeping it across a
   // query change meant "Archiver la sélection" could act on messages that were
@@ -381,10 +386,10 @@ function Inbox() {
   const suggestionByEmail = useMemo(() => {
     const map = new Map();
     suggestions.forEach((s) => {
-      if (s.action !== 'keep' && canApplyVerdict(s.action, isImap)) map.set(s.emailId, s);
+      if (s.action !== 'keep' && canApplyVerdict(s.action, !fullFeatures)) map.set(s.emailId, s);
     });
     return map;
-  }, [suggestions, isImap]);
+  }, [suggestions, fullFeatures]);
 
   // Avatars: the classic fills, or the hotel's inked discs with initials.
   const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
@@ -413,8 +418,9 @@ function Inbox() {
   // --- Undo helper ---------------------------------------------------------
   // Not over IMAP: a moved message changes its id there, and putting it back
   // is not written yet, so an "Annuler" would announce an undo that did nothing.
+  // Nor while the mailbox is not known.
   const undoToast = (messageId, action, message) => {
-    if (isImap) {
+    if (!fullFeatures) {
       toast.success(message);
       return;
     }
@@ -1346,7 +1352,7 @@ function Inbox() {
     : null;
   // A verdict this mailbox cannot apply (a label over IMAP) is shown with its
   // reason and "Ignorer", without the button that would do nothing.
-  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, isImap);
+  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, !fullFeatures);
 
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
