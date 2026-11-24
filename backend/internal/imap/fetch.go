@@ -102,6 +102,13 @@ func wholeMessage(msg *imapclient.FetchMessageBuffer) []byte {
 // reader. Falling back to the HTML when there is no plain part is what stops a
 // marketing email, which routinely ships HTML only, from rendering blank.
 func bodies(raw []byte) (plain, html string) {
+	return readBodies(raw, false)
+}
+
+// readBodies is bodies, on a whole message or (cut) on its first bytes only,
+// as Texts reads it: there the last part read may end mid-way, and what was
+// read of it is kept rather than dropped.
+func readBodies(raw []byte, cut bool) (plain, html string) {
 	reader, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil {
 		// Not every sender produces something the parser accepts. A message that
@@ -125,7 +132,7 @@ func bodies(raw []byte) (plain, html string) {
 			continue
 		}
 		content, err := io.ReadAll(io.LimitReader(part.Body, maxBodyBytes))
-		if err != nil {
+		if err != nil && !(cut && len(content) > 0) {
 			continue
 		}
 		mediaType, _, _ := header.ContentType()

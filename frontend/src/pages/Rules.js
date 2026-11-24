@@ -119,10 +119,10 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
   );
 }
 
-// `labelsOk` is false where rules do not run (IMAP, or not known yet):
-// "Étiqueter" and "Mettre en favori" are then not offered for a new action.
-// An action that already does one (an imported rule) keeps its choice, so the
-// list can still show it.
+// `labelsOk` is false where a rule cannot label (IMAP, where a message sits in
+// one folder, or a mailbox not known yet): "Étiqueter" is then not offered for
+// a new action. An action that already labels (an imported rule) keeps its
+// choice, so the list can still show it.
 function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, labelsOk }) {
   const [rule, setRule] = useState(initial);
   const toast = useToast();
@@ -152,10 +152,8 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
   // Actions already chosen can't be picked again (except "label", which can
   // repeat with different names), which keeps the combo meaningful.
   const usedTypes = new Set(rule.actions.map((a) => a.type));
-  // The label has no IMAP equivalent (a message sits in one folder). The star
-  // has one, but rules do not run over IMAP yet: it joins the editor there
-  // when they do.
-  const gmailOnly = (type) => type === 'label' || type === 'star';
+  // The label has no IMAP equivalent (a message sits in one folder).
+  const gmailOnly = (type) => type === 'label';
   const offered = (type, current) => {
     if (gmailOnly(type) && !labelsOk && current !== type) return false;
     return type === 'label' || type === current || !usedTypes.has(type);
@@ -449,14 +447,15 @@ function Rules() {
   // Distinct from `labels.length`: tant que l'appel n'a pas abouti, on ne peut
   // pas affirmer qu'un libellé saisi n'existe pas.
   const [labelsKnown, setLabelsKnown] = useState(false);
-  // Rules run through the Gmail API only: over IMAP the preview, "Appliquer
-  // maintenant" and the run at each sync answer 501, so they are hidden and the
-  // page says so once. Writing rules still works, so the page then describes
-  // what a rule says, never that it sorts by itself, and offers no label (a
-  // message sits in one folder). The quota is mentioned only where there is
-  // one. `rulesRun` is false too while the mailbox is not known.
-  const { isImap, fullFeatures } = useMailbox();
-  const rulesRun = fullFeatures;
+  // Rules run on both transports: the preview, "Appliquer maintenant" and the
+  // run at each sync (over IMAP it sorts the mails that arrive). A rule labels
+  // on the Gmail API only (`labelsOk`): over IMAP a message sits in one
+  // folder. The quota is mentioned only where there is one. While the mailbox
+  // is not known, the page describes what a rule says, never that it sorts by
+  // itself (`rulesRun`).
+  const { known, fullFeatures } = useMailbox();
+  const rulesRun = known;
+  const labelsOk = fullFeatures;
   const { selfHosted } = useInstance();
 
   const load = () => {
@@ -726,18 +725,6 @@ function Rules() {
         </div>
       )}
 
-      {isImap && (
-        <div className="card mb-5 flex items-start gap-3 p-4">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-muted">
-            <Bolt size={18} />
-          </span>
-          <p className="text-sm text-ink-600">
-            Les règles ne s'appliquent pas encore sur les boîtes IMAP : vous pouvez les écrire ici, mais ni
-            l'aperçu ni l'application, à la demande ou à chaque synchronisation, ne sont disponibles.
-          </p>
-        </div>
-      )}
-
       {hasRules && rulesRun && (
         <div className="card mb-5 flex items-center gap-3 p-4">
           <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', autoApply ? 'bg-brand-50 text-brand-600' : 'bg-ink-100 text-muted')}>
@@ -806,7 +793,7 @@ function Rules() {
             saving={saving}
             labels={labels}
             labelsKnown={labelsKnown}
-            labelsOk={rulesRun}
+            labelsOk={labelsOk}
             onCancel={() => setEditing(null)}
             onSave={save}
           />
@@ -829,13 +816,13 @@ function Rules() {
               !rulesRun
                 ? "Une règle dit quoi faire de ce qui revient chaque semaine (l'archiver, le supprimer, le marquer comme lu). Sans IA."
                 : selfHosted
-                ? 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA.'
-                : 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota.'
+                ? `Une règle ${labelsOk ? 'archive, étiquette ou supprime' : 'archive, supprime ou met en favori'} toute seule ce qui revient chaque semaine. Sans IA.`
+                : `Une règle ${labelsOk ? 'archive, étiquette ou supprime' : 'archive, supprime ou met en favori'} toute seule ce qui revient chaque semaine. Sans IA, sans quota.`
             }
             title="Aucune règle pour l'instant"
             description={
               rulesRun
-                ? 'Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents.'
+                ? `Créez votre première règle pour ${labelsOk ? 'archiver, étiqueter ou supprimer' : 'archiver, supprimer ou mettre en favori'} automatiquement les emails récurrents.`
                 : 'Créez votre première règle pour dire quoi faire des emails récurrents : les archiver, les supprimer ou les marquer comme lus.'
             }
             action={<button onClick={() => setEditing('new')} className="btn-primary">+ Créer une règle</button>}
@@ -858,7 +845,7 @@ function Rules() {
                 saving={saving}
                 labels={labels}
                 labelsKnown={labelsKnown}
-                labelsOk={rulesRun}
+                labelsOk={labelsOk}
                 onCancel={() => setEditing(null)}
                 onSave={save}
               />

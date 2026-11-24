@@ -498,18 +498,19 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// syncInbox pulls the user's inbox into MongoDB and, when the user opted into
-// rule autopilot, applies their deterministic rules to each freshly synced email
-// (instant, AI-free, quota-free). It is shared by the manual SyncEmails handler
-// and the background auto-sync scheduler so both behave identically. It returns
-// how many emails were persisted, how many were seen, and how many had a rule
-// applied.
 // syncInbox mirrors the caller's inbox into Mongo, through whichever transport
-// their mailbox is reached by.
+// their mailbox is reached by, and, when the user opted into rule autopilot
+// (autoApplyRules), applies their deterministic rules (instant, AI-free,
+// quota-free). It is shared by the manual SyncEmails handler and the
+// background auto-sync scheduler so both behave identically. It returns how
+// many emails were persisted, how many were seen, and how many had a rule
+// applied.
 //
 // This is the fork the whole edition split was for. Everything above it (the
 // handler, the auto-sync loop) asks for a sync and gets one; only this function
-// knows there are two ways to perform it.
+// knows there are two ways to perform it. The rules do not judge the same
+// messages on both: every message listed over the Gmail API, only the ones
+// that arrive over IMAP (see syncInboxIMAP).
 func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
 	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
@@ -518,16 +519,13 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 	defer session.Close()
 
 	if session.Transport == provider.TransportIMAP {
-		// Rules do not run on this half yet, so the count is zero rather than a
-		// number the user cannot trust. See syncInboxIMAP.
-		synced, total, err = h.syncInboxIMAP(ctx, userEmail, session)
-		return synced, total, 0, err
+		return h.syncInboxIMAP(ctx, userEmail, session)
 	}
-	return h.syncInboxGmail(ctx, userEmail, session.gmail)
+	return h.syncInboxGmail(ctx, userEmail, session)
 }
 
-func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailClient *gmailapi.Service) (synced, total, rulesApplied int, err error) {
-	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 100)
+func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session *mailSession) (synced, total, rulesApplied int, err error) {
+	messages, err := h.gmailService.ListMessages(session.gmail, "in:inbox", 100)
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -575,7 +573,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 
 		if len(autoRules) > 0 {
 			if match := rules.FirstMatch(email, autoRules); match != nil {
-				appliedActs, _ := h.applyRuleToMessage(ctx, gmailClient, userEmail, msg.Id, email.From, *match, protectedList, labelCache)
+				appliedActs, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
 				if len(appliedActs) > 0 {
 					rulesApplied++
 					byRule[match.Name]++
@@ -587,13 +585,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 		}
 	}
 
-	// Persist per-rule application counts (best-effort).
-	for name, n := range byRule {
-		h.db.SortingRules().UpdateOne(ctx,
-			bson.M{"userId": userEmail, "name": name},
-			bson.M{"$inc": bson.M{"appliedCount": n}},
-		)
-	}
+	h.countRuleHits(ctx, userEmail, byRule)
 
 	return synced, len(messages), rulesApplied, nil
 }

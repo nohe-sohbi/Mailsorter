@@ -98,6 +98,50 @@ func EffectiveActions(rule models.SortingRule) []models.RuleAction {
 	return []models.RuleAction{{Type: rule.Action, LabelName: rule.LabelName}}
 }
 
+// ApplyOrder returns a rule's actions in the order they are performed on a
+// mail: first what changes the mail where it is (mark read, star, label), in
+// the order written, then what moves it out of the inbox (archive, trash).
+// The order written is how the editor shows the rule, not what it does: over
+// IMAP a mail that changes folders takes a new number there, so an action
+// written after the move would name nothing, and a rule "archive, then star"
+// would archive without starring. On the Gmail API the order changes nothing.
+func ApplyOrder(actions []models.RuleAction) []models.RuleAction {
+	out := make([]models.RuleAction, 0, len(actions))
+	var moves []models.RuleAction
+	for _, a := range actions {
+		if a.Type == ActionArchive || a.Type == ActionTrash {
+			moves = append(moves, a)
+			continue
+		}
+		out = append(out, a)
+	}
+	return append(out, moves...)
+}
+
+// ReadsText says whether a ruleset reads the text of a mail: an enabled rule
+// with a condition on the body or the snippet that can match. A listing that
+// does not carry the text (the stored copy of an IMAP inbox keeps none) has
+// to read it for such a ruleset, and only for one: without it, "the body
+// contains" would match nothing and "the body does not contain" everything.
+// A temporal condition reads the received date whatever its field.
+func ReadsText(ruleset []models.SortingRule) bool {
+	for _, rule := range ruleset {
+		if !rule.Enabled {
+			continue
+		}
+		for _, c := range rule.Conditions {
+			if temporalOperators[c.Operator] || strings.TrimSpace(c.Value) == "" {
+				continue
+			}
+			switch strings.ToLower(c.Field) {
+			case FieldBody, FieldSnippet:
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // primaryAction returns the type and label of the first action, used to populate
 // the legacy single-action fields for back-compat. Empty for an empty list.
 func primaryAction(acts []models.RuleAction) (action, labelName string) {

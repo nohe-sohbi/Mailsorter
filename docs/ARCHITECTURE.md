@@ -55,6 +55,11 @@ syncInbox(compte)
           un déplacement en cours ou postérieur à la lecture attend la synchro suivante
        -> les propositions de l'IA sur ce qui est parti passent "moot" (hors du tri proposé)
        -> upsert dans emails avec le dossier, qui fait partie de l'identité d'un UID
+       -> si autoApplyRules : les règles sur les mails qui arrivent, ceux que la copie ne
+          connaissait pas (un mail remis par "Annuler" ou par un autre logiciel n'en est
+          pas un : son numéro ou son Message-ID le reconnaît) ; leur texte lu en PEEK
+          si une règle le regarde ; lu et favori avant le rangement, expéditeurs
+          protégés épargnés, entrée au journal (source "rule")
        -> les mails en favori que la copie n'a pas encore (un ancien favori), 500 au
           plus par synchro, les plus récents d'abord
        -> lu, favori et taille remis à jour sur chaque mail de la copie, ancien compris ;
@@ -66,7 +71,6 @@ syncInbox(compte)
           phase) ; un mail illisible seul est noté structureUnreadable, sans pièce
           jointe, et n'est plus redemandé ; un refus du serveur ou un délai ne conclut
           rien sur aucun mail : la synchro répond une erreur, la suivante relit
-       -> aucune règle : rulesApplied vaut 0
   -> { synced, total, rulesApplied }
 ```
 

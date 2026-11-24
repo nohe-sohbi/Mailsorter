@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -213,4 +215,36 @@ func TestAcceptance_StaleUndoAfterTheMailWasArchivedAgain(t *testing.T) {
 		app.failf("« Annuler » sur l'ancienne ligne, une fois le mail archivé de nouveau, devrait répondre 409 « Action déjà annulée », il a répondu %d : %v", got.code, got.body)
 	}
 	moi.expectOnServer(serverArchive, subject)
+}
+
+// A mail a rule archived at the sync that received it, moved back into the
+// inbox by another mail program (the person's phone): the server numbers it
+// anew there, a number the copy does not know. Only its Message-ID says it is
+// not a mail that arrives, and the rules a sync applies on its own leave it
+// where the person put it, at the next syncs, while still sorting a mail that
+// does arrive.
+func TestAcceptance_AutoRulesLeaveAMailMovedBackElsewhere(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+	moi.setAutoApplyRules(true)
+
+	moi.receive(shopOrder)
+	moi.sync()
+	moi.requireOnServer(serverArchive, shopOrder.Subject, "la règle vient de l'archiver à la synchronisation qui l'a reçu")
+
+	moi.movedFromElsewhere(serverArchive, shopOrder.Subject, serverInbox)
+	moi.requireOnServer(serverInbox, shopOrder.Subject, "un autre logiciel vient de le remettre dans la boîte de réception")
+	moi.sync()
+	moi.receive(shopSale)
+	moi.sync()
+
+	why := "un autre logiciel l'a remis dans la boîte de réception : la règle ne doit pas le ranger de nouveau"
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	moi.expectNotOnServer(serverArchive, shopOrder.Subject, why)
+	if !moi.shows(shopOrder.Subject) {
+		app.failf("la boîte de réception de %s devrait montrer le mail %q (%s), elle ne le montre pas", moi.email, shopOrder.Subject, why)
+	}
+	moi.expectOnServer(serverArchive, shopSale.Subject)
+	moi.expectNotOnServer(serverInbox, shopSale.Subject, "il est arrivé ensuite, la règle l'archive à la synchronisation qui le reçoit")
 }

@@ -99,9 +99,9 @@ function AutoSyncSettings({ settings, onSaved, rulesRun }) {
         </span>
         <h2 className="text-lg font-bold text-ink-900">Synchronisation automatique</h2>
       </div>
-      {/* The rules half of this sentence holds only where rules run at sync,
-          which is the Gmail API: over IMAP the sync fetches the mail and nothing
-          else. */}
+      {/* The rules half of this sentence holds once the mailbox is known: the
+          rules run at sync on both transports (over IMAP, on the mails that
+          arrive). */}
       <p className="mb-5 text-sm text-muted">
         Laissez Mailsorter <span className="font-semibold text-ink-700">synchroniser votre boîte en arrière-plan</span>,
         sans aucun clic.
@@ -952,12 +952,12 @@ function AISettingsCard() {
 
 function Settings() {
   const hotel = useHotel();
-  // Over IMAP the rules at sync are not available yet: the sync card does not
-  // promise them. The recap leaves from either transport (the Gmail API, or
-  // the sending server of an IMAP mailbox), so its card waits only for the
-  // answer about the mailbox. The Gmail card is for a mailbox connected
-  // through the Gmail API only.
-  const { mailbox, known, failed, isGmail, fullFeatures } = useMailbox();
+  // The rules at sync and the recap work on either transport (the recap
+  // leaves through the Gmail API, or the sending server of an IMAP mailbox),
+  // so the sync card and the recap card wait only for the answer about the
+  // mailbox. The Gmail card is for a mailbox connected through the Gmail API
+  // only.
+  const { mailbox, known, failed, isGmail } = useMailbox();
   const { isConfigured } = useInstance();
   const gmailCard = isGmail && isConfigured;
   const recapCard = known;
@@ -1000,11 +1000,9 @@ function Settings() {
           floor="/settings"
           title="Réglages"
           sub={
-            fullFeatures
+            recapCard
               ? "Le tri en arrière-plan, le récap du matin, votre boîte et les expéditeurs qu'on ne touche pas."
-              : recapCard
-                ? "La synchronisation en arrière-plan, le récap du matin, votre boîte et les expéditeurs qu'on ne touche pas."
-                : "La synchronisation en arrière-plan, l'IA, votre boîte et les expéditeurs qu'on ne touche pas."
+              : "La synchronisation en arrière-plan, l'IA, votre boîte et les expéditeurs qu'on ne touche pas."
           }
         />
       ) : (
@@ -1034,7 +1032,7 @@ function Settings() {
       ) : (
         settings && (
           <>
-            <AutoSyncSettings settings={settings} onSaved={applySaved} rulesRun={fullFeatures} />
+            <AutoSyncSettings settings={settings} onSaved={applySaved} rulesRun={known} />
             {recapCard && <DigestSettings settings={settings} onSaved={applySaved} gmailCard={gmailCard} />}
           </>
         )

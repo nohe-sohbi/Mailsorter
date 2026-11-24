@@ -237,7 +237,7 @@ export const ruleService = {
   updateRule: (id, rule) => apiClient.put(`/api/rules/${id}`, rule),
   deleteRule: (id) => apiClient.delete(`/api/rules/${id}`),
   apply: () => apiClient.post('/api/rules/apply'),
-  // Dry run: report what the rules WOULD do, without touching Gmail.
+  // Dry run: report what the rules WOULD do, without touching the mailbox.
   preview: () => apiClient.post('/api/rules/preview'),
   // Order is the engine's semantics (first match wins), so it is edited as a
   // whole list rather than one number at a time.

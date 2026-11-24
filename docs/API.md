@@ -359,11 +359,17 @@ ones it listed. The background sync (`autoSyncEnabled`) runs the same code.
 Over IMAP, `500` when the mirror could not be brought in line with the inbox
 (the listing itself is stored).
 
-Over the Gmail API, when `autoApplyRules` is on, the deterministic rules run on
-each synced message (protected senders shielded, each action journaled with
-source `rule`), and `rulesApplied` counts the messages a rule acted on. Over
-IMAP rules do not run and `rulesApplied` is `0`; the listing reads the messages
-with PEEK, so syncing never marks them read.
+When `autoApplyRules` is on, the deterministic rules run at the sync
+(protected senders shielded, each action journaled with source `rule`), and
+`rulesApplied` counts the messages a rule acted on. Over the Gmail API they run
+on each synced message. Over IMAP they run on the messages that arrive: the
+ones this sync stores for the first time. A message the stored copy already
+held is not one, so turning the option on sorts nothing already in the inbox
+(`POST /api/rules/apply` does), and neither is a message coming back under a
+new number (put back by "Annuler", or by another mail program), which its
+Message-ID gives away. A rule on `body` or `snippet` reads the text of those
+messages from the server first. The listing, and that text, are read with
+PEEK, so syncing never marks a message read.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -817,7 +823,7 @@ mailbox is on IMAP, rather than acting on the wrong message.
 
 | Works on IMAP | Answers 501 on IMAP |
 |---|---|
-| `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
+| `POST /api/emails/sync` (rules on the messages that arrive), `POST /api/rules/apply`, `POST /api/rules/preview` (on the stored mailbox, see "Sorting Rules Endpoints") | a rule's `label` action (skipped, the rule's other actions run) |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
 | `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
 | `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
@@ -827,8 +833,6 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
 | `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `GET /api/labels`, `POST /api/smart-labels` |
-
-A rule can be created on an IMAP account, but nothing runs it there.
 
 ### The listing is served from the stored mailbox on IMAP
 
@@ -1254,7 +1258,8 @@ mailbox: through the Gmail API, or through the sending server of a mailbox
 connected over IMAP (see `POST /api/account/digest/test`).
 When `autoSyncEnabled` is true, a background scheduler syncs the inbox at most
 every 30 minutes with no manual click, and applies rules when `autoApplyRules`
-is on (Gmail API only). Returns the full, merged settings.
+is on (over IMAP, to the messages that arrive: see `POST /api/emails/sync`).
+Returns the full, merged settings.
 
 > On the Gmail API, accounts connected before the digest feature must
 > **reconnect Gmail** to grant the `gmail.send` scope before delivery can succeed.
@@ -1794,8 +1799,8 @@ and any learned preference. Reads the datastore only.
 
 Turn a sender into a permanent deterministic rule: every email whose `From`
 contains the sender gets the action whenever the rules run (at sync time with
-`autoApplyRules`, or on `POST /api/rules/apply`; Gmail API only, see "Sorting
-Rules Endpoints").
+`autoApplyRules`, or on `POST /api/rules/apply`, see "Sorting Rules
+Endpoints").
 
 **Request body:**
 ```json
@@ -1823,15 +1828,24 @@ section for its shape).
 ## Sorting Rules Endpoints
 
 Deterministic, **AI-free** triage. A rule pairs conditions with an action; when
-the conditions match an email, the action is applied directly via Gmail: no
-model call, no quota consumed. Rules are the free, predictable complement to the
-AI suggestions, and the AI analysis does not consult them.
+the conditions match an email, the action is applied directly to the mailbox:
+no model call, no quota consumed. Rules are the free, predictable complement to
+the AI suggestions, and the AI analysis does not consult them.
 
-Rules run in two places only: at sync time when `autoApplyRules` is on, and on
-`POST /api/rules/apply`. Both are Gmail API only: over IMAP the sync skips them
-and `apply` / `preview` answer `501`. Creating, editing, reordering, exporting
-and importing rules read and write the datastore only and answer on both
-transports.
+Rules run in two places only: at sync time when `autoApplyRules` is on (see
+`POST /api/emails/sync`: over IMAP, on the messages that arrive), and on
+`POST /api/rules/apply`, both transports. Creating, editing, reordering,
+exporting and importing rules read and write the datastore only.
+
+Over IMAP, `apply` and `preview` judge the stored copy of the inbox, what the
+inbox screen shows (see "The listing is served from the stored mailbox on
+IMAP"): a message moved out of the inbox is not there, and one that arrived
+since the last sync not yet. The copy keeps no text, so when an enabled rule
+has a condition on `body` or `snippet`, the text of those messages is read from
+the server, with PEEK (the messages stay unread), the first 256 KiB of each,
+20 messages a FETCH; a message whose text cannot be read is left out, and a
+read the server stops fails the request (`502`). A `label` action is skipped
+there (a message sits in one folder); the rule's other actions run.
 
 A rule has the shape:
 
@@ -1865,11 +1879,15 @@ A rule has the shape:
   `regex`); temporal: `olderThan` / `newerThan`, whose `value` is a **number of
   days** compared against the email's received date (an undated email never
   matches a temporal condition).
-- **`actions`** : an **ordered list** of actions applied in sequence (e.g.
-  *label* then *archive*). Each is `{ "type": ..., "labelName": ... }` where
-  `type` is `archive`, `trash`, `label` (requires `labelName`), `markRead` or
-  `star`. A protected (VIP) sender has destructive actions (archive/trash)
-  skipped while non-destructive actions in the same rule still run.
+- **`actions`** : an **ordered list** of actions, all applied (e.g. *label*
+  and *archive*). Each is `{ "type": ..., "labelName": ... }` where `type` is
+  `archive`, `trash`, `label` (requires `labelName`), `markRead` or `star`.
+  The ones that change the message where it is (`label`, `markRead`, `star`)
+  run first, in the order written, then the ones that move it out of the inbox
+  (`archive`, `trash`): over IMAP a moved message takes a new number in its new
+  folder, so "archive then star" still stars it. A protected (VIP) sender has
+  destructive actions (archive/trash) skipped while non-destructive actions in
+  the same rule still run.
 - **`action` / `labelName`** : legacy single-action fields, kept for backward
   compatibility. A client may send either shape; the server normalizes them and
   mirrors the primary (first) action onto these fields. Rules created before
@@ -1920,9 +1938,10 @@ Deletes a rule. **Response:** `{ "status": "deleted" }`.
 
 #### POST /api/rules/apply
 
-Runs every **enabled** rule across the current inbox (up to 200 messages). Each
-email is matched in priority order and the first match's action is applied. Never
-calls the AI, never consumes quota.
+Runs every **enabled** rule across the current inbox (up to 200 messages, the
+most recent; over IMAP, the stored copy of the inbox). Each email is matched in
+priority order and the first match's actions are applied, each journaled with
+source `rule`. Never calls the AI, never consumes quota.
 
 **Response:**
 ```json
@@ -1933,6 +1952,11 @@ calls the AI, never consumes quota.
   "protectedSkipped": 0
 }
 ```
+
+**Error Responses:**
+- `500`: the stored copy of an IMAP inbox could not be read
+- `502`: the mailbox could not be read (the Gmail listing, or the text of IMAP
+  messages a rule needs)
 
 ### Preview Sorting Rules (dry run)
 
@@ -1959,7 +1983,8 @@ it: it runs the same matching function as `POST /api/rules/apply`.
 }
 ```
 `samples` is capped server-side. When the user has no rules, `willApply` is `0`
-and the arrays are empty.
+and the arrays are empty. It does not model the protected senders: `willApply`
+is what `apply` would at most act on. Errors as for `POST /api/rules/apply`.
 
 ### Reorder the ruleset
 
