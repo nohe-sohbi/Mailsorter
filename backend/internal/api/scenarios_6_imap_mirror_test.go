@@ -15,10 +15,17 @@ package api
 // from Mailsorter, or moved out by another mail program on the same mailbox,
 // is gone from the server's inbox, and a screen that still lists it offers to
 // act on a mail that is no longer there. The inbox is one of those screens,
-// the Expéditeurs tab, which counts the mails of each sender, another.
+// the Expéditeurs tab, which counts the mails of each sender, another. A sync
+// reads only the 100 most recent mails of the inbox (imapListLimit), and the
+// copy must lose an older one all the same.
+//
+// What the person changes from Mailsorter shows at once, without a sync: a
+// mail marked "non lu" is one.
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -237,5 +244,113 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 				moi.expectShows(uids[0], bankStatement.Subject)
 			},
 		},
+		{
+			phrase: "Sur une boîte IMAP de plus de 100 mails, un ancien mail qu'un autre logiciel a sorti de ta boîte de réception n'y apparaît plus après la synchronisation suivante, et les autres mails y restent.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapInboxOwner)
+				// 100 letters, synced, then 10 more, synced: 110 mails on the
+				// screen, more than one sync reads (the 100 most recent).
+				letters := numberedMails("Lettre n°%d", 100)
+				uids := moi.receive(letters...)
+				moi.sync()
+				later := numberedMails("Nouvelle lettre n°%d", 10)
+				moi.receive(later...)
+				moi.sync()
+				all := append(append([]incoming{}, letters...), later...)
+
+				// Where the sentence starts: every one of the 110 on the
+				// screen, scrolled to the end. An old mail never shown proves
+				// nothing once gone.
+				shown := map[string]bool{}
+				for _, m := range moi.wholeInbox() {
+					shown[m.Subject] = true
+				}
+				for _, m := range all {
+					if !shown[m.Subject] {
+						app.fatalf("après les deux synchronisations, la boîte de réception de %s devrait montrer le mail %q parmi ses %d mails, elle ne le montre pas : le scénario ne prouve rien", moi.email, m.Subject, len(all))
+					}
+				}
+
+				// The phone takes two old ones out of the inbox, among the 10
+				// a sync no longer reads: the two ways, archived (moved to
+				// another folder) and deleted for good (expunged).
+				archived, deleted := letters[2], letters[4]
+				moi.movedElsewhere(uids[2], serverArchive)
+				moi.deletedElsewhere(uids[4])
+
+				moi.sync()
+
+				// The whole screen, every page: the first alone does not
+				// reach the oldest mails.
+				shown = map[string]bool{}
+				for _, m := range moi.wholeInbox() {
+					shown[m.Subject] = true
+				}
+				if shown[archived.Subject] {
+					app.failf("la boîte de réception de %s ne devrait plus montrer le mail n°%s %q, qu'un autre logiciel a archivé avant cette synchronisation, elle le montre encore", moi.email, uids[2], archived.Subject)
+				}
+				if shown[deleted.Subject] {
+					app.failf("la boîte de réception de %s ne devrait plus montrer le mail n°%s %q, qu'un autre logiciel a supprimé définitivement avant cette synchronisation, elle le montre encore", moi.email, uids[4], deleted.Subject)
+				}
+				// The others stay, the old ones included: a sync that drops
+				// every mail it does not read would pass the lines above.
+				var missing []string
+				for _, m := range all {
+					if m.Subject != archived.Subject && m.Subject != deleted.Subject && !shown[m.Subject] {
+						missing = append(missing, fmt.Sprintf("%q", m.Subject))
+					}
+				}
+				if len(missing) > 0 {
+					app.failf("après la synchronisation, la boîte de réception de %s devrait montrer encore les %d autres mails, il en manque %d : %s", moi.email, len(all)-2, len(missing), strings.Join(missing, ", "))
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, un mail que tu marques non lu apparaît non lu dans ta boîte de réception tout de suite, sans attendre de synchronisation.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				// Both mails read in the reader, which marks them read. The
+				// first stays so: it is the control.
+				moi.openMail(uids[0])
+				moi.openMail(uids[1])
+				for i, uid := range uids {
+					if row, ok := moi.shownRow(uid); !ok || !row.IsRead {
+						app.fatalf("après l'avoir ouvert dans la liseuse, la boîte de réception de %s devrait montrer lu le mail n°%s %q (affiché : %v, lu : %v) : le scénario ne prouve rien", moi.email, uid, []incoming{bankStatement, shopOrder}[i].Subject, ok, row.IsRead)
+					}
+				}
+
+				// "Non lu" in the reader on the second mail: over IMAP, the
+				// single-message action with "unread" (flagAction in
+				// Inbox.js). act expects it to answer 200.
+				moi.act(uids[1], "unread")
+
+				// What the inbox loads next, with no "Synchroniser" between.
+				switch row, ok := moi.shownRow(uids[1]); {
+				case !ok:
+					app.failf("la boîte de réception de %s devrait montrer non lu le mail n°%s %q, que tu viens de marquer non lu, elle ne le montre plus", moi.email, uids[1], shopOrder.Subject)
+				case row.IsRead:
+					app.failf("la boîte de réception de %s devrait montrer non lu le mail n°%s %q, que tu viens de marquer non lu, elle le montre encore lu", moi.email, uids[1], shopOrder.Subject)
+				}
+				// The control: a listing showing every mail unread would pass
+				// the lines above.
+				if row, ok := moi.shownRow(uids[0]); !ok || !row.IsRead {
+					app.failf("la boîte de réception de %s devrait montrer toujours lu le mail n°%s %q, que tu as lu et pas touché depuis (affiché : %v, lu : %v)", moi.email, uids[0], bankStatement.Subject, ok, row.IsRead)
+				}
+			},
+		},
 	})
+}
+
+// numberedMails is n mails from one sender, their subjects numbered from 1 in
+// format, oldest first: a mailbox fuller than one sync reads, or enough mails
+// to try one sentence on each.
+func numberedMails(format string, n int) []incoming {
+	mails := make([]incoming, 0, n)
+	for i := 1; i <= n; i++ {
+		mails = append(mails, incoming{From: "Le Journal <lettre@journal.fr>", Subject: fmt.Sprintf(format, i)})
+	}
+	return mails
 }

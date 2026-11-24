@@ -29,15 +29,18 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"mime"
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	imapv2 "github.com/emersion/go-imap/v2"
@@ -381,11 +384,13 @@ func (p *imapPerson) sync() {
 	}
 }
 
-// shownMail is one row of the inbox screen.
+// shownMail is one row of the inbox screen. IsRead is what the row shows as
+// read or "non lu" (FLAG_PATCH in Inbox.js patches the same field).
 type shownMail struct {
 	MessageID string `json:"messageId"`
 	From      string `json:"from"`
 	Subject   string `json:"subject"`
+	IsRead    bool   `json:"isRead"`
 }
 
 // inbox is what this person's inbox screen shows: the listing it loads, with
@@ -406,6 +411,70 @@ func (p *imapPerson) inbox() []shownMail {
 		a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
 	}
 	return mails
+}
+
+// wholeInbox is everything this person's inbox screen lists once scrolled to
+// the end: the first page inbox loads, then "Charger plus" (loadMoreEmails in
+// EmailContext.js, 100 at a time) for as long as the listing hands back a next
+// page. A sentence about a mailbox of more than 100 mails is about every page,
+// and the first one alone would miss its oldest mails.
+func (p *imapPerson) wholeInbox() []shownMail {
+	a := p.app
+	a.t.Helper()
+	var all []shownMail
+	token := ""
+	for page := 1; ; page++ {
+		// A bound, so a listing that hands back the same token forever stops
+		// the scenario instead of hanging it.
+		if page > 50 {
+			a.fatalf("la boîte de réception de %s propose encore « Charger plus » après 50 pages : la liste ne finit pas", p.email)
+		}
+		path := "/api/emails?q=in%3Ainbox&maxResults=100"
+		if token != "" {
+			path += "&pageToken=" + url.QueryEscape(token)
+		}
+		code, out := a.callAs(p.token, http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			a.fatalf("la page %d de la boîte de réception de %s ne s'affiche pas : GET /api/emails a répondu %d : %v", page, p.email, code, out)
+		}
+		raw, err := json.Marshal(out["emails"])
+		if err != nil {
+			a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
+		}
+		var mails []shownMail
+		if err := json.Unmarshal(raw, &mails); err != nil {
+			a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
+		}
+		all = append(all, mails...)
+		token, _ = out["nextPageToken"].(string)
+		if token == "" {
+			return all
+		}
+	}
+}
+
+// openMail is opening a mail in the reader, as this person: the reader loads
+// it with markRead (getEmail in services/api.js), which is what makes a mail
+// read in Mailsorter. It expects the mail to open.
+func (p *imapPerson) openMail(uid string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/emails/"+url.PathEscape(uid)+"?markRead=1", nil)
+	if code != http.StatusOK {
+		a.fatalf("le mail n°%s de %s ne s'ouvre pas dans la liseuse : GET /api/emails/%s a répondu %d : %v", uid, p.email, uid, code, out)
+	}
+}
+
+// shownRow returns the row of the inbox screen for the mail with this number,
+// and whether the screen shows one.
+func (p *imapPerson) shownRow(uid string) (shownMail, bool) {
+	p.app.t.Helper()
+	for _, m := range p.inbox() {
+		if m.MessageID == uid {
+			return m, true
+		}
+	}
+	return shownMail{}, false
 }
 
 func describeInbox(mails []shownMail) string {
@@ -539,6 +608,73 @@ func (p *imapPerson) act(uid, action string) {
 	if code != http.StatusOK {
 		a.fatalf("l'action %q sur le mail n°%s de %s a répondu %d (attendu 200) : %v", action, uid, p.email, code, out)
 	}
+}
+
+// actAnswer is act, returning the answer whatever it is: for the sentences
+// about what that answer is.
+func (p *imapPerson) actAnswer(uid, action string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": uid, "action": action})
+	return answer{code: code, body: out}
+}
+
+// actTwiceAtOnce is a row's button clicked twice before the first answer
+// comes back (a double click, or the same mail in two tabs): two requests of
+// the single-message action, released at the same instant. It returns both
+// answers, whatever they are.
+//
+// The two requests run on goroutines of their own, so they cannot go through
+// callAs, which stops the scenario on a network error: only the test's own
+// goroutine may do that. A network error is collected and reported from here,
+// once both have come back.
+func (p *imapPerson) actTwiceAtOnce(uid, action string) [2]answer {
+	a := p.app
+	a.t.Helper()
+	raw, err := json.Marshal(map[string]string{"messageId": uid, "action": action})
+	if err != nil {
+		a.fatalf("encodage de l'action %q sur le mail n°%s : %v", action, uid, err)
+	}
+	var (
+		got  [2]answer
+		errs [2]error
+		wg   sync.WaitGroup
+	)
+	start := make(chan struct{})
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPost, a.server.URL+"/api/emails/action", bytes.NewReader(raw))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+p.token)
+			req.Header.Set("Content-Type", "application/json")
+			<-start
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			var out map[string]interface{}
+			_ = json.Unmarshal(body, &out)
+			if out == nil && len(body) > 0 {
+				out = map[string]interface{}{"_raw": string(body)}
+			}
+			got[i] = answer{code: resp.StatusCode, body: out}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			a.fatalf("la requête n°%d de l'action %q sur le mail n°%s de %s n'a pas abouti : %v", i+1, action, uid, p.email, err)
+		}
+	}
+	return got
 }
 
 // ---------------------------------------------------------------------------
@@ -861,6 +997,14 @@ func (p *imapPerson) analyze(uids ...string) {
 	}
 }
 
+// analyzeAnswer is "Analyser" on these mails, as this person, returning the
+// answer whatever it is: for a mail the analysis may rightly turn down.
+func (p *imapPerson) analyzeAnswer(uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": uids})
+	return answer{code: code, body: out}
+}
+
 // plan is the AI's triage plan as this person's inbox loads it
 // (GET /api/ai/suggestions): the proposals still waiting for an answer. It is
 // what the plan shows again after a refresh, so a proposal missing from it is
@@ -1107,4 +1251,39 @@ func (p *imapPerson) expectMarkedUndone(line historyLine, undone bool, what stri
 func (p *imapPerson) expectNoLongerUndoable(line historyLine, what string) {
 	p.app.t.Helper()
 	p.app.expectNoLongerUndoableAs(p.token, p.email, line, what)
+}
+
+// actionTakenDaysAgo is days going by since the action of this history line:
+// the line's date, and the date the stored copy of its mail records for when
+// it left the inbox (leftAt, written by mirroredIMAP), both moved that many
+// days back, which is what the database holds once that time has passed. The
+// app reads no clock a scenario can turn, and a sentence about an action older
+// than "Annuler" allows cannot wait thirty days.
+//
+// The line must exist: moving nothing back would prove nothing. The stored
+// copy may not, once the app keeps none for a mail that left the inbox.
+func (p *imapPerson) actionTakenDaysAgo(line historyLine, days int) {
+	a := p.app
+	a.t.Helper()
+	oid, err := primitive.ObjectIDFromHex(line.ID)
+	if err != nil {
+		a.fatalf("la ligne d'historique %q n'a pas un identifiant lisible : %v", line.ID, err)
+	}
+	then := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := a.h.db.ActionLog().UpdateOne(ctx,
+		bson.M{"_id": oid, "userId": p.email},
+		bson.M{"$set": bson.M{"createdAt": then}})
+	if err != nil {
+		a.fatalf("recul de %d jours de la ligne d'historique %q de %s : %v", days, line.Action, p.email, err)
+	}
+	if res.MatchedCount != 1 {
+		a.fatalf("la ligne d'historique %q du mail n°%s de %s est introuvable dans la base : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", line.Action, line.MessageID, p.email)
+	}
+	if _, err := a.h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": p.email, "messageId": line.MessageID, "leftInbox": true},
+		bson.M{"$set": bson.M{"leftAt": then}}); err != nil {
+		a.fatalf("recul de %d jours de la sortie de la boîte de réception du mail n°%s de %s : %v", days, line.MessageID, p.email, err)
+	}
 }
