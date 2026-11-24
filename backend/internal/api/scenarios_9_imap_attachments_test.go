@@ -17,6 +17,11 @@ package api
 // A download names a part of one mail. A part that mail does not have must
 // get the sentence that says so and nothing else: not another part, not the
 // text of the mail.
+//
+// Saving a file is not reading the mail. A plain BODY[] fetch sets \Seen on
+// the server, so a mail the person put back to unread would turn read, on
+// their phone as on the list after the next sync, just because they saved
+// its invoice.
 
 import (
 	"bytes"
@@ -297,6 +302,65 @@ func TestScenarios_IMAPAttachments(t *testing.T) {
 						app.failf("télécharger la pièce jointe %q du mail n°%s %q de %s (%s) ne devrait proposer aucun fichier, la réponse propose %q", tr.id, tr.mail, tr.subject, moi.email, tr.what, params["filename"])
 					}
 				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, télécharger la pièce jointe d'un mail que tu as remis en non lu le laisse non lu.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uid := invoiceInInbox(app)
+
+				// Opened in the reader, which marks it read: on the server
+				// and on the list. Both are read back here, so neither
+				// check below passes by always saying "non lu".
+				shown := moi.openInReader(uid)
+				if !moi.seenOnServer(serverInbox, invoiceMail.Subject) {
+					app.fatalf("après l'avoir ouvert dans la liseuse, le serveur IMAP de %s devrait montrer lu le mail n°%s %q, il le montre non lu : le scénario ne prouve rien", moi.email, uid, invoiceMail.Subject)
+				}
+				if row, ok := moi.shownRow(uid); !ok || !row.IsRead {
+					app.fatalf("après l'avoir ouvert dans la liseuse, la boîte de réception de %s devrait montrer lu le mail n°%s %q (affiché : %v, lu : %v) : le scénario ne prouve rien", moi.email, uid, invoiceMail.Subject, ok, row.IsRead)
+				}
+
+				// "Non lu" in the reader, still open on the mail: the
+				// single-message action with "unread" (flagAction in
+				// Inbox.js). Where the sentence starts.
+				moi.act(uid, "unread")
+				if moi.seenOnServer(serverInbox, invoiceMail.Subject) {
+					app.fatalf("après « Non lu », le serveur IMAP de %s devrait montrer non lu le mail n°%s %q, il le montre lu : le scénario ne prouve rien", moi.email, uid, invoiceMail.Subject)
+				}
+				if row, ok := moi.shownRow(uid); !ok || row.IsRead {
+					app.fatalf("après « Non lu », la boîte de réception de %s devrait montrer non lu le mail n°%s %q (affiché : %v, lu : %v) : le scénario ne prouve rien", moi.email, uid, invoiceMail.Subject, ok, row.IsRead)
+				}
+
+				// A click on the chip of the PDF. It must go through: a
+				// download that failed read nothing and proves nothing.
+				chip, ok := chipNamed(shown, invoicePDF.Name)
+				if !ok || chip.AttachmentID == "" {
+					app.fatalf("le lecteur du mail n°%s %q de %s ne propose pas de télécharger « %s » (il montre : %s) : le scénario ne prouve rien", uid, invoiceMail.Subject, moi.email, invoicePDF.Name, describeChips(shown))
+				}
+				if got := moi.download(uid, chip.AttachmentID); got.code != http.StatusOK {
+					app.fatalf("télécharger « %s » depuis le lecteur du mail n°%s de %s a répondu %s (attendu 200) : le scénario ne prouve rien", invoicePDF.Name, uid, moi.email, got)
+				}
+
+				// On the server, as the person's phone shows it.
+				if moi.seenOnServer(serverInbox, invoiceMail.Subject) {
+					app.failf("après le téléchargement de « %s », le serveur IMAP de %s devrait montrer encore non lu le mail n°%s %q, il le montre lu", invoicePDF.Name, moi.email, uid, invoiceMail.Subject)
+				}
+				// On the list, at once, then once "Synchroniser" has read
+				// the server again: the list is served from what the last
+				// sync stored.
+				unreadOnList := func(when string) {
+					t.Helper()
+					switch row, ok := moi.shownRow(uid); {
+					case !ok:
+						app.failf("%s, la boîte de réception de %s devrait montrer encore le mail n°%s %q, elle ne le montre plus", when, moi.email, uid, invoiceMail.Subject)
+					case row.IsRead:
+						app.failf("%s, la boîte de réception de %s devrait montrer encore non lu le mail n°%s %q, elle le montre lu", when, moi.email, uid, invoiceMail.Subject)
+					}
+				}
+				unreadOnList(fmt.Sprintf("juste après le téléchargement de « %s »", invoicePDF.Name))
+				moi.sync()
+				unreadOnList(fmt.Sprintf("après le téléchargement de « %s » et une synchronisation", invoicePDF.Name))
 			},
 		},
 	})
