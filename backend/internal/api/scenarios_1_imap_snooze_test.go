@@ -22,9 +22,14 @@ package api
 // a screen that lists a mail which is not there is wrong at any moment. When
 // the inbox must show a mail again after the background sweep, it is read
 // after a sync, which opening the inbox runs (fetchData in EmailContext.js):
-// the sweep is not something the person did on that screen. "Réveiller
-// maintenant" is, and its "tout de suite" is read without a sync, as the
-// "Annuler" of scenarios_9_imap_undo_test.go is.
+// the sweep is not something the person did on that screen. "Réactiver" is,
+// and its "tout de suite" is read without a sync, as the "Annuler" of
+// scenarios_9_imap_undo_test.go is.
+//
+// "Plus tard" is looked for at the root of the mailbox, or under the prefix a
+// server announces for personal folders ("INBOX." on some), which is where a
+// folder has to be created there (folderOnServer). The test server announces
+// none.
 
 import (
 	"net/http"
@@ -40,17 +45,19 @@ const laterFolder = "Plus tard"
 // reportedOnIMAP is where the sentences about a reported mail start: "Reporter"
 // on this mail answered 200, and the mail in the "Plus tard" folder of the
 // server. Anything else stops the scenario: there is then no reported mail to
-// look at.
-func reportedOnIMAP(moi *imapPerson, uid string, m incoming) {
+// look at. It returns the name the server lists that folder under.
+func reportedOnIMAP(moi *imapPerson, uid string, m incoming) string {
 	app := moi.app
 	app.t.Helper()
 	if got := moi.snoozeAnswer(uid); got.code != http.StatusOK {
 		app.fatalf("reporter le mail n°%s %q de %s devrait répondre 200, le serveur a répondu %s : le mail n'est pas reporté, le scénario s'arrête là", uid, m.Subject, moi.email, got)
 	}
-	if !moi.folderOnServer(laterFolder) {
+	later, ok := moi.folderOnServer(laterFolder)
+	if !ok {
 		app.fatalf("après le report du mail n°%s %q, le serveur IMAP de %s devrait avoir un dossier « %s », il n'en a pas : le mail n'est rangé nulle part, le scénario s'arrête là", uid, m.Subject, moi.email, laterFolder)
 	}
-	moi.requireOnServer(laterFolder, m.Subject, "il vient d'être reporté")
+	moi.requireOnServer(later, m.Subject, "il vient d'être reporté")
+	return later
 }
 
 // expectInLater checks that the "Plus tard" folder of the server exists and
@@ -59,19 +66,20 @@ func reportedOnIMAP(moi *imapPerson, uid string, m incoming) {
 func expectInLater(moi *imapPerson, m incoming) {
 	app := moi.app
 	app.t.Helper()
-	if !moi.folderOnServer(laterFolder) {
+	later, ok := moi.folderOnServer(laterFolder)
+	if !ok {
 		app.failf("le mail %q devrait être rangé dans le dossier « %s » du serveur IMAP de %s, ce dossier n'existe pas", m.Subject, laterFolder, moi.email)
 		return
 	}
-	moi.expectOnServer(laterFolder, m.Subject)
+	moi.expectOnServer(later, m.Subject)
 }
 
 // expectNotInLater checks that the "Plus tard" folder of the server, if there
 // is one, does not hold this mail. why says why it must not.
 func expectNotInLater(moi *imapPerson, m incoming, why string) {
 	moi.app.t.Helper()
-	if moi.folderOnServer(laterFolder) {
-		moi.expectNotOnServer(laterFolder, m.Subject, why)
+	if later, ok := moi.folderOnServer(laterFolder); ok {
+		moi.expectNotOnServer(later, m.Subject, why)
 	}
 }
 
@@ -130,7 +138,7 @@ func TestScenarios_IMAPSnooze(t *testing.T) {
 				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
 				// Where the sentence starts: no "Plus tard" folder yet, so
 				// the first report has to create it.
-				if moi.folderOnServer(laterFolder) {
+				if _, ok := moi.folderOnServer(laterFolder); ok {
 					app.fatalf("le serveur IMAP de %s a déjà un dossier « %s » avant le premier report : le scénario ne prouve pas qu'il est créé (à corriger dans acceptance_imap_test.go)", moi.email, laterFolder)
 				}
 
@@ -190,25 +198,36 @@ func TestScenarios_IMAPSnooze(t *testing.T) {
 			},
 		},
 		{
-			phrase: "Sur une boîte IMAP, « Réveiller maintenant » remet tout de suite le mail dans ta boîte de réception.",
+			phrase: "Sur une boîte IMAP, « Réactiver » sur un mail reporté le remet tout de suite dans ta boîte de réception, marqué non lu.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+				// Read first, in the reader: "marqué non lu" proves nothing
+				// on a mail that was never read.
+				moi.openMail(uids[1])
+				if !moi.seenOnServer(serverInbox, shopOrder.Subject) {
+					app.fatalf("le mail n°%s %q de %s devrait être lu sur le serveur une fois ouvert dans la liseuse, il ne l'est pas : le scénario ne prouve rien", uids[1], shopOrder.Subject, moi.email)
+				}
 				reportedOnIMAP(moi, uids[1], shopOrder)
 				row, ok := moi.reportedRow(shopOrder.Subject)
 				if !ok {
-					app.fatalf("les mails reportés de %s devraient montrer le mail %q, ils ne le montrent pas (ils montrent : %s) : il n'y a pas de « Réveiller maintenant » à presser", moi.email, shopOrder.Subject, describeReported(moi.reported()))
+					app.fatalf("les mails reportés de %s devraient montrer le mail %q, ils ne le montrent pas (ils montrent : %s) : il n'y a pas de « Réactiver » à presser", moi.email, shopOrder.Subject, describeReported(moi.reported()))
 				}
 
 				if got := moi.wakeNowAnswer(row); got.code != http.StatusOK {
-					app.failf("« Réveiller maintenant » sur le mail %q de %s devrait répondre 200, le serveur a répondu %s", shopOrder.Subject, moi.email, got)
+					app.failf("« Réactiver » sur le mail reporté %q de %s devrait répondre 200, le serveur a répondu %s", shopOrder.Subject, moi.email, got)
 				}
 
-				// What the inbox shows right after, without a sync, and the
-				// server: back in the inbox, out of "Plus tard".
-				moi.expectBackInInbox(shopOrder.Subject, "juste après « Réveiller maintenant »")
-				moi.expectOnServer(serverInbox, shopOrder.Subject)
-				expectNotInLater(moi, shopOrder, "« Réveiller maintenant » l'a remis dans la boîte de réception")
+				// What the inbox shows right after, without a sync: the mail,
+				// once, and unread, as the confirmation "Ramener maintenant"
+				// promises.
+				moi.expectBackInInbox(shopOrder.Subject, "juste après « Réactiver »")
+				if shown, ok := rowBySubject(moi.inbox(), shopOrder.Subject); ok && shown.IsRead {
+					app.failf("juste après « Réactiver », la boîte de réception de %s montre le mail %q marqué lu : il devrait être non lu", moi.email, shopOrder.Subject)
+				}
+				// The server: back in the inbox, unread, out of "Plus tard".
+				expectUnreadInServerInbox(moi, shopOrder)
+				expectNotInLater(moi, shopOrder, "« Réactiver » l'a remis dans la boîte de réception")
 				// The control: the mail nobody reported is still there.
 				moi.expectShows(uids[0], bankStatement.Subject)
 			},
@@ -255,13 +274,13 @@ func TestScenarios_IMAPSnooze(t *testing.T) {
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
-				reportedOnIMAP(moi, uids[1], shopOrder)
+				later := reportedOnIMAP(moi, uids[1], shopOrder)
 				reportedOnIMAP(moi, uids[2], travelOffer)
 
 				// On their phone, the person files the first one in a folder
 				// of their own before its hour.
 				moi.newFolderElsewhere(ownFolder)
-				moi.movedFromElsewhere(laterFolder, shopOrder.Subject, ownFolder)
+				moi.movedFromElsewhere(later, shopOrder.Subject, ownFolder)
 
 				moi.timeComesForSnoozes()
 

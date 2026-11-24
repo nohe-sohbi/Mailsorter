@@ -1405,26 +1405,48 @@ func (p *imapPerson) expectBackInInbox(subject, when string) {
 	}
 }
 
-// folderOnServer says whether the person's server has a folder by this name,
-// as another mail program lists them (LIST "" "*"). For the sentences about a
-// folder Mailsorter creates: expectOnServer stops the scenario on a folder
-// that does not open, and a folder that was never created is then the very
-// thing the sentence is about.
-func (p *imapPerson) folderOnServer(name string) bool {
+// folderOnServer returns the name under which the person's server lists the
+// folder a mail program shows as name, and whether it lists one, as another
+// mail program reads them (LIST "" "*"). For the sentences about a folder
+// Mailsorter creates: expectOnServer stops the scenario on a folder that does
+// not open, and a folder that was never created is then the very thing the
+// sentence is about.
+//
+// The name itself, at the root, or the name under a prefix the server
+// announces for personal folders (NAMESPACE, RFC 2342: "INBOX." on servers
+// that keep every folder under the inbox), where a mail program creating the
+// folder rightly puts it. The test server announces no prefix, so there the
+// name itself is the only one accepted; the prefixed one is accepted so that
+// these sentences do not forbid what such a server requires.
+func (p *imapPerson) folderOnServer(name string) (string, bool) {
 	a := p.app
 	a.t.Helper()
 	c := p.otherProgram()
 	defer c.Close()
+	accepted := []string{name}
+	if c.Caps().Has(imapv2.CapNamespace) {
+		ns, err := c.Namespace().Wait()
+		if err != nil {
+			a.fatalf("lecture des espaces de dossiers (NAMESPACE) du serveur IMAP de %s : %v", p.email, err)
+		}
+		for _, personal := range ns.Personal {
+			if personal.Prefix != "" {
+				accepted = append(accepted, personal.Prefix+name)
+			}
+		}
+	}
 	folders, err := c.List("", "*", nil).Collect()
 	if err != nil {
 		a.fatalf("lecture des dossiers du serveur IMAP de %s : %v", p.email, err)
 	}
-	for _, f := range folders {
-		if f.Mailbox == name {
-			return true
+	for _, want := range accepted {
+		for _, f := range folders {
+			if f.Mailbox == want {
+				return f.Mailbox, true
+			}
 		}
 	}
-	return false
+	return "", false
 }
 
 // ---------------------------------------------------------------------------
@@ -1518,9 +1540,8 @@ func describeReported(rows []reportedMail) string {
 }
 
 // wakeNowAnswer is "Réactiver" on a row of the "Prévus" tab, once its
-// confirmation "Ramener maintenant" is accepted (handleWake in Snoozed.js): what
-// the sentences call "Réveiller maintenant". It returns the answer, whatever
-// it is.
+// confirmation "Ramener maintenant" is accepted (handleWake in Snoozed.js). It
+// returns the answer, whatever it is.
 func (p *imapPerson) wakeNowAnswer(row reportedMail) answer {
 	p.app.t.Helper()
 	code, out := p.app.callAs(p.token, http.MethodPost, "/api/snoozes/"+url.PathEscape(row.ID)+"/wake", nil)
