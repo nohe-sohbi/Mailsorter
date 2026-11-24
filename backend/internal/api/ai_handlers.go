@@ -146,7 +146,7 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 
 	// The model is told nothing of the user's labels (see runAnalysis): the
 	// label it proposes is matched with the user's afterwards.
-	analysis, err := aiClient.AnalyzeSender(req.SenderEmail, emails, nil)
+	analysis, err := aiClient.AnalyzeSender(req.SenderEmail, emails)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to analyze sender: "+err.Error())
 		return

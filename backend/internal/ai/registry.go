@@ -104,7 +104,7 @@ func (r *Registry) ProviderNames() []string {
 
 // AnalyzeEmail tries each provider in priority order, falling back on transient
 // errors. Permanent errors (auth, bad request) fail immediately.
-func (r *Registry) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
+func (r *Registry) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
 	r.mu.RLock()
 	providers := r.providers
 	r.mu.RUnlock()
@@ -115,7 +115,7 @@ func (r *Registry) AnalyzeEmail(email models.Email, existingLabels []string) (*E
 
 	var lastErr error
 	for _, p := range providers {
-		result, err := p.analyzer.AnalyzeEmail(email, existingLabels)
+		result, err := p.analyzer.AnalyzeEmail(email)
 		if err == nil {
 			return result, nil
 		}
@@ -129,7 +129,7 @@ func (r *Registry) AnalyzeEmail(email models.Email, existingLabels []string) (*E
 }
 
 // AnalyzeBatch tries each provider in priority order with fallback.
-func (r *Registry) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (r *Registry) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	r.mu.RLock()
 	providers := r.providers
 	r.mu.RUnlock()
@@ -140,7 +140,7 @@ func (r *Registry) AnalyzeBatch(emails []models.Email, existingLabels []string) 
 
 	var lastErr error
 	for _, p := range providers {
-		result, err := p.analyzer.AnalyzeBatch(emails, existingLabels)
+		result, err := p.analyzer.AnalyzeBatch(emails)
 		if err == nil {
 			return result, nil
 		}
@@ -154,7 +154,7 @@ func (r *Registry) AnalyzeBatch(emails []models.Email, existingLabels []string) 
 }
 
 // AnalyzeSender tries each provider in priority order with fallback.
-func (r *Registry) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
+func (r *Registry) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
 	r.mu.RLock()
 	providers := r.providers
 	r.mu.RUnlock()
@@ -165,7 +165,7 @@ func (r *Registry) AnalyzeSender(senderEmail string, emails []models.Email, exis
 
 	var lastErr error
 	for _, p := range providers {
-		result, err := p.analyzer.AnalyzeSender(senderEmail, emails, existingLabels)
+		result, err := p.analyzer.AnalyzeSender(senderEmail, emails)
 		if err == nil {
 			return result, nil
 		}

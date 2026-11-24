@@ -783,7 +783,8 @@ Do not duplicate these into this file. Point at them.
   reader, which do not read them, a message keeps what the sync stored.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
   never cache anything user-specific through it. That is also why the model is told
-  none of the user's labels or folders (`runAnalysis`, `AnalyzeSender` pass none):
+  none of the user's labels or folders (the `ai.Analyzer` methods take none, and
+  `internal/ai/prompts.go` asks for no list):
   its verdict would carry one person's folder name into another's plan, and the
   public pages say it sees the sender, the subject and 200 characters. What it
   proposes is matched with the user's labels afterwards, per account

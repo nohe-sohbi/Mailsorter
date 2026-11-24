@@ -212,7 +212,7 @@ func (h *Handler) runAnalysis(
 
 		// When analyzing a single email, call AnalyzeEmail directly for maximum reliability.
 		if len(chunk) == 1 {
-			single, err := aiClient.AnalyzeEmail(chunk[0], nil)
+			single, err := aiClient.AnalyzeEmail(chunk[0])
 			if err != nil {
 				log.Printf("runAnalysis: AnalyzeEmail error for %s: %v", chunk[0].MessageID, err)
 				lastErr = err
@@ -233,7 +233,7 @@ func (h *Handler) runAnalysis(
 		}
 
 		var analyses []ai.EmailAnalysis
-		if res, err := aiClient.AnalyzeBatch(chunk, nil); err == nil {
+		if res, err := aiClient.AnalyzeBatch(chunk); err == nil {
 			analyses = res
 		} else {
 			log.Printf("runAnalysis: AnalyzeBatch failed (%v), falling back to AnalyzeEmail", err)
@@ -245,7 +245,7 @@ func (h *Handler) runAnalysis(
 			case analyses != nil && j < len(analyses):
 				a = analyses[j]
 			default:
-				single, err := aiClient.AnalyzeEmail(email, nil)
+				single, err := aiClient.AnalyzeEmail(email)
 				if err != nil {
 					log.Printf("runAnalysis: fallback AnalyzeEmail error for %s: %v", email.MessageID, err)
 					lastErr = err
@@ -349,7 +349,7 @@ func (h *Handler) persistSuggestion(
 	userEmail string,
 	email models.Email,
 	a ai.EmailAnalysis,
-	existingLabels []string,
+	knownLabels []string,
 ) (models.AISuggestion, bool) {
 	suggestion := models.AISuggestion{
 		UserID:     userEmail,
@@ -363,7 +363,7 @@ func (h *Handler) persistSuggestion(
 	}
 
 	if a.Action == "label" && a.LabelName != "" {
-		matched := localMatchLabel(a.LabelName, existingLabels)
+		matched := localMatchLabel(a.LabelName, knownLabels)
 		suggestion.LabelName = matched
 		var sl models.SmartLabel
 		if err := h.db.SmartLabels().FindOne(ctx, bson.M{"userId": userEmail, "name": matched}).Decode(&sl); err == nil {

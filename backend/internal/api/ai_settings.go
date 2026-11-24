@@ -241,7 +241,7 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	_ = ctx // The AI call doesn't use context yet, but we bound the handler.
 
-	result, err := testRegistry.AnalyzeEmail(testEmail, nil)
+	result, err := testRegistry.AnalyzeEmail(testEmail)
 	if err != nil {
 		errMsg := err.Error()
 		// Provide user-friendly messages for common errors
