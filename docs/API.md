@@ -465,7 +465,7 @@ to display.
   "body": "version texte",
   "bodyHtml": "<p>version html</p>",
   "attachments": [
-    { "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481, "attachmentId": "ANGjdJ..." }
+    { "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481, "attachmentId": "1" }
   ],
   "labelIds": ["INBOX"],
   "isRead": true
@@ -493,9 +493,13 @@ disposition: the files attached from Gmail's web interface (each one carries a
 `Content-ID` and an `X-Attachment-Id`), a PDF Apple Mail sends inline and an
 image no HTML shows were missing from the list, and are now in it.
 
-`attachmentId` is the handle the bytes live behind (see the download route
-below). A part without one carries its data inline in the message payload and is
-not downloadable.
+`attachmentId` is what the download route below takes back: the file's part
+number in the message, on both transports (`"1"`, `"0.2"` over the Gmail API,
+`"2"`, `"1.3"` over IMAP). Over the Gmail API it is not Gmail's own
+attachment id, which nothing promises to stay the same from one
+`messages.get` to the next; a message that is a single file, which Gmail
+gives no part number, has `"payload"`. A Gmail part whose data travels inline
+in the message payload has no `attachmentId` and is not downloadable.
 
 On a mailbox reached over IMAP the fetch PEEKS: it downloads the body without
 setting `\Seen`, so opening a message stays distinct from reading it and only
@@ -527,12 +531,15 @@ encoding does not decode is left out of the list and logged.
 #### GET /api/emails/{id}/attachments/{attachmentId}
 
 Stream one attachment of one message. Gmail never ships attachment data with the
-message, so this resolves the message first (to learn the part's real filename
-and MIME type, and to prove the message actually carries that id) and then
-fetches the bytes.
+message, so this reads the message again first (to learn the part's real
+filename and MIME type, to prove the message actually carries a file under that
+part number, and to get the attachment id Gmail gives it in this fresh copy)
+and then fetches the bytes under that fresh id. An id that is no part number,
+a Gmail attachment id sent by a screen opened before part numbers were handed
+out, is served only while the fresh copy still gives a file that id.
 
-Only a part of the named message may be served: an attachment id the message
-does not carry is a 404, never a passthrough to Gmail.
+Only a part of the named message may be served: an id the message does not
+carry is a 404, never a passthrough to Gmail.
 
 Over IMAP the file is inside the message. The route first asks the server
 for the message's `BODYSTRUCTURE`: a file whose stored size cannot fit under

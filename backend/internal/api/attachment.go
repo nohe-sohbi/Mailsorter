@@ -16,6 +16,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	gmailapi "google.golang.org/api/gmail/v1"
 )
 
 // maxAttachmentBytes bounds what the download route will buffer and stream.
@@ -65,8 +66,18 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		h.downloadAttachmentIMAP(ctx, w, session, messageID, attachmentID)
 		return
 	}
-	gmailClient := session.gmail
+	h.downloadAttachmentGmail(w, session.gmail, userEmail, messageID, attachmentID)
+}
 
+// downloadAttachmentGmail is the Gmail half of DownloadAttachment.
+//
+// The id is the part number the reader listed. The message is read again,
+// fresh, and the bytes are asked for under the attachment id Gmail gives that
+// part in this copy: an id from an earlier copy is not trusted to still name
+// them. An id that is no part number, sent by a screen opened before the
+// reader handed out part numbers, is looked for among the attachment ids of
+// the fresh copy, and served only if it is still one of them.
+func (h *Handler) downloadAttachmentGmail(w http.ResponseWriter, gmailClient *gmailapi.Service, userEmail, messageID, attachmentID string) {
 	failed := fmt.Sprintf("attachment: %s of message %s for %s", attachmentID, messageID, userEmail)
 	msg, err := h.gmailService.GetMessage(gmailClient, messageID)
 	if err != nil {
@@ -90,7 +101,7 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.gmailService.GetAttachment(gmailClient, messageID, attachmentID)
+	data, err := h.gmailService.GetAttachment(gmailClient, messageID, att.gmailID)
 	if err != nil {
 		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
 		return
@@ -143,10 +154,21 @@ func writeAttachment(w http.ResponseWriter, filename, mimeType string, data []by
 	_, _ = w.Write(data)
 }
 
-// findAttachment returns the described part carrying attachmentID.
-func findAttachment(list []attachmentView, attachmentID string) (attachmentView, bool) {
+// findAttachment returns the listed file the screen named id: by the id
+// the reader hands out (its part number), else by the Gmail attachment id a
+// screen opened before part numbers were handed out may still send, when the
+// copy the list was read from still gives a file that id.
+func findAttachment(list []attachmentView, id string) (attachmentView, bool) {
+	if id == "" {
+		return attachmentView{}, false
+	}
 	for _, a := range list {
-		if a.AttachmentID != "" && a.AttachmentID == attachmentID {
+		if a.AttachmentID == id {
+			return a, true
+		}
+	}
+	for _, a := range list {
+		if a.AttachmentID != "" && a.gmailID == id {
 			return a, true
 		}
 	}

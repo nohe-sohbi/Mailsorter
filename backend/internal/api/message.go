@@ -35,16 +35,23 @@ type messageView struct {
 }
 
 // attachmentView describes a file carried by the message. AttachmentID is what
-// the download route needs: over the Gmail API the handle Gmail hands out for
-// the bytes themselves (they never travel with the message payload), over IMAP
-// the file's part number in the message. A Gmail part with no id carries its
-// data inline and is not downloadable through that route.
+// the screen sends back to download it: the file's part number in the
+// message, on both transports (see listAttachments for Gmail's). A Gmail part
+// Gmail gives no attachment id carries its data inline and is not
+// downloadable through that route, so it gets none either.
 type attachmentView struct {
 	Filename     string `json:"filename"`
 	MimeType     string `json:"mimeType"`
 	Size         int64  `json:"size"`
 	AttachmentID string `json:"attachmentId,omitempty"`
+	// gmailID is the handle Gmail gave the bytes in the copy of the message
+	// this view was read from. Never sent: it is only good for that copy.
+	gmailID string
 }
+
+// gmailPayloadPart names the file a single-part Gmail message is, which
+// Gmail gives no part number ("" is the payload's).
+const gmailPayloadPart = "payload"
 
 // What the reader and the download answer when the mailbox could not hand a
 // message over: sentences for the screen, which shows what the server says.
@@ -185,6 +192,12 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 // transports share (attachment.Listed), html being the HTML the reader
 // renders for it.
 //
+// A file is named by its part number (partId: "1", "0.2"), not by the
+// attachment id Gmail hands out for its bytes. Nothing in Gmail's
+// documentation says that id stays the same from one messages.get to the
+// next, so the screen gets the number, which does, and the download asks
+// Gmail for a fresh id under it (downloadAttachmentGmail).
+//
 // The rule changed for Gmail when IMAP mailboxes got their attachments. A
 // part with a Content-ID, an X-Attachment-Id or an inline disposition used
 // to be hidden whatever it was: that hid every file attached from Gmail's
@@ -206,18 +219,24 @@ func listAttachments(msg *gmailapi.Message, html string) []attachmentView {
 			return
 		}
 		if name, ok := attachment.Listed(gmailPart(part), shown); ok {
-			var size int64
-			var attachmentID string
+			view := attachmentView{Filename: name, MimeType: part.MimeType}
 			if part.Body != nil {
-				size = part.Body.Size
-				attachmentID = part.Body.AttachmentId
+				view.Size = part.Body.Size
+				view.gmailID = part.Body.AttachmentId
 			}
-			out = append(out, attachmentView{
-				Filename:     name,
-				MimeType:     part.MimeType,
-				Size:         size,
-				AttachmentID: attachmentID,
-			})
+			if view.gmailID != "" {
+				switch {
+				case part.PartId != "":
+					view.AttachmentID = part.PartId
+				case part == msg.Payload:
+					view.AttachmentID = gmailPayloadPart
+				default:
+					// A part with no number of its own: Gmail's handle is
+					// all there is to name it by.
+					view.AttachmentID = view.gmailID
+				}
+			}
+			out = append(out, view)
 		}
 		for _, child := range part.Parts {
 			walk(child, depth+1)

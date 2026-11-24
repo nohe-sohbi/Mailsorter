@@ -66,43 +66,65 @@ func TestAttachmentContentType(t *testing.T) {
 	}
 }
 
-// listAttachments must publish the attachment id (the handle the bytes live
-// behind) and must keep ignoring the inline images a newsletter references.
+// listAttachments must publish an id the download can take back (the part
+// number, never Gmail's own handle, which is kept for the download alone) and
+// must keep ignoring the inline images a newsletter references.
 func TestListAttachmentsExposesAttachmentID(t *testing.T) {
 	msg := &gmailapi.Message{Payload: &gmailapi.MessagePart{
 		MimeType: "multipart/mixed",
 		Parts: []*gmailapi.MessagePart{
 			{
+				PartId:   "0",
 				MimeType: "text/html",
 				Body:     &gmailapi.MessagePartBody{Data: "PGltZyBzcmM9ImNpZDpsb2dvIj4"},
 			},
 			{
+				PartId:   "1",
 				Filename: "facture.pdf",
 				MimeType: "application/pdf",
 				Body:     &gmailapi.MessagePartBody{AttachmentId: "att-1", Size: 2048},
 			},
 			{
+				PartId:   "2",
 				Filename: "logo.png",
 				MimeType: "image/png",
 				Headers:  []*gmailapi.MessagePartHeader{{Name: "Content-ID", Value: "<logo>"}},
 				Body:     &gmailapi.MessagePartBody{AttachmentId: "att-2", Size: 10},
 			},
+			{
+				PartId:   "3",
+				Filename: "petit.txt",
+				MimeType: "text/plain",
+				Headers:  []*gmailapi.MessagePartHeader{{Name: "Content-Disposition", Value: "attachment"}},
+				Body:     &gmailapi.MessagePartBody{Data: "eA", Size: 1},
+			},
 		},
 	}}
 
 	got := listAttachments(msg, `<img src="cid:logo">`)
-	if len(got) != 1 {
-		t.Fatalf("listAttachments returned %d parts, want only the real attachment: %#v", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("listAttachments returned %d parts, want the two real attachments: %#v", len(got), got)
 	}
-	if got[0].AttachmentID != "att-1" || got[0].Size != 2048 {
-		t.Errorf("attachment = %#v, want id att-1 and size 2048", got[0])
+	if got[0].AttachmentID != "1" || got[0].gmailID != "att-1" || got[0].Size != 2048 {
+		t.Errorf("attachment = %#v, want id 1 (Gmail's att-1 kept aside) and size 2048", got[0])
+	}
+	// Its bytes travel in the payload: nothing to download, so no id.
+	if got[1].Filename != "petit.txt" || got[1].AttachmentID != "" {
+		t.Errorf("attachment = %#v, want petit.txt without an id", got[1])
+	}
+	if body, _ := json.Marshal(got[0]); strings.Contains(string(body), "att-1") {
+		t.Errorf("the reader sends %s: Gmail's handle must not reach the screen", body)
 	}
 
-	if _, ok := findAttachment(got, "att-2"); ok {
-		t.Error("an inline part must not be downloadable through the attachment route")
+	for _, id := range []string{"2", "att-2"} {
+		if _, ok := findAttachment(got, id); ok {
+			t.Errorf("findAttachment(%q) found an inline part: it must not be downloadable", id)
+		}
 	}
-	if _, ok := findAttachment(got, "att-1"); !ok {
-		t.Error("findAttachment did not resolve the attachment it just listed")
+	for _, id := range []string{"1", "att-1"} {
+		if a, ok := findAttachment(got, id); !ok || a.Filename != "facture.pdf" {
+			t.Errorf("findAttachment(%q) = %#v, %v, want facture.pdf", id, a, ok)
+		}
 	}
 }
 
