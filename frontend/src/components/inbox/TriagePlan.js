@@ -469,6 +469,7 @@ function TriagePlan({ plan, onOpenEmail }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const [allMoves, setAllMoves] = useState(false);
   const [allKeeps, setAllKeeps] = useState(false);
+  const [allHeld, setAllHeld] = useState(false);
 
   if (groups.moves.length === 0 && groups.keeps.length === 0) return null;
 
@@ -491,7 +492,13 @@ function TriagePlan({ plan, onOpenEmail }) {
       return next;
     });
 
-  const moves = allMoves ? groups.moves : groups.moves.slice(0, VISIBLE_MOVES);
+  // The moves this mailbox can apply, then the ones it cannot (a label over
+  // IMAP), each under its own count: "À ranger · 0" used to head a list of
+  // label rows that only offered "Ignorer".
+  const tidy = groups.moves.filter(plan.canApply);
+  const held = groups.moves.filter((g) => !plan.canApply(g));
+  const moves = allMoves ? tidy : tidy.slice(0, VISIBLE_MOVES);
+  const heldShown = allHeld ? held : held.slice(0, VISIBLE_KEEPS);
   const keeps = allKeeps ? groups.keeps : groups.keeps.slice(0, VISIBLE_KEEPS);
   const reviewed = totals.moves + totals.keeps;
 
@@ -561,24 +568,41 @@ function TriagePlan({ plan, onOpenEmail }) {
         <div id="triage-plan-body">
           {groups.moves.length > 0 && (
             <div className="border-t border-hairline">
-              {groups.keeps.length > 0 && (
-                <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
-                  À ranger · {totals.toTidy}
-                </h3>
+              {tidy.length > 0 && (
+                <>
+                  {(groups.keeps.length > 0 || held.length > 0) && (
+                    <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
+                      À ranger · {totals.toTidy}
+                    </h3>
+                  )}
+                  <ul className="divide-y divide-[rgb(var(--hairline))]">{moves.map(row)}</ul>
+                  {moves.length < tidy.length && (
+                    <ShowMore hidden={tidy.length - moves.length} onClick={() => setAllMoves(true)} />
+                  )}
+                </>
               )}
-              <ul className="divide-y divide-[rgb(var(--hairline))]">{moves.map(row)}</ul>
-              {moves.length < groups.moves.length && (
-                <ShowMore hidden={groups.moves.length - moves.length} onClick={() => setAllMoves(true)} />
+              {held.length > 0 && (
+                <div className={cn(tidy.length > 0 && 'border-t border-hairline')}>
+                  <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
+                    Pas encore possible sur cette boîte · {totals.held}
+                  </h3>
+                  <ul className="divide-y divide-[rgb(var(--hairline))]">{heldShown.map(row)}</ul>
+                  {heldShown.length < held.length && (
+                    <ShowMore hidden={held.length - heldShown.length} onClick={() => setAllHeld(true)} />
+                  )}
+                </div>
               )}
               <div className="flex flex-col gap-2 border-t border-hairline bg-surface-sunken/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-                <p className="text-xs text-muted">
-                  {totals.unsure === 0
-                    ? "Chaque rangement est journalisé dans l'historique."
-                    : totals.sure === 0
-                    ? "L'IA hésite sur ceux-ci : à vérifier un par un."
-                    : `${emailsCount(totals.unsure)} à vérifier ${totals.unsure > 1 ? 'restent' : 'reste'} hors du tri groupé.`}
-                </p>
-                <div className="flex items-center justify-end gap-2">
+                {totals.toTidy > 0 && (
+                  <p className="text-xs text-muted">
+                    {totals.unsure === 0
+                      ? "Chaque rangement est journalisé dans l'historique."
+                      : totals.sure === 0
+                      ? "L'IA hésite sur ceux-ci : à vérifier un par un."
+                      : `${emailsCount(totals.unsure)} à vérifier ${totals.unsure > 1 ? 'restent' : 'reste'} hors du tri groupé.`}
+                  </p>
+                )}
+                <div className="flex items-center justify-end gap-2 sm:ml-auto">
                   <button
                     type="button"
                     onClick={plan.ignoreMoves}
