@@ -178,7 +178,8 @@ func formatAddress(addrs []imapv2.Address) string {
 	// Written out by hand, not with net/mail's Address.String: that one
 	// re-encodes any non-ASCII name as RFC 2047 ("=?utf-8?q?R=C3=A9seau?="),
 	// which the screens and the history then showed as is. go-imap already
-	// decoded the name; it is stored readable, quoted the way the Gmail path
+	// decoded the name, in any charset go-message knows (Connect's
+	// WordDecoder); it is stored readable, quoted the way the Gmail path
 	// stores it.
 	name := strings.ReplaceAll(strings.ReplaceAll(a.Name, `\`, `\\`), `"`, `\"`)
 	return `"` + name + `" <` + addr + `>`
