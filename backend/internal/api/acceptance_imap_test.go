@@ -860,12 +860,20 @@ type fileAnswer struct {
 	body   []byte
 }
 
-func (f fileAnswer) String() string {
+// said is the "error" field of a refusal, empty when the answer has none.
+func (f fileAnswer) said() string {
 	var out struct {
 		Error string `json:"error"`
 	}
-	if json.Unmarshal(f.body, &out) == nil && out.Error != "" {
-		return fmt.Sprintf("%d %q", f.code, out.Error)
+	if json.Unmarshal(f.body, &out) != nil {
+		return ""
+	}
+	return out.Error
+}
+
+func (f fileAnswer) String() string {
+	if s := f.said(); s != "" {
+		return fmt.Sprintf("%d %q", f.code, s)
 	}
 	return fmt.Sprintf("%d (%d octets, Content-Type %q)", f.code, len(f.body), f.header.Get("Content-Type"))
 }

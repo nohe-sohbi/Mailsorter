@@ -15,7 +15,8 @@ package api
 // must be the one that was sent, byte for byte, under its own name.
 //
 // A download names a part of one mail. A part that mail does not have must
-// get nothing: not another part, not the text of the mail.
+// get the sentence that says so and nothing else: not another part, not the
+// text of the mail.
 
 import (
 	"bytes"
@@ -55,6 +56,10 @@ var purchasesCSV = attachedFile{
 	NameAs:   nameRFC2231,
 	Transfer: transferQuotedPrintable,
 }
+
+// attachmentNotInMail is what a download answers, as its "error", for a
+// part the mail does not have.
+const attachmentNotInMail = "Cette pièce jointe est introuvable dans ce mail."
 
 // plainMail is a mail with no file attached.
 var plainMail = incoming{
@@ -237,7 +242,7 @@ func TestScenarios_IMAPAttachments(t *testing.T) {
 			},
 		},
 		{
-			phrase: "Sur une boîte IMAP, télécharger une pièce jointe qui n'existe pas dans ce mail répond une erreur, sans rien envoyer d'autre.",
+			phrase: "Sur une boîte IMAP, télécharger une pièce jointe qui n'existe pas dans ce mail répond « Cette pièce jointe est introuvable dans ce mail. », sans rien envoyer d'autre.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				moi := app.imapPerson(imapInboxOwner)
@@ -282,8 +287,8 @@ func TestScenarios_IMAPAttachments(t *testing.T) {
 
 				for _, tr := range tries {
 					got := moi.download(tr.mail, tr.id)
-					if got.code < 400 || got.code > 499 {
-						app.failf("télécharger la pièce jointe %q du mail n°%s %q de %s (%s) devrait répondre une erreur disant qu'elle n'existe pas (4xx), le serveur a répondu %s", tr.id, tr.mail, tr.subject, moi.email, tr.what, got)
+					if got.code < 400 || got.code > 499 || got.said() != attachmentNotInMail {
+						app.failf("télécharger la pièce jointe %q du mail n°%s %q de %s (%s) devrait répondre %q avec une erreur 4xx, le serveur a répondu %s", tr.id, tr.mail, tr.subject, moi.email, tr.what, attachmentNotInMail, got)
 					}
 					if leaked := leakedParts(got.body); len(leaked) > 0 {
 						app.failf("télécharger la pièce jointe %q du mail n°%s %q de %s (%s) ne devrait rien envoyer d'autre qu'une erreur, la réponse contient %s", tr.id, tr.mail, tr.subject, moi.email, tr.what, strings.Join(leaked, ", "))
