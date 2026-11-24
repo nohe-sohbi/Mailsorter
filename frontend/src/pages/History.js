@@ -9,6 +9,7 @@ import Spinner from '../ui/Spinner';
 import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
+import { useMailbox } from '../contexts/EmailContext';
 
 // Une page à la fois : le serveur plafonne à 200, mais 50 lignes remplissent
 // déjà l'écran et rendent « Charger plus » utile plutôt que décoratif.
@@ -99,7 +100,11 @@ function byDay(entries) {
   return days;
 }
 
-function HotelRegister({ entries, undoing, onUndo }) {
+// What the right-hand side of a row says. `undoOk` is false over IMAP, where
+// the server cannot undo yet: the button is hidden there, and so is
+// "Définitif", which would say the action has no inverse when it has one on
+// Gmail. The page says why, once, above the list.
+function HotelRegister({ entries, undoing, onUndo, undoOk }) {
   return (
     <div className="card px-5 pb-4 pt-1 sm:px-7">
       {byDay(entries).map((day) => (
@@ -125,14 +130,16 @@ function HotelRegister({ entries, undoing, onUndo }) {
                       {SOURCE_LABELS[e.source] || e.source}
                     </small>
                   </div>
-                  {e.undoable ? (
+                  {e.undoable && undoOk ? (
                     <button onClick={() => onUndo(e)} disabled={undoing === e.id} className="hd-link" title="Annuler cette action">
                       {undoing === e.id ? <Spinner size={13} /> : 'Annuler'}
                     </button>
-                  ) : (
+                  ) : e.undone || !e.undoable ? (
                     <span className="text-xs text-muted" title={e.undone ? undefined : "Cette action n'a pas d'inverse automatique."}>
                       {e.undone ? 'Annulé' : 'Définitif'}
                     </span>
+                  ) : (
+                    <span />
                   )}
                 </li>
               );
@@ -168,6 +175,8 @@ function History() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [undoing, setUndoing] = useState(null);
+  // Undo goes through the Gmail API only (the server answers 501 over IMAP).
+  const { isImap, fullFeatures: undoOk } = useMailbox();
 
   // Read inside async callbacks to tell whether the filter moved on since a
   // request was issued.
@@ -242,11 +251,11 @@ function History() {
     const identity = identityOf(entry);
     // Le ledger n'a pas d'inverse pour un inverse : une fois la ligne annulée,
     // le bouton disparaît définitivement. `danger` reste faux parce que l'effet
-    // est restaurateur (l'email revient) — le peindre en rouge mentirait.
+    // est restaurateur (l'email revient) - le peindre en rouge mentirait.
     if (
       !(await confirm({
         title: 'Annuler cette action ?',
-        message: `« ${identity.title} » : l'action « ${meta.past} » sera défaite dans votre boîte Gmail.`,
+        message: `« ${identity.title} » : l'action « ${meta.past} » sera défaite dans votre boîte.`,
         detail: "Cette annulation est définitive : elle ne pourra pas être refaite depuis l'historique.",
         confirmLabel: "Annuler l'action",
         cancelLabel: 'Revenir',
@@ -291,7 +300,7 @@ function History() {
         <PageHead
           floor="/history"
           title="Historique"
-          sub="Tout ce que Mailsorter a fait à votre place, et de quoi l'annuler."
+          sub={undoOk ? "Tout ce que Mailsorter a fait à votre place, et de quoi l'annuler." : 'Tout ce que Mailsorter a fait à votre place.'}
         />
       ) : (
         <div className="mb-6 flex items-center gap-3">
@@ -301,7 +310,9 @@ function History() {
           <div>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Historique</h1>
             <p className="text-sm text-muted">
-              Tout ce que Mailsorter a fait à votre place, et un bouton pour l'annuler.
+              {undoOk
+                ? "Tout ce que Mailsorter a fait à votre place, et un bouton pour l'annuler."
+                : 'Tout ce que Mailsorter a fait à votre place.'}
             </p>
           </div>
         </div>
@@ -316,7 +327,7 @@ function History() {
           <input
             type="search"
             className="input pl-10"
-            placeholder={hotel ? 'Rechercher un sujet ou un expéditeur' : 'Rechercher un sujet ou un expéditeur…'}
+            placeholder={hotel ? 'Rechercher un sujet ou un expéditeur' : 'Rechercher un sujet ou un expéditeur...'}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Rechercher dans l'historique"
@@ -390,9 +401,17 @@ function History() {
               Icon={HistoryIcon}
               scene={{ prop: 'newspaper', color: '#7A2E3B' }}
               hotelTitle="Rien d'écrit pour l'instant."
-              hotelDescription="Dès qu'un e-mail est trié, par vous, une règle ou l'IA, il est noté ici, avec de quoi l'annuler."
+              hotelDescription={
+                undoOk
+                  ? "Dès qu'un e-mail est trié, par vous, une règle ou l'IA, il est noté ici, avec de quoi l'annuler."
+                  : "Dès qu'un e-mail est trié, par vous ou par l'IA, il est noté ici."
+              }
               title="Aucune action pour l'instant"
-              description="Dès que vous (ou l'auto-pilote) triez un email, l'action apparaîtra ici, avec une option pour la défaire."
+              description={
+                undoOk
+                  ? "Dès que vous (ou l'auto-pilote) triez un email, l'action apparaîtra ici, avec une option pour la défaire."
+                  : "Dès que vous triez un email, l'action apparaîtra ici."
+              }
             />
           )}
         </div>
@@ -403,11 +422,15 @@ function History() {
               <span className="font-semibold text-ink-900">{entries.length}</span> action{plural} affichée{plural}
               {nextBefore ? ", l'historique continue plus bas" : ''}
             </p>
-            <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>
+            {undoOk ? (
+              <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>
+            ) : (
+              isImap && <p className="text-xs text-muted">Annuler une action n'est pas encore disponible sur les boîtes IMAP.</p>
+            )}
           </div>
 
           {hotel ? (
-            <HotelRegister entries={entries} undoing={undoing} onUndo={handleUndo} />
+            <HotelRegister entries={entries} undoing={undoing} onUndo={handleUndo} undoOk={undoOk} />
           ) : (
             <ul className="space-y-2.5">
               {entries.map((e) => {
@@ -455,7 +478,7 @@ function History() {
                       </div>
                     </div>
 
-                    {e.undoable ? (
+                    {e.undoable && undoOk ? (
                       <button
                         onClick={() => handleUndo(e)}
                         disabled={undoing === e.id}
@@ -465,7 +488,8 @@ function History() {
                         {undoing === e.id ? <Spinner size={14} /> : <Undo size={14} />} Annuler
                       </button>
                     ) : (
-                      !e.undone && (
+                      !e.undone &&
+                      !e.undoable && (
                         <span
                           className="shrink-0 text-xs text-muted"
                           title="Cette action n'a pas d'inverse automatique."

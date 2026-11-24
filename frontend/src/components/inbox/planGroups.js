@@ -112,18 +112,21 @@ export function keepOrder(groups, shownKeys = []) {
 const count = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
 
 // The numbers the header and the bulk button state. `sure` is what "Ranger"
-// applies, `unsure` is what it leaves out and says so.
-export function planTotals({ moves, keeps }) {
+// applies, `unsure` is what it leaves out and says so. `canApply` says whether
+// a group's verdict can be applied to this mailbox at all (a label cannot over
+// IMAP): such a group is never in the bulk, nor counted as "à vérifier".
+export function planTotals({ moves, keeps }, canApply = () => true) {
   const byAction = {};
   for (const g of moves) byAction[g.action] = (byAction[g.action] || 0) + g.items.length;
-  const sureGroups = moves.filter((g) => g.sure);
+  const applicable = moves.filter(canApply);
+  const sureGroups = applicable.filter((g) => g.sure);
   return {
     moves: count(moves),
     keeps: count(keeps),
     byAction,
     sureGroups,
     sure: count(sureGroups),
-    unsure: count(moves) - count(sureGroups),
+    unsure: count(applicable) - count(sureGroups),
   };
 }
 

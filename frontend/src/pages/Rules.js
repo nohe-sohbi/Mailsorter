@@ -9,6 +9,8 @@ import { actionMeta } from '../ui/actions';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
+import { useMailbox } from '../contexts/EmailContext';
+import { useInstance } from '../contexts/InstanceContext';
 import { Bolt, Trash, Tag, Check, X, Refresh, Search, ChevronDown, Copy, Download, Upload } from '../ui/icons';
 
 const FIELDS = [
@@ -57,7 +59,7 @@ const operatorLabel = (v) => OPERATORS.find((o) => o.value === v)?.label || v;
 // normalised before any string work.
 const conditionValue = (v) => String(v ?? '');
 
-// Concrete examples beat an abstract "Valeur…": most people write their first
+// Concrete examples beat an abstract "Valeur...": most people write their first
 // rule by imitating the placeholder.
 const valuePlaceholder = (c) => {
   if (isTemporalOperator(c.operator)) return 'Ex. 30';
@@ -74,7 +76,7 @@ const valuePlaceholder = (c) => {
     case 'body':
       return 'Ex. numéro de commande';
     default:
-      return 'Valeur…';
+      return 'Valeur...';
   }
 };
 
@@ -101,7 +103,7 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
       <input
         className="input"
         list={listId}
-        placeholder={labels.length ? 'Choisissez ou créez un libellé…' : 'Ex. Factures'}
+        placeholder={labels.length ? 'Choisissez ou créez un libellé...' : 'Ex. Factures'}
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
         aria-label="Libellé à appliquer"
@@ -110,7 +112,7 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
       />
       {isNew && (
         <span id={hintId} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-caution-700">
-          <Tag size={12} /> Nouveau libellé : il sera créé dans Gmail.
+          <Tag size={12} /> Nouveau libellé : il sera créé dans votre boîte.
         </span>
       )}
     </div>
@@ -184,7 +186,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
             onChange={(e) => set({ priority: parseInt(e.target.value, 10) || 0 })}
           />
           <span className="mt-1 block text-xs text-muted">
-            Un email n’est traité que par <strong className="font-semibold text-ink-700">une seule règle</strong> : la
+            Un email n'est traité que par <strong className="font-semibold text-ink-700">une seule règle</strong> : la
             première qui correspond gagne, les suivantes sont ignorées. Plus le nombre est petit, plus la règle passe tôt.
           </span>
         </label>
@@ -234,7 +236,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
                   className="input min-w-[140px] flex-1"
                   type={isTemporalOperator(c.operator) ? 'number' : 'text'}
                   min={isTemporalOperator(c.operator) ? 0 : undefined}
-                  placeholder={isTemporalOperator(c.operator) ? 'Nombre de jours… (ex. 30)' : valuePlaceholder(c)}
+                  placeholder={isTemporalOperator(c.operator) ? 'Nombre de jours... (ex. 30)' : valuePlaceholder(c)}
                   value={c.value}
                   onChange={(e) => setCondition(i, { value: e.target.value })}
                 />
@@ -265,7 +267,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold text-ink-700">Actions</span>
-          <span className="text-xs text-muted">Exécutées dans l’ordre, ex. <em>Étiqueter</em> puis <em>Archiver</em></span>
+          <span className="text-xs text-muted">Exécutées dans l'ordre, ex. <em>Étiqueter</em> puis <em>Archiver</em></span>
         </div>
         <div className="space-y-2">
           {rule.actions.map((a, i) => (
@@ -288,7 +290,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown }) 
                 />
               )}
               {rule.actions.length > 1 && (
-                <button onClick={() => removeAction(i)} className="btn-ghost btn-icon text-muted" aria-label="Retirer l’action">
+                <button onClick={() => removeAction(i)} className="btn-ghost btn-icon text-muted" aria-label="Retirer l'action">
                   <X size={16} />
                 </button>
               )}
@@ -431,6 +433,12 @@ function Rules() {
   // Distinct from `labels.length`: tant que l'appel n'a pas abouti, on ne peut
   // pas affirmer qu'un libellé saisi n'existe pas.
   const [labelsKnown, setLabelsKnown] = useState(false);
+  // Rules run through the Gmail API only: over IMAP the preview, "Appliquer
+  // maintenant" and the run at each sync answer 501, so they are hidden and the
+  // page says so once. Writing rules still works. The quota is mentioned only
+  // where there is one.
+  const { isImap, fullFeatures } = useMailbox();
+  const { selfHosted } = useInstance();
 
   const load = () => {
     ruleService
@@ -440,7 +448,7 @@ function Rules() {
         setError(null);
       })
       .catch((err) =>
-        setError(err.response?.data?.trim?.() || 'Vos règles n’ont pas pu être récupérées.')
+        setError(err.response?.data?.trim?.() || "Vos règles n'ont pas pu être récupérées.")
       );
   };
 
@@ -480,7 +488,7 @@ function Rules() {
       setEditing(null);
       load();
     } catch (err) {
-      toast.error(apiError(err, 'Échec de l’enregistrement.'));
+      toast.error(apiError(err, "Échec de l'enregistrement."));
     } finally {
       setSaving(false);
     }
@@ -499,7 +507,7 @@ function Rules() {
     if (
       !(await confirm({
         title: 'Supprimer cette règle ?',
-        message: `« ${rule.name} » sera définitivement supprimée. Les emails qu’elle a déjà triés ne changent pas.`,
+        message: `« ${rule.name} » sera définitivement supprimée. Les emails qu'elle a déjà triés ne changent pas.`,
         confirmLabel: 'Supprimer la règle',
         danger: true,
       }))
@@ -606,7 +614,7 @@ function Rules() {
       setPreview(null);
       load();
     } catch {
-      toast.error('Impossible d’appliquer les règles.');
+      toast.error("Impossible d'appliquer les règles.");
     } finally {
       setApplying(false);
     }
@@ -629,7 +637,11 @@ function Rules() {
     setAutoApply(next); // optimistic
     try {
       await accountService.updateSettings({ autoApplyRules: next });
-      toast.success(next ? 'Autopilote activé : vos règles s’appliqueront à chaque synchro.' : 'Autopilote désactivé.');
+      toast.success(
+        next
+          ? "Application automatique activée : vos règles s'appliqueront à chaque synchronisation."
+          : 'Application automatique désactivée.'
+      );
     } catch {
       setAutoApply(!next); // revert
       toast.error('Mise à jour impossible.');
@@ -657,9 +669,13 @@ function Rules() {
         <PageHead
           floor="/rules"
           title="Règles de tri"
-          sub="Les évidences n'ont pas besoin d'IA. Vos règles passent avant le modèle, et ne touchent pas à votre quota."
+          sub={
+            selfHosted
+              ? "Les évidences n'ont pas besoin d'IA. Vos règles trient sans le modèle."
+              : "Les évidences n'ont pas besoin d'IA. Vos règles trient sans le modèle, et ne touchent pas à votre quota."
+          }
         >
-          {hasRules && ruleTools}
+          {hasRules && fullFeatures && ruleTools}
         </PageHead>
       ) : (
         <div className="mb-6 flex items-end justify-between gap-4">
@@ -667,10 +683,12 @@ function Rules() {
             <span className="chip mb-2 bg-brand-50 text-brand-700"><Bolt size={14} /> Tri automatique, sans IA</span>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Règles de tri</h1>
             <p className="mt-1 max-w-lg text-sm text-ink-500">
-              Encodez vos cas évidents une fois : les règles s’appliquent instantanément, gratuitement et sans consommer votre quota IA.
+              {selfHosted
+                ? "Encodez vos cas évidents une fois : les règles s'appliquent instantanément, sans IA."
+                : "Encodez vos cas évidents une fois : les règles s'appliquent instantanément, gratuitement et sans consommer votre quota IA."}
             </p>
           </div>
-          {hasRules && (
+          {hasRules && fullFeatures && (
             <div className="flex shrink-0 items-center gap-2">
               {ruleTools}
             </div>
@@ -678,7 +696,19 @@ function Rules() {
         </div>
       )}
 
-      {hasRules && (
+      {isImap && (
+        <div className="card mb-5 flex items-start gap-3 p-4">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-muted">
+            <Bolt size={18} />
+          </span>
+          <p className="text-sm text-ink-600">
+            Les règles ne s'appliquent pas encore sur les boîtes IMAP : vous pouvez les écrire ici, mais ni
+            l'aperçu ni l'application, à la demande ou à chaque synchronisation, ne sont disponibles.
+          </p>
+        </div>
+      )}
+
+      {hasRules && fullFeatures && (
         <div className="card mb-5 flex items-center gap-3 p-4">
           <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', autoApply ? 'bg-brand-50 text-brand-600' : 'bg-ink-100 text-muted')}>
             <Bolt size={18} />
@@ -688,8 +718,12 @@ function Rules() {
               id="auto-apply-rules"
               checked={autoApply}
               onChange={toggleAutoApply}
-              label="Autopilote au sync"
-              description="Appliquer automatiquement vos règles à chaque synchronisation de la boîte, sans IA et sans quota."
+              label="Appliquer à chaque synchronisation"
+              description={
+                selfHosted
+                  ? 'Vos règles trient automatiquement les nouveaux emails à chaque synchronisation de la boîte, sans IA.'
+                  : 'Vos règles trient automatiquement les nouveaux emails à chaque synchronisation de la boîte, sans IA et sans quota.'
+              }
             />
           </div>
         </div>
@@ -701,7 +735,7 @@ function Rules() {
             <h3 className="flex items-center gap-2 font-bold text-ink-900">
               <Search size={16} className="text-brand-500" /> Aperçu : {preview.willApply} email{preview.willApply > 1 ? 's' : ''} sur {preview.scanned}
             </h3>
-            <button onClick={() => setPreview(null)} className="btn-ghost btn-sm btn-icon text-muted" aria-label="Fermer l’aperçu">
+            <button onClick={() => setPreview(null)} className="btn-ghost btn-sm btn-icon text-muted" aria-label="Fermer l'aperçu">
               <X size={16} />
             </button>
           </div>
@@ -729,7 +763,7 @@ function Rules() {
                   </li>
                 ))}
               </ul>
-              <p className="mt-3 text-xs text-muted">Aperçu en lecture seule : rien n’a été modifié dans Gmail.</p>
+              <p className="mt-3 text-xs text-muted">Aperçu en lecture seule : rien n'a été modifié dans votre boîte.</p>
             </>
           )}
         </div>
@@ -760,8 +794,12 @@ function Rules() {
             Icon={Bolt}
             scene={{ prop: 'signpost', color: '#2F6F73' }}
             hotelTitle="Aucune règle pour l'instant."
-            hotelDescription="Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota."
-            title="Aucune règle pour l’instant"
+            hotelDescription={
+              selfHosted
+                ? 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA.'
+                : 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota.'
+            }
+            title="Aucune règle pour l'instant"
             description="Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents."
             action={<button onClick={() => setEditing('new')} className="btn-primary">+ Créer une règle</button>}
           />
@@ -772,7 +810,7 @@ function Rules() {
               que les règles se cumulent sur un même email. */}
           {rules.length > 1 && (
             <p className="text-xs text-muted">
-              Un email n’est traité que par la première règle qui correspond (priorité la plus petite d’abord).
+              Un email n'est traité que par la première règle qui correspond (priorité la plus petite d'abord).
             </p>
           )}
           {rules.map((rule) =>

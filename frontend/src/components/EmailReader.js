@@ -13,6 +13,7 @@ import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
 import { proposalText } from './hotel/InboxBits';
+import { IMAP_UNAVAILABLE } from './landing/features';
 
 function extractEmail(from) {
   const match = from?.match(/<(.+)>/);
@@ -86,6 +87,9 @@ function EmailReader({
   aiAnalyzing,
   onApplySuggestion,
   onRejectSuggestion,
+  // True when the verdict cannot be applied to this mailbox (a label over
+  // IMAP): the card says so, and the Inbox passes no onApplySuggestion.
+  suggestionUnavailable = false,
 }) {
   const toast = useToast();
   const hotel = useHotel();
@@ -268,7 +272,7 @@ function EmailReader({
                 onClick={triage.onNext}
                 disabled={!triage.hasNext}
                 className="btn-ghost btn-xs flex items-center gap-1 disabled:opacity-30"
-                title="Passer a l'email suivant sans modifier (Flèche droite ou J)"
+                title="Passer à l'email suivant sans modifier (Flèche droite ou J)"
               >
                 <span className="hidden sm:inline">Passer</span>
                 <ChevronRight size={13} />
@@ -289,8 +293,8 @@ function EmailReader({
           ref={closeRef}
           onClick={onClose}
           className="btn-ghost btn-sm btn-icon"
-          aria-label={triage ? 'Quitter le tri pas-a-pas' : 'Fermer le lecteur'}
-          title={triage ? 'Quitter le tri pas-a-pas (Échap)' : 'Fermer le lecteur (Échap)'}
+          aria-label={triage ? 'Quitter le tri pas-à-pas' : 'Fermer le lecteur'}
+          title={triage ? 'Quitter le tri pas-à-pas (Échap)' : 'Fermer le lecteur (Échap)'}
         >
           <X size={18} />
         </button>
@@ -457,6 +461,7 @@ function EmailReader({
                     </span>
                   )}
                   {aiSuggestion.reasoning && <p>{aiSuggestion.reasoning}</p>}
+                  {suggestionUnavailable && <p>{IMAP_UNAVAILABLE}</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (
@@ -528,6 +533,7 @@ function EmailReader({
                   {aiSuggestion.reasoning && (
                     <p className="mt-0.5 text-sm leading-relaxed text-ink-700">{aiSuggestion.reasoning}</p>
                   )}
+                  {suggestionUnavailable && <p className="mt-1 text-xs text-muted">{IMAP_UNAVAILABLE}</p>}
                 </div>
               </div>
               {(onApplySuggestion || onRejectSuggestion) && (
