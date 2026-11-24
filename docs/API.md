@@ -1297,6 +1297,10 @@ that loop. It deliberately does **not** stamp `digestLastSentAt`, so a test neve
 consumes the day's real digest, and it sends even when the week is empty (unlike
 the scheduler, which has no reason to mail "0 emails triés" unprompted).
 
+One test per account per minute, a failed one included: each opens an
+authenticated session with the sending server, and a burst of refused
+passwords is what gets the instance's address throttled by a provider.
+
 **Response:** `200 OK`
 ```json
 { "status": "sent", "subject": "Mailsorter : 34 emails triés cette semaine", "total": 34 }
@@ -1310,13 +1314,20 @@ the scheduler, which has no reason to mail "0 emails triés" unprompted).
   sending server: none on its row, none in the catalog for its provider
   ("Mailsorter ne connaît pas le serveur d'envoi de cette boîte : le récap ne
   peut pas en partir.")
+- `429 Too Many Requests`: a test was asked less than a minute ago for this
+  account ("Vous venez de demander un test. Attendez une minute avant d'en
+  envoyer un autre."), with `Retry-After: 60`. Nothing is tried.
 - `500 Internal Server Error`: the ledger could not be read
 - `502 Bad Gateway`: the send failed. On the Gmail API, Gmail refused it
   (typically a missing `gmail.send` scope on an older authorization), or no
   mailbox is connected ("Reconnectez Gmail"). On IMAP, the sending server
   refused the app password ("Le serveur d'envoi de votre boîte a refusé le mot
-  de passe d'application."), could not be reached, or did not take the message;
-  each has its own sentence, none of them about Gmail.
+  de passe d'application.": a 535, or Gmail's 534 5.7.9), blocked the sign-in
+  for where it came from, the password being right ("Votre fournisseur a
+  bloqué la connexion venant du serveur de Mailsorter. Autorisez-la depuis la
+  sécurité de votre compte, puis réessayez.": Gmail's 534 5.7.14), could not
+  be reached, or did not take the message; each has its own sentence, none of
+  them about Gmail.
 
 The matching preview, without sending anything, is `GET /api/stats/digest`.
 

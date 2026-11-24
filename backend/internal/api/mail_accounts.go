@@ -84,17 +84,36 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		return models.MailAccount{}, fmt.Errorf("seal mailbox secret: %w", err)
 	}
 
-	now := time.Now()
+	account, update := mailboxRow(userEmail, p.Key, address, route, sealed, time.Now())
+	if _, err := h.db.MailAccounts().UpdateOne(ctx,
+		bson.M{"userId": userEmail},
+		update,
+		options.Update().SetUpsert(true),
+	); err != nil {
+		return models.MailAccount{}, fmt.Errorf("store mail account: %w", err)
+	}
+	return account, nil
+}
+
+// mailboxRow is what a connection proved over route becomes: the account
+// connectAndStore answers with, and the upsert that writes it over the user's
+// previous row, sealed password included. The sending server comes from the
+// same route, so the recap leaves from the provider whose IMAP server was
+// just proved. A route without one clears what a mailbox connected before may
+// have left on the row, rather than keep another provider's server.
+func mailboxRow(userEmail, providerKey, address string, route provider.Route, sealed string, now time.Time) (models.MailAccount, bson.M) {
 	account := models.MailAccount{
 		UserID:    userEmail,
-		Provider:  p.Key,
+		Provider:  providerKey,
 		Transport: string(route.Transport),
 		Username:  address,
-		Host:      route.IMAP.Host,
-		Port:      route.IMAP.Port,
-		TLS:       string(route.IMAP.TLS),
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if route.IMAP != nil {
+		account.Host = route.IMAP.Host
+		account.Port = route.IMAP.Port
+		account.TLS = string(route.IMAP.TLS)
 	}
 
 	set := bson.M{
@@ -111,9 +130,6 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		"$set":         set,
 		"$setOnInsert": bson.M{"userId": userEmail, "createdAt": now},
 	}
-	// The sending server comes from the same route, so the recap leaves from
-	// the provider whose IMAP server was just proved. A route without one
-	// clears what a mailbox connected before may have left on the row.
 	if route.SMTP != nil {
 		account.SMTPHost = route.SMTP.Host
 		account.SMTPPort = route.SMTP.Port
@@ -124,15 +140,7 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 	} else {
 		update["$unset"] = bson.M{"smtpHost": "", "smtpPort": "", "smtpTls": ""}
 	}
-
-	if _, err := h.db.MailAccounts().UpdateOne(ctx,
-		bson.M{"userId": userEmail},
-		update,
-		options.Update().SetUpsert(true),
-	); err != nil {
-		return models.MailAccount{}, fmt.Errorf("store mail account: %w", err)
-	}
-	return account, nil
+	return account, update
 }
 
 // writeMailboxConnectError maps a connectAndStore failure to an answer.
