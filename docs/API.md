@@ -541,12 +541,18 @@ bulk-by-sender paths; a message that fails is counted rather than aborting the
 batch.
 
 Over IMAP the ids are the numbers the stored inbox gives (UIDs). Archive and
-delete are moves to the server's Archive and Trash folders, which take the
-messages off the listing at once and keep where they went for `/batch-undo`;
-read, unread and the star are flags, written to the stored copy at once too. The
-sender a protected check reads comes from the stored copy only: a message it
-does not hold is spared by a destructive action when the protected list is not
-empty. A message that already left the inbox is neither `applied` nor `failed`.
+delete are moves to the server's Archive and Trash folders, the whole selection
+in ONE `UID MOVE`: the stored rows are read in one query and claimed one by one,
+the claimed numbers move together, and where each one landed (the server's
+`COPYUID` answer, or, without UIDPLUS, a search by Message-ID) is written in one
+bulk write, for `/batch-undo`. The messages leave the listing at once. Read,
+unread and the star are flags, one message at a time, written to the stored
+copy at once too. The sender a protected check reads comes from the stored copy
+only: a message it does not hold is spared by a destructive action when the
+protected list is not empty. A message that had already left the inbox (moved
+by Mailsorter before, or by another mail client) is neither `applied` nor
+`failed`: it is listed in `alreadyOut`, which the client takes off the list,
+saying why.
 
 **Request body:**
 ```json
@@ -560,6 +566,7 @@ exist. At most 200 ids per request.
 ```json
 {
   "applied": ["18c..."],
+  "alreadyOut": [],
   "failed": 0,
   "protectedSkipped": 1,
   "total": 2,
@@ -568,7 +575,8 @@ exist. At most 200 ids per request.
 }
 ```
 `reversible` tells the client whether to offer an "Annuler" affordance;
-`applied` carries the exact ids to hand back to `/batch-undo`.
+`applied` carries the exact ids to hand back to `/batch-undo`. `alreadyOut` is
+always empty on the Gmail API.
 
 **Error Responses:**
 - `400 Bad Request`: Empty selection, unsupported action, missing label name, or over 200 ids
@@ -786,16 +794,39 @@ every redirect hop. A refused endpoint is not an error for the caller: the
 response falls back to `done: false` with the `url` for the client to open, which
 is where a request driven by a stranger belongs.
 
-Over IMAP the headers are read from the stored inbox (the sync stores both), and
-a sender that offers only a `mailto:` is written to by the server: one plain
-text mail, to the one address the link names, with its `subject` and `body`
-(`unsubscribe` when it gives none), from the mailbox's own address, through the
-mailbox's sending server, logged in as for the daily recap. The answer is then
-`done: true`, `method: "mailto"` and an empty `mailto`, so the client opens
-nothing. A link naming more than one recipient (in its path, `to`, `cc` or
-`bcc`) or an address with a display name is not written to, and neither is
-anything when the sending server is unknown or refuses: the answer falls back
-to `done: false` with the `mailto` for the client to open.
+The backlog is archived first, on the request's 30 seconds, checked before
+each mail: what is left when they are spent is counted in `notArchived`, not
+tried. The unsubscribe itself comes after, on a clock of its own.
+
+Over IMAP the headers are read from the stored inbox (the sync stores both; the
+mailbox is opened only to archive), and a sender that offers only a `mailto:` may
+be written to by the server, from the mailbox's own address, through the
+mailbox's sending server, logged in as for the daily recap, with 20 seconds of
+its own. Nobody sees that mail before it leaves, and the header that asks for it
+was written by whoever sent the newsletter, so it is written only when
+(`unsubscribe.ForSender`):
+
+- the link names exactly one plain address (not in `to`, `cc` or `bcc` fields
+  as well, no display name), on the same registrable domain as the sender (the
+  public suffix plus one label: `lettre@journal.fr` may ask for
+  `desabonnement@journal.fr`, never for `groupe+subscribe@googlegroups.com`);
+- its `subject` is one line of at most 100 characters (`unsubscribe` when it
+  gives none). Its `body` is ignored: the text is always `unsubscribe`;
+- no unsubscribe mail went to that address for this account in the last 24
+  hours (counted on the `unsubscribes` rows, which keep `sentTo` and `sentAt`).
+
+Sent, the answer is `done: true`, `method: "mailto"`, an empty `mailto` (the
+client opens nothing) and `sentTo`, the address written to. Within the 24
+hours, nothing is sent: `done: false`, `alreadySent: true`, `sentTo`, an empty
+`mailto`, and a `message`. Off the sender's domain, or with a link refused
+above, nothing is sent either and the answer is the one the Gmail API gives:
+`done: false` with the `mailto` for the client to open in the person's own mail
+program. When the sending server is unknown, refuses or does not answer, the
+same, with a `message` saying the mail did not leave, and the 24 hours do not
+count it.
+
+`message`, when present, says in French what was not done (the mail already
+sent, the mail that did not leave, mails not archived).
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -817,6 +848,20 @@ to `done: false` with the `mailto` for the client to open.
   "mailto": "",
   "archived": 37,
   "sender": "news@medium.com"
+}
+```
+Over IMAP, after a mail written by the server, with a mail left in the inbox:
+```json
+{
+  "done": true,
+  "method": "mailto",
+  "url": "",
+  "mailto": "",
+  "sentTo": "desabonnement@journal.fr",
+  "archived": 3,
+  "notArchived": 1,
+  "message": "1 email de cet expéditeur n'a pas pu être archivé : réessayez.",
+  "sender": "lettre@journal.fr"
 }
 ```
 

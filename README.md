@@ -78,7 +78,7 @@ Sur une boîte IMAP, Mailsorter synchronise la boîte de réception, l'affiche a
 
 **Des règles sans IA.** Un moteur de règles déterministes : conditions sur `from`, `subject`, `snippet`, `to`, `body` (contient, égal, commence par, finit par, regex, négations, plus vieux ou plus récent que N jours) vers une ou plusieurs actions enchaînées. Les règles ne passent pas par le modèle et ne comptent pas dans le quota. Elles s'appliquent à la demande, après un aperçu qui ne change rien, et, si vous activez l'option, à chaque synchronisation. Elles tournent sur l'API Gmail seulement pour l'instant, et l'analyse par l'IA ne les consulte pas.
 
-**Couper le robinet.** Détection des newsletters via les en-têtes `List-Unsubscribe` (RFC 2369) et `List-Unsubscribe-Post` (RFC 8058), désabonnement exécuté côté serveur quand l'expéditeur le permet, puis archivage du backlog de l'expéditeur dans le même geste. Sur une boîte IMAP, une lettre qui ne propose qu'une adresse reçoit le mail de désabonnement par le serveur d'envoi de la boîte.
+**Couper le robinet.** Détection des newsletters via les en-têtes `List-Unsubscribe` (RFC 2369) et `List-Unsubscribe-Post` (RFC 8058), désabonnement exécuté côté serveur quand l'expéditeur le permet, puis archivage du backlog de l'expéditeur dans le même geste. Sur une boîte IMAP, une lettre qui ne propose qu'une adresse chez elle reçoit le mail de désabonnement par le serveur d'envoi de la boîte.
 
 **Tourner sans vous.** Synchronisation de fond, au plus toutes les 30 minutes, et récap quotidien des sept derniers jours envoyé depuis votre propre boîte, si vous les activez. Sur l'API Gmail, en plus : application des règles à chaque synchronisation, et report d'emails qui reviennent tout seuls au moment choisi.
 

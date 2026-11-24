@@ -528,7 +528,10 @@ type UpdateSenderPreferenceRequest struct {
 }
 
 // Unsubscribe records a completed or assisted unsubscribe from a mailing-list
-// sender, keyed by (userId, senderEmail) so it is idempotent.
+// sender, keyed by (userId, senderEmail) so it is idempotent. SentTo and
+// SentAt are the address and the time of the last unsubscribe mail Mailsorter
+// wrote for this sender (over IMAP, through the mailbox's sending server):
+// SentAt is what refuses a second one to that address for 24 hours.
 type Unsubscribe struct {
 	ID          string    `json:"id" bson:"_id,omitempty"`
 	UserID      string    `json:"userId" bson:"userId"`
@@ -538,6 +541,8 @@ type Unsubscribe struct {
 	Status      string    `json:"status" bson:"status"` // "done", "opened"
 	CreatedAt   time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt" bson:"updatedAt"`
+	SentTo      string    `json:"sentTo,omitempty" bson:"sentTo,omitempty"`
+	SentAt      time.Time `json:"sentAt,omitzero" bson:"sentAt,omitempty"`
 }
 
 // UnsubscribeRequest is the request body for POST /api/unsubscribe

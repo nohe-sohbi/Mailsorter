@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
@@ -21,14 +23,29 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// unsubscribeSendBudget is how long the unsubscribe mail has to leave through
+// the mailbox's sending server, on a clock of its own, started once the
+// archive is done: a sending server that does not answer must not leave "et
+// archiver ses mails" with no time. A var so that a test need not wait for it.
+var unsubscribeSendBudget = 20 * time.Second
+
+// unsubscribeResendWindow is how long, after Mailsorter wrote to an
+// unsubscribe address for a person, it refuses to write to it again for
+// them: a list takes days to process a request, and a second click must not
+// become a second mail, or a hundred.
+const unsubscribeResendWindow = 24 * time.Hour
+
 // Unsubscribe performs a one-click (or assisted) unsubscribe for the sender of a
 // given message, over whichever transport the mailbox uses. When the sender
 // advertises RFC 8058 one-click support the POST is fired server-side and the
 // user never leaves the app; otherwise the https link or mailto: address is
-// returned for the client to open. Over IMAP a sender that offers only an
-// address is written to from here, through the mailbox's own sending server,
-// so there is nothing left for the client to open. The action is recorded
-// idempotently per sender and can optionally archive the backlog.
+// returned for the client to open. Over IMAP, a sender that offers only an
+// address on its own domain is written to from here, through the mailbox's own
+// sending server, so there is nothing left for the client to open
+// (sendUnsubscribeMail says what is written and when). The action is recorded
+// idempotently per sender and can optionally archive the backlog, which is
+// done first, on the request's time: the sending has a budget of its own.
+// The answer says what was not done (message).
 func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -48,14 +65,25 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	session, err := h.openSession(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
-	defer session.Close()
+	// A session holds a connection: over IMAP it is opened only to archive,
+	// the headers being in the stored inbox. Over the Gmail API it reads the
+	// message.
+	var session *mailSession
+	if transport != provider.TransportIMAP || req.AlsoArchive {
+		session, err = h.openSession(ctx, userEmail)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		defer session.Close()
+	}
 
-	links, from, err := h.unsubscribeLinksOf(ctx, session, userEmail, req.MessageID)
+	links, from, err := h.unsubscribeLinksOf(ctx, transport, session, userEmail, req.MessageID)
 	if errors.Is(err, errMessageUnknown) {
 		writeError(w, http.StatusNotFound, "Email introuvable")
 		return
@@ -74,9 +102,22 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What was not done, in the words the screen shows.
+	var notDone []string
+
+	archived, notArchived := 0, 0
+	if req.AlsoArchive {
+		archived, notArchived = h.archiveBySender(ctx, session, userEmail, senderAddr)
+		if notArchived > 0 {
+			notDone = append(notDone, notArchivedMessage(notArchived))
+		}
+	}
+
 	method := "browser"
 	status := "opened"
 	done := false
+	sentTo := ""
+	alreadySent := false
 
 	switch {
 	case links.OneClick:
@@ -92,20 +133,36 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 	case httpURL == "" && mailto != "":
 		method = "mailto"
-		if session.Transport == provider.TransportIMAP {
-			if err := h.sendUnsubscribeMail(ctx, session.account, mailto); err == nil {
-				// Sent: the client has nothing left to open, and opening the
-				// person's mail program on it would write the request twice.
-				status, done, mailto = "done", true, ""
-			} else {
-				// Not fatal either: the address goes back to the client, which
-				// opens the person's own mail program on it.
-				log.Printf("unsubscribe: the mail to %s for %s did not leave through the mailbox's sending server, handed to the screen: %v", senderAddr, userEmail, err)
-			}
+		if transport != provider.TransportIMAP {
+			break
+		}
+		sendCtx, cancelSend := context.WithTimeout(r.Context(), unsubscribeSendBudget)
+		to, err := h.sendUnsubscribeMail(sendCtx, account, userEmail, senderAddr, mailto)
+		cancelSend()
+		var already *alreadySentError
+		switch {
+		case err == nil:
+			// Sent: the client has nothing left to open, and opening the
+			// person's mail program on it would write the request twice.
+			status, done, mailto, sentTo = "done", true, "", to
+		case errors.As(err, &already):
+			// Written already, a moment ago: nothing to open either.
+			status, mailto, sentTo, alreadySent = "done", "", already.to, true
+			notDone = append(notDone, fmt.Sprintf(
+				"Une demande de désabonnement est déjà partie vers %s il y a moins de 24 h : la liste peut mettre quelques jours à la traiter.", already.to))
+		case errors.Is(err, errNotWrittenForYou):
+			// Not for Mailsorter to write without showing it: the client
+			// opens it in the person's own mail program, as on Gmail.
+		default:
+			log.Printf("unsubscribe: the mail to the list of %s for %s did not leave through the mailbox's sending server, handed to the screen: %v", senderAddr, userEmail, err)
+			notDone = append(notDone, "Le mail de désabonnement n'a pas pu partir de votre boîte : il s'ouvre dans votre messagerie pour que vous l'envoyiez.")
 		}
 	}
 
-	if _, err := h.db.Unsubscribes().UpdateOne(ctx,
+	// On its own clock: the archive may have used the request's.
+	recordCtx, cancelRecord := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancelRecord()
+	if _, err := h.db.Unsubscribes().UpdateOne(recordCtx,
 		bson.M{"userId": userEmail, "senderEmail": senderAddr},
 		bson.M{
 			"$set": bson.M{
@@ -125,19 +182,35 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		log.Printf("unsubscribe: record the unsubscribe of %s from %s: %v", userEmail, senderAddr, err)
 	}
 
-	archived := 0
-	if req.AlsoArchive {
-		archived = h.archiveBySender(ctx, session, userEmail, senderAddr)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	answer := map[string]interface{}{
 		"done":     done,
 		"method":   method,
 		"url":      httpURL,
 		"mailto":   mailto,
 		"archived": archived,
 		"sender":   senderAddr,
-	})
+	}
+	if sentTo != "" {
+		answer["sentTo"] = sentTo
+	}
+	if alreadySent {
+		answer["alreadySent"] = true
+	}
+	if notArchived > 0 {
+		answer["notArchived"] = notArchived
+	}
+	if len(notDone) > 0 {
+		answer["message"] = strings.Join(notDone, " ")
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// notArchivedMessage says how many of a sender's mails the archive left.
+func notArchivedMessage(n int) string {
+	if n == 1 {
+		return "1 email de cet expéditeur n'a pas pu être archivé : réessayez."
+	}
+	return fmt.Sprintf("%d emails de cet expéditeur n'ont pas pu être archivés : réessayez.", n)
 }
 
 // errMessageUnknown is a message the mailbox does not hold: on the Gmail API,
@@ -146,12 +219,13 @@ var errMessageUnknown = errors.New("api: no such message")
 
 // unsubscribeLinksOf reads the way out a message offers, and its sender.
 //
-// Over the Gmail API the headers are read from Gmail. Over IMAP they are read
-// from the stored copy of the inbox, which the sync wrote them into
-// (imap.Client.List reads both headers): the screen only shows what it holds,
-// and reading them again costs a round trip for the same answer.
-func (h *Handler) unsubscribeLinksOf(ctx context.Context, session *mailSession, userEmail, messageID string) (unsubscribe.Links, string, error) {
-	if session.Transport == provider.TransportIMAP {
+// Over the Gmail API the headers are read from Gmail, through the session.
+// Over IMAP they are read from the stored copy of the inbox, which the sync
+// wrote them into (imap.Client.List reads both headers): the screen only
+// shows what it holds, and reading them again costs a connection for the
+// same answer.
+func (h *Handler) unsubscribeLinksOf(ctx context.Context, transport provider.Transport, session *mailSession, userEmail, messageID string) (unsubscribe.Links, string, error) {
+	if transport == provider.TransportIMAP {
 		var stored models.Email
 		err := h.db.Emails().FindOne(ctx, bson.M{
 			"userId": userEmail, "folder": string(mailbox.FolderInbox), "messageId": messageID,
@@ -174,30 +248,113 @@ func (h *Handler) unsubscribeLinksOf(ctx context.Context, session *mailSession, 
 	return unsubscribe.Links{URL: httpURL, Mailto: mailto, OneClick: oneClick}, from, nil
 }
 
-// sendUnsubscribeMail writes the mail a list's mailto: asks for (to its
-// address, with its subject and body), from the mailbox's own address, the
-// one subscribed, through the mailbox's sending server: the recap's way out.
-// A mailto: this server will not write to (more than one address, an address
-// that is not plain) is an error, and the client opens it instead.
-func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAccount, mailto string) error {
-	request, err := unsubscribe.ParseMailto(mailto)
+// errNotWrittenForYou is a mailto: Mailsorter does not write on the person's
+// behalf (unsubscribe.ForSender says why): the client opens it instead.
+var errNotWrittenForYou = errors.New("api: this unsubscribe mail is not written for the person")
+
+// alreadySentError is an unsubscribe mail Mailsorter wrote to the same
+// address for the person less than unsubscribeResendWindow ago.
+type alreadySentError struct{ to string }
+
+func (e *alreadySentError) Error() string {
+	return "api: an unsubscribe mail already left for " + e.to
+}
+
+// sendUnsubscribeMail writes the mail a list's mailto: asks for, from the
+// mailbox's own address (the one subscribed), through the mailbox's sending
+// server: the recap's way out. It returns the address it wrote to.
+//
+// Nobody sees this mail before it leaves, from the person's real address,
+// and the header that asks for it was written by whoever sent the mail. So it
+// is written only to an address on the sender's own registrable domain, with
+// a subject of one short line and a body that is always the same
+// (unsubscribe.ForSender; errNotWrittenForYou otherwise), and only once per
+// address in unsubscribeResendWindow (alreadySentError), counted on the
+// sender's row of unsubscribes, which keeps where it went (sentTo) and when
+// (sentAt).
+func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAccount, userEmail, senderAddr, mailto string) (string, error) {
+	request, err := unsubscribe.ForSender(mailto, senderAddr)
 	if err != nil {
-		return err
+		log.Printf("unsubscribe: the mailto of %s is not written for %s, handed to the screen: %v", senderAddr, userEmail, err)
+		return "", fmt.Errorf("%w: %w", errNotWrittenForYou, err)
+	}
+	to := strings.ToLower(request.To)
+	now := time.Now().Truncate(time.Millisecond)
+	claimed, sentTo, err := h.claimUnsubscribeMail(ctx, userEmail, senderAddr, to, now)
+	if err != nil {
+		return "", err
+	}
+	if !claimed {
+		return "", &alreadySentError{to: sentTo}
 	}
 	from := account.Username
 	message := mailer.Build(mailer.Message{
 		From:    from,
-		To:      request.To,
+		To:      to,
 		Subject: request.Subject,
-		Text:    request.Body,
-		Date:    time.Now(),
+		Text:    unsubscribe.Body,
+		Date:    now,
 		ID:      mailer.MessageID(rand.Text(), from),
 	})
-	return h.sendThroughBox(ctx, account, request.To, message)
+	if err := h.sendThroughBox(ctx, account, to, message); err != nil {
+		// Not sent: the window must not refuse the next try. On a clock of
+		// its own, the send's may be spent.
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, rErr := h.db.Unsubscribes().UpdateOne(releaseCtx,
+			bson.M{"userId": userEmail, "senderEmail": senderAddr, "sentAt": now},
+			bson.M{"$unset": bson.M{"sentTo": "", "sentAt": ""}},
+		); rErr != nil {
+			log.Printf("unsubscribe: the mail to %s for %s did not leave, and the next try stays refused for 24 h: %v", to, userEmail, rErr)
+		}
+		return "", err
+	}
+	return to, nil
+}
+
+// claimUnsubscribeMail reserves the unsubscribe mail to `to` for this person,
+// at now, on the row of the sender in unsubscribes. It answers false, with
+// the address the earlier mail went to, when a mail to that address left for
+// them less than unsubscribeResendWindow ago, whatever the sender, or when
+// one left for this sender in that time (the row is unique per sender, so of
+// two clicks at once only one writes).
+func (h *Handler) claimUnsubscribeMail(ctx context.Context, userEmail, senderAddr, to string, now time.Time) (bool, string, error) {
+	since := now.Add(-unsubscribeResendWindow)
+	n, err := h.db.Unsubscribes().CountDocuments(ctx, bson.M{"userId": userEmail, "sentTo": to, "sentAt": bson.M{"$gte": since}})
+	if err != nil {
+		return false, "", fmt.Errorf("look for an unsubscribe mail to %s already sent: %w", to, err)
+	}
+	if n > 0 {
+		return false, to, nil
+	}
+	_, err = h.db.Unsubscribes().UpdateOne(ctx,
+		bson.M{"userId": userEmail, "senderEmail": senderAddr, "sentAt": bson.M{"$not": bson.M{"$gte": since}}},
+		bson.M{
+			"$set":         bson.M{"sentTo": to, "sentAt": now},
+			"$setOnInsert": bson.M{"createdAt": now},
+		},
+		options.Update().SetUpsert(true),
+	)
+	if mongo.IsDuplicateKeyError(err) {
+		// The sender's row holds a recent mail: say where it went.
+		var row models.Unsubscribe
+		if fErr := h.db.Unsubscribes().FindOne(ctx, bson.M{"userId": userEmail, "senderEmail": senderAddr}).Decode(&row); fErr != nil || row.SentTo == "" {
+			if fErr != nil {
+				log.Printf("unsubscribe: read where the last unsubscribe mail of %s to %s went: %v", userEmail, senderAddr, fErr)
+			}
+			return false, to, nil
+		}
+		return false, row.SentTo, nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("reserve the unsubscribe mail to %s: %w", to, err)
+	}
+	return true, to, nil
 }
 
 // archiveBySender archives every stored email sent from senderAddr, whatever
-// display name each one carries, and returns how many were archived.
+// display name each one carries, and returns how many were archived, and how
+// many of his were not (a failure, or no time left).
 //
 // The datastore query is only a narrowing: a case-insensitive substring of the
 // address, which every mail of that sender contains. protect.SameAddress is what
@@ -205,12 +362,12 @@ func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAc
 // on the local part, a longer domain), other senders this sweep used to archive
 // too.
 //
-// A protected sender is still unsubscribed (the caller has recorded it before
-// this runs) but its mail stays in the inbox, as with every other sweep.
+// A protected sender is still unsubscribed but its mail stays in the inbox, as
+// with every other sweep, and is not counted either way.
 //
-// Best-effort past the listing: the unsubscribe itself has already happened, so
-// a mail that fails to move is logged and skipped rather than failing the call.
-func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, userEmail, senderAddr string) int {
+// Best-effort past the listing: the unsubscribe itself is not tied to it, so a
+// mail that fails to move is logged and counted rather than failing the call.
+func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, userEmail, senderAddr string) (archived, notArchived int) {
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId":    userEmail,
 		"leftInbox": notLeftInbox,
@@ -218,24 +375,29 @@ func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, use
 	})
 	if err != nil {
 		log.Printf("unsubscribe: listing the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)
-		return 0
+		return 0, 0
 	}
 	defer cursor.Close(ctx)
 
 	var emails []models.Email
 	if err := cursor.All(ctx, &emails); err != nil {
 		log.Printf("unsubscribe: reading the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)
-		return 0
+		return 0, 0
 	}
 
 	protectedList := h.protectedValues(ctx, userEmail)
 	mb := session.Mailbox()
-	n := 0
 	for _, e := range emails {
 		if !protect.SameAddress(e.From, senderAddr) {
 			continue
 		}
 		if !allows(protect.ActionArchive, e.From, protectedList) {
+			continue
+		}
+		// Past the deadline every move would fail, and its ledger write too:
+		// what is left is counted as not archived, not tried.
+		if ctx.Err() != nil {
+			notArchived++
 			continue
 		}
 		err := h.applyVerb(ctx, mb, session.RefFor(ctx, e.MessageID), "archive", "")
@@ -245,12 +407,13 @@ func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, use
 		}
 		if err != nil {
 			log.Printf("unsubscribe: archiving %s for %s failed: %v", e.MessageID, userEmail, err)
+			notArchived++
 			continue
 		}
-		n++
+		archived++
 		h.logActionMeta(ctx, userEmail, e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
 	}
-	return n
+	return archived, notArchived
 }
 
 // GetSubscriptions aggregates the mailing-list senders in the user's stored

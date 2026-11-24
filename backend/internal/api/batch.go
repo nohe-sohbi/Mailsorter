@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -32,7 +33,12 @@ type BatchActionRequest struct {
 // batchActionResult reports one message's outcome so the client can tell the
 // difference between "done", "shielded by your protected list" and "failed".
 type batchActionResult struct {
-	Applied     []string `json:"applied"`
+	Applied []string `json:"applied"`
+	// AlreadyOut is the messages that had already left the inbox (moved by
+	// Mailsorter before, or by another mail client): nothing was done to
+	// them, they are neither applied nor failed, and the screen takes them
+	// off the list all the same.
+	AlreadyOut  []string `json:"alreadyOut"`
 	Failed      int      `json:"failed"`
 	Protected   int      `json:"protectedSkipped"`
 	Total       int      `json:"total"`
@@ -148,24 +154,17 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 
 	res := batchActionResult{
 		Applied:     make([]string, 0, len(req.MessageIDs)),
+		AlreadyOut:  []string{},
 		Total:       len(req.MessageIDs),
 		LabelName:   req.LabelName,
 		InverseName: batchInverse[req.Action],
 	}
 	res.Reversible = res.InverseName != "" && batchUndoReaches(session.Transport)
 
-	mb := session.Mailbox()
+	// The messages the action may touch, in the order they were sent.
+	eligible := make([]string, 0, len(req.MessageIDs))
 	for _, id := range req.MessageIDs {
 		if id == "" {
-			res.Failed++
-			continue
-		}
-		// The deadline is not plumbed into the Gmail client, so the loop has to
-		// check it itself: past it, every ledger write would fail silently and
-		// the batch would keep mutating the mailbox off the books. Since the
-		// context descends from the request, this also stops the batch when the
-		// caller hangs up, rather than mutating an inbox nobody is waiting on.
-		if ctx.Err() != nil {
 			res.Failed++
 			continue
 		}
@@ -181,25 +180,91 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 			res.Protected++
 			continue
 		}
+		eligible = append(eligible, id)
+	}
 
-		applyErr := h.applyVerb(ctx, mb, session.RefFor(ctx, id), req.Action, labelID)
-		if errors.Is(applyErr, errAlreadyOut) {
-			// It had already left the inbox (a screen left open, another mail
-			// client): nothing happened, so it is neither done nor failed, and
-			// "Annuler" must not send it back.
-			continue
-		}
-		if applyErr != nil {
-			log.Printf("batch-action: %s on message %s of %s: %v", req.Action, id, userEmail, applyErr)
-			res.Failed++
-			continue
-		}
-
+	done := func(id string) {
+		meta := identities[id]
 		res.Applied = append(res.Applied, id)
 		h.logActionMeta(ctx, userEmail, id, req.Action, SourceDirect, meta.Subject, meta.From)
 	}
+	failed := func(id string, err error) {
+		log.Printf("batch-action: %s on message %s of %s: %v", req.Action, id, userEmail, err)
+		res.Failed++
+	}
+
+	mb := session.Mailbox()
+	if imapMove, mut := movesOutOfIMAPInbox(mb, req.Action); imapMove != nil {
+		// Archiving or deleting a selection over IMAP: one UID MOVE for the
+		// whole of it, not one search and one move per message.
+		outcome := imapMove.MoveOutMany(ctx, eligible, mut)
+		moved := make(map[string]bool, len(outcome.Moved))
+		for _, id := range outcome.Moved {
+			moved[id] = true
+		}
+		out := make(map[string]bool, len(outcome.Out))
+		for _, id := range outcome.Out {
+			out[id] = true
+		}
+		for _, id := range eligible {
+			switch {
+			case moved[id]:
+				done(id)
+			case out[id]:
+				res.AlreadyOut = append(res.AlreadyOut, id)
+			default:
+				failed(id, outcome.Failed[id])
+			}
+		}
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
+
+	for _, id := range eligible {
+		// The deadline is not plumbed into the Gmail client, so the loop has to
+		// check it itself: past it, every ledger write would fail silently and
+		// the batch would keep mutating the mailbox off the books. Since the
+		// context descends from the request, this also stops the batch when the
+		// caller hangs up, rather than mutating an inbox nobody is waiting on.
+		if ctx.Err() != nil {
+			res.Failed++
+			continue
+		}
+		applyErr := h.applyVerb(ctx, mb, session.RefFor(ctx, id), req.Action, labelID)
+		switch {
+		case errors.Is(applyErr, errAlreadyOut), errors.Is(applyErr, errLeftInbox):
+			// It had already left the inbox (a screen left open, another mail
+			// client): nothing happened, so it is neither done nor failed, and
+			// "Annuler" must not send it back.
+			res.AlreadyOut = append(res.AlreadyOut, id)
+		case applyErr != nil:
+			failed(id, applyErr)
+		default:
+			done(id)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, res)
+}
+
+// movesOutOfIMAPInbox is the IMAP mailbox and the mutation when verb moves a
+// message out of an IMAP inbox (archive, delete): the batch then moves the
+// whole selection at once. nil on the Gmail API, and for a flag.
+func movesOutOfIMAPInbox(mb mailbox.Mailbox, verb string) (*mirroredIMAP, mailbox.Mutation) {
+	box, ok := mb.(mirroredIMAP)
+	if !ok {
+		return nil, mailbox.Mutation{}
+	}
+	action, err := mailbox.Parse(verb)
+	if err != nil {
+		return nil, mailbox.Mutation{}
+	}
+	mut := mailbox.Mutation{Action: action}
+	op, err := mailbox.IMAPOpFor(mut)
+	if err != nil || op.Kind != mailbox.IMAPMove || op.To == mailbox.FolderInbox {
+		return nil, mailbox.Mutation{}
+	}
+	return &box, mut
 }
 
 // batchUndoReaches reports whether BatchUndo can reverse a batch for a mailbox

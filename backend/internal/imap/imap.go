@@ -521,6 +521,153 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, dest, headerMessag
 	return landed, nil
 }
 
+// Moved is what MoveMany did: the server's name for the destination, the new
+// UID there of each message it moved, by the UID it had in the source folder
+// ("" when neither the server nor its Message-ID said), and the UIDs that
+// were no longer in the source folder, which nothing touched.
+type Moved struct {
+	Folder string
+	To     map[string]string
+	Gone   []string
+}
+
+// MoveMany moves the messages numbered uids in folder into the special folder
+// `to` in ONE UID MOVE: a selection of 200 mails is one search and one move,
+// not 200 of each.
+//
+// Where each one landed comes from the server's answer (COPYUID, which
+// UIDPLUS and IMAP4rev2 servers send: the source and destination UIDs, in
+// the same order). A server that does not send it is asked again by each
+// message's Message-ID header, when messageIDs holds it.
+//
+// The UIDs no longer in the folder (another mail client moved them first) are
+// left out of the MOVE, which would answer OK for them and do nothing, and
+// come back in Gone. When the MOVE itself fails, the ones gone since are added
+// to Gone and the error comes back: any UID neither in To nor in Gone was not
+// moved.
+func (c *Client) MoveMany(ctx context.Context, folder string, uids []string, to mailbox.Folder, messageIDs map[string]string) (Moved, error) {
+	dest, ok := c.folders[to]
+	if !ok {
+		return Moved{}, fmt.Errorf("%w: %s", ErrNoSuchFolder, to)
+	}
+	out := Moved{Folder: dest, To: make(map[string]string, len(uids))}
+	if len(uids) == 0 {
+		return out, nil
+	}
+	nums := make(map[string]imapv2.UID, len(uids))
+	var all imapv2.UIDSet
+	for _, uid := range uids {
+		num, err := parseUID(uid)
+		if err != nil {
+			return out, err
+		}
+		nums[uid] = num
+		all.AddNum(num)
+	}
+	if err := c.selectFolder(folder); err != nil {
+		return out, err
+	}
+	present, err := c.uidsIn(all)
+	if err != nil {
+		return out, fmt.Errorf("imap: look for %d uids in %q: %w", len(uids), folder, err)
+	}
+	var move imapv2.UIDSet
+	var moving []string
+	for _, uid := range uids {
+		if present[nums[uid]] {
+			move.AddNum(nums[uid])
+			moving = append(moving, uid)
+		} else {
+			out.Gone = append(out.Gone, uid)
+		}
+	}
+	if len(moving) == 0 {
+		return out, nil
+	}
+	if dest == c.selected {
+		for _, uid := range moving {
+			out.To[uid] = uid
+		}
+		return out, nil
+	}
+	data, err := c.c.Move(move, dest).Wait()
+	if err != nil {
+		// Moved by another connection between the search and the MOVE: gone,
+		// not failed. What is still there was not moved.
+		if still, sErr := c.uidsIn(move); sErr == nil {
+			for _, uid := range moving {
+				if !still[nums[uid]] {
+					out.Gone = append(out.Gone, uid)
+				}
+			}
+		}
+		return out, fmt.Errorf("imap: move %d messages to %q: %w", len(moving), dest, err)
+	}
+	var pairs map[imapv2.UID]imapv2.UID
+	if data != nil {
+		pairs = pairUIDs(data.SourceUIDs, data.DestUIDs)
+	}
+	for _, uid := range moving {
+		if landed, ok := pairs[nums[uid]]; ok {
+			out.To[uid] = strconv.FormatUint(uint64(landed), 10)
+			continue
+		}
+		out.To[uid] = ""
+		if id := messageIDs[uid]; id != "" {
+			// The move happened either way; a failed lookup only means the
+			// new UID stays unknown, which the caller handles.
+			found, err := c.FindByMessageID(dest, id)
+			if err != nil {
+				log.Printf("imap: moved to %q, but could not find %s there again: %v", dest, id, err)
+			}
+			out.To[uid] = found
+		}
+	}
+	return out, nil
+}
+
+// uidsIn is which of set the selected folder holds.
+func (c *Client) uidsIn(set imapv2.UIDSet) (map[imapv2.UID]bool, error) {
+	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}, nil).Wait()
+	if err != nil {
+		return nil, err
+	}
+	found := res.AllUIDs()
+	in := make(map[imapv2.UID]bool, len(found))
+	for _, u := range found {
+		in[u] = true
+	}
+	return in, nil
+}
+
+// pairUIDs reads a COPYUID answer: the i-th source UID landed as the i-th
+// destination UID. nil when the answer is missing or does not line up (a
+// count that differs, a range left open), which leaves the Message-ID to
+// find them.
+func pairUIDs(source, dest imapv2.NumSet) map[imapv2.UID]imapv2.UID {
+	src, ok := source.(imapv2.UIDSet)
+	if !ok {
+		return nil
+	}
+	dst, ok := dest.(imapv2.UIDSet)
+	if !ok {
+		return nil
+	}
+	from, ok := src.Nums()
+	if !ok {
+		return nil
+	}
+	to, ok := dst.Nums()
+	if !ok || len(from) != len(to) || len(from) == 0 {
+		return nil
+	}
+	pairs := make(map[imapv2.UID]imapv2.UID, len(from))
+	for i := range from {
+		pairs[from[i]] = to[i]
+	}
+	return pairs
+}
+
 // MoveRecorded moves the message Mailsorter recorded as uid in folder into
 // the folder the server calls dest. When
 // its Message-ID is known, the number is checked first against the one the
