@@ -345,8 +345,11 @@ func (h *Handler) completeInboxDetails(ctx context.Context, userEmail string, cl
 	}
 	details, err := client.Details(folder, uids)
 	if err != nil {
+		// Only an addition to what the list shows (the size and attachment
+		// filters): a server whose answer cannot be read here must not turn
+		// every sync of the inbox into an error. Logged, tried again next sync.
 		log.Printf("imap sync: read the size and the attachments of %d messages of %s: %v", len(uids), userEmail, err)
-		return errMirrorNotReconciled
+		return nil
 	}
 	writes := make([]mongo.WriteModel, 0, len(details))
 	for uid, d := range details {
