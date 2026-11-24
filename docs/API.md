@@ -481,10 +481,14 @@ be absent.
 else `name` of `Content-Type`) is a file; so is an unnamed part declared
 `Content-Disposition: attachment`, listed as `piece-jointe`, and an unnamed
 forwarded mail (`message/rfc822`), listed as `message.eml`. The one exception
-is an image without a name that the HTML in `bodyHtml` shows through a `cid:`
-URL, whatever its disposition: the reader draws it in the text (see
-`inlineImages`), and a newsletter's pictures do not become chips named after
-nothing. A named one is listed too, so it can be saved. A `Content-ID`, an
+is an image without a name that an `<img>` of the HTML in `bodyHtml` draws
+through a `cid:` URL in its `src`, whatever its disposition: the reader draws
+it in the text (see `inlineImages`), and a newsletter's pictures do not become
+chips named after nothing. A named one is listed too, so it can be saved. A
+`cid:` anywhere else (a CSS `url()`, a `background` attribute) is not drawn
+by the screen and counts for nothing: an unnamed image only a background
+points at is listed as `piece-jointe` when it is declared an attachment, and
+is not shown at all otherwise, as before this rule. A `Content-ID`, an
 `X-Attachment-Id` or an inline disposition alone hides nothing. `filename` is cleaned before it is sent: no directory,
 no control character, no quote, no bidirectional control (U+061C, U+200E,
 U+200F, U+202A to U+202E, U+2066 to U+2069), the same name the download's
@@ -499,12 +503,17 @@ image no HTML shows were missing from the list, and are now in it.
 `inlineImages` maps the `cid:` of each picture the HTML draws to the id the
 download route serves it under, on both transports (`attachment.InlineImage`):
 a part of a type a browser draws without running anything (PNG, JPEG, GIF,
-WebP, BMP; never SVG, a document that can carry script) whose `Content-ID` a
-`cid:` URL of the HTML points at. The key is the `Content-ID` as the URL
-names it: %-unescaped, without its angle brackets, in lower case. No browser
-resolves `cid:`, so the SPA downloads each picture through the route below,
-puts an object URL in place of the `src="cid:..."` after the HTML is
-sanitized, and frees the object URLs when the reader leaves the message.
+WebP, BMP; never SVG, a document that can carry script) whose `Content-ID` the
+`src` of an `<img>` of the HTML names with a `cid:` URL. At most 30 of them
+(`attachment.MaxDrawn`), the first ones in the order of the HTML: each is a
+download, and over IMAP a connection to the mailbox, and a thread quoting its
+signatures carries dozens of logos; the others stay as the mail wrote them.
+The key is the `Content-ID` as the URL names it: %-unescaped, without its
+angle brackets, in lower case. No browser resolves `cid:`, so the SPA
+downloads the pictures through the route below, at most 3 at a time, puts an
+object URL in place of each `src="cid:..."` after the HTML is sanitized, and
+when the reader leaves the message drops the rest of the queue, aborts the
+downloads under way and frees the object URLs.
 
 `attachmentId` is what the download route below takes back: the file's part
 number in the message, on both transports (`"1"`, `"0.2"` over the Gmail API,
@@ -563,9 +572,10 @@ out, is served only while the fresh copy still gives a file that id.
 
 Only a part of the named message may be served: an id the message does not
 carry is a 404, never a passthrough to Gmail. The parts served are the files
-the reader lists and the pictures its HTML draws (`inlineImages`), on both
-transports: a picture of another type, or one the HTML does not point at, is
-not served unless it is a listed file.
+the reader lists and the pictures its HTML draws (`inlineImages`, the 30 first
+ones), on both transports: a picture of another type, one no `<img>` of the
+HTML points at, or one past the 30th, is not served unless it is a listed
+file.
 
 Over IMAP the file is inside the message. The route reads the message the
 way the reader does (its description, the headers of its parts, its HTML and

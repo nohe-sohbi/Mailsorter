@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"golang.org/x/oauth2"
 	gmailapi "google.golang.org/api/gmail/v1"
@@ -92,6 +93,28 @@ func (g *rotatingGmail) message(id string) *gmailapi.Message {
 				// Small enough for Gmail to send it with the message.
 				image("3", "petit@acme", gmailDotPNG, true),
 			},
+		}}
+	case "thread":
+		// A thread quoting signatures: more pictures than the screen draws,
+		// the parts in the reverse order of the HTML.
+		var html strings.Builder
+		var parts []*gmailapi.MessagePart
+		for i := 1; i <= attachment.MaxDrawn+1; i++ {
+			fmt.Fprintf(&html, `<img src="cid:img%d@x">`, i)
+			partID := fmt.Sprint(i)
+			aid := g.id(partID)
+			g.issued[aid] = []byte("PNG" + partID)
+			parts = append([]*gmailapi.MessagePart{{
+				PartId: partID, MimeType: "image/png",
+				Headers: []*gmailapi.MessagePartHeader{{Name: "Content-ID", Value: fmt.Sprintf("<img%d@x>", i)}},
+				Body:    &gmailapi.MessagePartBody{AttachmentId: aid, Size: int64(len("PNG" + partID))},
+			}}, parts...)
+		}
+		return &gmailapi.Message{Id: id, Payload: &gmailapi.MessagePart{
+			MimeType: "multipart/related",
+			Parts: append([]*gmailapi.MessagePart{
+				{PartId: "0", MimeType: "text/html", Body: &gmailapi.MessagePartBody{Data: base64.URLEncoding.EncodeToString([]byte(html.String()))}},
+			}, parts...),
 		}}
 	case "scan":
 		// A message that is a file and nothing else: the payload itself,
@@ -296,5 +319,42 @@ func TestGmailDownloadServesThePicturesTheHTMLDraws(t *testing.T) {
 	h.downloadAttachmentGmail(rec, client, "moi@example.com", "newsletter", "2")
 	if rec.Code != http.StatusNotFound || len(g.asked) != 0 || !strings.Contains(rec.Body.String(), attachmentMissingMessage) {
 		t.Errorf("download of a picture the HTML does not point at = %d %q (asked %v), want 404 %q and nothing asked", rec.Code, rec.Body.String(), g.asked, attachmentMissingMessage)
+	}
+}
+
+// The screen draws the first attachment.MaxDrawn pictures of the HTML, in its
+// order: the reader hands out those, and the download serves no other,
+// without asking Gmail.
+func TestGmailDrawsOnlyTheFirstPictures(t *testing.T) {
+	g := &rotatingGmail{rotate: true}
+	h, client := gmailHandler(t, g)
+	msg, err := h.gmailService.GetMessage(client, "thread")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	_, html := gmail.GetEmailBodies(msg)
+	images := readGmailParts(msg, html).inlineImages()
+	n := attachment.MaxDrawn + 1
+	if len(images) != attachment.MaxDrawn {
+		t.Fatalf("inline images = %d pictures, want %d", len(images), attachment.MaxDrawn)
+	}
+	if _, ok := images[fmt.Sprintf("img%d@x", n)]; ok {
+		t.Errorf("inline images hold the %dth picture of the HTML", n)
+	}
+	thirtieth := fmt.Sprint(n - 1)
+	if images[fmt.Sprintf("img%d@x", n-1)] != thirtieth {
+		t.Errorf("inline images = %v, want the %dth picture under %s", images, n-1, thirtieth)
+	}
+
+	rec := httptest.NewRecorder()
+	h.downloadAttachmentGmail(rec, client, "moi@example.com", "thread", thirtieth)
+	if rec.Code != http.StatusOK || rec.Body.String() != "PNG"+thirtieth {
+		t.Errorf("download of the %dth picture = %d %q, want 200 and it", n-1, rec.Code, rec.Body.String())
+	}
+	g.asked = nil
+	rec = httptest.NewRecorder()
+	h.downloadAttachmentGmail(rec, client, "moi@example.com", "thread", fmt.Sprint(n))
+	if rec.Code != http.StatusNotFound || len(g.asked) != 0 {
+		t.Errorf("download of the %dth picture = %d (asked Gmail %v), want 404 and nothing asked", n, rec.Code, g.asked)
 	}
 }

@@ -65,7 +65,8 @@ type contents struct {
 	// files are the parts the reader lists as files, in the message's order.
 	files []Attachment
 	// images are the pictures the HTML draws through cid:, by cid: the parts
-	// the screen shows in the text (attachment.InlineImage).
+	// the screen shows in the text (attachment.InlineImage), the
+	// attachment.MaxDrawn first ones.
 	images map[string]Attachment
 	// leafOf is the leaf of each file and of each image, by part number.
 	leafOf map[string]leaf
@@ -76,10 +77,8 @@ type contents struct {
 // servable is the part the download serves under part number, and its leaf:
 // a file the reader lists, or a picture the HTML draws.
 func (c *contents) servable(number string) (Attachment, leaf, bool) {
-	for _, f := range c.files {
-		if f.Part == number {
-			return f, c.leafOf[number], true
-		}
+	if f, ok := c.fileAt(number); ok {
+		return f, c.leafOf[number], true
 	}
 	for _, img := range c.images {
 		if img.Part == number {
@@ -87,6 +86,40 @@ func (c *contents) servable(number string) (Attachment, leaf, bool) {
 		}
 	}
 	return Attachment{}, leaf{}, false
+}
+
+// fileAt is the file listed under part number.
+func (c *contents) fileAt(number string) (Attachment, bool) {
+	for _, f := range c.files {
+		if f.Part == number {
+			return f, true
+		}
+	}
+	return Attachment{}, false
+}
+
+// drawnAt says whether a picture the screen draws is under part number.
+func (c *contents) drawnAt(number string) bool {
+	for _, img := range c.images {
+		if img.Part == number {
+			return true
+		}
+	}
+	return false
+}
+
+// firstDrawn keeps, of images (by cid), the attachment.MaxDrawn the HTML
+// draws first.
+func firstDrawn(shown attachment.Shown, images map[string]Attachment) map[string]Attachment {
+	cids := make([]string, 0, len(images))
+	for cid := range images {
+		cids = append(cids, cid)
+	}
+	kept := make(map[string]Attachment, len(images))
+	for _, cid := range shown.FirstDrawn(cids) {
+		kept[cid] = images[cid]
+	}
+	return kept
 }
 
 // inlineImages is the cid of each picture the HTML draws, to the part number
@@ -190,6 +223,13 @@ func (c *Client) readParts(folder, uid string, structure imapv2.BodyStructure, w
 		}
 		out.files = append(out.files, Attachment{Part: l.number, Filename: name, MimeType: part.MediaType, Size: l.size})
 		out.leafOf[l.number] = l
+	}
+	// The pictures the screen draws, bounded: the download serves no other.
+	out.images = firstDrawn(shown, out.images)
+	for number := range out.leafOf {
+		if _, file := out.fileAt(number); !file && !out.drawnAt(number) {
+			delete(out.leafOf, number)
+		}
 	}
 	out.skipped = errors.Join(skipped...)
 	return out, nil

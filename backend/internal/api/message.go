@@ -197,7 +197,8 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 // gmailParts is what the reader shows of the parts of a Gmail message: the
-// files it lists, and the pictures its HTML draws through cid:, by cid.
+// files it lists, and the pictures its HTML draws through cid:, by cid, the
+// attachment.MaxDrawn first ones.
 type gmailParts struct {
 	files  []attachmentView
 	images map[string]attachmentView
@@ -281,6 +282,16 @@ func readGmailParts(msg *gmailapi.Message, html string) gmailParts {
 		}
 	}
 	walk(msg.Payload, 0)
+	// The pictures the screen draws, bounded: the download serves no other.
+	cids := make([]string, 0, len(out.images))
+	for cid := range out.images {
+		cids = append(cids, cid)
+	}
+	kept := make(map[string]attachmentView, len(out.images))
+	for _, cid := range shown.FirstDrawn(cids) {
+		kept[cid] = out.images[cid]
+	}
+	out.images = kept
 	return out
 }
 

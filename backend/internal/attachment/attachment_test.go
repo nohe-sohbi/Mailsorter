@@ -1,6 +1,11 @@
 package attachment
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 // The HTML of a newsletter, showing its logo and its banner through cid:
 // URLs, the ways mail programs write them.
@@ -76,8 +81,16 @@ func TestListed(t *testing.T) {
 			part: Part{MediaType: "image/png", ContentID: "<logo@acme>"},
 		},
 		{
-			name: "an unnamed image the HTML shows as a CSS background",
+			// A CSS background is not drawn by the screen: without a name or
+			// a disposition, it is no file either.
+			name: "an unnamed image only a CSS background points at",
 			part: Part{MediaType: "image/jpeg", ContentID: "<fond@acme>"},
+		},
+		{
+			name:     "an unnamed image only a CSS background points at, declared an attachment",
+			part:     Part{MediaType: "image/jpeg", Disposition: "attachment", ContentID: "<fond@acme>"},
+			wantOK:   true,
+			wantName: Unnamed,
 		},
 		{
 			name: "an unnamed image the HTML shows, its reference %-escaped and in another case",
@@ -251,17 +264,28 @@ func TestListedForAMailWithoutHTML(t *testing.T) {
 	}
 }
 
+// Only the src of an image counts, in the order of the HTML: that is what
+// the screen replaces.
 func TestShownBy(t *testing.T) {
 	cases := map[string][]string{
-		"":                                       nil,
-		`<img src="https://acme.fr/logo.png">`:   nil,
-		`<img src="cid:logo@acme">`:              {"logo@acme"},
-		`<img src='cid:logo@acme'>`:              {"logo@acme"},
-		`<img src=cid:logo@acme>`:                {"logo@acme"},
-		`<td style="background:url(cid:f@a)">`:   {"f@a"},
-		`<img src="CID:Logo%40Acme">`:            {"logo@acme"},
-		`<img src="cid:a@x"><img src="cid:b@x">`: {"a@x", "b@x"},
-		`<img src="cid:%zz@x">`:                  {"%zz@x"},
+		"":                                        nil,
+		`<img src="https://acme.fr/logo.png">`:    nil,
+		`<img src="cid:logo@acme">`:               {"logo@acme"},
+		`<img src='cid:logo@acme'>`:               {"logo@acme"},
+		`<img src=cid:logo@acme>`:                 {"logo@acme"},
+		`<IMG ALT="x" SRC="CID:Logo%40Acme">`:     {"logo@acme"},
+		`<img alt="logo" src=" cid:logo@acme ">`:  {"logo@acme"},
+		`<img src="cid:%zz@x">`:                   {"%zz@x"},
+		"<img\n  class=\"l\"\n  src=\"cid:a@x\">": {"a@x"},
+		// In this order, each once.
+		`<img src="cid:b@x"><p><img src="cid:a@x"><img src="cid:b@x">`: {"b@x", "a@x"},
+		// Not an image's src: the screen draws none of these.
+		`<td style="background:url(cid:f@a)">`:                  nil,
+		`<table background="cid:f@a">`:                          nil,
+		`<a href="cid:doc@a">le devis</a>`:                      nil,
+		`<img data-src="cid:f@a" src="https://acme.fr/f.png">`:  nil,
+		`<img srcset="cid:f@a 2x" src="https://acme.fr/f.png">`: nil,
+		`<p>voir cid:f@a</p>`:                                   nil,
 	}
 	for html, want := range cases {
 		got := ShownBy(html)
@@ -269,11 +293,44 @@ func TestShownBy(t *testing.T) {
 			t.Errorf("ShownBy(%q) = %v, want %v", html, got, want)
 			continue
 		}
-		for _, id := range want {
-			if !got[id] {
-				t.Errorf("ShownBy(%q) = %v, want it to hold %q", html, got, id)
+		for rank, id := range want {
+			if at, ok := got[id]; !ok || at != rank {
+				t.Errorf("ShownBy(%q) = %v, want %q drawn at %d", html, got, id, rank)
 			}
 		}
+	}
+}
+
+// The reader and the download draw the first MaxDrawn pictures of the HTML,
+// in its order, whatever the order of the parts.
+func TestFirstDrawn(t *testing.T) {
+	var html strings.Builder
+	var parts []string
+	for i := 1; i <= MaxDrawn+5; i++ {
+		html.WriteString(fmt.Sprintf(`<img src="cid:img%d@x">`, i))
+		// The parts in the reverse order, and one the HTML does not draw.
+		parts = append([]string{fmt.Sprintf("img%d@x", i)}, parts...)
+	}
+	parts = append(parts, "autre@x")
+	shown := ShownBy(html.String())
+
+	got := shown.FirstDrawn(parts)
+	if len(got) != MaxDrawn {
+		t.Fatalf("FirstDrawn kept %d pictures, want %d", len(got), MaxDrawn)
+	}
+	for i, cid := range got {
+		if want := fmt.Sprintf("img%d@x", i+1); cid != want {
+			t.Errorf("FirstDrawn(...)[%d] = %q, want %q", i, cid, want)
+		}
+	}
+	// Under the bound, all of them.
+	if got := shown.FirstDrawn([]string{"img3@x", "img1@x", "autre@x"}); !reflect.DeepEqual(got, []string{"img1@x", "img3@x"}) {
+		t.Errorf("FirstDrawn(3 parts) = %v, want img1@x and img3@x", got)
+	}
+	// At the bound: the 30th is in, the 31st is not.
+	at := shown.FirstDrawn(parts[len(parts)-1-MaxDrawn-1:])
+	if len(at) != MaxDrawn || at[MaxDrawn-1] != fmt.Sprintf("img%d@x", MaxDrawn) {
+		t.Errorf("FirstDrawn(31 drawn) = %v, want img1@x to img%d@x", at, MaxDrawn)
 	}
 }
 

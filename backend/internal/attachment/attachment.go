@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -156,37 +157,68 @@ func DispositionType(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// Shown is the set of Content-IDs a mail's HTML points at, normalized by
-// contentID.
-type Shown map[string]bool
+// Shown is the Content-IDs a mail's HTML draws through cid: URLs in the src
+// of its images, normalized by contentID, each to its rank in the HTML (0
+// for the first one drawn).
+type Shown map[string]int
 
-// cidURL is a cid: URL (RFC 2392) in HTML: in an attribute, quoted or not,
-// or in a CSS url(). It ends where the attribute or the url() ends.
-var cidURL = regexp.MustCompile(`(?i)cid:([^\s"'<>()\\]+)`)
+// imgCID is the src of an <img> that is a cid: URL (RFC 2392), quoted or
+// not. Only there: the screen draws a picture by replacing the src of an
+// image, so a cid: in a CSS url() or in a background attribute names a part
+// nobody draws, which is not taken for a picture of the text.
+var imgCID = regexp.MustCompile(`(?is)<img\b[^>]*?\ssrc\s*=\s*(?:"\s*cid:([^"]*)"|'\s*cid:([^']*)'|cid:([^\s>]+))`)
 
-// ShownBy reads the cid: URLs of the HTML the reader renders for a mail.
-// A mail without HTML shows no part this way.
+// ShownBy reads the images of the HTML the reader renders for a mail whose
+// src is a cid: URL, in their order. A mail without HTML draws no part this
+// way.
 func ShownBy(html string) Shown {
 	shown := Shown{}
-	for _, m := range cidURL.FindAllStringSubmatch(html, -1) {
-		id := m[1]
+	for _, m := range imgCID.FindAllStringSubmatch(html, -1) {
+		id := m[1] + m[2] + m[3]
 		// A cid: URL is the Content-ID with its URL-unsafe characters
 		// %-escaped. One that does not unescape is compared as written.
 		if unescaped, err := url.PathUnescape(id); err == nil {
 			id = unescaped
 		}
 		if id = contentID(id); id != "" {
-			shown[id] = true
+			if _, seen := shown[id]; !seen {
+				shown[id] = len(shown)
+			}
 		}
 	}
 	return shown
 }
 
-// Has says whether the HTML shows the part whose Content-ID header is
-// header. A part without a Content-ID is never shown this way.
+// Has says whether the HTML draws the part whose Content-ID header is
+// header. A part without a Content-ID is never drawn this way.
 func (s Shown) Has(header string) bool {
 	id := contentID(header)
-	return id != "" && s[id]
+	_, ok := s[id]
+	return id != "" && ok
+}
+
+// MaxDrawn bounds how many pictures of one mail the screen draws. Each is
+// one download, and over IMAP one connection to the mailbox: a thread whose
+// mails quote each other's signatures carries dozens of logos. The pictures
+// past it stay as the mail wrote them, and the download does not serve them.
+const MaxDrawn = 30
+
+// FirstDrawn keeps, of cids (the pictures found among a mail's parts, keyed
+// as InlineImage keys them), the MaxDrawn its HTML draws first, in that
+// order. The reader and the download both bound with it, so the download
+// serves exactly the pictures the reader hands out.
+func (s Shown) FirstDrawn(cids []string) []string {
+	out := make([]string, 0, len(cids))
+	for _, c := range cids {
+		if _, ok := s[c]; ok {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return s[out[i]] < s[out[j]] })
+	if len(out) > MaxDrawn {
+		out = out[:MaxDrawn]
+	}
+	return out
 }
 
 // contentID is a Content-ID as a cid: URL names it: without its angle

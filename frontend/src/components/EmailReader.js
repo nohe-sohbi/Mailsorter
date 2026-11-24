@@ -65,13 +65,20 @@ const cidKey = (ref) => {
 // of all, a document that can carry script.
 const DRAWN_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/bmp']);
 
+// How many pictures download at once. Each one is a request, and on a mailbox
+// reached over IMAP a connection to it: a thread full of signature logos must
+// not open them all together.
+const DRAWING_AT_ONCE = 3;
+
 // Sanitising is not optional here: the body is attacker-controlled HTML. On top
 // of DOMPurify's default stripping, every surviving link is forced to open in a
 // new tab with rel="noopener" so a marketing email can never navigate the app
 // away from itself or reach back through window.opener. drawn maps a cid to
 // the object URL of the picture downloaded for it, put in place after the
 // sanitising, so nothing the sender wrote decides what URL an image gets.
-function sanitize(html, drawn = {}) {
+// A Map, not an object: a cid: named "constructor" or "__proto__" must find
+// nothing rather than the object's prototype.
+function sanitize(html, drawn = new Map()) {
   const clean = DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'object', 'embed'],
@@ -87,9 +94,9 @@ function sanitize(html, drawn = {}) {
   doc.querySelectorAll('img').forEach((img) => {
     img.setAttribute('loading', 'lazy');
     img.setAttribute('referrerpolicy', 'no-referrer');
-    const src = img.getAttribute('src') || '';
+    const src = (img.getAttribute('src') || '').trim();
     if (/^cid:/i.test(src)) {
-      const url = drawn[cidKey(src.slice(4))];
+      const url = drawn.get(cidKey(src.slice(4)));
       if (url) img.setAttribute('src', url);
     }
   });
@@ -135,7 +142,7 @@ function EmailReader({
   const [loadError, setLoadError] = useState('');
   const [downloading, setDownloading] = useState(null);
   const [labelsById, setLabelsById] = useState(null);
-  const [drawn, setDrawn] = useState({});
+  const [drawn, setDrawn] = useState(() => new Map());
   const loadSeqRef = useRef(0);
   // Held in a ref so loadMessage can stay a stable callback.
   const onReadRef = useRef(onRead);
@@ -189,30 +196,44 @@ function EmailReader({
     };
   }, [messageId, loadMessage]);
 
-  // The pictures the HTML draws: downloaded once the message is loaded, each
-  // into an object URL that the text shows in place of its cid:, and freed
-  // when the reader leaves the message (or the message is loaded again). A
+  // The pictures the HTML draws: downloaded once the message is loaded, at
+  // most DRAWING_AT_ONCE at a time, each into an object URL that the text
+  // shows in place of its cid:. Leaving the message (or loading it again)
+  // drops the queue, aborts the downloads under way and frees the URLs. A
   // picture that does not come stays as the mail wrote it.
   const inlineImages = full?.inlineImages;
   useEffect(() => {
-    setDrawn({});
-    const entries = Object.entries(inlineImages || {});
-    if (!messageId || entries.length === 0) return undefined;
-    let left = false;
+    setDrawn(new Map());
+    const queue = Object.entries(inlineImages || {});
+    if (!messageId || queue.length === 0) return undefined;
+    const controller = new AbortController();
     const urls = [];
-    entries.forEach(([cid, id]) => {
+    let running = 0;
+    let next = () => {};
+    const start = ([cid, id]) => {
+      running += 1;
       emailService
-        .downloadAttachment(messageId, id)
+        .downloadAttachment(messageId, id, { signal: controller.signal })
         .then(({ data }) => {
-          if (left || !DRAWN_TYPES.has(String(data?.type || '').toLowerCase())) return;
+          if (controller.signal.aborted || !DRAWN_TYPES.has(String(data?.type || '').toLowerCase())) return;
           const url = URL.createObjectURL(data);
           urls.push(url);
-          setDrawn((prev) => ({ ...prev, [cid]: url }));
+          setDrawn((prev) => new Map(prev).set(cid, url));
         })
-        .catch(() => {});
-    });
+        .catch(() => {})
+        .finally(() => {
+          running -= 1;
+          next();
+        });
+    };
+    next = () => {
+      while (!controller.signal.aborted && running < DRAWING_AT_ONCE && queue.length > 0) {
+        start(queue.shift());
+      }
+    };
+    next();
     return () => {
-      left = true;
+      controller.abort();
       urls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [messageId, inlineImages]);

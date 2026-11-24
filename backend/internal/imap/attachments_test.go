@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"mime"
 	"mime/quotedprintable"
 	"net"
@@ -588,6 +589,9 @@ func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
 	want := []Attachment{
 		// Drawn in the text, and listed so it can be saved: it has a name.
 		{Part: "1.2", Filename: "logo.png", MimeType: "image/png", Size: int64(len("PNG-logo"))},
+		// Only a CSS background points at it, which the screen does not
+		// draw: declared an attachment, it is a file.
+		{Part: "1.3", Filename: attachment.Unnamed, MimeType: "image/jpeg", Size: int64(len("JPEG-fond"))},
 		{Part: "2", Filename: "facture.pdf", MimeType: "application/pdf", Size: int64(len("%PDF-gmail"))},
 		{Part: "3", Filename: "devis.pdf", MimeType: "application/pdf", Size: int64(len("%PDF-apple"))},
 		{Part: "4", Filename: "photo.jpg", MimeType: "image/jpeg", Size: int64(len("JPEG-photo"))},
@@ -602,9 +606,9 @@ func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
 	if !reflect.DeepEqual(msg.Attachments, want) {
 		t.Errorf("Fetch(...).Attachments = %+v, want %+v", msg.Attachments, want)
 	}
-	// The logo and the background, unnamed and declared an attachment; not
-	// the SVG, which the HTML points at too.
-	wantImages := map[string]string{"logo@acme": "1.2", "fond@acme": "1.3"}
+	// The logo; not the background, which an image does not draw, nor the
+	// SVG, which an image does.
+	wantImages := map[string]string{"logo@acme": "1.2"}
 	if !reflect.DeepEqual(msg.InlineImages, wantImages) {
 		t.Errorf("Fetch(...).InlineImages = %v, want %v", msg.InlineImages, wantImages)
 	}
@@ -618,9 +622,6 @@ func TestTheListAndTheDownloadFollowOneRule(t *testing.T) {
 		if att != w || int64(len(data)) != w.Size {
 			t.Errorf("Attachment(%q) = %+v (%d bytes), want %+v", w.Part, att, len(data), w)
 		}
-	}
-	if att, data, err := c.Attachment(context.Background(), "INBOX", uid, "1.3", testLimit); err != nil || string(data) != "JPEG-fond" || att.MimeType != "image/jpeg" {
-		t.Errorf("Attachment(1.3, the background the HTML draws) = %+v %q, %v, want the picture", att, data, err)
 	}
 	// The HTML itself, a picture the HTML does not point at, an SVG it does.
 	for _, part := range []string{"1.1", "7", "8"} {
@@ -999,5 +1000,45 @@ func TestHeaderParams(t *testing.T) {
 	}
 	if _, err := headerParams(""); err == nil {
 		t.Error(`headerParams("") error = nil, want one: no value, no parameters`)
+	}
+}
+
+// The screen draws the first attachment.MaxDrawn pictures of the HTML, in its
+// order: the reader hands out those, and the download serves no other.
+func TestOnlyTheFirstPicturesAreDrawn(t *testing.T) {
+	n := attachment.MaxDrawn + 1
+	var html strings.Builder
+	var parts []string
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&html, `<img src="cid:img%d@x">`, i)
+		// The parts in the reverse order of the HTML.
+		parts = append([]string{fmt.Sprintf("Content-Type: image/png\r\nContent-ID: <img%d@x>\r\n\r\nPNG%d", i, i)}, parts...)
+	}
+	related := "Content-Type: multipart/related; boundary=\"rel\"\r\n\r\n" +
+		"--rel\r\nContent-Type: text/html\r\n\r\n" + html.String() + "\r\n" +
+		"--rel\r\n" + strings.Join(parts, "\r\n--rel\r\n") + "\r\n--rel--"
+	c := newTestServer(t, standardMailboxes())
+	uid := stored(t, c, mixed(related))
+
+	msg, err := c.Fetch(context.Background(), "INBOX", uid)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(msg.InlineImages) != attachment.MaxDrawn {
+		t.Fatalf("Fetch(...).InlineImages holds %d pictures, want %d", len(msg.InlineImages), attachment.MaxDrawn)
+	}
+	// Part 1.2 is the last in the HTML (img31), 1.3 the 30th.
+	last, thirtieth := fmt.Sprintf("img%d@x", n), fmt.Sprintf("img%d@x", n-1)
+	if _, ok := msg.InlineImages[last]; ok {
+		t.Errorf("Fetch(...).InlineImages holds %s, the %dth picture of the HTML", last, n)
+	}
+	if msg.InlineImages[thirtieth] != "1.3" || msg.InlineImages["img1@x"] != fmt.Sprintf("1.%d", n+1) {
+		t.Errorf("Fetch(...).InlineImages = %v, want the first %d of the HTML under their parts", msg.InlineImages, attachment.MaxDrawn)
+	}
+	if _, data, err := c.Attachment(context.Background(), "INBOX", uid, "1.3", testLimit); err != nil || string(data) != fmt.Sprintf("PNG%d", n-1) {
+		t.Errorf("Attachment(1.3, the %dth picture) = %q, %v, want it", n-1, data, err)
+	}
+	if _, data, err := c.Attachment(context.Background(), "INBOX", uid, "1.2", testLimit); !errors.Is(err, ErrNoSuchAttachment) || data != nil {
+		t.Errorf("Attachment(1.2, the %dth picture) = %d bytes, %v, want ErrNoSuchAttachment", n, len(data), err)
 	}
 }
