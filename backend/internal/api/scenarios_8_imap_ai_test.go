@@ -16,8 +16,9 @@ package api
 // hidden, so "Annuler" can bring it back; two sentences say its proposal does
 // not stay with it, and that "Tout ranger" from a screen that still shows it
 // moves, counts and records nothing more for that mail. The same goes for a
-// mail another mail program took out of the inbox, and for "Analyser" on a
-// mail already archived, from a screen that still shows it.
+// mail another mail program took out of the inbox, even an old one a sync no
+// longer reads, and for "Analyser" on a mail already archived, from a screen
+// that still shows it.
 
 import (
 	"net/http"
@@ -293,6 +294,59 @@ func TestScenarios_IMAPAI(t *testing.T) {
 				lines := moi.historyLinesOf(uids[0])
 				if len(lines) != 1 || lines[0].Action != "archive" || lines[0].Source != SourceDirect {
 					app.failf("l'historique de %s devrait montrer une seule ligne pour le mail n°%s %q, ton archivage à la main (\"archive\", %s) : il en montre %d (%s)", moi.email, uids[0], shopOrder.Subject, SourceDirect, len(lines), describeHistory(lines))
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP de plus de 100 mails, quand un autre logiciel a sorti de ta boîte de réception un ancien mail que l'IA proposait de ranger, sa proposition quitte le tri proposé à la synchronisation suivante.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapInboxOwner)
+				// 100 letters, synced, then 10 more, synced: more than one
+				// sync reads (the 100 most recent), and the 10 oldest letters
+				// are no longer among them.
+				letters := numberedMails("Lettre n°%d", 100)
+				uids := moi.receive(letters...)
+				moi.sync()
+				moi.receive(numberedMails("Nouvelle lettre n°%d", 10)...)
+				moi.sync()
+
+				// The AI proposes to archive three of those old letters. The
+				// middle one nobody touches: it is the control, as old as the
+				// other two, so a sync that drops every proposal about a mail
+				// it does not read cannot pass.
+				app.ai.willSay("archive", 0.95)
+				moi.analyze(uids[2], uids[3], uids[4])
+				archived := moi.proposalFor(uids[2])
+				control := moi.proposalFor(uids[3])
+				deleted := moi.proposalFor(uids[4])
+				for _, s := range []models.AISuggestion{archived, control, deleted} {
+					if s.Action != "archive" {
+						app.fatalf("le plan de l'IA devrait proposer d'archiver le mail n°%s, il propose %q : le scénario ne prouve rien", s.EmailID, s.Action)
+					}
+				}
+
+				// The phone takes two of them out of the inbox, the two ways:
+				// archived (moved to another folder) and deleted for good.
+				moi.movedElsewhere(uids[2], serverArchive)
+				moi.deletedElsewhere(uids[4])
+
+				moi.sync()
+
+				for _, c := range []struct {
+					s       models.AISuggestion
+					subject string
+					how     string
+				}{
+					{archived, letters[2].Subject, "archivé"},
+					{deleted, letters[4].Subject, "supprimé définitivement"},
+				} {
+					if moi.inPlan(c.s.ID) {
+						app.failf("après la synchronisation, la proposition d'archiver le mail n°%s %q, qu'un autre logiciel a %s, devrait avoir quitté le tri proposé de l'IA : elle y est encore (statut enregistré : %q)", c.s.EmailID, c.subject, c.how, moi.proposalStatus(c.s.ID))
+					}
+				}
+				if !moi.inPlan(control.ID) {
+					app.failf("après la synchronisation, la proposition d'archiver le mail n°%s %q, que personne n'a touché, devrait rester dans le tri proposé de l'IA : elle n'y est plus (statut enregistré : %q)", uids[3], letters[3].Subject, moi.proposalStatus(control.ID))
 				}
 			},
 		},

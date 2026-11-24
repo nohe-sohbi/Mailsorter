@@ -17,10 +17,12 @@ package api
 // act on a mail that is no longer there. The inbox is one of those screens,
 // the Expéditeurs tab, which counts the mails of each sender, another. A sync
 // reads only the 100 most recent mails of the inbox (imapListLimit), and the
-// copy must lose an older one all the same.
+// copy must lose an older one all the same, and every one of them when the
+// inbox has been emptied.
 //
 // What the person changes from Mailsorter shows at once, without a sync: a
-// mail marked "non lu" is one.
+// mail marked "non lu", and the counters above the inbox once a mail is
+// archived.
 
 import (
 	"fmt"
@@ -245,6 +247,34 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP qu'un autre logiciel a vidée, ta boîte de réception dans Mailsorter est vide après la synchronisation suivante.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+
+				// Another mail program empties the inbox, every way a mail
+				// leaves it: archived, put in the trash, deleted for good.
+				moi.movedElsewhere(uids[0], serverArchive)
+				moi.movedElsewhere(uids[1], serverTrash)
+				moi.deletedElsewhere(uids[2])
+				// Where the sentence starts: nothing left in the inbox of
+				// the server. An inbox still holding a mail proves nothing
+				// about an empty one.
+				if left := moi.onServer(serverInbox); len(left) > 0 {
+					app.fatalf("la boîte de réception du serveur IMAP de %s devrait être vide, elle contient encore %q : le scénario ne prouve rien", moi.email, left)
+				}
+
+				moi.sync()
+
+				// An empty listing is the case a sync could take for "nothing
+				// read" and leave the copy as it was: the whole screen, every
+				// page, must be empty.
+				if mails := moi.wholeInbox(); len(mails) > 0 {
+					app.failf("après la synchronisation, la boîte de réception de %s devrait être vide, comme celle du serveur qu'un autre logiciel a vidée : elle montre %s", moi.email, describeInbox(mails))
+				}
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP de plus de 100 mails, un ancien mail qu'un autre logiciel a sorti de ta boîte de réception n'y apparaît plus après la synchronisation suivante, et les autres mails y restent.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
@@ -338,6 +368,35 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 				// the lines above.
 				if row, ok := moi.shownRow(uids[0]); !ok || !row.IsRead {
 					app.failf("la boîte de réception de %s devrait montrer toujours lu le mail n°%s %q, que tu as lu et pas touché depuis (affiché : %v, lu : %v)", moi.email, uids[0], bankStatement.Subject, ok, row.IsRead)
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, juste après avoir archivé un mail, les compteurs de ta boîte ne le comptent plus, sans attendre de synchronisation.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				// Where the sentence starts: the counters count both mails,
+				// unread as they arrived. A mail never counted proves nothing
+				// once it is no longer.
+				if inbox, unread := moi.counters(); inbox != 2 || unread != 2 {
+					app.fatalf("après la synchronisation, les compteurs de la boîte de %s devraient montrer 2 mails dans la boîte de réception, 2 non lus : ils montrent %d et %d, le scénario ne prouve rien", moi.email, inbox, unread)
+				}
+
+				// "Archiver" on the row of the second mail.
+				moi.act(uids[1], "archive")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver")
+
+				// The counters as the inbox loads them next, with no
+				// "Synchroniser" between. 1, not 0: the mail nobody touched is
+				// the control, so counters that drop to nothing do not pass.
+				inbox, unread := moi.counters()
+				if inbox != 1 {
+					app.failf("juste après l'archivage du mail n°%s %q, le compteur « Boîte de réception » de %s devrait montrer 1 mail, il en montre %d", uids[1], shopOrder.Subject, moi.email, inbox)
+				}
+				if unread != 1 {
+					app.failf("juste après l'archivage du mail n°%s %q, non lu, le compteur « Non lus » de %s devrait montrer 1 mail, il en montre %d", uids[1], shopOrder.Subject, moi.email, unread)
 				}
 			},
 		},

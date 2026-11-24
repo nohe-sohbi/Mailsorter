@@ -465,6 +465,19 @@ func (p *imapPerson) openMail(uid string) {
 	}
 }
 
+// counters is what the counters above this person's inbox show: "Boîte de
+// réception" and "Non lus", the two STAT_CARDS of Inbox.js an IMAP mailbox
+// gets (the other two are Gmail only), as GET /api/stats hands them over.
+func (p *imapPerson) counters() (inbox, unread int) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/stats", nil)
+	if code != http.StatusOK {
+		a.fatalf("les compteurs de la boîte de %s ne s'affichent pas : GET /api/stats a répondu %d : %v", p.email, code, out)
+	}
+	return a.number(out, "inboxCount"), a.number(out, "unreadCount")
+}
+
 // shownRow returns the row of the inbox screen for the mail with this number,
 // and whether the screen shows one.
 func (p *imapPerson) shownRow(uid string) (shownMail, bool) {
