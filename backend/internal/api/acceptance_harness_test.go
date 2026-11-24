@@ -853,6 +853,110 @@ func (a *testApp) autopilot(from, action string) {
 }
 
 // ---------------------------------------------------------------------------
+// "Annuler" right after an action, and the Historique screen
+//
+// Each helper ending in As acts or looks as whoever holds this session, like
+// callAs: the IMAP people of acceptance_imap_test.go go through them too, so
+// both transports are read the same way.
+// ---------------------------------------------------------------------------
+
+// undoRightAfter is "Annuler" in the message that follows "Archiver" or
+// "Supprimer" on a mail (undoToast in Inbox.js). It returns the answer,
+// whatever it is.
+func (a *testApp) undoRightAfter(id, action string) answer {
+	a.t.Helper()
+	return a.undoRightAfterAs(a.token, id, action)
+}
+
+// undoRightAfterAs is that "Annuler": the single-message action again, on the
+// id the mail had when it was acted on, with the verb that undoes action
+// ("unarchive" after "archive", "untrash" otherwise). It returns the answer,
+// whatever it is.
+func (a *testApp) undoRightAfterAs(token, id, action string) answer {
+	a.t.Helper()
+	inverse := "untrash"
+	if action == "archive" {
+		inverse = "unarchive"
+	}
+	code, out := a.callAs(token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": id, "action": inverse})
+	return answer{code: code, body: out}
+}
+
+// historyLine is one line of the Historique screen, as GET /api/activity/log
+// hands it over: "undone" is what the screen shows as "Annulé", "undoable" is
+// what makes it offer "Annuler" (History.js).
+type historyLine struct {
+	ID        string `json:"id"`
+	MessageID string `json:"messageId"`
+	Action    string `json:"action"`
+	Source    string `json:"source"`
+	Subject   string `json:"subject"`
+	Undone    bool   `json:"undone"`
+	Undoable  bool   `json:"undoable"`
+}
+
+// historyScreenAs is the Historique screen: the first page it loads
+// (History.js, 50 lines), newest first. who names the person in a failure.
+func (a *testApp) historyScreenAs(token, who string) []historyLine {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodGet, "/api/activity/log?limit=50", nil)
+	if code != http.StatusOK {
+		a.fatalf("l'historique de %s ne s'affiche pas : GET /api/activity/log a répondu %d : %v", who, code, out)
+	}
+	raw, err := json.Marshal(out["entries"])
+	if err != nil {
+		a.fatalf("réponse de GET /api/activity/log illisible pour %s : %v", who, err)
+	}
+	var lines []historyLine
+	if err := json.Unmarshal(raw, &lines); err != nil {
+		a.fatalf("réponse de GET /api/activity/log illisible pour %s : %v", who, err)
+	}
+	return lines
+}
+
+// historyLineFor returns the newest line of the Historique screen for this
+// action on this mail, and stops the scenario when the screen shows none:
+// there is then nothing to look at once the action is undone.
+func (a *testApp) historyLineFor(id, action string) historyLine {
+	a.t.Helper()
+	for _, l := range a.historyScreenAs(a.token, scenarioUser) {
+		if l.MessageID == id && l.Action == action {
+			return l
+		}
+	}
+	a.fatalf("l'historique de %s ne montre pas de ligne %q pour le mail %s : le scénario ne prouve rien", scenarioUser, action, a.describe(id))
+	return historyLine{}
+}
+
+// expectNoLongerUndoable checks, on the Historique screen as it loads again,
+// that this line shows "Annulé" and no longer offers "Annuler". what names
+// the line in a failure.
+func (a *testApp) expectNoLongerUndoable(line historyLine, what string) {
+	a.t.Helper()
+	a.expectNoLongerUndoableAs(a.token, scenarioUser, line, what)
+}
+
+// expectNoLongerUndoableAs is that check. Both halves, because the screen
+// offers "Annuler" on any line marked undoable, even one marked undone (the
+// register of the hotel theme then shows the button and no "Annulé").
+func (a *testApp) expectNoLongerUndoableAs(token, who string, line historyLine, what string) {
+	a.t.Helper()
+	for _, l := range a.historyScreenAs(token, who) {
+		if l.ID != line.ID {
+			continue
+		}
+		if !l.Undone {
+			a.failf("dans l'historique de %s, la ligne %s devrait être marquée annulée, elle ne l'est pas", who, what)
+		}
+		if l.Undoable {
+			a.failf("dans l'historique de %s, la ligne %s ne devrait plus proposer « Annuler », elle le propose encore", who, what)
+		}
+		return
+	}
+	a.failf("l'historique de %s ne montre plus la ligne %s", who, what)
+}
+
+// ---------------------------------------------------------------------------
 // The edition, and the month's analyses
 // ---------------------------------------------------------------------------
 

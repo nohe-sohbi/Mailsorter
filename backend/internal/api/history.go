@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -109,9 +111,20 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 
 	h.resolveLogIdentities(ctx, userEmail, logs)
 
+	imapState := h.imapUndoState(ctx, userEmail, logs)
 	views := make([]actionLogView, 0, len(logs))
 	for _, l := range logs {
-		_, reversible := activity.Inverse(l.Action)
+		inverse, reversible := activity.Inverse(l.Action)
+		if imapState != nil && reversible {
+			switch inverse {
+			case "unarchive", "untrash":
+				reversible = imapState.canBringBack[l.MessageID]
+			default:
+				// A flag change can only be reversed on a mail still in the
+				// inbox: elsewhere its number names nothing.
+				reversible = imapState.inInbox[l.MessageID]
+			}
+		}
 		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone})
 	}
 
@@ -123,6 +136,68 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": views, "nextBefore": nextBefore})
+}
+
+// imapUndo is what the history needs to know, on an IMAP mailbox, to offer
+// "Annuler" only where it can work.
+type imapUndo struct {
+	// canBringBack: messages Mailsorter moved out whose stored copy says
+	// where they went (a number or a Message-ID to find them by), within
+	// undoWindow. Past it the sync forgets the move, and a move made before
+	// Mailsorter recorded destinations was never known.
+	canBringBack map[string]bool
+	// inInbox: messages still in the inbox, the only ones whose flags can be
+	// changed back.
+	inInbox map[string]bool
+}
+
+// imapUndoState answers for these entries; nil off IMAP, where every
+// reversible action stays reversible. When the store cannot answer, nothing
+// is offered: offering "Annuler" on what cannot be undone is a promise broken
+// on click, hiding it for one page load is not.
+func (h *Handler) imapUndoState(ctx context.Context, userEmail string, logs []models.ActionLog) *imapUndo {
+	none := &imapUndo{canBringBack: map[string]bool{}, inInbox: map[string]bool{}}
+	transport, _, err := h.transportFor(ctx, userEmail)
+	if err != nil {
+		log.Printf("history: which transport %s is on: %v", userEmail, err)
+		return none
+	}
+	if transport != provider.TransportIMAP {
+		return nil
+	}
+	ids := make([]string, 0, len(logs))
+	for _, l := range logs {
+		if l.MessageID != "" {
+			ids = append(ids, l.MessageID)
+		}
+	}
+	if len(ids) == 0 {
+		return none
+	}
+	cur, err := h.db.Emails().Find(ctx, bson.M{
+		"userId":    userEmail,
+		"folder":    string(mailbox.FolderInbox),
+		"messageId": bson.M{"$in": ids},
+	}, options.Find().SetProjection(bson.M{"messageId": 1, "headerMessageId": 1, "leftInbox": 1, "leftAt": 1, "movedTo": 1}))
+	if err != nil {
+		log.Printf("history: which actions of %s can be undone: %v", userEmail, err)
+		return none
+	}
+	var rows []movedRow
+	if err := cur.All(ctx, &rows); err != nil {
+		log.Printf("history: which actions of %s can be undone: %v", userEmail, err)
+		return none
+	}
+	since := time.Now().Add(-undoWindow)
+	for _, r := range rows {
+		switch {
+		case !r.LeftInbox:
+			none.inInbox[r.MessageID] = true
+		case r.MovedTo.Folder != "" && (r.MovedTo.UID != "" || r.HeaderMessageID != "") && !r.LeftAt.Before(since):
+			none.canBringBack[r.MessageID] = true
+		}
+	}
+	return none
 }
 
 // formatLogCursor encodes the (createdAt, _id) pair the next page starts after.
@@ -242,21 +317,60 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
-	if err != nil {
-		writeAuthError(w, err)
-		return
+	if transport, _, err := h.transportFor(ctx, userEmail); err == nil && transport == provider.TransportIMAP {
+		// On IMAP the inverse goes through the session: a moved message is
+		// fetched back from where Mailsorter put it (mirroredIMAP), by the
+		// number it had in the inbox, which is what the entry recorded.
+		session, err := h.openSession(ctx, userEmail)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		defer session.Close()
+		err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, entry.MessageID), inverse, "")
+		switch {
+		case errors.Is(err, errNotWhereLeft):
+			writeError(w, http.StatusNotFound, notWhereLeftMessage)
+			return
+		case errors.Is(err, errUndoExpired):
+			writeError(w, http.StatusNotFound, undoExpiredMessage)
+			return
+		case errors.Is(err, errLeftInbox):
+			writeError(w, http.StatusNotFound, leftInboxMessage)
+			return
+		case errors.Is(err, errUndoBusy):
+			writeError(w, http.StatusLocked, undoBusyMessage)
+			return
+		case errors.Is(err, errAlreadyBack):
+			// Another "Annuler" brought it back a moment ago, and marks the
+			// entry: nothing more to do or to record.
+			writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
+			return
+		case errors.Is(err, mailbox.ErrNoIMAPEquivalent):
+			writeTransportError(w)
+			return
+		case err != nil:
+			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
+			return
+		}
+	} else {
+		gmailClient, err := h.gmailClientFor(ctx, userEmail)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		if err := h.applyInverseAction(gmailClient, entry.MessageID, inverse); err != nil {
+			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
+			return
+		}
 	}
 
-	if err := h.applyInverseAction(gmailClient, entry.MessageID, inverse); err != nil {
-		writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
-		return
-	}
-
-	h.db.ActionLog().UpdateOne(ctx,
+	if _, err := h.db.ActionLog().UpdateOne(ctx,
 		bson.M{"_id": oid},
 		bson.M{"$set": bson.M{"undone": true, "undoneAt": time.Now()}},
-	)
+	); err != nil {
+		log.Printf("history: entry %s of %s undone but not marked: %v", oid.Hex(), userEmail, err)
+	}
 	// Record the reversal itself so the audit trail stays truthful.
 	h.logActionMeta(ctx, userEmail, entry.MessageID, inverse, SourceUndo, entry.Subject, entry.From)
 

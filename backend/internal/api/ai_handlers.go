@@ -122,8 +122,9 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch emails from this sender
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId": userEmail,
-		"from":   bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
+		"userId":    userEmail,
+		"leftInbox": notLeftInbox,
+		"from":      bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
 	}, options.Find().SetLimit(20))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
@@ -218,6 +219,11 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Suggestion not found")
 		return
 	}
+	if suggestion.Status == proposalMoot {
+		// Its mail left the inbox some other way: nothing to apply.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already"})
+		return
+	}
 
 	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
@@ -230,6 +236,13 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	suggestion.LabelID = labelID
 	if errors.Is(err, errNoLabelsOnIMAP) {
 		writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
+		return
+	}
+	if errors.Is(err, errAlreadyOut) {
+		// The mail was already tidied by hand: the proposal is moot. It
+		// leaves the plan, and nothing is counted or recorded.
+		h.dropMootProposal(ctx, objectID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already"})
 		return
 	}
 	if err != nil {
@@ -311,6 +324,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			failed++
 			continue
 		}
+		if suggestion.Status == proposalMoot {
+			// Its mail left the inbox some other way (a screen loaded before
+			// still sends its id): neither applied nor failed.
+			continue
+		}
 
 		// Shield protected senders from a bulk "apply all" that would archive
 		// or trash their mail. The suggestion is left pending, untouched.
@@ -322,6 +340,12 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		labelID, applyErr := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 		suggestion.LabelID = labelID
 
+		if errors.Is(applyErr, errAlreadyOut) {
+			// Already tidied by hand: not applied, not failed, and the moot
+			// proposal leaves the plan.
+			h.dropMootProposal(ctx, objectID)
+			continue
+		}
 		if errors.Is(applyErr, errNoLabelsOnIMAP) {
 			// Left pending, neither applied nor failed: nothing went wrong,
 			// the mailbox simply has no labels.
@@ -387,8 +411,9 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	// contained the key: a longer address on the same domain, or the same
 	// address on a longer domain.
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId": userEmail,
-		"from":   req.SenderEmail,
+		"userId":    userEmail,
+		"leftInbox": notLeftInbox,
+		"from":      req.SenderEmail,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
@@ -618,7 +643,7 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 
 	// Aggregate emails by sender
 	pipeline := []bson.M{
-		{"$match": bson.M{"userId": userEmail}},
+		{"$match": bson.M{"userId": userEmail, "leftInbox": notLeftInbox}},
 		{"$group": bson.M{
 			"_id":        "$from",
 			"emailCount": bson.M{"$sum": 1},
@@ -816,6 +841,33 @@ func (h *Handler) getSmartLabelNames(ctx context.Context, userEmail string) ([]s
 	return names, nil
 }
 
+// dropMootProposal sets moot a pending proposal about a mail that already
+// left the inbox, so it leaves the plan (see proposalMoot). Best effort: a
+// failure is logged, and the next sync does it.
+func (h *Handler) dropMootProposal(ctx context.Context, id primitive.ObjectID) {
+	if _, err := h.db.AISuggestions().UpdateOne(ctx,
+		bson.M{"_id": id, "status": "pending"},
+		bson.M{"$set": bson.M{"status": proposalMoot}},
+	); err != nil {
+		log.Printf("ai: set moot the proposal %s: %v", id.Hex(), err)
+	}
+}
+
+// leftInbox reports whether Mailsorter already moved this IMAP message out of
+// the inbox (mirroredIMAP flagged its stored copy).
+// A store that cannot answer reads as "still in the inbox": the action then
+// goes to the server, which knows.
+func (h *Handler) leftInbox(ctx context.Context, userEmail, messageID string) bool {
+	n, err := h.db.Emails().CountDocuments(ctx, bson.M{
+		"userId": userEmail, "folder": string(mailbox.FolderInbox), "messageId": messageID, "leftInbox": true,
+	})
+	if err != nil {
+		log.Printf("ai: did message %s of %s leave the inbox: %v", messageID, userEmail, err)
+		return false
+	}
+	return n > 0
+}
+
 // errNoLabelsOnIMAP is what applying a "label" verdict to an IMAP mailbox
 // answers: the transport has no labels (internal/mailbox/imap.go).
 var errNoLabelsOnIMAP = errors.New("labels are not available on an IMAP mailbox")
@@ -826,6 +878,11 @@ const noLabelsOnIMAPMessage = "Les étiquettes ne sont pas encore disponibles su
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
 	if action == "keep" {
 		return "", nil
+	}
+	if session.Transport == provider.TransportIMAP && h.leftInbox(ctx, userEmail, messageID) {
+		// The user already tidied this mail by hand: the proposal is moot,
+		// whatever it proposed. Nothing moves, nothing is counted or recorded.
+		return "", errAlreadyOut
 	}
 	if action == "label" {
 		if session.Transport == provider.TransportIMAP {

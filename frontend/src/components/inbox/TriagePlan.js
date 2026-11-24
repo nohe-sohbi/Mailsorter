@@ -116,10 +116,20 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       byVerb.get(key).ids.push(s.emailId);
     }
     try {
+      // A mail another mail client moved meanwhile does not come back: the
+      // server says so, and the screen does not announce a full undo.
+      let reason = '';
+      let missing = 0;
       for (const { action, labelName, ids } of byVerb.values()) {
-        for (const chunk of chunks(ids)) await emailService.batchUndo(chunk, action, labelName);
+        for (const chunk of chunks(ids)) {
+          const { data } = await emailService.batchUndo(chunk, action, labelName);
+          if (data?.message) reason = data.message;
+          missing += Math.max(0, (data?.total || 0) - (data?.restored || 0));
+        }
       }
-      toast.success('Tri annulé');
+      if (reason) toast.error(reason);
+      else if (missing) toast.error(`${emailsCount(missing)} n'${missing > 1 ? 'ont' : 'a'} pas pu être remis.`);
+      else toast.success('Tri annulé');
     } catch (err) {
       toast.error(apiError(err, "Impossible d'annuler."));
     } finally {
@@ -152,6 +162,12 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       const protectedSkipped = data?.protectedSkipped || 0;
       const failed = data?.failed || 0;
       if (applied.length === 0) {
+        if (!protectedSkipped && !failed) {
+          // Nothing applied and nothing failed: every mail had already left
+          // the inbox (tidied by hand, or from another device).
+          toast.success(items.length > 1 ? 'Ces mails étaient déjà rangés.' : 'Ce mail était déjà rangé.');
+          return;
+        }
         toast.error(
           protectedSkipped
             ? 'Rien appliqué : ces expéditeurs sont protégés.'

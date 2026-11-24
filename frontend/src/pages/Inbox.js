@@ -416,11 +416,11 @@ function Inbox() {
   };
 
   // --- Undo helper ---------------------------------------------------------
-  // Not over IMAP: a moved message changes its id there, and putting it back
-  // is not written yet, so an "Annuler" would announce an undo that did nothing.
-  // Nor while the mailbox is not known.
+  // Works on both transports: over IMAP the server fetches the message back
+  // from where it put it, by the number it had here, and says so when another
+  // mail client moved it meanwhile. Not while the mailbox is not known yet.
   const undoToast = (messageId, action, message) => {
-    if (!fullFeatures) {
+    if (!known) {
       toast.success(message);
       return;
     }
@@ -430,7 +430,9 @@ function Inbox() {
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
-        toast.error("Impossible d'annuler");
+        // The one failure worth its own words: another mail client moved the
+        // mail meanwhile (404 with the reason). Anything else stays generic.
+        toast.error(err?.response?.status === 404 ? apiError(err, "Impossible d'annuler.") : "Impossible d'annuler");
       }
     });
   };
@@ -640,7 +642,15 @@ function Inbox() {
     const act = suggestion.action;
     removeSuggestion(id);
     try {
-      await aiService.applySuggestion(id);
+      const { data } = await aiService.applySuggestion(id);
+      if (data?.status === 'already') {
+        // It had already left the inbox (tidied by hand, or from another
+        // device): nothing was done, so nothing to count or undo.
+        removeEmails(suggestion.emailId);
+        setSelectedEmail((prev) => (prev?.messageId === suggestion.emailId ? null : prev));
+        toast.success('Ce mail était déjà rangé.');
+        return;
+      }
       track('suggestion_applied', { action: act });
       bumpGamify(1);
       if (act !== 'keep') {
@@ -821,10 +831,18 @@ function Inbox() {
               // Same cap as the forward path: undoing 400 archives is two calls.
               // The label name travels back too: taking a label off needs to
               // know which one, and only this closure still remembers.
+              // A mail another mail client moved meanwhile does not come back:
+              // the server says so, and the screen does not claim a full undo.
+              let reason = '';
+              let missing = 0;
               for (let i = 0; i < applied.length; i += BATCH_LIMIT) {
-                await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
+                const { data: undone } = await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
+                if (undone?.message) reason = undone.message;
+                missing += Math.max(0, (undone?.total || 0) - (undone?.restored || 0));
               }
-              toast.success('Action annulée');
+              if (reason) toast.error(reason);
+              else if (missing) toast.error(`${missing} email${plural(missing)} n'${missing > 1 ? 'ont' : 'a'} pas pu être remis.`);
+              else toast.success('Action annulée');
               fetchData({ forceRefresh: true, sync: false });
             } catch {
               toast.error("Impossible d'annuler");
@@ -906,8 +924,14 @@ function Inbox() {
     removeEmails(email.messageId);
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
-      await emailService.action(email.messageId, action);
+      const { data } = await emailService.action(email.messageId, action);
       plan.settle(email.messageId);
+      if (data?.status === 'already') {
+        // It had already left the inbox (from another device, or a click
+        // just before): nothing moved, so nothing to count or undo.
+        toast.success('Ce mail avait déjà quitté la boîte de réception.');
+        return;
+      }
       bumpGamify(1);
       undoToast(email.messageId, action, action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
     } catch (err) {
@@ -932,9 +956,12 @@ function Inbox() {
       try {
         await emailService.action(email.messageId, action);
         toast.success(actionMeta(action).past, { duration: 1800 });
-      } catch {
+      } catch (err) {
         if (rollback) patchEmail(email.messageId, rollback);
-        toast.error("L'action a échoué");
+        toast.error(apiError(err, "L'action a échoué"));
+        // 404: it is no longer in the inbox (moved from another device):
+        // the row goes, as it would at the next sync.
+        if (err?.response?.status === 404) removeEmails(email.messageId);
       }
       return;
     }

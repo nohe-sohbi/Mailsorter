@@ -68,7 +68,7 @@ Free, SFR, Yahoo et AOL, Zoho, OVH, Google Workspace par IMAP et tout autre serv
 
 Par l'API Gmail, tout est branché.
 
-Sur une boîte IMAP, Mailsorter synchronise la boîte de réception, l'affiche, analyse les emails avec l'IA et range : archiver, supprimer, marquer comme lu, mettre en favori, appliquer ou ignorer une proposition de l'IA (archiver, supprimer, garder). Le reste passe encore par l'API Gmail et répond `501` sur une boîte IMAP : les étiquettes, les règles, l'annulation, le report, le désabonnement, les actions sur une sélection et sur tout un expéditeur, les pièces jointes. Le récap quotidien part par l'API Gmail du compte : il n'est pas envoyé depuis une boîte IMAP. Une proposition "étiqueter" de l'IA reste en attente sur une boîte IMAP : l'appliquer répond "Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP."
+Sur une boîte IMAP, Mailsorter synchronise la boîte de réception, l'affiche, analyse les emails avec l'IA et range : archiver, supprimer, marquer comme lu, mettre en favori, appliquer ou ignorer une proposition de l'IA (archiver, supprimer, garder), et annuler (juste après, après un rangement ou depuis l'historique : le mail revient de là où Mailsorter l'avait mis). Le reste passe encore par l'API Gmail et répond `501` sur une boîte IMAP : les étiquettes, les règles, le report, le désabonnement, les actions sur une sélection et sur tout un expéditeur, les pièces jointes. Le récap quotidien part par l'API Gmail du compte : il n'est pas envoyé depuis une boîte IMAP. Une proposition "étiqueter" de l'IA reste en attente sur une boîte IMAP : l'appliquer répond "Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP."
 
 ## Ce qu'elle fait
 

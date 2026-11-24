@@ -29,15 +29,18 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"mime"
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	imapv2 "github.com/emersion/go-imap/v2"
@@ -381,11 +384,13 @@ func (p *imapPerson) sync() {
 	}
 }
 
-// shownMail is one row of the inbox screen.
+// shownMail is one row of the inbox screen. IsRead is what the row shows as
+// read or "non lu" (FLAG_PATCH in Inbox.js patches the same field).
 type shownMail struct {
 	MessageID string `json:"messageId"`
 	From      string `json:"from"`
 	Subject   string `json:"subject"`
+	IsRead    bool   `json:"isRead"`
 }
 
 // inbox is what this person's inbox screen shows: the listing it loads, with
@@ -406,6 +411,83 @@ func (p *imapPerson) inbox() []shownMail {
 		a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
 	}
 	return mails
+}
+
+// wholeInbox is everything this person's inbox screen lists once scrolled to
+// the end: the first page inbox loads, then "Charger plus" (loadMoreEmails in
+// EmailContext.js, 100 at a time) for as long as the listing hands back a next
+// page. A sentence about a mailbox of more than 100 mails is about every page,
+// and the first one alone would miss its oldest mails.
+func (p *imapPerson) wholeInbox() []shownMail {
+	a := p.app
+	a.t.Helper()
+	var all []shownMail
+	token := ""
+	for page := 1; ; page++ {
+		// A bound, so a listing that hands back the same token forever stops
+		// the scenario instead of hanging it.
+		if page > 50 {
+			a.fatalf("la boîte de réception de %s propose encore « Charger plus » après 50 pages : la liste ne finit pas", p.email)
+		}
+		path := "/api/emails?q=in%3Ainbox&maxResults=100"
+		if token != "" {
+			path += "&pageToken=" + url.QueryEscape(token)
+		}
+		code, out := a.callAs(p.token, http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			a.fatalf("la page %d de la boîte de réception de %s ne s'affiche pas : GET /api/emails a répondu %d : %v", page, p.email, code, out)
+		}
+		raw, err := json.Marshal(out["emails"])
+		if err != nil {
+			a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
+		}
+		var mails []shownMail
+		if err := json.Unmarshal(raw, &mails); err != nil {
+			a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
+		}
+		all = append(all, mails...)
+		token, _ = out["nextPageToken"].(string)
+		if token == "" {
+			return all
+		}
+	}
+}
+
+// openMail is opening a mail in the reader, as this person: the reader loads
+// it with markRead (getEmail in services/api.js), which is what makes a mail
+// read in Mailsorter. It expects the mail to open.
+func (p *imapPerson) openMail(uid string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/emails/"+url.PathEscape(uid)+"?markRead=1", nil)
+	if code != http.StatusOK {
+		a.fatalf("le mail n°%s de %s ne s'ouvre pas dans la liseuse : GET /api/emails/%s a répondu %d : %v", uid, p.email, uid, code, out)
+	}
+}
+
+// counters is what the counters above this person's inbox show: "Boîte de
+// réception" and "Non lus", the two STAT_CARDS of Inbox.js an IMAP mailbox
+// gets (the other two are Gmail only), as GET /api/stats hands them over.
+func (p *imapPerson) counters() (inbox, unread int) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/stats", nil)
+	if code != http.StatusOK {
+		a.fatalf("les compteurs de la boîte de %s ne s'affichent pas : GET /api/stats a répondu %d : %v", p.email, code, out)
+	}
+	return a.number(out, "inboxCount"), a.number(out, "unreadCount")
+}
+
+// shownRow returns the row of the inbox screen for the mail with this number,
+// and whether the screen shows one.
+func (p *imapPerson) shownRow(uid string) (shownMail, bool) {
+	p.app.t.Helper()
+	for _, m := range p.inbox() {
+		if m.MessageID == uid {
+			return m, true
+		}
+	}
+	return shownMail{}, false
 }
 
 func describeInbox(mails []shownMail) string {
@@ -460,6 +542,73 @@ func (p *imapPerson) expectDoesNotShow(subject, why string) {
 	}
 }
 
+// sendersTab is this person's Expéditeurs tab: one card per sender, as
+// GET /api/senders lists them, each with the count of mails it shows.
+func (p *imapPerson) sendersTab() []senderCard {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/senders", nil)
+	if code != http.StatusOK {
+		a.fatalf("l'onglet Expéditeurs de %s ne s'affiche pas : GET /api/senders a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var cards []senderCard
+	if err := json.Unmarshal([]byte(raw), &cards); err != nil {
+		a.fatalf("réponse de GET /api/senders illisible pour %s : %v", p.email, err)
+	}
+	return cards
+}
+
+// senderCardOf returns the card of the Expéditeurs tab whose sender has this
+// address, and whether the tab shows one. By the address, because a card
+// holds the sender as the mail wrote it, name included ("Boutique"
+// <info@boutique.com>), and which way the IMAP listing quotes that name is
+// not what a sentence about the tab is about.
+func (p *imapPerson) senderCardOf(addr string) (senderCard, bool) {
+	p.app.t.Helper()
+	for _, c := range p.sendersTab() {
+		got := c.SenderEmail
+		if parsed, err := mail.ParseAddress(got); err == nil {
+			got = parsed.Address
+		}
+		if strings.EqualFold(got, addr) {
+			return c, true
+		}
+	}
+	return senderCard{}, false
+}
+
+// describeSenders is the Expéditeurs tab in a failure message.
+func describeSenders(cards []senderCard) string {
+	if len(cards) == 0 {
+		return "aucun expéditeur"
+	}
+	parts := make([]string, 0, len(cards))
+	for _, c := range cards {
+		parts = append(parts, fmt.Sprintf("%s (%d mail(s))", c.SenderEmail, c.EmailCount))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// expectSenderListed checks that the Expéditeurs tab shows this sender.
+func (p *imapPerson) expectSenderListed(addr string) {
+	a := p.app
+	a.t.Helper()
+	if _, ok := p.senderCardOf(addr); !ok {
+		a.failf("l'onglet Expéditeurs de %s devrait montrer %s, il ne le montre pas (il montre : %s)", p.email, addr, describeSenders(p.sendersTab()))
+	}
+}
+
+// expectSenderNotListed checks that the Expéditeurs tab no longer shows this
+// sender. why says why it should have left.
+func (p *imapPerson) expectSenderNotListed(addr, why string) {
+	a := p.app
+	a.t.Helper()
+	if c, ok := p.senderCardOf(addr); ok {
+		a.failf("l'onglet Expéditeurs de %s ne devrait plus montrer %s (%s), il le montre encore, avec %d mail(s)", p.email, addr, why, c.EmailCount)
+	}
+}
+
 // act is a button of an inbox row, as this person: the single-message action
 // (POST /api/emails/action), with the verb the row sends ("archive" for
 // "Archiver", "delete" for "Supprimer"). It expects the action to go through:
@@ -472,6 +621,92 @@ func (p *imapPerson) act(uid, action string) {
 	if code != http.StatusOK {
 		a.fatalf("l'action %q sur le mail n°%s de %s a répondu %d (attendu 200) : %v", action, uid, p.email, code, out)
 	}
+}
+
+// actAnswer is act, returning the answer whatever it is: for the sentences
+// about what that answer is.
+func (p *imapPerson) actAnswer(uid, action string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": uid, "action": action})
+	return answer{code: code, body: out}
+}
+
+// actTwiceAtOnce is a row's button clicked twice before the first answer
+// comes back (a double click, or the same mail in two tabs): two requests of
+// the single-message action, released at the same instant. It returns both
+// answers, whatever they are.
+func (p *imapPerson) actTwiceAtOnce(uid, action string) [2]answer {
+	p.app.t.Helper()
+	return p.twiceAtOnce("/api/emails/action", map[string]string{"messageId": uid, "action": action},
+		fmt.Sprintf("de l'action %q sur le mail n°%s", action, uid))
+}
+
+// undoFromHistoryTwiceAtOnce is "Annuler" on a line of the Historique screen
+// confirmed twice before the first answer comes back (a double click, or the
+// history open in two tabs): two POST /api/activity/undo on the same line,
+// released at the same instant. It returns both answers, whatever they are.
+func (p *imapPerson) undoFromHistoryTwiceAtOnce(line historyLine) [2]answer {
+	p.app.t.Helper()
+	return p.twiceAtOnce("/api/activity/undo", map[string]string{"id": line.ID},
+		fmt.Sprintf("de « Annuler » sur la ligne %q du mail n°%s", line.Action, line.MessageID))
+}
+
+// twiceAtOnce sends the same POST twice as this person, both requests
+// released at the same instant, and returns both answers, whatever they are.
+// what names the request in a failure.
+//
+// The two requests run on goroutines of their own, so they cannot go through
+// callAs, which stops the scenario on a network error: only the test's own
+// goroutine may do that. A network error is collected and reported from here,
+// once both have come back.
+func (p *imapPerson) twiceAtOnce(path string, body interface{}, what string) [2]answer {
+	a := p.app
+	a.t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		a.fatalf("encodage %s : %v", what, err)
+	}
+	var (
+		got  [2]answer
+		errs [2]error
+		wg   sync.WaitGroup
+	)
+	start := make(chan struct{})
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPost, a.server.URL+path, bytes.NewReader(raw))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+p.token)
+			req.Header.Set("Content-Type", "application/json")
+			<-start
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			var out map[string]interface{}
+			_ = json.Unmarshal(body, &out)
+			if out == nil && len(body) > 0 {
+				out = map[string]interface{}{"_raw": string(body)}
+			}
+			got[i] = answer{code: resp.StatusCode, body: out}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			a.fatalf("la requête n°%d %s de %s n'a pas abouti : %v", i+1, what, p.email, err)
+		}
+	}
+	return got
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +804,126 @@ func (p *imapPerson) deletedElsewhere(uid string) {
 	p.expectGoneElsewhere(c, uid, "un autre logiciel l'a supprimé définitivement")
 }
 
+// openFolderElsewhere is another mail program with this folder of the
+// person's mailbox open, ready to change it.
+func (p *imapPerson) openFolderElsewhere(folder string) *imapclient.Client {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	if _, err := c.Select(folder, nil).Wait(); err != nil {
+		_ = c.Close()
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir le dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	return c
+}
+
+// numberElsewhere is the number of the mail with this subject in the folder
+// open on c. By its subject, because a mail Mailsorter moved has a number in
+// its new folder that nobody told the scenario. A folder without that mail
+// stops the scenario: another program acting on a mail that is not there
+// proves nothing.
+func (p *imapPerson) numberElsewhere(c *imapclient.Client, folder, subject string) imapv2.UID {
+	a := p.app
+	a.t.Helper()
+	for _, m := range p.mailsIn(c, folder) {
+		if m.subject == subject {
+			return m.uid
+		}
+	}
+	a.fatalf("le dossier %s du serveur IMAP de %s ne contient pas le mail %q : le scénario ne prouve rien (à corriger dans le scénario)", folder, p.email, subject)
+	return 0
+}
+
+// expectLeftElsewhere checks, on the connection that just acted, that the
+// folder no longer holds this mail, for the reason expectGoneElsewhere gives.
+func (p *imapPerson) expectLeftElsewhere(c *imapclient.Client, folder, subject, what string) {
+	a := p.app
+	a.t.Helper()
+	for _, m := range p.mailsIn(c, folder) {
+		if m.subject == subject {
+			a.fatalf("le mail %q est encore dans le dossier %s du serveur IMAP de %s alors qu'%s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", subject, folder, p.email, what)
+		}
+	}
+}
+
+// newFolderElsewhere is another mail program creating a folder of the
+// person's own, the way they make one on their phone to file mail in.
+func (p *imapPerson) newFolderElsewhere(name string) {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if err := c.Create(name, nil).Wait(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu créer le dossier %s sur le serveur IMAP de %s : %v", name, p.email, err)
+	}
+}
+
+// movedFromElsewhere is another mail program moving the mail with this
+// subject out of folder into to: the person filed it elsewhere on their
+// phone. It does not sync.
+func (p *imapPerson) movedFromElsewhere(folder, subject, to string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openFolderElsewhere(folder)
+	defer c.Close()
+	uid := p.numberElsewhere(c, folder, subject)
+	if _, err := c.Move(imapv2.UIDSetNum(uid), to).Wait(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu déplacer le mail %q de %s du dossier %s vers %s : %v", subject, p.email, folder, to, err)
+	}
+	p.expectLeftElsewhere(c, folder, subject, "un autre logiciel l'a déplacé vers "+to)
+}
+
+// erasedFromElsewhere is another mail program deleting the mail with this
+// subject from folder for good, as deletedElsewhere does in the inbox. It
+// does not sync.
+func (p *imapPerson) erasedFromElsewhere(folder, subject string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openFolderElsewhere(folder)
+	defer c.Close()
+	uid := p.numberElsewhere(c, folder, subject)
+	deleted := &imapv2.StoreFlags{Op: imapv2.StoreFlagsAdd, Silent: true, Flags: []imapv2.Flag{imapv2.FlagDeleted}}
+	if err := c.Store(imapv2.UIDSetNum(uid), deleted, nil).Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu marquer supprimé le mail %q du dossier %s de %s : %v", subject, folder, p.email, err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu effacer le mail %q du dossier %s de %s : %v", subject, folder, p.email, err)
+	}
+	p.expectLeftElsewhere(c, folder, subject, "un autre logiciel l'a supprimé définitivement")
+}
+
+// serverMail is one mail of a folder, as another mail program lists it.
+type serverMail struct {
+	uid     imapv2.UID
+	subject string
+}
+
+// mailsIn lists the folder open on c, read from the envelopes, so listing
+// marks nothing read.
+func (p *imapPerson) mailsIn(c *imapclient.Client, folder string) []serverMail {
+	a := p.app
+	a.t.Helper()
+	found, err := c.UIDSearch(&imapv2.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	uids := found.AllUIDs()
+	if len(uids) == 0 {
+		return nil
+	}
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uids...), &imapv2.FetchOptions{UID: true, Envelope: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	mails := make([]serverMail, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Envelope != nil {
+			mails = append(mails, serverMail{uid: m.UID, subject: m.Envelope.Subject})
+		}
+	}
+	return mails
+}
+
 // onServer returns the subjects of the mails in this folder of the person's
 // server, as another mail program lists them. Opened read-only and read from
 // the envelopes, so looking marks nothing read.
@@ -580,25 +935,48 @@ func (p *imapPerson) onServer(folder string) []string {
 	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
 	}
-	found, err := c.UIDSearch(&imapv2.SearchCriteria{}, nil).Wait()
-	if err != nil {
-		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
-	}
-	uids := found.AllUIDs()
-	if len(uids) == 0 {
+	mails := p.mailsIn(c, folder)
+	if len(mails) == 0 {
 		return nil
 	}
-	msgs, err := c.Fetch(imapv2.UIDSetNum(uids...), &imapv2.FetchOptions{Envelope: true}).Collect()
-	if err != nil {
-		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
-	}
-	subjects := make([]string, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Envelope != nil {
-			subjects = append(subjects, m.Envelope.Subject)
-		}
+	subjects := make([]string, 0, len(mails))
+	for _, m := range mails {
+		subjects = append(subjects, m.subject)
 	}
 	return subjects
+}
+
+// seenOnServer says whether the mail with this subject in this folder of the
+// person's server is read there (the \Seen flag), as another mail program
+// shows it. Opened read-only and read from the flags, so looking marks
+// nothing read. A folder without that mail stops the scenario: a flag read on
+// nothing proves nothing.
+func (p *imapPerson) seenOnServer(folder, subject string) bool {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
+	}
+	uid := p.numberElsewhere(c, folder, subject)
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uid), &imapv2.FetchOptions{UID: true, Flags: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture des drapeaux du mail %q dans le dossier %s du serveur IMAP de %s : %v", subject, folder, p.email, err)
+	}
+	for _, m := range msgs {
+		if m.UID != uid {
+			continue
+		}
+		for _, f := range m.Flags {
+			if f == imapv2.FlagSeen {
+				return true
+			}
+		}
+		return false
+	}
+	a.fatalf("le serveur IMAP de %s ne donne pas les drapeaux du mail %q du dossier %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", p.email, subject, folder)
+	return false
 }
 
 // expectOnServer checks that this folder of the person's server holds a mail
@@ -619,6 +997,55 @@ func (p *imapPerson) expectOnServer(folder, subject string) {
 	a.failf("le mail %q devrait être dans le dossier %s du serveur IMAP de %s, il n'y est pas (le dossier contient : %s)", subject, folder, p.email, held)
 }
 
+// expectNotOnServer checks that this folder of the person's server no longer
+// holds a mail with this subject. why says why it should have left.
+func (p *imapPerson) expectNotOnServer(folder, subject, why string) {
+	a := p.app
+	a.t.Helper()
+	for _, s := range p.onServer(folder) {
+		if s == subject {
+			a.failf("le mail %q ne devrait plus être dans le dossier %s du serveur IMAP de %s (%s), il y est encore", subject, folder, p.email, why)
+			return
+		}
+	}
+}
+
+// requireOnServer is expectOnServer for what a scenario starts from: when the
+// folder does not hold the mail, the scenario stops there, since undoing an
+// action that moved nothing proves nothing. what names that action.
+func (p *imapPerson) requireOnServer(folder, subject, what string) {
+	a := p.app
+	a.t.Helper()
+	for _, s := range p.onServer(folder) {
+		if s == subject {
+			return
+		}
+	}
+	a.fatalf("le mail %q devrait être dans le dossier %s du serveur IMAP de %s, puisqu'%s : il n'y est pas, le scénario ne prouve rien", subject, folder, p.email, what)
+}
+
+// expectBackInInbox checks that the inbox screen lists the mail with this
+// subject again, and once. By its subject rather than its number: a mail that
+// comes back to an IMAP inbox gets a new number there from the server. when
+// says at which moment the screen is read.
+func (p *imapPerson) expectBackInInbox(subject, when string) {
+	a := p.app
+	a.t.Helper()
+	mails := p.inbox()
+	var numbers []string
+	for _, m := range mails {
+		if m.Subject == subject {
+			numbers = append(numbers, m.MessageID)
+		}
+	}
+	switch {
+	case len(numbers) == 0:
+		a.failf("%s, la boîte de réception de %s devrait montrer de nouveau le mail %q, elle ne le montre pas (elle montre : %s)", when, p.email, subject, describeInbox(mails))
+	case len(numbers) > 1:
+		a.failf("%s, la boîte de réception de %s devrait montrer le mail %q une fois, elle le montre %d fois (n°%s)", when, p.email, subject, len(numbers), strings.Join(numbers, ", n°"))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The AI's triage plan, and the history, as this person sees them
 // ---------------------------------------------------------------------------
@@ -633,6 +1060,14 @@ func (p *imapPerson) analyze(uids ...string) {
 	if code != http.StatusOK {
 		a.fatalf("l'analyse par l'IA des mails n°%s de %s a répondu %d (attendu 200) : %v", strings.Join(uids, ", n°"), p.email, code, out)
 	}
+}
+
+// analyzeAnswer is "Analyser" on these mails, as this person, returning the
+// answer whatever it is: for a mail the analysis may rightly turn down.
+func (p *imapPerson) analyzeAnswer(uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": uids})
+	return answer{code: code, body: out}
 }
 
 // plan is the AI's triage plan as this person's inbox loads it
@@ -732,4 +1167,188 @@ func (p *imapPerson) history(uid string) []models.ActionLog {
 		a.fatalf("lecture de l'historique de %s : %v", p.email, err)
 	}
 	return rows
+}
+
+// ---------------------------------------------------------------------------
+// "Annuler", from the three places that offer it
+// ---------------------------------------------------------------------------
+
+// undoRightAfter is "Annuler" in the message that follows a row's "Archiver"
+// or "Supprimer" (undoToast in Inbox.js), as this person, on the number the
+// mail had in the inbox. It returns the answer, whatever it is.
+func (p *imapPerson) undoRightAfter(uid, action string) answer {
+	p.app.t.Helper()
+	return p.app.undoRightAfterAs(p.token, uid, action)
+}
+
+// tidyUndo is one request of the "Annuler" that follows "Tout ranger": the
+// mails of one verdict, and what the server answered.
+type tidyUndo struct {
+	action string
+	uids   []string
+	got    answer
+}
+
+// undoTidy is "Annuler" in the message that follows "Tout ranger" (undo in
+// useTriagePlan, TriagePlan.js): one POST /api/emails/batch-undo per verdict,
+// with the numbers the mails had in the inbox when they were tidied, and
+// nothing for a "keep", which moved nothing. applied are the proposals
+// "Tout ranger" applied. It returns each answer, whatever it is.
+func (p *imapPerson) undoTidy(applied []models.AISuggestion) []tidyUndo {
+	p.app.t.Helper()
+	// The client's spelling of a verdict (canonicalAction in ui/actions.js).
+	canonical := map[string]string{"trash": "delete", "markRead": "read", "markUnread": "unread"}
+	var order []string
+	byVerb := map[string]*tidyUndo{}
+	labels := map[string]string{}
+	for _, s := range applied {
+		action := s.Action
+		if c, ok := canonical[action]; ok {
+			action = c
+		}
+		if action == "keep" {
+			continue
+		}
+		key := action
+		if action == "label" {
+			key = action + "|" + s.LabelName
+			labels[key] = s.LabelName
+		}
+		if byVerb[key] == nil {
+			byVerb[key] = &tidyUndo{action: action}
+			order = append(order, key)
+		}
+		byVerb[key].uids = append(byVerb[key].uids, s.EmailID)
+	}
+	out := make([]tidyUndo, 0, len(order))
+	for _, key := range order {
+		u := byVerb[key]
+		code, body := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-undo",
+			map[string]interface{}{"messageIds": u.uids, "action": u.action, "labelName": labels[key]})
+		u.got = answer{code: code, body: body}
+		out = append(out, *u)
+	}
+	return out
+}
+
+// historyScreen is this person's Historique screen: the first page it loads
+// (History.js, 50 lines), newest first.
+func (p *imapPerson) historyScreen() []historyLine {
+	p.app.t.Helper()
+	return p.app.historyScreenAs(p.token, p.email)
+}
+
+// historyLineFor returns the newest line of the Historique screen for this
+// action on the mail with this number, and stops the scenario when the
+// screen shows none: there is then nothing to press "Annuler" on.
+func (p *imapPerson) historyLineFor(uid, action string) historyLine {
+	a := p.app
+	a.t.Helper()
+	for _, l := range p.historyScreen() {
+		if l.MessageID == uid && l.Action == action {
+			return l
+		}
+	}
+	a.fatalf("l'historique de %s ne montre pas de ligne %q pour le mail n°%s : le scénario ne prouve rien", p.email, action, uid)
+	return historyLine{}
+}
+
+// historyLinesOf returns every line the Historique screen shows for the mail
+// with this number, newest first. For the sentences about an action that does
+// nothing: the screen must then show no line for it, so the scenario counts
+// them where the person reads them, not in the database.
+func (p *imapPerson) historyLinesOf(uid string) []historyLine {
+	p.app.t.Helper()
+	var lines []historyLine
+	for _, l := range p.historyScreen() {
+		if l.MessageID == uid {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// describeHistory is lines of the Historique screen in a failure message:
+// the action and where it came from (the Source* constants in ledger.go).
+func describeHistory(lines []historyLine) string {
+	if len(lines) == 0 {
+		return "aucune ligne"
+	}
+	parts := make([]string, 0, len(lines))
+	for _, l := range lines {
+		parts = append(parts, fmt.Sprintf("%q (%s)", l.Action, l.Source))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// undoFromHistory is "Annuler" on a line of the Historique screen (handleUndo
+// in History.js), once its confirmation is accepted. It returns the answer,
+// whatever it is.
+func (p *imapPerson) undoFromHistory(line historyLine) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/activity/undo", map[string]string{"id": line.ID})
+	return answer{code: code, body: out}
+}
+
+// expectMarkedUndone checks, on the Historique screen as it loads again, that
+// this line shows "Annulé" (undone) or not. what names the line in a failure.
+func (p *imapPerson) expectMarkedUndone(line historyLine, undone bool, what string) {
+	a := p.app
+	a.t.Helper()
+	for _, l := range p.historyScreen() {
+		if l.ID != line.ID {
+			continue
+		}
+		switch {
+		case undone && !l.Undone:
+			a.failf("dans l'historique de %s, la ligne %s devrait être marquée annulée, elle ne l'est pas", p.email, what)
+		case !undone && l.Undone:
+			a.failf("dans l'historique de %s, la ligne %s ne devrait pas être marquée annulée, elle l'est", p.email, what)
+		}
+		return
+	}
+	a.failf("l'historique de %s ne montre plus la ligne %s", p.email, what)
+}
+
+// expectNoLongerUndoable checks, on this person's Historique screen as it
+// loads again, that this line shows "Annulé" and no longer offers "Annuler".
+// what names the line in a failure.
+func (p *imapPerson) expectNoLongerUndoable(line historyLine, what string) {
+	p.app.t.Helper()
+	p.app.expectNoLongerUndoableAs(p.token, p.email, line, what)
+}
+
+// actionTakenDaysAgo is days going by since the action of this history line:
+// the line's date, and the date the stored copy of its mail records for when
+// it left the inbox (leftAt, written by mirroredIMAP), both moved that many
+// days back, which is what the database holds once that time has passed. The
+// app reads no clock a scenario can turn, and a sentence about an action older
+// than "Annuler" allows cannot wait thirty days.
+//
+// The line must exist: moving nothing back would prove nothing. The stored
+// copy may not, once the app keeps none for a mail that left the inbox.
+func (p *imapPerson) actionTakenDaysAgo(line historyLine, days int) {
+	a := p.app
+	a.t.Helper()
+	oid, err := primitive.ObjectIDFromHex(line.ID)
+	if err != nil {
+		a.fatalf("la ligne d'historique %q n'a pas un identifiant lisible : %v", line.ID, err)
+	}
+	then := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := a.h.db.ActionLog().UpdateOne(ctx,
+		bson.M{"_id": oid, "userId": p.email},
+		bson.M{"$set": bson.M{"createdAt": then}})
+	if err != nil {
+		a.fatalf("recul de %d jours de la ligne d'historique %q de %s : %v", days, line.Action, p.email, err)
+	}
+	if res.MatchedCount != 1 {
+		a.fatalf("la ligne d'historique %q du mail n°%s de %s est introuvable dans la base : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", line.Action, line.MessageID, p.email)
+	}
+	if _, err := a.h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": p.email, "messageId": line.MessageID, "leftInbox": true},
+		bson.M{"$set": bson.M{"leftAt": then}}); err != nil {
+		a.fatalf("recul de %d jours de la sortie de la boîte de réception du mail n°%s de %s : %v", days, line.MessageID, p.email, err)
+	}
 }

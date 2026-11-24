@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -464,5 +465,201 @@ func TestApplyRefusesAnAccountWideReference(t *testing.T) {
 	}
 	if n := countIn(t, c, "INBOX"); n != 1 {
 		t.Errorf("INBOX holds %d message(s); the refused action must not have moved anything", n)
+	}
+}
+
+// appendWithMessageID drops a message carrying a Message-ID header into folder
+// and returns its UID.
+func appendWithMessageID(t *testing.T, c *Client, folder, messageID string) string {
+	t.Helper()
+	raw := "From: sender@example.com\r\n" +
+		"To: " + testUser + "\r\n" +
+		"Subject: Test\r\n" +
+		"Message-ID: " + messageID + "\r\n" +
+		"\r\n" +
+		"Body.\r\n"
+	cmd := c.c.Append(folder, int64(len(raw)), nil)
+	if _, err := cmd.Write([]byte(raw)); err != nil {
+		t.Fatalf("append write: %v", err)
+	}
+	if err := cmd.Close(); err != nil {
+		t.Fatalf("append close: %v", err)
+	}
+	data, err := cmd.Wait()
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	c.selected = ""
+	return fmtUID(data.UID)
+}
+
+// MoveTo says where the message landed: the server's folder and the new UID,
+// which is what "Annuler" fetches it back by.
+func TestMoveToSaysWhereTheMessageLanded(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	uid := appendWithMessageID(t, c, "INBOX", "<move-1@example.com>")
+
+	landed, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.FolderArchive, "<move-1@example.com>")
+	if err != nil {
+		t.Fatalf("MoveTo: %v", err)
+	}
+	if landed.Folder != "Archive" || landed.ID == "" {
+		t.Fatalf("landed = %+v, want Archive with a UID", landed)
+	}
+	back, err := c.MoveTo(context.Background(), landed, mailbox.FolderInbox, "<move-1@example.com>")
+	if err != nil {
+		t.Fatalf("MoveTo back: %v", err)
+	}
+	if back.Folder != "INBOX" || back.ID == "" {
+		t.Fatalf("back = %+v, want INBOX with a UID", back)
+	}
+	if n := countIn(t, c, "INBOX"); n != 1 {
+		t.Errorf("INBOX holds %d message(s) after the round trip, want 1", n)
+	}
+}
+
+// A UID that is no longer in its folder is reported as gone, not "moved": a
+// MOVE on a missing UID would answer OK and do nothing.
+func TestMoveToReportsAMessageThatIsGone(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	appendWithMessageID(t, c, "INBOX", "<here@example.com>")
+	_, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", "999"), mailbox.FolderArchive, "")
+	if !errors.Is(err, ErrMessageGone) {
+		t.Errorf("MoveTo on a missing uid = %v, want ErrMessageGone", err)
+	}
+}
+
+// The fallback when a server does not say where a message landed: find it
+// again by its Message-ID header.
+func TestFindByMessageIDFindsTheMessageAgain(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	appendWithMessageID(t, c, "Archive", "<other@example.com>")
+	want := appendWithMessageID(t, c, "Archive", "<wanted@example.com>")
+	if got, err := c.FindByMessageID("Archive", "<wanted@example.com>"); err != nil || got != want {
+		t.Errorf("FindByMessageID = %q, %v, want %q", got, err, want)
+	}
+	if got, err := c.FindByMessageID("Archive", "<absent@example.com>"); err != nil || got != "" {
+		t.Errorf("FindByMessageID on an absent id = %q, %v, want empty", got, err)
+	}
+}
+
+// UIDs answers for the whole folder, not a page of it: it is how the sync
+// tells which old stored messages are still in the inbox.
+func TestUIDsListsEveryMessageOfTheFolder(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	want := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		want[appendMessage(t, c, "INBOX")] = true
+	}
+	appendMessage(t, c, "Archive")
+	got, err := c.UIDs("INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("UIDs(INBOX) = %v, want %v", got, want)
+	}
+}
+
+func TestHasSaysWhetherTheMessageIsStillThere(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	uid := appendMessage(t, c, "INBOX")
+	ref := mailbox.InFolder("INBOX", uid)
+	if there, err := c.Has(ref); err != nil || !there {
+		t.Fatalf("Has(%s) = %v, %v; want true", ref, there, err)
+	}
+	if _, err := c.MoveTo(context.Background(), ref, mailbox.FolderArchive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if there, err := c.Has(ref); err != nil || there {
+		t.Errorf("Has(%s) after the move = %v, %v; want false", ref, there, err)
+	}
+}
+
+// IDAt reads the Message-ID a number carries, the check that keeps a stored
+// number from moving another mail after a server renumbered its folders.
+func TestIDAtReadsTheMessageIDOfANumber(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	raw := "From: a@example.com\r\nSubject: Tagged\r\nMessage-ID: <tagged@example.com>\r\n\r\nBody.\r\n"
+	cmd := c.c.Append("INBOX", int64(len(raw)), nil)
+	if _, err := cmd.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := cmd.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.selected = ""
+	tagged := fmtUID(data.UID)
+	other := appendMessage(t, c, "INBOX")
+
+	id, exists, err := c.IDAt("INBOX", tagged)
+	if err != nil || !exists || !strings.Contains(id, "tagged@example.com") {
+		t.Fatalf("IDAt(tagged) = %q, %v, %v; want its Message-ID", id, exists, err)
+	}
+	if otherID, _, _ := c.IDAt("INBOX", other); otherID == id {
+		t.Errorf("IDAt(other) = %q, the same as the tagged mail's", otherID)
+	}
+	if _, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", tagged), mailbox.FolderArchive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists, err := c.IDAt("INBOX", tagged); err != nil || exists {
+		t.Errorf("IDAt after the move: exists=%v, %v; want a number that names nothing", exists, err)
+	}
+}
+
+// appendWithID puts a message carrying a Message-ID in folder and returns its UID.
+func appendWithID(t *testing.T, c *Client, folder, subject, id string) string {
+	t.Helper()
+	raw := "From: a@example.com\r\nSubject: " + subject + "\r\nMessage-ID: <" + id + ">\r\n\r\nBody.\r\n"
+	cmd := c.c.Append(folder, int64(len(raw)), nil)
+	if _, err := cmd.Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := cmd.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.selected = ""
+	return fmtUID(data.UID)
+}
+
+// A recorded number that now names another mail (a server that renumbered
+// its folders) must not move that mail: the right one is found by its
+// Message-ID, and when it is nowhere, nothing moves.
+func TestMoveRecordedNeverMovesAnotherMail(t *testing.T) {
+	ctx := context.Background()
+	c := newTestServer(t, standardMailboxes())
+	stranger := appendWithID(t, c, "Archive", "Stranger", "stranger@example.com")
+	ours := appendWithID(t, c, "Archive", "Ours", "ours@example.com")
+	oursID, _, err := c.IDAt("Archive", ours)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The recorded number names the stranger: ours is found by Message-ID.
+	landed, err := c.MoveRecorded(ctx, "Archive", stranger, mailbox.FolderInbox, oursID)
+	if err != nil {
+		t.Fatalf("MoveRecorded = %v", err)
+	}
+	if id, _, _ := c.IDAt("INBOX", landed.ID); id != oursID {
+		t.Errorf("the inbox received %q, want our mail %q", id, oursID)
+	}
+	if _, there, _ := c.IDAt("Archive", stranger); !there {
+		t.Error("the stranger left the archive: another mail was moved")
+	}
+
+	// Our mail is nowhere in the archive now: nothing moves, and it says so.
+	if _, err := c.MoveRecorded(ctx, "Archive", stranger, mailbox.FolderInbox, oursID); !errors.Is(err, ErrMessageGone) {
+		t.Errorf("MoveRecorded of a mail no longer there = %v, want ErrMessageGone", err)
+	}
+	if _, there, _ := c.IDAt("Archive", stranger); !there {
+		t.Error("the stranger left the archive on the second call")
 	}
 }

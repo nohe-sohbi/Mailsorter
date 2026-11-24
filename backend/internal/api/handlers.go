@@ -594,6 +594,10 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 	return synced, len(messages), rulesApplied, nil
 }
 
+// reversedBy names, for each inverse a client sends right after an action, the
+// action as the ledger recorded it ("trash" is recorded as "delete").
+var reversedBy = map[string]string{"unarchive": "archive", "untrash": "delete"}
+
 // EmailAction performs a direct action on a single message, over whichever
 // transport the mailbox uses (archive, trash, mark read/unread), without going
 // through AI suggestions.
@@ -642,6 +646,42 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		// with 501 keeps it apart from "your request was wrong".
 		writeTransportError(w)
 		return
+	}
+	if errors.Is(err, errNotWhereLeft) {
+		writeError(w, http.StatusNotFound, notWhereLeftMessage)
+		return
+	}
+	if errors.Is(err, errUndoExpired) {
+		writeError(w, http.StatusNotFound, undoExpiredMessage)
+		return
+	}
+	if errors.Is(err, errLeftInbox) {
+		writeError(w, http.StatusNotFound, leftInboxMessage)
+		return
+	}
+	if errors.Is(err, errAlreadyOut) {
+		// It had already left the inbox (moved there by Mailsorter, or by
+		// another mail client): nothing happened, so nothing is recorded, and
+		// the screen is told so rather than announce a move.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already", "action": req.Action})
+		return
+	}
+	if errors.Is(err, errUndoBusy) {
+		writeError(w, http.StatusLocked, undoBusyMessage)
+		return
+	}
+	if errors.Is(err, errAlreadyBack) {
+		// Another "Annuler" brought it back a moment ago and recorded it.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})
+		return
+	}
+	if err == nil {
+		// "Annuler" right after an action sends its inverse here. Mark the
+		// action it reverses undone, as the history and batch-undo do, or the
+		// history keeps offering "Annuler" on work already reversed.
+		if forward, ok := reversedBy[req.Action]; ok {
+			h.recordUndo(ctx, userEmail, req.MessageID, forward, req.Action)
+		}
 	}
 
 	if err != nil {

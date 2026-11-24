@@ -100,10 +100,22 @@ function byDay(entries) {
   return days;
 }
 
-// What the right-hand side of a row says. `undoOk` is false over IMAP, where
-// the server cannot undo yet: the button is hidden there, and so is
-// "Définitif", which would say the action has no inverse when it has one on
-// Gmail. The page says why, once, above the list.
+// Actions that have an inverse. When the server still says one of these
+// cannot be undone, it is because it no longer can (on IMAP: past 30 days,
+// a move Mailsorter cannot trace, a read change on a mail that left the
+// inbox), not because the action has no inverse.
+const HAS_INVERSE = new Set(['archive', 'delete', 'trash', 'read', 'markRead']);
+
+const finalLabel = (e, none = 'Définitif') => (HAS_INVERSE.has(e.action) ? 'Plus annulable' : none);
+
+const finalHint = (e) =>
+  HAS_INVERSE.has(e.action)
+    ? "Mailsorter ne peut plus annuler cette action d'ici : le mail a changé de place depuis, ou elle est trop ancienne."
+    : "Cette action n'a pas d'inverse automatique.";
+
+// What the right-hand side of a row says. `undoOk` waits for the mailbox to be
+// known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
+// moved remembering where it went.
 function HotelRegister({ entries, undoing, onUndo, undoOk }) {
   return (
     <div className="card px-5 pb-4 pt-1 sm:px-7">
@@ -135,8 +147,8 @@ function HotelRegister({ entries, undoing, onUndo, undoOk }) {
                       {undoing === e.id ? <Spinner size={13} /> : 'Annuler'}
                     </button>
                   ) : e.undone || !e.undoable ? (
-                    <span className="text-xs text-muted" title={e.undone ? undefined : "Cette action n'a pas d'inverse automatique."}>
-                      {e.undone ? 'Annulé' : 'Définitif'}
+                    <span className="text-xs text-muted" title={e.undone ? undefined : finalHint(e)}>
+                      {e.undone ? 'Annulé' : finalLabel(e)}
                     </span>
                   ) : (
                     <span />
@@ -175,8 +187,8 @@ function History() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [undoing, setUndoing] = useState(null);
-  // Undo goes through the Gmail API only (the server answers 501 over IMAP).
-  const { isImap, fullFeatures: undoOk } = useMailbox();
+  // Undo works on both transports; it only waits for the mailbox to be known.
+  const { known: undoOk } = useMailbox();
 
   // Read inside async callbacks to tell whether the filter moved on since a
   // request was issued.
@@ -220,7 +232,7 @@ function History() {
     // happened. Changing source or search while it is in flight would otherwise
     // graft the tail of the old filter onto the new list, and overwrite the
     // cursor with one that no longer describes what is on screen.
-    const filterAtCall = `${source} ${query}`;
+    const filterAtCall = `${source}\u0000${query}`;
     setLoadingMore(true);
     try {
       const { data } = await accountService.getActionLog({
@@ -229,7 +241,7 @@ function History() {
         limit: PAGE_SIZE,
         before: nextBefore,
       });
-      if (filterAtCall !== `${sourceRef.current} ${queryRef.current}`) return;
+      if (filterAtCall !== `${sourceRef.current}\u0000${queryRef.current}`) return;
       const page = data.entries || [];
       // Le curseur est temporel : une action enregistrée entre deux pages peut
       // décaler la fenêtre, on dédoublonne sur l'id plutôt que d'afficher deux
@@ -277,6 +289,11 @@ function History() {
       // qui échouera à chaque clic.
       if (err.response?.status === 409) {
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true, undoable: false } : e)));
+      }
+      // 404 = le mail n'est plus là où Mailsorter l'avait mis, ou l'action est
+      // trop ancienne : le serveur ne la propose plus, la ligne non plus.
+      if (err.response?.status === 404) {
+        setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undoable: false } : e)));
       }
       toast.error(apiError(err, 'Annulation impossible.'));
     } finally {
@@ -422,11 +439,7 @@ function History() {
               <span className="font-semibold text-ink-900">{entries.length}</span> action{plural} affichée{plural}
               {nextBefore ? ", l'historique continue plus bas" : ''}
             </p>
-            {undoOk ? (
-              <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>
-            ) : (
-              isImap && <p className="text-xs text-muted">Annuler une action n'est pas encore disponible sur les boîtes IMAP.</p>
-            )}
+            {undoOk && <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>}
           </div>
 
           {hotel ? (
@@ -490,11 +503,8 @@ function History() {
                     ) : (
                       !e.undone &&
                       !e.undoable && (
-                        <span
-                          className="shrink-0 text-xs text-muted"
-                          title="Cette action n'a pas d'inverse automatique."
-                        >
-                          Non réversible
+                        <span className="shrink-0 text-xs text-muted" title={finalHint(e)}>
+                          {finalLabel(e, 'Non réversible')}
                         </span>
                       )
                     )}

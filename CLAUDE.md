@@ -201,7 +201,7 @@ in its package doc:
 | `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
-| `mirror` | Which messages of the local copy of an IMAP inbox are no longer in it, given what a listing just returned (a capped listing judges only its own range) | `StaleUIDs` |
+| `mirror` | What the local copy of an IMAP inbox should hold, given every UID the inbox holds now: what goes, what Mailsorter keeps hidden for "Annuler", what is back, and what a sync must leave alone (a move in flight, a row flagged after the listing started) | `Judge`, `Row`, `Rules`, `Verdict` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML, the HTML in the instance's look (classic or Grand Hotel, email-safe) | `Digest`, `Render`, `RenderStyle`, `Style*` |
 | `mailer` | RFC 2822 multipart build for Gmail send, and daily-due arithmetic | `BuildRaw`, `DueAt` |
@@ -236,7 +236,7 @@ The outbound clients and primitives:
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
 | `message.go` | `GET /api/emails/{id}`: one message with its body, on both transports (no attachment list over IMAP) |
-| `batch.go` | `POST /api/emails/batch-action` and `/batch-undo` (Gmail only), plus the identity lookups the ledger uses |
+| `batch.go` | `POST /api/emails/batch-action` (Gmail only) and `/batch-undo` (Gmail and IMAP), plus the identity lookups the ledger uses |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
 | `ai_handlers.go` | Eight of the `/api/ai/*` endpoints (analyze, analyze-sender, apply, apply-batch, apply-bulk, suggestions, reject, reject-batch), `GET /api/senders`, the sender preferences and `/api/smart-labels`. `analyze-async` and `jobs/{id}` are in `jobs.go` |
 | `ai_settings.go` | The BYOK routes (`/api/ai/providers`, `/api/ai/settings`, `/api/ai/settings/test`) and `resolveAnalyzer`, which puts the account's own provider first |
@@ -259,7 +259,7 @@ The outbound clients and primitives:
 | `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken` and the only reader of the sealed app password |
 | `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
-| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport` |
+| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`) |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest through the user's own Gmail, `digestHourOf` (a stored hour, 0 = midnight, or `DIGEST_HOUR_UTC` when none was picked; the settings screen and the scheduler both read it), `POST /api/account/digest/test`, and `digestStyle()`, the UI theme as a digest style |
 | `auto_sync.go` | 30 min per-user background inbox sync |

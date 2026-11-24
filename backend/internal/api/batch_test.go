@@ -210,12 +210,12 @@ func TestBatchActionRejectsMalformedJSON(t *testing.T) {
 }
 
 // apply-batch reports this so the client offers "Annuler" only where batch-undo
-// can perform it. It cannot on IMAP yet, and an undo that answers 501 after the
-// user pressed it is worse than none.
-func TestBatchUndoReachesOnlyTheGmailAPI(t *testing.T) {
+// can perform it: the Gmail API and IMAP, not Graph (not implemented). An undo
+// that answers 501 after the user pressed it is worse than none.
+func TestBatchUndoReachesGmailAndIMAP(t *testing.T) {
 	cases := map[provider.Transport]bool{
 		provider.TransportGmailAPI: true,
-		provider.TransportIMAP:     false,
+		provider.TransportIMAP:     true,
 		provider.TransportGraph:    false,
 		"":                         false,
 	}

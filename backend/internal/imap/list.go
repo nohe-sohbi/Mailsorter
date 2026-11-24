@@ -132,6 +132,7 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 
 	if env := msg.Envelope; env != nil {
 		email.Subject = env.Subject
+		email.HeaderMessageID = env.MessageID
 		email.From = formatAddress(env.From)
 		email.To = addressList(env.To)
 		email.ReceivedDate = env.Date

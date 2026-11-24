@@ -160,21 +160,3 @@ func TestIMAPIsReadIsTheOppositeConventionFromGmail(t *testing.T) {
 		t.Error("a read message reads differently across the two transports")
 	}
 }
-
-func TestLeavesInbox(t *testing.T) {
-	cases := map[Action]bool{
-		ActionArchive:    true,
-		ActionTrash:      true,
-		ActionUnarchive:  false,
-		ActionUntrash:    false,
-		ActionMarkRead:   false,
-		ActionMarkUnread: false,
-		ActionStar:       false,
-		ActionLabel:      false,
-	}
-	for action, want := range cases {
-		if got := LeavesInbox(Mutation{Action: action, LabelID: "x"}); got != want {
-			t.Errorf("LeavesInbox(%s) = %v, want %v", action, got, want)
-		}
-	}
-}

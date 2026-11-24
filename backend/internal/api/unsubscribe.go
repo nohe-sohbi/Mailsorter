@@ -131,8 +131,9 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 // a mail that fails to move is logged and skipped rather than failing the call.
 func (h *Handler) archiveBySender(ctx context.Context, gmailClient *gmailapi.Service, userEmail, senderAddr string) int {
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId": userEmail,
-		"from":   bson.M{"$regex": regexp.QuoteMeta(senderAddr), "$options": "i"},
+		"userId":    userEmail,
+		"leftInbox": notLeftInbox,
+		"from":      bson.M{"$regex": regexp.QuoteMeta(senderAddr), "$options": "i"},
 	})
 	if err != nil {
 		log.Printf("unsubscribe: listing the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)
@@ -181,7 +182,8 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 
 	pipeline := []bson.M{
 		{"$match": bson.M{
-			"userId": userEmail,
+			"userId":    userEmail,
+			"leftInbox": notLeftInbox,
 			"$or": []bson.M{
 				{"unsubUrl": bson.M{"$nin": []interface{}{nil, ""}}},
 				{"unsubMailto": bson.M{"$nin": []interface{}{nil, ""}}},

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -182,13 +184,13 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 }
 
 // batchUndoReaches reports whether BatchUndo can reverse a batch for a mailbox
-// on this transport. It reaches the mailbox through gmailClientFor, so the
-// answer is the Gmail API alone, and any path that applies a batch without
+// on this transport: the Gmail API, and IMAP since a moved message remembers
+// where it went (mirroredIMAP). Any path that applies a batch without
 // going through BatchAction reports it from here (apply-batch does). Kept next
 // to BatchUndo so that porting it to a session changes the answer in the same
 // diff: an "Annuler" that answers 501 is worse than no button.
 func batchUndoReaches(transport provider.Transport) bool {
-	return transport == provider.TransportGmailAPI
+	return transport == provider.TransportGmailAPI || transport == provider.TransportIMAP
 }
 
 // BatchUndo reverses a batch that was just applied. It is deliberately separate
@@ -230,6 +232,11 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
+	if transport, _, err := h.transportFor(ctx, userEmail); err == nil && transport == provider.TransportIMAP {
+		h.batchUndoIMAP(ctx, w, userEmail, req, inverse)
+		return
+	}
+
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
@@ -259,30 +266,78 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		restored++
-
-		// Mark the forward entry undone so the history does not offer a second
-		// "Annuler" on work already reversed. Deliberately the MOST RECENT
-		// matching entry only: an UpdateMany here would stamp every past
-		// archive of the same message as undone, rewriting history the user
-		// never touched.
-		var entry models.ActionLog
-		err := h.db.ActionLog().FindOneAndUpdate(ctx,
-			bson.M{"userId": userEmail, "messageId": id, "action": req.Action, "undone": bson.M{"$ne": true}},
-			bson.M{"$set": bson.M{"undone": true, "undoneAt": time.Now()}},
-			options.FindOneAndUpdate().SetSort(bson.M{"createdAt": -1}),
-		).Decode(&entry)
-
-		// Record the reversal itself, exactly as the per-entry undo does. Without
-		// it a batch undo left no trace and the ledger stopped being a truthful
-		// account of what Mailsorter did.
-		if err == nil {
-			h.logActionMeta(ctx, userEmail, id, inverse, SourceUndo, entry.Subject, entry.From)
-		} else {
-			h.logAction(ctx, userEmail, id, inverse, SourceUndo)
-		}
+		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)})
+}
+
+// batchUndoIMAP is BatchUndo on an IMAP mailbox: each message is fetched back
+// from where Mailsorter moved it (mirroredIMAP), by the number it had in the
+// inbox, which is the number the client holds. One that is no longer there,
+// or a reversal IMAP cannot express (taking off a label), is not restored and
+// not counted.
+func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, userEmail string, req BatchActionRequest, inverse string) {
+	session, err := h.openSession(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	defer session.Close()
+
+	restored, gone := 0, 0
+	for _, id := range req.MessageIDs {
+		if id == "" {
+			continue
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if err := h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, id), inverse, ""); err != nil {
+			if errors.Is(err, errAlreadyBack) {
+				// Another "Annuler" brought it back a moment ago and recorded it.
+				restored++
+				continue
+			}
+			if errors.Is(err, errNotWhereLeft) || errors.Is(err, errUndoExpired) {
+				gone++
+			} else {
+				log.Printf("batch-undo: message %s of %s not put back: %v", id, userEmail, err)
+			}
+			continue
+		}
+		restored++
+		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
+	}
+	answer := map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)}
+	if gone > 0 {
+		// The others came back; say why these did not, rather than let the
+		// screen announce a full undo.
+		answer["message"] = notWhereLeftMessage
+		answer["notWhereLeft"] = gone
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// recordUndo marks the forward entry undone, so the history does not
+// offer a second "Annuler" on work already reversed, and records the reversal
+// itself. Deliberately the MOST RECENT matching entry only: an UpdateMany here
+// would stamp every past archive of the same message as undone, rewriting
+// history the user never touched. Without the reversal entry a batch undo left
+// no trace and the ledger stopped being a truthful account of what Mailsorter
+// did.
+func (h *Handler) recordUndo(ctx context.Context, userEmail, id, action, inverse string) {
+	var entry models.ActionLog
+	err := h.db.ActionLog().FindOneAndUpdate(ctx,
+		bson.M{"userId": userEmail, "messageId": id, "action": action, "undone": bson.M{"$ne": true}},
+		bson.M{"$set": bson.M{"undone": true, "undoneAt": time.Now()}},
+		options.FindOneAndUpdate().SetSort(bson.M{"createdAt": -1}),
+	).Decode(&entry)
+	if err == nil {
+		h.logActionMeta(ctx, userEmail, id, inverse, SourceUndo, entry.Subject, entry.From)
+	} else {
+		h.logAction(ctx, userEmail, id, inverse, SourceUndo)
+	}
 }
 
 // emailIdentities resolves the subject/sender of a set of messages in one

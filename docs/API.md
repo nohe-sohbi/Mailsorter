@@ -348,8 +348,11 @@ message's UID in it. See "Transports and what works on each".
 
 Mirror the 100 most recent messages of the inbox into the database, through
 the caller's transport. Over IMAP it also drops from the mirror the messages
-that have left the inbox since the last sync. The background sync
-(`autoSyncEnabled`) runs the same code.
+that have left the inbox since the last sync, however old: it asks the server
+for the UID of every message in the inbox (one `UID SEARCH`), not only the
+ones it listed. The background sync (`autoSyncEnabled`) runs the same code.
+Over IMAP, `500` when the mirror could not be brought in line with the inbox
+(the listing itself is stored).
 
 Over the Gmail API, when `autoApplyRules` is on, the deterministic rules run on
 each synced message (protected senders shielded, each action journaled with
@@ -392,8 +395,27 @@ archive and trash folders and read and star are flags.
 ```
 `action` is one of `archive`, `delete` (alias `trash`), `unarchive`, `untrash`,
 `read`, `unread`, `star`, `unstar`. Forward triage actions
-(`archive`/`delete`/`read`/`star`) are recorded in the action ledger; the inverse
-actions are not. The vocabulary matches `/api/emails/batch-action`, so the reader
+(`archive`/`delete`/`read`/`star`) are recorded in the action ledger, except,
+over IMAP, a move of a message that already left the inbox: toward where
+Mailsorter put it (a second click from a screen left open), while another
+request is moving it (two key presses at once), or after another mail client
+moved it. It answers `200` with `"status": "already"` and records nothing, so the
+screen does not announce a move that did not happen. `read`, `unread`, `star`
+and `unstar` over IMAP answer `404` "Ce mail n'est plus dans votre boîte de
+réception." when the message has left the inbox (the server would accept the
+change on a number that names nothing). A move elsewhere (`delete` on
+a mail Mailsorter archived) moves it from where it is, and "Annuler" still
+finds it. `read` and `unread` over IMAP also change the stored copy, so the
+list shows them at once. `unarchive`
+and `untrash` are what "Annuler" sends right after an action: they mark the
+most recent matching forward entry `undone` and record the reversal (source
+`undo`), as `POST /api/activity/undo` does.
+
+Over IMAP, `unarchive` / `untrash` take the number the message had in the inbox
+(the one the client holds) and fetch it back from where Mailsorter moved it;
+the list shows it again at once, under the inbox's new number. A message another
+mail client moved or deleted since answers `404` "Ce mail n'est plus là où
+Mailsorter l'avait rangé.". The vocabulary matches `/api/emails/batch-action`, so the reader
 and the shortcuts can express the same things one message at a time.
 
 **Response:** `200 OK`
@@ -537,7 +559,7 @@ exist. At most 200 ids per request.
 
 #### POST /api/emails/batch-undo
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP (where a label has no inverse).
 
 Reverse a batch the client just applied. Separate from the per-entry history undo
 because the client already holds the exact ids, which is what makes undoing a
@@ -560,6 +582,14 @@ stores no label name, so it would have nothing to remove.
 **Response:** `200 OK`
 ```json
 { "restored": 1, "total": 1 }
+```
+
+Over IMAP each message is fetched back from where Mailsorter moved it, by the
+number it had in the inbox. When another mail client moved some of them
+meanwhile, the others still come back, and the answer says why those did not:
+
+```json
+{ "restored": 2, "total": 3, "notWhereLeft": 1, "message": "Ce mail n'est plus là où Mailsorter l'avait rangé." }
 ```
 
 **Error Responses:**
@@ -783,13 +813,13 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `has:`, `larger:`, `smaller:`, `label:`, `filename:`, `category:` terms, `is:` other than `read` / `unread`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` |
 | `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
-| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar) | `POST /api/emails/batch-action`, `POST /api/emails/batch-undo` |
+| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
 | `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
 | `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep) | a `label` suggestion: `apply` answers 501, `apply-batch` leaves it pending |
 | Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
-| | `POST /api/activity/undo`, `GET /api/labels`, `POST /api/smart-labels` |
+| | `GET /api/labels`, `POST /api/smart-labels` |
 
 Two more are Gmail-only without answering 501: `POST /api/account/digest/test`
 answers `502` (see there), and the daily digest loop logs the failure and sends
@@ -810,10 +840,13 @@ Two consequences worth knowing:
   runs at most every 30 minutes, so the window is the one the inbox already had.
 - The mirror holds what the syncs stored: the 100 most recent inbox messages at
   each sync, plus older ones earlier syncs kept. A message Mailsorter archives
-  or deletes leaves the listing at once. Each sync also drops the messages that
-  are no longer in the inbox, whoever moved them, along with the pending AI
-  proposals about them; when the inbox holds more than 100 messages, only the
-  range the listing covered can be judged.
+  or deletes leaves the listing at once; it stays stored, hidden from every
+  inbox read, for 30 days, which is how long "Annuler" can bring it back. Each
+  sync drops the messages that are no longer in the inbox for another reason,
+  whoever moved them and however old they are. The pending AI proposals about
+  a message that left, either way, become `moot`: they leave the plan, and
+  applying one from a screen loaded before does nothing (`ApplySuggestion`
+  answers `{"status":"already"}`, `apply-batch` neither counts nor fails it).
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 A query term the mirror cannot answer is **refused with 501, naming the term**,
@@ -1018,7 +1051,10 @@ source `undo`) both appear.
 #### GET /api/activity/log?source=&limit=&before=&q=
 
 Returns the caller's most recent ledger entries, newest first. Each entry is
-flagged `undoable` (it has a clean inverse and has not been undone yet).
+flagged `undoable` (it has a clean inverse and has not been undone yet). On
+IMAP an archive or a delete is `undoable` only while Mailsorter knows where it
+put the message (30 days, and never for a move made before it recorded that),
+and a read change only while the message is still in the inbox.
 
 **Query parameters:**
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
@@ -1062,7 +1098,15 @@ still render, but cannot be searched.
 
 #### POST /api/activity/undo
 
-Gmail API only: `501` over IMAP.
+Gmail API and IMAP. On IMAP a moved message is fetched back from where
+Mailsorter put it, and a read change is reversed only while the message is
+still in the inbox (`404` "Ce mail n'est plus dans votre boîte de réception."
+otherwise). Two "Annuler" of one move at once (here or through
+`POST /api/emails/action`) bring the message back once: the second waits for
+the first and answers like it, recording nothing more. A message another
+mail client already moved, back to the inbox or elsewhere, answers `404` "Ce
+mail n'est plus là où Mailsorter l'avait rangé.": Mailsorter did not bring
+it back.
 
 Reverses one recorded action by replaying its inverse Gmail mutation
 (`archive` -> `unarchive`, `delete` / `trash` -> `untrash`, `read` -> `unread`).
@@ -1072,8 +1116,13 @@ The entry is marked `undone` and the reversal is itself appended to the ledger
 **Request Body:** `{ "id": "665..." }`
 
 **Responses:** `200 { "status": "undone", "action": "unarchive" }`; `400` not
-reversible or an invalid id; `404` not found; `409` already undone; `501` the
-mailbox is on IMAP; `502` Gmail refused the reversal.
+reversible or an invalid id; `404` not found, or, on IMAP, "Ce mail n'est plus là
+où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
+entry stays not undone); `409` already undone; `502` the provider refused the
+reversal. On IMAP a moved message stays recorded for 30 days after it left the
+inbox, which is how long the history can bring it back; past that, `404` "Cette
+action est trop ancienne pour être annulée ici : retrouvez ce mail dans
+l'archive ou la corbeille de votre messagerie." and nothing moves.
 
 ---
 
@@ -1441,7 +1490,10 @@ suggestion stays pending, out of the history.
 
 **Request body:** `{ "suggestionId": "662..." }`
 
-**Response:** `200 OK` -> `{ "status": "applied" }`
+**Response:** `200 OK` -> `{ "status": "applied" }`, or, over IMAP,
+`{ "status": "already" }` when the mail already left the inbox (the user
+tidied it by hand): nothing moves, nothing is recorded, and the proposal
+becomes `moot`.
 
 **Error Responses:** `400` invalid id; `404` no such suggestion for this caller;
 `428` no mailbox connected; `501` a label on IMAP; `500` the mailbox refused
@@ -1454,7 +1506,9 @@ the action.
 Apply a list of suggestions in one request (one session, looped server-side),
 at most 200. Suggestions whose sender is protected are skipped for destructive
 actions and stay pending. Over IMAP, a `label` suggestion stays pending and is
-counted neither in `applied` nor in `failed`.
+counted neither in `applied` nor in `failed`; neither is a suggestion whose mail
+already left the inbox (tidied by hand, from a screen loaded before), which
+becomes `moot`, nor a suggestion already `moot`.
 
 **Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
 
@@ -1465,7 +1519,7 @@ counted neither in `applied` nor in `failed`.
 
 `reversible` says whether `POST /api/emails/batch-undo` can reverse what this
 batch moved, so the client offers "Annuler" only when it would work. It is true
-on the Gmail API and false over IMAP, where batch-undo is not ported yet. A
+on the Gmail API and over IMAP. A
 `keep` suggestion moves nothing and has nothing to undo either way.
 
 ### Apply in bulk for a sender
