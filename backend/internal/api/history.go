@@ -308,6 +308,14 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if entry.Undone {
+		// Undone a moment ago by another "Annuler" (two tabs, two clicks):
+		// that one did what this one asks, so answer like it. Long after,
+		// it is a screen showing an old line: say it was already undone.
+		if !entry.UndoneAt.IsZero() && time.Since(entry.UndoneAt) < moveInFlight {
+			inverse, _ := activity.Inverse(entry.Action)
+			writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
+			return
+		}
 		writeError(w, http.StatusConflict, "Action déjà annulée")
 		return
 	}

@@ -1151,7 +1151,7 @@ The entry is marked `undone` and the reversal is itself appended to the ledger
 **Responses:** `200 { "status": "undone", "action": "unarchive" }`; `400` not
 reversible or an invalid id; `404` not found, or, on IMAP, "Ce mail n'est plus là
 où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
-entry stays not undone); `409` already undone; `502` the provider refused the
+entry stays not undone); `409` already undone (a request a moment after another one undid it answers `200` like it: two clicks, two tabs); `502` the provider refused the
 reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette
 action est trop ancienne pour être annulée ici : retrouvez ce mail dans
