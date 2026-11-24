@@ -532,12 +532,21 @@ SPA downloads through the API client and hands the browser an object URL.
 
 #### POST /api/emails/batch-action
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP, but `label`, which answers `501` over IMAP
+("Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP.").
 
 Apply one triage action to a list of messages in a single request. Protected
 senders are shielded from destructive actions exactly as in the rules and
 bulk-by-sender paths; a message that fails is counted rather than aborting the
 batch.
+
+Over IMAP the ids are the numbers the stored inbox gives (UIDs). Archive and
+delete are moves to the server's Archive and Trash folders, which take the
+messages off the listing at once and keep where they went for `/batch-undo`;
+read, unread and the star are flags, written to the stored copy at once too. The
+sender a protected check reads comes from the stored copy only: a message it
+does not hold is spared by a destructive action when the protected list is not
+empty. A message that already left the inbox is neither `applied` nor `failed`.
 
 **Request body:**
 ```json
@@ -564,6 +573,8 @@ exist. At most 200 ids per request.
 **Error Responses:**
 - `400 Bad Request`: Empty selection, unsupported action, missing label name, or over 200 ids
 - `401 Unauthorized`: Missing or expired session
+- `428 Precondition Required`: No mailbox connected
+- `501 Not Implemented`: `label` on an IMAP mailbox
 - `502 Bad Gateway`: The label could not be created
 
 ---
@@ -756,7 +767,7 @@ both transports.
 
 #### POST /api/unsubscribe
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP.
 
 Unsubscribes from the sender of a given message. When the sender supports RFC
 8058 one-click, the POST is performed server-side (`done: true`); otherwise the
@@ -774,6 +785,17 @@ the cloud metadata endpoint, carrier-grade NAT), on the resolved address and on
 every redirect hop. A refused endpoint is not an error for the caller: the
 response falls back to `done: false` with the `url` for the client to open, which
 is where a request driven by a stranger belongs.
+
+Over IMAP the headers are read from the stored inbox (the sync stores both), and
+a sender that offers only a `mailto:` is written to by the server: one plain
+text mail, to the one address the link names, with its `subject` and `body`
+(`unsubscribe` when it gives none), from the mailbox's own address, through the
+mailbox's sending server, logged in as for the daily recap. The answer is then
+`done: true`, `method: "mailto"` and an empty `mailto`, so the client opens
+nothing. A link naming more than one recipient (in its path, `to`, `cc` or
+`bcc`) or an address with a display name is not written to, and neither is
+anything when the sending server is unknown or refuses: the answer falls back
+to `done: false` with the `mailto` for the client to open.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -800,8 +822,10 @@ is where a request driven by a stranger belongs.
 
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session
-- `404 Not Found`: Email not found
+- `404 Not Found`: Email not found (over IMAP: not in the stored inbox)
 - `422 Unprocessable Entity`: Sender exposes no unsubscribe link
+- `428 Precondition Required`: No mailbox connected
+- `500 Internal Server Error`: The stored inbox could not be read (IMAP)
 
 ---
 
@@ -1483,9 +1507,11 @@ reasoning, persisted as a pending suggestion the user reviews and applies.
 
 Analyze a set of messages now, by the ids `GET /api/emails` returns (Gmail
 message ids, or IMAP UIDs), at most 200. A message missing from the stored
-mailbox is fetched through the caller's session first. Over the Gmail API,
-senders on auto-pilot get their learned action applied inline (source
-`ai-auto`), without the model. Then the shared cache answers what it already
+mailbox is fetched through the caller's session first. Senders on auto-pilot
+get their learned action applied inline (source `ai-auto`), without the model,
+on both transports, except a protected sender's destructive one, and, over
+IMAP, a `label` one, which goes on to the cache and the model like any other
+email. Then the shared cache answers what it already
 knows, and the rest goes to the configured AI provider in batches of 8, falling
 back to one email at a time when a batch answer does not line up. The caller's
 own provider is tried first when they set one, then the instance's, in
@@ -1668,13 +1694,16 @@ on the Gmail API and over IMAP. A
 
 #### POST /api/ai/apply-bulk
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP, but `label`, which answers `501` over IMAP
+("Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP.").
 
 Apply one action to every stored email from a sender ("learn once, clean up
 everything"). `senderEmail` is the `senderEmail` of a `GET /api/senders` row, a
 stored From header, and is matched exactly: the action reaches the mails that row
 counts and nothing else, never a From that merely contains it. A protected
-sender's mail is skipped for `archive`, `trash` and `delete`.
+sender's mail is skipped for `archive`, `trash` and `delete`. Over IMAP the
+stored copy of the inbox is what is swept (the messages still in it), and a
+mail that already left the inbox is not counted.
 
 **Request body:**
 ```json

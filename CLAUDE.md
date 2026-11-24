@@ -21,7 +21,7 @@ the README. The last audit closed every item it opened (`BACKLOG.md`).
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
 | Google | `golang.org/x/oauth2` 0.38.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
 | IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned, plus its companion `go-message` v0.18.2 (already in the graph, promoted to direct for MIME body parsing) | `backend/go.mod` |
-| SMTP | the standard library's `net/smtp`, no dependency: the recap of an IMAP mailbox leaves through its sending server | `backend/internal/smtpsend` |
+| SMTP | the standard library's `net/smtp`, no dependency: the recap of an IMAP mailbox, and the unsubscribe mail to a list that offers only an address, leave through its sending server | `backend/internal/smtpsend` |
 | Passwords | `golang.org/x/crypto` v0.58.0, for bcrypt on account passwords | `backend/go.mod` |
 | AI | Mistral, OpenAI-compatible, Anthropic and Ollama (local), hand-rolled HTTP clients behind a fallback registry | `backend/internal/ai/registry.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
@@ -107,7 +107,7 @@ backend/
             protect,provider,rules,schedule,search,snooze,unsubscribe}/
                          pure logic, no I/O, heavily unit-tested
   internal/{ai,billing,gmail,imap,smtpsend}/  outbound clients (AI providers, Stripe,
-                         Gmail, IMAP, and SMTP for the recap of an IMAP mailbox)
+                         Gmail, IMAP, and SMTP for what an IMAP mailbox sends)
   internal/{auth,crypto,config,database,models}/  cross-cutting primitives
   scripts/scenarios.sh   runs the acceptance scenarios against a throwaway MongoDB
 frontend/
@@ -206,13 +206,13 @@ in its package doc:
 | `mirror` | What the local copy of an IMAP inbox should hold, given every UID the inbox holds now: what goes, what Mailsorter keeps hidden for "Annuler", what is back, and what a sync must leave alone (a move in flight, a row flagged after the listing started) | `Judge`, `Row`, `Rules`, `Verdict` |
 | `activity` | Action ledger rows to a 7-day series plus breakdowns | `Row`, `DayCount` aggregation |
 | `digest` | The 7-day recap rendered into subject + text + HTML, the HTML in the instance's look (classic or Grand Hotel, email-safe) | `Digest`, `Render`, `RenderStyle`, `Style*` |
-| `mailer` | The recap as an RFC 5322 multipart message (bodies in quoted-printable, so no line a sending server may refuse; a `Message-ID` on the domain of the sending address, its unique part drawn by the caller), its base64url encoding for Gmail's send API, and daily-due arithmetic | `Message`, `Build`, `MessageID`, `ForGmail`, `DueAt` |
+| `mailer` | The recap as an RFC 5322 multipart message, and the unsubscribe mail to a list as a text-only one (bodies in quoted-printable, so no line a sending server may refuse; a `Message-ID` on the domain of the sending address, its unique part drawn by the caller), its base64url encoding for Gmail's send API, and daily-due arithmetic | `Message`, `Build`, `MessageID`, `ForGmail`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses. `SendingServer` is where a connected IMAP mailbox sends from: the server recorded on its row, or that route's in the catalog for a row from before | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `SendingServer`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `IMAPIsStarred`, `Folder*`, `Flag*`, and `MatchLabel` / `LabelKey`: a label the model proposed matched with one the user has (case, accents and a plural aside, never a part of a name) |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
-| `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
+| `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched. Plus the mail a `mailto:` of it asks for (RFC 6068), refused unless it names exactly one plain address, since it leaves from the person's own address | `Parse`, `SplitAngleList`, `Links`, `ParseMailto`, `Request` |
 
 The outbound clients and primitives:
 
@@ -239,7 +239,7 @@ The outbound clients and primitives:
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
 | `message.go` | `GET /api/emails/{id}`: one message with its body, on both transports (no attachment list over IMAP) |
-| `batch.go` | `POST /api/emails/batch-action` (Gmail only) and `/batch-undo` (Gmail and IMAP), plus the identity lookups the ledger uses |
+| `batch.go` | `POST /api/emails/batch-action` and `/batch-undo` (Gmail and IMAP; a label is Gmail only), plus the identity lookups the ledger uses |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
 | `ai_handlers.go` | Eight of the `/api/ai/*` endpoints (analyze, analyze-sender, apply, apply-batch, apply-bulk, suggestions, reject, reject-batch), `GET /api/senders`, the sender preferences and `/api/smart-labels`. `analyze-async` and `jobs/{id}` are in `jobs.go` |
 | `ai_settings.go` | The BYOK routes (`/api/ai/providers`, `/api/ai/settings`, `/api/ai/settings/test`) and `resolveAnalyzer`, which puts the account's own provider first |
@@ -251,7 +251,7 @@ The outbound clients and primitives:
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
 | `protected.go` | VIP list CRUD and `protectedValues` lookup |
-| `unsubscribe.go` | `List-Unsubscribe` (RFC 2369) and one-click POST (RFC 8058) |
+| `unsubscribe.go` | `List-Unsubscribe` (RFC 2369) and one-click POST (RFC 8058), on both transports. Over IMAP the headers are read from the stored inbox, and a `mailto:` is sent from here (`sendUnsubscribeMail`, through `sendThroughBox`) |
 | `history.go` | Action log view and undo |
 | `ledger.go` | `logAction` plus the `Source*` vocabulary. Read this before adding a mutating action |
 | `account.go` | Settings, usage, profile, activity and digest preview, `FreeMonthlyLimit = 200` and `analysisCapFor` (only free accounts of the hosted edition are capped) |
@@ -259,7 +259,7 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
-| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap to the mailbox's sending server: the only two readers of the sealed app password |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap, or the unsubscribe mail to a list, to the mailbox's sending server: the only two readers of the sealed app password |
 | `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
 | `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `storeStarredOutsideList`, `refreshInboxState` and `completeInboxStructure` keep the read state, the star, the size and the attachments of every stored row right, old favorites included, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`) |

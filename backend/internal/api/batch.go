@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
-	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -59,9 +58,11 @@ var batchInverse = map[string]string{
 }
 
 // BatchAction applies one triage action to a list of messages in a single
-// request. Selecting emails in the inbox used to only scope AI analysis: there
-// was no way to archive, trash, label or mark the selection as read without
-// going through the model. This is the deterministic, quota-free path.
+// request, over whichever transport the mailbox uses. Selecting emails in the
+// inbox used to only scope AI analysis: there was no way to archive, trash,
+// label or mark the selection as read without going through the model. This
+// is the deterministic, quota-free path. Labelling stays Gmail's: over IMAP it
+// answers 501, as a single "label" verdict does.
 //
 // Protected senders are shielded from destructive actions exactly as they are
 // in the bulk-by-sender and rules paths; non-destructive actions still run on
@@ -98,20 +99,28 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Gmail mutations are sequential and network-bound; budget generously but
-	// stay under any sane proxy timeout.
+	// Mutations are sequential and network-bound; budget generously but stay
+	// under any sane proxy timeout.
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
+	defer session.Close()
+	imapBox := session.Transport == provider.TransportIMAP
 
 	var labelID string
 	if req.Action == "label" {
-		labelID, err = h.ensureLabel(ctx, gmailClient, userEmail, req.LabelName)
+		if imapBox {
+			// A message sits in one folder over IMAP: there is no label to
+			// add, and filing into a folder is not this route's yet.
+			writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
+			return
+		}
+		labelID, err = h.ensureLabel(ctx, session.gmail, userEmail, req.LabelName)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "Création du libellé impossible : "+err.Error())
 			return
@@ -121,18 +130,20 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	// One lookup for the whole batch: the protected check needs each sender, and
 	// the ledger needs the subject/sender to say which email was acted on.
 	//
-	// The local mailbox is only written by syncInbox, while the list the user
-	// selects from is served live from Gmail, so a message can perfectly well
-	// be on screen and absent here. That gap used to silently defeat the
-	// protected-sender shield: an unknown sender reads as "not protected", and a
-	// VIP's mail would be trashed by a bulk action the moment a sync had not run
-	// (or had failed, which the client swallows). Anything still missing is
-	// resolved straight from Gmail below.
+	// Over the Gmail API the list the user selects from is served live from
+	// Gmail, while the local mailbox is only written by syncInbox, so a message
+	// can perfectly well be on screen and absent here. That gap used to
+	// silently defeat the protected-sender shield: an unknown sender reads as
+	// "not protected", and a VIP's mail would be trashed by a bulk action the
+	// moment a sync had not run (or had failed, which the client swallows).
+	// Anything still missing is resolved straight from Gmail below. Over IMAP
+	// the list IS the stored copy, and there is no one to ask (identityIn):
+	// a message it does not hold stays unknown, which the shield refuses below.
 	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
 	protectedList := h.protectedValues(ctx, userEmail)
 	destructive := protect.IsDestructive(req.Action)
-	if len(protectedList) > 0 || len(identities) < len(req.MessageIDs) {
-		h.fillMissingIdentities(ctx, gmailClient, req.MessageIDs, identities)
+	if !imapBox && (len(protectedList) > 0 || len(identities) < len(req.MessageIDs)) {
+		h.fillMissingIdentities(ctx, session.gmail, req.MessageIDs, identities)
 	}
 
 	res := batchActionResult{
@@ -141,8 +152,9 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 		LabelName:   req.LabelName,
 		InverseName: batchInverse[req.Action],
 	}
-	res.Reversible = res.InverseName != ""
+	res.Reversible = res.InverseName != "" && batchUndoReaches(session.Transport)
 
+	mb := session.Mailbox()
 	for _, id := range req.MessageIDs {
 		if id == "" {
 			res.Failed++
@@ -150,9 +162,9 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 		}
 		// The deadline is not plumbed into the Gmail client, so the loop has to
 		// check it itself: past it, every ledger write would fail silently and
-		// the batch would keep mutating Gmail off the books. Since the context
-		// descends from the request, this also stops the batch when the caller
-		// hangs up, rather than mutating an inbox nobody is waiting on.
+		// the batch would keep mutating the mailbox off the books. Since the
+		// context descends from the request, this also stops the batch when the
+		// caller hangs up, rather than mutating an inbox nobody is waiting on.
 		if ctx.Err() != nil {
 			res.Failed++
 			continue
@@ -170,8 +182,15 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		applyErr := h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(id), req.Action, labelID)
+		applyErr := h.applyVerb(ctx, mb, session.RefFor(ctx, id), req.Action, labelID)
+		if errors.Is(applyErr, errAlreadyOut) {
+			// It had already left the inbox (a screen left open, another mail
+			// client): nothing happened, so it is neither done nor failed, and
+			// "Annuler" must not send it back.
+			continue
+		}
 		if applyErr != nil {
+			log.Printf("batch-action: %s on message %s of %s: %v", req.Action, id, userEmail, applyErr)
 			res.Failed++
 			continue
 		}
@@ -185,8 +204,8 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 
 // batchUndoReaches reports whether BatchUndo can reverse a batch for a mailbox
 // on this transport: the Gmail API, and IMAP since a moved message remembers
-// where it went (mirroredIMAP). Any path that applies a batch without
-// going through BatchAction reports it from here (apply-batch does). Kept next
+// where it went (mirroredIMAP). Every path that applies a batch reports it
+// from here (BatchAction and apply-batch do). Kept next
 // to BatchUndo so that porting it to a session changes the answer in the same
 // diff: an "Annuler" that answers 501 is worse than no button.
 func batchUndoReaches(transport provider.Transport) bool {

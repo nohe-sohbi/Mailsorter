@@ -214,7 +214,7 @@ func (h *Handler) deliverDigest(ctx context.Context, userEmail string, summary a
 		// From and to the mailbox's own address, which need not be the
 		// account's: the sending server takes a message only from the
 		// address it logged in as, and the mailbox is where the person reads.
-		if err := h.sendThroughBox(ctx, account, recap(account.Username)); err != nil {
+		if err := h.sendThroughBox(ctx, account, account.Username, recap(account.Username)); err != nil {
 			return d, fmt.Errorf("%w: %w", errSendThroughBox, err)
 		}
 		return d, nil

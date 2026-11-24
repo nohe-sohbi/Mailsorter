@@ -17,7 +17,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	gmailapi "google.golang.org/api/gmail/v1"
 )
 
 // AnalyzeEmails synchronously analyzes selected emails and creates AI suggestions.
@@ -69,9 +68,11 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 }
 
 // autoApplySender applies a sender's saved default action to an email directly,
-// recording it as an already-applied suggestion. Returns true on success so the
-// caller can skip the AI analysis for that email.
-func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Service, userEmail string, email models.Email, pref models.SenderPreference) bool {
+// over whichever transport the session is on, recording it as an
+// already-applied suggestion. Returns true on success so the caller can skip
+// the AI analysis for that email. A default this mailbox cannot apply (a label
+// over IMAP) returns false: the email goes to the analysis like any other.
+func (h *Handler) autoApplySender(ctx context.Context, session *mailSession, userEmail string, email models.Email, pref models.SenderPreference) bool {
 	suggestion := models.AISuggestion{
 		UserID:     userEmail,
 		EmailID:    email.MessageID,
@@ -84,8 +85,11 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 		AppliedAt:  time.Now(),
 	}
 
-	labelID, err := h.applyVerdict(ctx, gmailClient, userEmail, email.MessageID, pref.DefaultAction, pref.DefaultLabel, "")
+	labelID, err := h.applySessionVerdict(ctx, session, userEmail, email.MessageID, pref.DefaultAction, pref.DefaultLabel, "")
 	if err != nil {
+		if !errors.Is(err, errNoLabelsOnIMAP) && !errors.Is(err, errAlreadyOut) {
+			log.Printf("auto-pilot: %s on message %s of %s not applied, left to the analysis: %v", pref.DefaultAction, email.MessageID, userEmail, err)
+		}
 		return false
 	}
 	suggestion.LabelID = labelID
@@ -402,7 +406,9 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// ApplyBulk applies an action to all emails from a sender
+// ApplyBulk applies an action to all emails from a sender, over whichever
+// transport the mailbox uses. Labelling stays Gmail's: over IMAP it answers
+// 501, as a single "label" verdict does.
 func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -418,9 +424,14 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
+		return
+	}
+	defer session.Close()
+	if req.Action == "label" && session.Transport == provider.TransportIMAP {
+		writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
 		return
 	}
 
@@ -450,7 +461,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	// Prepare label if needed
 	var labelID string
 	if req.Action == "label" && req.LabelName != "" {
-		labelID, err = h.ensureLabel(ctx, gmailClient, userEmail, req.LabelName)
+		labelID, err = h.ensureLabel(ctx, session.gmail, userEmail, req.LabelName)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to create label: "+err.Error())
 			return
@@ -469,11 +480,17 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		// labelID is resolved once before the loop: a bulk apply must not create
 		// the same label per message.
-		_, applyErr := h.applyVerdict(ctx, gmailClient, userEmail, email.MessageID, req.Action, "", labelID)
-		if applyErr == nil {
-			appliedCount++
-			h.logActionMeta(ctx, userEmail, email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
+		_, applyErr := h.applySessionVerdict(ctx, session, userEmail, email.MessageID, req.Action, "", labelID)
+		if errors.Is(applyErr, errAlreadyOut) {
+			// Already out of the inbox: nothing happened, nothing to count.
+			continue
 		}
+		if applyErr != nil {
+			log.Printf("apply-bulk: %s on message %s of %s: %v", req.Action, email.MessageID, userEmail, applyErr)
+			continue
+		}
+		appliedCount++
+		h.logActionMeta(ctx, userEmail, email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -960,6 +977,18 @@ func appliedFields(s models.AISuggestion, transport provider.Transport) bson.M {
 	return fields
 }
 
+// applySessionVerdict applies one verdict (the AI's, a sender's auto-pilot, a
+// sweep by sender) to one message, over whichever transport the session is on.
+//
+// "keep" is not a mutation but a decision not to act, so it succeeds having
+// changed nothing. Everything else goes through the neutral vocabulary, which
+// also closed a latent hole: three of the four call sites this replaced had no
+// default branch, so an action they did not recognise left the error nil and
+// the message was then recorded, and counted, as applied without the mailbox
+// ever being touched. An unknown verb now fails, loudly.
+//
+// The resolved label id comes back because the caller stores it on the
+// suggestion: it is what makes the action undoable later.
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
 	if action == "keep" {
 		return "", nil
@@ -993,31 +1022,6 @@ func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession,
 		}
 	}
 	return labelID, h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), action, labelID)
-}
-
-// applyVerdict applies one AI verdict to one message.
-//
-// "keep" is not a mutation but a decision not to act, so it succeeds having
-// changed nothing. Everything else goes through the neutral vocabulary, which
-// also closed a latent hole: three of the four call sites this replaced had no
-// default branch, so an action they did not recognise left the error nil and
-// the message was then recorded, and counted, as applied without Gmail ever
-// being touched. An unknown verb now fails, loudly.
-//
-// The resolved label id comes back because the caller stores it on the
-// suggestion: it is what makes the action undoable later.
-func (h *Handler) applyVerdict(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID, action, labelName, labelID string) (string, error) {
-	if action == "keep" {
-		return "", nil
-	}
-	if action == "label" && labelID == "" {
-		resolved, err := h.ensureLabel(ctx, gmailClient, userEmail, labelName)
-		if err != nil {
-			return "", err
-		}
-		labelID = resolved
-	}
-	return labelID, h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(messageID), action, labelID)
 }
 
 // senderOf returns the stored From of a message, or "" if unknown. Used to

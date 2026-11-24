@@ -300,10 +300,11 @@ func (h *Handler) openMailbox(ctx context.Context, userEmail string) (*imap.Clie
 
 // sendThroughBox hands a message to the sending server of a mailbox reached
 // over IMAP, logged in with the address and the app password the mailbox was
-// connected with, from that address to that address: the daily recap, a
-// message the person sends to themselves. Here, beside openMailbox, because
-// those two are the only readers of the sealed app password.
-func (h *Handler) sendThroughBox(ctx context.Context, account models.MailAccount, message []byte) error {
+// connected with, from that address, to the address to: the mailbox's own for
+// the daily recap, a message the person sends to themselves, and a list's for
+// the unsubscribe mail it asks for. Here, beside openMailbox, because those two
+// are the only readers of the sealed app password.
+func (h *Handler) sendThroughBox(ctx context.Context, account models.MailAccount, to string, message []byte) error {
 	server, err := provider.SendingServer(provider.Endpoint{
 		Host: account.SMTPHost,
 		Port: account.SMTPPort,
@@ -320,5 +321,5 @@ func (h *Handler) sendThroughBox(ctx context.Context, account models.MailAccount
 		Endpoint: server,
 		Username: account.Username,
 		Password: password,
-	}, account.Username, []string{account.Username}, message)
+	}, account.Username, []string{to}, message)
 }

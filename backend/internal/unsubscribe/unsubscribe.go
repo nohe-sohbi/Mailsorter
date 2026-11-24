@@ -11,7 +11,9 @@
 //
 // What it does NOT do is follow any of it. Acting on the https endpoint is a
 // server-side request to an address a stranger chose, which is internal/egress
-// territory.
+// territory. ParseMailto reads a mailto: into the mail it asks for, and
+// refuses what Mailsorter will not write on the person's behalf; sending it is
+// the api package's.
 package unsubscribe
 
 import "strings"

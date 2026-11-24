@@ -79,7 +79,8 @@ POST /api/ai/analyze (200 ids au plus) ou POST /api/ai/analyze-async (500, file 
   -> 503 si aucun fournisseur d'IA ; 402 si le quota gratuit du service géré est épuisé
   -> runAnalysis
        -> chaque message est lu dans le miroir, ou récupéré par la session s'il y manque
-       -> API Gmail : pilote automatique par expéditeur -> action appliquée tout de suite (source "ai-auto")
+       -> pilote automatique par expéditeur -> action appliquée tout de suite par la session (source "ai-auto"),
+          sauf sur un expéditeur protégé, et sauf une étiquette sur IMAP
        -> cache partagé -> suggestion sans appel au modèle
        -> le reste par lots de 8 -> registre d'IA : la clé du compte d'abord, puis les fournisseurs
           de l'instance par priorité ; erreur transitoire -> fournisseur suivant

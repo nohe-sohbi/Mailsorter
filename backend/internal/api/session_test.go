@@ -70,15 +70,13 @@ func TestGmailClientForReturnsWrongTransportForNonGmail(t *testing.T) {
 func TestUnportedEndpointsUseGmailClientFor(t *testing.T) {
 	h := newTestHandler(t)
 
-	// Unsubscribe, ApplyBulk, and CreateSmartLabel must route through gmailClientFor
-	// and reject unauthenticated / invalid transport requests cleanly via writeAuthError.
+	// CreateSmartLabel must route through gmailClientFor and reject
+	// unauthenticated / invalid transport requests cleanly via writeAuthError.
 	reqs := []struct {
 		name    string
 		handler func(http.ResponseWriter, *http.Request)
 		body    string
 	}{
-		{"Unsubscribe", h.Unsubscribe, `{"messageId":"msg123"}`},
-		{"ApplyBulk", h.ApplyBulk, `{"senderEmail":"spammer@example.com","action":"delete"}`},
 		{"CreateSmartLabel", h.CreateSmartLabel, `{"name":"Important"}`},
 	}
 
@@ -295,20 +293,6 @@ func TestUnportedHandlersEnforceTransportGuard(t *testing.T) {
 		path    string
 		body    string
 	}{
-		{
-			name:    "Unsubscribe",
-			handler: h.Unsubscribe,
-			method:  "POST",
-			path:    "/api/unsubscribe",
-			body:    `{"messageId":"msg123"}`,
-		},
-		{
-			name:    "ApplyBulk",
-			handler: h.ApplyBulk,
-			method:  "POST",
-			path:    "/api/ai/apply-bulk",
-			body:    `{"senderEmail":"test@example.com","action":"archive"}`,
-		},
 		{
 			name:    "CreateSmartLabel",
 			handler: h.CreateSmartLabel,

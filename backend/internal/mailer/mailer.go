@@ -1,5 +1,6 @@
-// Package mailer writes the daily recap as an email, and decides, purely, when
-// a recurring daily message is due.
+// Package mailer writes the daily recap as an email (and, over IMAP, the
+// unsubscribe mail to a list), and decides, purely, when a recurring daily
+// message is due.
 //
 // It deliberately holds no mail client, no clock, no randomness and no I/O:
 // Build turns a subject + text/HTML bodies into an RFC 5322 message, MessageID
@@ -27,7 +28,8 @@ import (
 const multipartBoundary = "mailsorter-alt-boundary"
 
 // Message is one email Mailsorter writes: from an address to an address, a
-// subject, and the same content as plain text and as HTML.
+// subject, and the same content as plain text and as HTML, or as plain text
+// only.
 type Message struct {
 	From    string
 	To      string
@@ -75,6 +77,10 @@ func MessageID(unique, address string) string {
 // quoted-printable: the HTML recap is one long line, and a line over 998
 // characters is one a sending server may refuse (RFC 5321, 4.5.3.1.6) or cut
 // in the middle of a tag. Quoted-printable keeps every line under 77.
+//
+// Without HTML it is a text/plain message, one part: the unsubscribe mail to
+// a list, which a list program reads as text, has no HTML version, and an
+// empty one is not a version.
 func Build(m Message) []byte {
 	var b bytes.Buffer
 	if !m.Date.IsZero() {
@@ -87,6 +93,10 @@ func Build(m Message) []byte {
 	b.WriteString("To: " + m.To + "\r\n")
 	b.WriteString("Subject: " + mime.BEncoding.Encode("UTF-8", m.Subject) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
+	if m.HTML == "" {
+		writeBody(&b, "text/plain", m.Text)
+		return b.Bytes()
+	}
 	b.WriteString("Content-Type: multipart/alternative; boundary=\"" + multipartBoundary + "\"\r\n\r\n")
 
 	writePart(&b, "text/plain", m.Text)
@@ -99,6 +109,13 @@ func Build(m Message) []byte {
 // writePart writes one part of the alternative, its body quoted-printable.
 func writePart(b *bytes.Buffer, contentType, body string) {
 	b.WriteString("--" + multipartBoundary + "\r\n")
+	writeBody(b, contentType, body)
+	b.WriteString("\r\n")
+}
+
+// writeBody writes the content headers of one body and the body itself,
+// quoted-printable.
+func writeBody(b *bytes.Buffer, contentType, body string) {
 	b.WriteString("Content-Type: " + contentType + "; charset=\"UTF-8\"\r\n")
 	b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
 	qp := quotedprintable.NewWriter(b)
@@ -106,7 +123,7 @@ func writePart(b *bytes.Buffer, contentType, body string) {
 	// the writer under it does: there is no error here to lose.
 	_, _ = qp.Write([]byte(body))
 	_ = qp.Close()
-	b.WriteString("\r\n\r\n")
+	b.WriteString("\r\n")
 }
 
 // ForGmail encodes a message built by Build the way Gmail's send API takes

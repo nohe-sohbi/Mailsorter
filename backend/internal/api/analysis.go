@@ -168,7 +168,7 @@ func (h *Handler) runAnalysis(
 	// Pass 1: resolve auto-pilot + cache hits, collect the rest for batching.
 	pending := make([]models.Email, 0, len(emails))
 	for _, email := range emails {
-		if session != nil && session.gmail != nil {
+		if session != nil {
 			var pref models.SenderPreference
 			err := h.db.SenderPreferences().FindOne(ctx, bson.M{
 				"userId":      userEmail,
@@ -176,7 +176,7 @@ func (h *Handler) runAnalysis(
 				"autoApply":   true,
 			}).Decode(&pref)
 			if err == nil && pref.DefaultAction != "" && allows(pref.DefaultAction, email.From, protectedList) &&
-				h.autoApplySender(ctx, session.gmail, userEmail, email, pref) {
+				h.autoApplySender(ctx, session, userEmail, email, pref) {
 				p.AutoApplied++
 				p.Processed++
 				report()
