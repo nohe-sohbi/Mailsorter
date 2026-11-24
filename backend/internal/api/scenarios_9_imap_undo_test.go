@@ -245,6 +245,59 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP, quand un autre logiciel a remis dans ta boîte de réception un mail que Mailsorter avait archivé, « Annuler » depuis l'historique répond « Ce mail n'est plus là où Mailsorter l'avait rangé. », ne marque pas la ligne annulée, et la ligne ne propose plus « Annuler » après la synchronisation suivante.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+				moi.act(uids[1], "archive")
+				moi.requireOnServer(serverArchive, shopOrder.Subject, "tu viens de l'archiver")
+				// The line "Annuler" is pressed on below: the one this archive
+				// wrote.
+				line := moi.historyLineFor(uids[1], "archive")
+				what := "de l'archivage du mail n°" + uids[1] + " \"" + shopOrder.Subject + "\""
+
+				// The person changes their mind on their phone: another mail
+				// program moves the mail from the archives back to the inbox,
+				// where the server numbers it anew. Then a sync, so Mailsorter
+				// has read the inbox since.
+				moi.movedFromElsewhere(serverArchive, shopOrder.Subject, serverInbox)
+				moi.requireOnServer(serverInbox, shopOrder.Subject, "un autre logiciel l'y a remis")
+				moi.sync()
+
+				// "Annuler" on that line. A refusal, as History.js shows one: a
+				// 4xx status and its "error" field (apiError in
+				// services/api.js). On a 2xx the screen announces the mail
+				// restored and shows the line "Annulé" until it loads again.
+				got := moi.undoFromHistory(line)
+				if got.code/100 != 4 || got.said() != notWhereFiled {
+					app.failf("« Annuler » sur la ligne %s, qu'un autre logiciel a remis de %s dans la boîte de réception, devrait répondre %q, le serveur a répondu %s", what, serverArchive, notWhereFiled, got)
+				}
+				moi.expectMarkedUndone(line, false, what)
+
+				// The next sync, and the Historique screen as it loads after
+				// it: the line no longer offers "Annuler", since the mail it
+				// would bring back is in the inbox already.
+				moi.sync()
+				shown := false
+				for _, l := range moi.historyScreen() {
+					if l.ID != line.ID {
+						continue
+					}
+					shown = true
+					if l.Undoable {
+						app.failf("après la synchronisation suivante, dans l'historique de %s, la ligne %s, dont un autre logiciel a remis le mail dans la boîte de réception, ne devrait plus proposer « Annuler », elle le propose encore", moi.email, what)
+					}
+				}
+				if !shown {
+					app.failf("après la synchronisation suivante, l'historique de %s ne montre plus la ligne %s", moi.email, what)
+				}
+
+				// The control: the mail nobody touched is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP, « Annuler » après « Tout ranger » remet les autres mails dans ta boîte de réception, et répond « Ce mail n'est plus là où Mailsorter l'avait rangé. » pour celui qu'un autre logiciel a déjà sorti de là.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
