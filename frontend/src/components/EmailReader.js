@@ -216,9 +216,19 @@ function EmailReader({
       // enough without leaking the buffer for the rest of the session.
       setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
     } catch (err) {
-      // The error body is a Blob here (responseType), so the shared reader would
-      // find no message: say plainly that the download failed instead.
-      toast.error(apiError(err, 'Téléchargement impossible.'));
+      // The error body is a Blob here (responseType), so the shared reader
+      // would find no message: read it, and show what the server said (a
+      // missing attachment, a mailbox that does not answer).
+      let said = '';
+      const body = err?.response?.data;
+      if (body instanceof Blob) {
+        try {
+          said = JSON.parse(await body.text())?.error || '';
+        } catch {
+          said = '';
+        }
+      }
+      toast.error(said || apiError(err, 'Téléchargement impossible.'));
     } finally {
       setDownloading(null);
     }
