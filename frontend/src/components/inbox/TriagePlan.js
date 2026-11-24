@@ -116,10 +116,17 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       byVerb.get(key).ids.push(s.emailId);
     }
     try {
+      // A mail another mail client moved meanwhile does not come back: the
+      // server says so, and the screen does not announce a full undo.
+      let reason = '';
       for (const { action, labelName, ids } of byVerb.values()) {
-        for (const chunk of chunks(ids)) await emailService.batchUndo(chunk, action, labelName);
+        for (const chunk of chunks(ids)) {
+          const { data } = await emailService.batchUndo(chunk, action, labelName);
+          if (data?.message) reason = data.message;
+        }
       }
-      toast.success('Tri annulé');
+      if (reason) toast.error(reason);
+      else toast.success('Tri annulé');
     } catch (err) {
       toast.error(apiError(err, "Impossible d'annuler."));
     } finally {

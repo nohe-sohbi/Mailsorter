@@ -110,16 +110,6 @@ func IMAPOpFor(m Mutation) (IMAPOp, error) {
 	return IMAPOp{}, fmt.Errorf("%w: %q", ErrUnknownAction, m.Action)
 }
 
-// LeavesInbox reports whether applying m over IMAP takes a message that sits
-// in the inbox out of it: archive and trash do, a flag change does not, and
-// putting a message back into the inbox obviously does not. The local copy of
-// an IMAP mailbox only lists the inbox, so this is when a copied message has
-// to leave the copy too.
-func LeavesInbox(m Mutation) bool {
-	op, err := IMAPOpFor(m)
-	return err == nil && op.Kind == IMAPMove && op.To != FolderInbox
-}
-
 // IMAPOpsFor translates several mutations, preserving order.
 //
 // Unlike the Gmail side, these do NOT collapse into one operation: a flag

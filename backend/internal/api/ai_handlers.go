@@ -122,8 +122,9 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch emails from this sender
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId": userEmail,
-		"from":   bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
+		"userId":    userEmail,
+		"leftInbox": notLeftInbox,
+		"from":      bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
 	}, options.Find().SetLimit(20))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
@@ -387,8 +388,9 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	// contained the key: a longer address on the same domain, or the same
 	// address on a longer domain.
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId": userEmail,
-		"from":   req.SenderEmail,
+		"userId":    userEmail,
+		"leftInbox": notLeftInbox,
+		"from":      req.SenderEmail,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
@@ -618,7 +620,7 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 
 	// Aggregate emails by sender
 	pipeline := []bson.M{
-		{"$match": bson.M{"userId": userEmail}},
+		{"$match": bson.M{"userId": userEmail, "leftInbox": notLeftInbox}},
 		{"$group": bson.M{
 			"_id":        "$from",
 			"emailCount": bson.M{"$sum": 1},

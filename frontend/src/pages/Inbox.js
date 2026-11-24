@@ -821,13 +821,18 @@ function Inbox() {
               // Same cap as the forward path: undoing 400 archives is two calls.
               // The label name travels back too: taking a label off needs to
               // know which one, and only this closure still remembers.
+              // A mail another mail client moved meanwhile does not come back:
+              // the server says so, and the screen does not claim a full undo.
+              let reason = '';
               for (let i = 0; i < applied.length; i += BATCH_LIMIT) {
-                await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
+                const { data: undone } = await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
+                if (undone?.message) reason = undone.message;
               }
-              toast.success('Action annulée');
+              if (reason) toast.error(reason);
+              else toast.success('Action annulée');
               fetchData({ forceRefresh: true, sync: false });
-            } catch {
-              toast.error("Impossible d'annuler");
+            } catch (err) {
+              toast.error(apiError(err, "Impossible d'annuler."));
             }
           });
         } else {

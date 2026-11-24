@@ -282,7 +282,7 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, listed [
 		switch {
 		case shown[r.MessageID]:
 			back = append(back, r.MessageID)
-		case r.MovedTo.UID == "" || now.Sub(r.LeftAt) > undoWindow:
+		case r.MovedTo.Folder == "" || now.Sub(r.LeftAt) > undoWindow:
 			gone = append(gone, r.MessageID)
 		}
 	}
@@ -343,8 +343,19 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 	inbox := string(mailbox.FolderInbox)
 	var row movedRow
 	findErr := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}).Decode(&row)
+	if findErr != nil && !errors.Is(findErr, mongo.ErrNoDocuments) {
+		// Not "unknown message": the store could not answer. Moving on would
+		// lose where the message goes, or wrongly tell "Annuler" it is gone.
+		return fmt.Errorf("read the stored copy of message %s: %w", ref.ID, findErr)
+	}
 	if op.To == mailbox.FolderInbox {
 		return m.putBack(ctx, ref, row, findErr)
+	}
+	if findErr == nil && row.LeftInbox {
+		// Already moved out by Mailsorter (a second click from a stale tab, a
+		// proposal still pending): nothing to do, and above all nothing to
+		// overwrite, or "Annuler" would forget where the message is.
+		return nil
 	}
 
 	landed, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
@@ -375,10 +386,19 @@ func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow
 	if findErr == nil && !row.LeftInbox {
 		return nil // still in the inbox: nothing to bring back
 	}
-	if findErr != nil || row.MovedTo.Folder == "" || row.MovedTo.UID == "" {
+	if findErr != nil || row.MovedTo.Folder == "" {
 		return errNotWhereLeft
 	}
-	from := mailbox.InFolder(row.MovedTo.Folder, row.MovedTo.UID)
+	uid := row.MovedTo.UID
+	if uid == "" && row.HeaderMessageID != "" {
+		// The server did not say where it landed when it left: look for it
+		// there by its Message-ID header now.
+		uid = m.client.FindByMessageID(row.MovedTo.Folder, row.HeaderMessageID)
+	}
+	if uid == "" {
+		return errNotWhereLeft
+	}
+	from := mailbox.InFolder(row.MovedTo.Folder, uid)
 	landed, err := m.client.MoveTo(ctx, from, mailbox.FolderInbox, row.HeaderMessageID)
 	if errors.Is(err, imap.ErrMessageGone) {
 		return errNotWhereLeft

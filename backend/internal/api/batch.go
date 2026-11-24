@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -283,7 +284,7 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 	}
 	defer session.Close()
 
-	restored := 0
+	restored, gone := 0, 0
 	for _, id := range req.MessageIDs {
 		if id == "" {
 			continue
@@ -292,12 +293,22 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 			break
 		}
 		if err := h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, id), inverse, ""); err != nil {
+			if errors.Is(err, errNotWhereLeft) {
+				gone++
+			}
 			continue
 		}
 		restored++
 		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)})
+	answer := map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)}
+	if gone > 0 {
+		// The others came back; say why these did not, rather than let the
+		// screen announce a full undo.
+		answer["message"] = notWhereLeftMessage
+		answer["notWhereLeft"] = gone
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // recordUndo marks the forward entry undone, so the history does not

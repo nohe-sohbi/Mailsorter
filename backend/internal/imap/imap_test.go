@@ -466,3 +466,78 @@ func TestApplyRefusesAnAccountWideReference(t *testing.T) {
 		t.Errorf("INBOX holds %d message(s); the refused action must not have moved anything", n)
 	}
 }
+
+// appendWithMessageID drops a message carrying a Message-ID header into folder
+// and returns its UID.
+func appendWithMessageID(t *testing.T, c *Client, folder, messageID string) string {
+	t.Helper()
+	raw := "From: sender@example.com\r\n" +
+		"To: " + testUser + "\r\n" +
+		"Subject: Test\r\n" +
+		"Message-ID: " + messageID + "\r\n" +
+		"\r\n" +
+		"Body.\r\n"
+	cmd := c.c.Append(folder, int64(len(raw)), nil)
+	if _, err := cmd.Write([]byte(raw)); err != nil {
+		t.Fatalf("append write: %v", err)
+	}
+	if err := cmd.Close(); err != nil {
+		t.Fatalf("append close: %v", err)
+	}
+	data, err := cmd.Wait()
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	c.selected = ""
+	return fmtUID(data.UID)
+}
+
+// MoveTo says where the message landed: the server's folder and the new UID,
+// which is what "Annuler" fetches it back by.
+func TestMoveToSaysWhereTheMessageLanded(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	uid := appendWithMessageID(t, c, "INBOX", "<move-1@example.com>")
+
+	landed, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", uid), mailbox.FolderArchive, "<move-1@example.com>")
+	if err != nil {
+		t.Fatalf("MoveTo: %v", err)
+	}
+	if landed.Folder != "Archive" || landed.ID == "" {
+		t.Fatalf("landed = %+v, want Archive with a UID", landed)
+	}
+	back, err := c.MoveTo(context.Background(), landed, mailbox.FolderInbox, "<move-1@example.com>")
+	if err != nil {
+		t.Fatalf("MoveTo back: %v", err)
+	}
+	if back.Folder != "INBOX" || back.ID == "" {
+		t.Fatalf("back = %+v, want INBOX with a UID", back)
+	}
+	if n := countIn(t, c, "INBOX"); n != 1 {
+		t.Errorf("INBOX holds %d message(s) after the round trip, want 1", n)
+	}
+}
+
+// A UID that is no longer in its folder is reported as gone, not "moved": a
+// MOVE on a missing UID would answer OK and do nothing.
+func TestMoveToReportsAMessageThatIsGone(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	appendWithMessageID(t, c, "INBOX", "<here@example.com>")
+	_, err := c.MoveTo(context.Background(), mailbox.InFolder("INBOX", "999"), mailbox.FolderArchive, "")
+	if !errors.Is(err, ErrMessageGone) {
+		t.Errorf("MoveTo on a missing uid = %v, want ErrMessageGone", err)
+	}
+}
+
+// The fallback when a server does not say where a message landed: find it
+// again by its Message-ID header.
+func TestFindByMessageIDFindsTheMessageAgain(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	appendWithMessageID(t, c, "Archive", "<other@example.com>")
+	want := appendWithMessageID(t, c, "Archive", "<wanted@example.com>")
+	if got := c.FindByMessageID("Archive", "<wanted@example.com>"); got != want {
+		t.Errorf("FindByMessageID = %q, want %q", got, want)
+	}
+	if got := c.FindByMessageID("Archive", "<absent@example.com>"); got != "" {
+		t.Errorf("FindByMessageID on an absent id = %q, want empty", got)
+	}
+}

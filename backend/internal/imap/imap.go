@@ -290,14 +290,15 @@ func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, to mailbox.Folder,
 		}
 	}
 	if landed.ID == "" && headerMessageID != "" {
-		landed.ID = c.findByMessageID(dest, headerMessageID)
+		landed.ID = c.FindByMessageID(dest, headerMessageID)
 	}
 	return landed, nil
 }
 
-// findByMessageID returns the highest UID in folder whose Message-ID header
-// is id, or "" when none or on error.
-func (c *Client) findByMessageID(folder, id string) string {
+// FindByMessageID returns the highest UID in folder whose Message-ID header
+// is id, or "" when none or on error. It is how a message is found again
+// after a move when the server did not say where it landed.
+func (c *Client) FindByMessageID(folder, id string) string {
 	if err := c.selectFolder(folder); err != nil {
 		return ""
 	}

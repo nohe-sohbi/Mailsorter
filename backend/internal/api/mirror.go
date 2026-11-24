@@ -51,10 +51,17 @@ func (e errUnsupportedQuery) Error() string {
 //
 // Anything the query could not express is the caller's problem, not this
 // function's: it is handed a Criteria that is already only the answerable part.
+// notLeftInbox is the filter every read of the stored mailbox that shows or
+// counts what is IN the inbox carries: a message Mailsorter moved out stays
+// stored for a while, hidden, so "Annuler" knows where it went (mirroredIMAP),
+// and must not be listed, counted, grouped by sender or acted on as if it
+// were still there. Reads that resolve an identity for the history do not.
+var notLeftInbox = bson.M{"$ne": true}
+
 func mirrorFilter(userEmail string, crit search.Criteria, now time.Time) bson.M {
 	// leftInbox: a message an action just moved out of the inbox, kept until
 	// the next sync for the history entry that reads it (mirroredIMAP).
-	filter := bson.M{"userId": userEmail, "leftInbox": bson.M{"$ne": true}}
+	filter := bson.M{"userId": userEmail, "leftInbox": notLeftInbox}
 
 	if crit.Folder != "" {
 		filter["folder"] = crit.Folder
