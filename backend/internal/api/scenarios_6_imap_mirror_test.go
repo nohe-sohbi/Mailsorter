@@ -568,6 +568,34 @@ func TestScenarios_IMAPFavoritesAndFilters(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP de plus de 100 mails, un ancien mail en favori apparaît dans le filtre « Favoris » dès la première synchronisation, même s'il n'a jamais été parmi les 100 plus récents.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi := app.imapPerson(imapInboxOwner)
+				// 150 mails, oldest first: a sync lists the 100 most recent
+				// (n°51 to n°150), so the first 50 have never been among them.
+				letters := numberedMails("Lettre n°%d", 150)
+				uids := moi.receive(letters...)
+
+				// Two old ones already in the favorites before Mailsorter
+				// ever looks at the mailbox, starred on the phone, and an old
+				// one nobody starred, the control.
+				starred1, starred2, untouched := 2, 19, 9
+				moi.expectNumbered(uids[starred1], "3")
+				moi.expectNumbered(uids[starred2], "20")
+				moi.expectNumbered(uids[untouched], "10")
+				moi.flaggedElsewhere(uids[starred1])
+				moi.flaggedElsewhere(uids[starred2])
+
+				// The very first "Synchroniser", and no other.
+				moi.sync()
+
+				moi.expectFilterShows(favoritesFilter, "après la toute première synchronisation",
+					[]string{letters[starred1].Subject, letters[starred2].Subject},
+					map[string]string{letters[untouched].Subject: "personne ne l'a mis en favori"})
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP, un ancien mail lu depuis un autre logiciel apparaît lu après la synchronisation suivante, même s'il n'est pas parmi les 100 plus récents.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
