@@ -48,17 +48,22 @@ syncInbox(compte)
        -> si autoApplyRules : première règle qui correspond, expéditeurs protégés épargnés,
           action par internal/mailbox, entrée au journal (source "rule")
   -> IMAP : les 100 messages les plus récents de INBOX, lus en PEEK (aucun \Seen posé)
-       -> UID SEARCH de toute la boîte : le numéro de chaque mail qui y est encore
+       -> un FETCH des drapeaux de toute la boîte : le numéro de chaque mail qui y est
+          encore, lu ou non, en favori ou non
        -> mirror.Judge sur la copie : un mail que la boîte n'a plus part, quel que soit
           son âge ; un mail que Mailsorter a rangé reste caché 30 jours pour "Annuler" ;
           un déplacement en cours ou postérieur à la lecture attend la synchro suivante
        -> les propositions de l'IA sur ce qui est parti passent "moot" (hors du tri proposé)
        -> upsert dans emails avec le dossier, qui fait partie de l'identité d'un UID
+       -> lu et favori remis à jour sur chaque mail de la copie, ancien compris, sauf
+          un changement fait depuis Mailsorter après la lecture des drapeaux (flagsAt)
+       -> taille et pièces jointes (RFC822.SIZE, BODYSTRUCTURE) des mails de la copie
+          qui ne les ont pas encore, 500 au plus par synchro, les plus récents d'abord
        -> aucune règle : rulesApplied vaut 0
   -> { synced, total, rulesApplied }
 ```
 
-Sur IMAP, la liste (`GET /api/emails`) et les compteurs (`GET /api/stats`) sont ensuite servis depuis ce miroir, sans rouvrir la boîte.
+Sur IMAP, la liste (`GET /api/emails`), ses filtres (non lus, aujourd'hui, favoris, pièces jointes, volumineux) et les compteurs (`GET /api/stats`) sont ensuite servis depuis ce miroir, sans rouvrir la boîte.
 
 ## Flux d'une analyse
 

@@ -124,9 +124,11 @@ func (c *Client) reselect(folder string) (*imapv2.SelectData, error) {
 // folder into a label list would make the Gmail-shaped code above believe it
 // can add a second one.
 func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
+	flags := flagNames(msg.Flags)
 	email := models.Email{
 		MessageID: strconv.FormatUint(uint64(msg.UID), 10),
-		IsRead:    isSeen(msg.Flags),
+		IsRead:    mailbox.IMAPIsRead(flags),
+		IsStarred: mailbox.IMAPIsStarred(flags),
 		CreatedAt: time.Now(),
 	}
 
@@ -153,12 +155,13 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	return email
 }
 
-func isSeen(flags []imapv2.Flag) bool {
+// flagNames is a message's flags as internal/mailbox reads them.
+func flagNames(flags []imapv2.Flag) []string {
 	as := make([]string, 0, len(flags))
 	for _, f := range flags {
 		as = append(as, string(f))
 	}
-	return mailbox.IMAPIsRead(as)
+	return as
 }
 
 // formatAddress renders a sender the way the rest of the app expects to read

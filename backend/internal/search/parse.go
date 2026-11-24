@@ -1,6 +1,7 @@
 package search
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +17,8 @@ import (
 //
 // The part that can be understood is turned into Criteria. The part that cannot
 // is returned as such, term by term, rather than dropped. That distinction is
-// the whole point of this file: a dropped `has:attachment` does not produce an
-// error, it produces a full inbox under a button labelled "Pieces jointes", and
+// the whole point of this file: a dropped `label:Factures` does not produce an
+// error, it produces a full inbox under a saved search named "Factures", and
 // the user has no way of telling that the filter did nothing.
 
 // Criteria is a query reduced to what a stored mailbox can answer.
@@ -38,13 +39,22 @@ type Criteria struct {
 	// NewerThan and OlderThan are ages, not dates: the caller owns the clock.
 	NewerThan time.Duration
 	OlderThan time.Duration
+	// Starred is is:starred: the star, \Flagged on an IMAP server.
+	Starred bool
+	// HasAttachment is has:attachment.
+	HasAttachment bool
+	// Larger and Smaller are larger: and smaller:, in bytes, strict bounds on
+	// the size of the whole message. Zero means the query did not say.
+	Larger  int64
+	Smaller int64
 }
 
 // Empty reports whether the query constrained nothing at all.
 func (c Criteria) Empty() bool {
 	return c.Folder == "" && c.Unread == nil &&
 		len(c.From) == 0 && len(c.To) == 0 && len(c.Subject) == 0 && len(c.Text) == 0 &&
-		c.NewerThan == 0 && c.OlderThan == 0
+		c.NewerThan == 0 && c.OlderThan == 0 &&
+		!c.Starred && !c.HasAttachment && c.Larger == 0 && c.Smaller == 0
 }
 
 // FolderInbox is the one mailbox scope a mirror-served listing can answer,
@@ -95,10 +105,13 @@ func Parse(query string) (Criteria, []string) {
 				crit.Unread = boolPtr(false)
 			case "read":
 				crit.Unread = boolPtr(true)
+			case "starred":
+				crit.Starred = true
 			default:
-				// is:starred and the rest. A stored message records whether it
-				// was read and nothing else about its flags, on purpose: the
-				// rest is Gmail label vocabulary that does not cross transports.
+				// is:important and the rest. A stored message records whether
+				// it was read and starred, the two flags both transports have,
+				// and nothing else: the rest is Gmail label vocabulary that
+				// does not cross transports.
 				unsupported = append(unsupported, token)
 			}
 		case "newer_than":
@@ -113,9 +126,35 @@ func Parse(query string) (Criteria, []string) {
 				continue
 			}
 			unsupported = append(unsupported, token)
-		case "has", "larger", "smaller", "label", "filename", "category":
-			// All of them need something the mirror does not keep: the MIME
-			// tree, the byte size, or Gmail's labels.
+		case "has":
+			// The mirror keeps whether a message carries a file, not Gmail's
+			// other has: values (has:drive, has:userlabels, the colored stars).
+			if strings.EqualFold(value, "attachment") {
+				crit.HasAttachment = true
+				continue
+			}
+			unsupported = append(unsupported, token)
+		case "larger":
+			// Several bounds narrow, like every other term: the largest
+			// "larger than" and the smallest "smaller than" are the ones left.
+			if n, ok := parseSize(value); ok {
+				if n > crit.Larger {
+					crit.Larger = n
+				}
+				continue
+			}
+			unsupported = append(unsupported, token)
+		case "smaller":
+			if n, ok := parseSize(value); ok {
+				if crit.Smaller == 0 || n < crit.Smaller {
+					crit.Smaller = n
+				}
+				continue
+			}
+			unsupported = append(unsupported, token)
+		case "label", "filename", "category":
+			// All of them need something the mirror does not keep: the name of
+			// each file, or Gmail's labels.
 			unsupported = append(unsupported, token)
 		default:
 			// Not an operator this app has ever produced. Gmail treats an
@@ -166,6 +205,34 @@ func parseAge(value string) (time.Duration, bool) {
 		return time.Duration(count) * 365 * day, true
 	}
 	return 0, false
+}
+
+// parseSize reads the size of larger: and smaller:, in bytes: a count of
+// bytes, or of kilobytes or megabytes with a K or an M (either case).
+//
+// A kilobyte is 1024 bytes and a megabyte 1024 x 1024, the way a mail program
+// counts the size of a file. Gmail documents larger:10M without saying which
+// megabyte; the filter "Volumineux" (larger:5M) reads the same either way for
+// any mail a person would call large.
+func parseSize(value string) (int64, bool) {
+	if value == "" {
+		return 0, false
+	}
+	unit := int64(1)
+	digits := value
+	switch value[len(value)-1] {
+	case 'k', 'K':
+		unit, digits = 1<<10, value[:len(value)-1]
+	case 'm', 'M':
+		unit, digits = 1<<20, value[:len(value)-1]
+	}
+	count, err := strconv.ParseInt(digits, 10, 64)
+	// Zero bounds nothing (larger:0) or everything (smaller:0), and a count
+	// past what an int64 of bytes holds is not a size anyone means.
+	if err != nil || count <= 0 || count > math.MaxInt64/unit {
+		return 0, false
+	}
+	return count * unit, true
 }
 
 func boolPtr(v bool) *bool { return &v }

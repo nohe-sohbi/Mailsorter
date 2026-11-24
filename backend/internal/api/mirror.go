@@ -70,6 +70,24 @@ func mirrorFilter(userEmail string, crit search.Criteria, now time.Time) bson.M 
 	if crit.Unread != nil {
 		filter["isRead"] = *crit.Unread
 	}
+	if crit.Starred {
+		filter["isStarred"] = true
+	}
+	if crit.HasAttachment {
+		filter["hasAttachments"] = true
+	}
+	// A message the sync has not read the size of yet (sizeEstimate missing)
+	// matches neither bound: it is not known to be large, nor small.
+	sizeBounds := bson.M{}
+	if crit.Larger > 0 {
+		sizeBounds["$gt"] = crit.Larger
+	}
+	if crit.Smaller > 0 {
+		sizeBounds["$lt"] = crit.Smaller
+	}
+	if len(sizeBounds) > 0 {
+		filter["sizeEstimate"] = sizeBounds
+	}
 	for _, v := range crit.From {
 		filter["from"] = containsInsensitive(v)
 	}
