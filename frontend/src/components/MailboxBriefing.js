@@ -1,5 +1,6 @@
 import React from 'react';
 import { Alert } from '../ui/icons';
+import { canConnectByPassword, imapLegend, imapRouteOf } from './landing/features';
 
 // What a mailbox route means, in French, in ONE place.
 //
@@ -35,15 +36,6 @@ const BLOCKER_COPY = {
     "Ce fournisseur note les connexions selon leur origine et refuse parfois celles qui viennent d'un hébergeur. Si la connexion échoue sans raison visible, c'est la première piste.",
 };
 
-// CAP_COPY names what a route can do, so the user learns what they give up
-// before connecting rather than discovering it in use.
-const CAP_COPY = {
-  labels: 'Étiquettes',
-  providerSearch: 'Recherche côté serveur',
-  threads: 'Conversations',
-  send: 'Envoi',
-};
-
 function normalizeDomain(address) {
   const at = address.lastIndexOf('@');
   if (at < 0 || at === address.length - 1) return '';
@@ -58,35 +50,55 @@ function detectProvider(providers, address) {
   if (!domain) return null;
   const match = providers.find((p) => (p.domains || []).includes(domain));
   if (match) return match;
-  // The catalog always ends with a generic IMAP entry, which is a valid answer
-  // rather than a failure.
-  return providers.find((p) => !(p.domains || []).length) || null;
+  // An unknown domain falls back to the catalog's generic IMAP entry, exactly
+  // as the server does. Not to "the first entry without domains": several
+  // providers list none (their addresses are on the customer's own domain),
+  // and that guess showed the Google Workspace card for any unknown address.
+  return providers.find((p) => p.key === 'imap') || null;
 }
 
-function ProviderBriefing({ provider }) {
-  const route = provider?.routes?.[0];
-  if (!route) return null;
+// Why a provider cannot be connected with an address and a password here, in
+// one sentence.
+function notYetCopy(provider) {
+  const route = imapRouteOf(provider);
+  if (!route) {
+    const viaMicrosoft = (provider.routes || []).some((r) => r.transport === 'graph');
+    return viaMicrosoft
+      ? "Cette messagerie passe par l'API de Microsoft, que Mailsorter n'utilise pas encore. Elle ne se branche pas encore ici."
+      : "Cette messagerie ne se branche pas encore ici.";
+  }
+  return "Mailsorter ne connaît pas encore le serveur de cette messagerie, et ne sait pas encore le trouver seul : elle ne se branche pas encore ici.";
+}
 
+// The briefing for the address being typed in the address-and-password form,
+// so it reads the provider's IMAP route, the one that form goes through. The
+// catalog's notes are not shown: they are written for whoever maintains it.
+function ProviderBriefing({ provider }) {
+  if (!provider) return null;
+
+  if (!canConnectByPassword(provider)) {
+    return (
+      <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="chip bg-brand-50 text-brand-700">{provider.name}</span>
+          <span className="chip bg-ink-100 text-ink-600">Bientôt</span>
+        </div>
+        <p className="mt-3 text-sm leading-relaxed text-ink-600">{notYetCopy(provider)}</p>
+      </div>
+    );
+  }
+
+  const route = imapRouteOf(provider);
   const blockers = (route.blockers || []).filter((b) => BLOCKER_COPY[b]);
-  const caps = Object.entries(CAP_COPY).filter(([key]) => route.capabilities?.[key]);
-  const missing = Object.entries(CAP_COPY).filter(([key]) => !route.capabilities?.[key]);
 
   return (
     <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-6">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="chip bg-brand-50 text-brand-700">{provider.name}</span>
-        {route.autodiscover ? (
-          <span className="text-xs text-muted">Réglages détectés à la connexion</span>
-        ) : (
-          route.imap && (
-            <span className="font-mono text-xs text-muted">
-              {route.imap.host}:{route.imap.port}
-            </span>
-          )
-        )}
+        <span className="font-mono text-xs text-muted">
+          {route.imap.host}:{route.imap.port}
+        </span>
       </div>
-
-      {route.note && <p className="mt-3 text-sm leading-relaxed text-ink-600">{route.note}</p>}
 
       {blockers.length > 0 && (
         <ul className="mt-4 space-y-2.5">
@@ -99,25 +111,15 @@ function ProviderBriefing({ provider }) {
         </ul>
       )}
 
-      {caps.length > 0 && (
-        <div className="mt-4 border-t border-hairline/70 pt-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-ink-500">Disponible</p>
-          <ul className="mt-2 flex flex-wrap gap-1.5">
-            {caps.map(([key, label]) => (
-              <li key={key} className="chip bg-positive-50 text-positive-700">
-                {label}
-              </li>
-            ))}
-          </ul>
-          {missing.length > 0 && (
-            <p className="mt-3 text-xs leading-relaxed text-muted">
-              Pas sur cette boîte : {missing.map(([, label]) => label.toLowerCase()).join(', ')}.
-            </p>
-          )}
-        </div>
-      )}
+      {/* What a mailbox connected this way gets today, from the same list the
+          landing reads (GMAIL_ONLY), not from the route's capabilities: those
+          describe the provider, and Mailsorter does not use most of them yet. */}
+      <div className="mt-4 border-t border-hairline/70 pt-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-ink-500">Sur cette boîte</p>
+        <p className="mt-2 text-xs leading-relaxed text-ink-600">{imapLegend()}</p>
+      </div>
     </div>
   );
 }
 
-export { BLOCKER_COPY, CAP_COPY, normalizeDomain, detectProvider, ProviderBriefing };
+export { BLOCKER_COPY, normalizeDomain, detectProvider, ProviderBriefing };
