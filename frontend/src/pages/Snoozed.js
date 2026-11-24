@@ -40,7 +40,7 @@ const TABS = [
       scene: { prop: 'alarm', color: '#2F6F73' },
       hotelTitle: 'Rien en attente.',
       hotelDescription:
-        'Un e-mail reporté disparaît de la boîte et revient ce soir, demain ou ce week-end. Il revient non lu dans votre boîte.',
+        'Un e-mail reporté quitte votre boîte, puis y revient non lu ce soir, demain ou ce week-end.',
       description:
         "Depuis le lecteur d'email, utilisez « Reporter » pour mettre un email de côté jusqu'au moment qui vous arrange.",
     },

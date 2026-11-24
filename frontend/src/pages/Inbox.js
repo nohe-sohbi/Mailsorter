@@ -178,8 +178,8 @@ function welcomeLevers({ can, selfHosted }) {
       Icon: Bolt,
       t: 'Encoder vos évidences en règles',
       d: selfHosted
-        ? "Les règles trient sans IA. Un aperçu montre ce qu'elles feraient avant de rien toucher."
-        : "Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre ce qu'elles feraient avant de rien toucher.",
+        ? "Les règles trient sans IA. Un aperçu montre d'abord ce qu'elles feraient, sans rien modifier."
+        : "Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre d'abord ce qu'elles feraient, sans rien modifier.",
       lead: 'Vos évidences deviennent des règles.',
       rest: selfHosted
         ? "Elles trient sans IA, et un aperçu montre ce qu'elles feraient avant de toucher à quoi que ce soit."

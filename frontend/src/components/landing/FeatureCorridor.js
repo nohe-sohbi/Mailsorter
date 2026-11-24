@@ -25,7 +25,7 @@ const ROOMS = [
     number: '302',
     prop: 'alarm',
     title: 'Pas maintenant.',
-    text: 'Un e-mail disparaît et revient ce soir, demain ou ce week-end. Il revient non lu dans votre boîte.',
+    text: 'Un e-mail quitte votre boîte, puis y revient non lu ce soir, demain ou ce week-end.',
   },
   {
     feature: 'protected',
