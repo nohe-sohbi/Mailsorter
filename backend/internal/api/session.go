@@ -618,7 +618,17 @@ func (m mirroredIMAP) backInInbox(ctx context.Context, headerMessageID string) b
 
 // putBack is "Annuler" for a message Mailsorter moved out of the inbox.
 func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow, findErr error) error {
+	inbox := string(mailbox.FolderInbox)
 	if errors.Is(findErr, mongo.ErrNoDocuments) {
+		// Another "Annuler" may have brought it back a moment ago: the row
+		// then took its new number, and remembers the old one.
+		n, err := m.h.db.Emails().CountDocuments(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "restoredFrom": ref.ID})
+		if err != nil {
+			return fmt.Errorf("look for message %s put back: %w", ref.ID, err)
+		}
+		if n > 0 {
+			return errAlreadyBack
+		}
 		// Past the undo window the sync dropped what it knew of the move, and
 		// a move made before Mailsorter kept that is not known at all.
 		return errUndoExpired
@@ -656,18 +666,41 @@ func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow
 	if uid == "" {
 		return errNotWhereLeft
 	}
+
+	// Claim the return, as a move out claims the row: of two "Annuler" at
+	// once (two tabs, or the button after the action and the history), only
+	// one moves the message; the other is told it is already back. A claim
+	// left by a crash expires.
+	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}
+	now := time.Now()
+	res, err := m.h.db.Emails().UpdateOne(ctx, bson.M{
+		"userId": m.userEmail, "folder": inbox, "messageId": ref.ID, "leftInbox": true,
+		"$or": []bson.M{{"restoringAt": bson.M{"$exists": false}}, {"restoringAt": bson.M{"$lt": now.Add(-moveInFlight)}}},
+	}, bson.M{"$set": bson.M{"restoringAt": now}})
+	if err != nil {
+		return fmt.Errorf("claim message %s for its return: %w", ref.ID, err)
+	}
+	if res.MatchedCount == 0 {
+		return errAlreadyBack
+	}
+	release := func() {
+		if _, err := m.h.db.Emails().UpdateOne(ctx, filter, bson.M{"$unset": bson.M{"restoringAt": ""}}); err != nil {
+			log.Printf("imap: message %s of %s not put back, and its claim not released: %v", ref.ID, m.userEmail, err)
+		}
+	}
+
 	landed, err := m.moveFrom(ctx, row.MovedTo.Folder, uid, mailbox.FolderInbox, row.HeaderMessageID)
 	if errors.Is(err, imap.ErrMessageGone) {
+		release()
 		if m.backInInbox(ctx, row.HeaderMessageID) {
 			return errAlreadyBack
 		}
 		return errNotWhereLeft
 	}
 	if err != nil {
+		release()
 		return err
 	}
-	inbox := string(mailbox.FolderInbox)
-	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}
 	if landed.ID == "" {
 		// Back on the server, number unknown: the next sync lists it.
 		if _, err := m.h.db.Emails().DeleteOne(ctx, filter); err != nil {
@@ -676,8 +709,10 @@ func (m mirroredIMAP) putBack(ctx context.Context, ref mailbox.Ref, row movedRow
 		return nil
 	}
 	if _, err := m.h.db.Emails().UpdateOne(ctx, filter, bson.M{
-		"$set":   bson.M{"messageId": landed.ID},
-		"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": ""},
+		// restoredFrom: the number "Annuler" still names it by, for a second
+		// "Annuler" sent at the same time.
+		"$set":   bson.M{"messageId": landed.ID, "restoredFrom": ref.ID},
+		"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": "", "restoringAt": ""},
 		// Written now, like a row a sync stores: a sync whose UID search ran
 		// before the return must not judge it gone.
 		"$currentDate": bson.M{"syncedAt": true},
