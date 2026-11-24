@@ -129,7 +129,11 @@ function faq({ selfHosted, billingOn, isConfigured, undo, rules, autopilot }) {
     },
     {
       q: "Mes emails partent-ils chez un fournisseur d'IA ?",
-      a: `Uniquement quand vous lancez une analyse, et seulement l'expéditeur, le sujet et un extrait de 200 caractères, chez le fournisseur d'IA configuré sur l'instance (qui peut être un modèle local). ${AI_EGRESS}${
+      a: `Uniquement quand vous lancez une analyse, et seulement l'expéditeur, le sujet et un extrait de 200 caractères, ${
+        selfHosted
+          ? "chez le fournisseur d'IA configuré sur l'instance (qui peut être un modèle local), ou chez celui dont vous avez branché votre propre clé dans les réglages."
+          : "chez Mistral AI, le fournisseur d'IA du service en ligne, ou chez celui dont vous avez branché votre propre clé dans les réglages."
+      }${selfHosted ? ` ${AI_EGRESS}` : ''}${
         rules ? ` Les règles de tri, elles, ne font appel à aucune IA${selfHosted ? '' : ' et ne consomment aucun quota'}.` : ''
       }`,
     },

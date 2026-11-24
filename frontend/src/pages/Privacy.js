@@ -9,6 +9,9 @@ import { useInstance } from '../contexts/InstanceContext';
 //   scopes ............. backend/internal/gmail/gmail.go (NewService)
 //   ce qui est stocke .. backend/internal/models/models.go (Email, User)
 //   envoi a l'IA ....... backend/internal/ai/prompts.go (From, Subject, Snippet tronque)
+//   fournisseur d'IA ... docker-compose.yml (le service en ligne ne recoit que
+//                        MISTRAL_*), backend/internal/api/ai_settings.go (cle
+//                        personnelle, dans les deux editions)
 //   cache partage ...... backend/internal/api/analysis.go, cle sha256(from|subject)
 //   chiffrement ........ backend/internal/crypto, backend/internal/api/tokens.go
 //   export/effacement .. backend/internal/account/account.go (Datasets)
@@ -106,8 +109,8 @@ function Privacy() {
           Pour afficher votre boîte sans rappeler votre fournisseur à chaque clic, Mailsorter conserve une copie
           locale des messages synchronisés dans la base de données de l'instance :{' '}
           <strong className="text-ink-900">expéditeur, destinataires, sujet, extrait, contenu, libellés
-          et date</strong>. Les pièces jointes ne sont pas stockées : elles sont récupérées chez Google
-          au moment où vous les téléchargez.
+          et date</strong>. Les pièces jointes ne sont pas stockées : quand l'application vous propose
+          d'en télécharger une, elle la récupère chez votre fournisseur au moment où vous cliquez.
         </p>
         <p>Sont également conservés les éléments que vous créez dans l'application :</p>
         <LegalList
@@ -129,11 +132,15 @@ function Privacy() {
 
       <LegalSection n="4" title="Ce qui est envoyé à l'intelligence artificielle">
         <p>
-          Quand vous lancez un tri par IA, Mailsorter envoie au fournisseur d'IA configuré sur l'instance
-          (qui peut être un modèle local), pour chaque email analysé,{' '}
+          Quand vous lancez un tri par IA, Mailsorter envoie{' '}
+          {selfHosted
+            ? "au fournisseur d'IA configuré sur l'instance (qui peut être un modèle local)"
+            : "à Mistral AI, le fournisseur d'IA du service en ligne"}
+          , ou à celui dont vous avez branché votre propre clé dans les réglages, pour chaque email
+          analysé,{' '}
           <strong className="text-ink-900">l'expéditeur, le sujet et un extrait tronqué à 200
           caractères</strong>. Le contenu complet du message n'est jamais transmis, et les pièces
-          jointes non plus. Avec un modèle local, rien ne sort de l'instance.
+          jointes non plus.{selfHosted ? " Avec un modèle local, rien ne sort de l'instance." : ''}
         </p>
         <p>
           Rien n'est envoyé sans votre geste : l'analyse se déclenche quand vous cliquez. Les règles de
@@ -229,7 +236,9 @@ function Privacy() {
         <LegalList
           items={[
             'votre fournisseur de messagerie (Google pour une boîte Gmail), dont provient votre courrier et à qui sont adressées les actions de tri,',
-            "le fournisseur d'IA configuré sur l'instance, pour la seule analyse décrite en section 4 (aucun tiers si c'est un modèle local),",
+            selfHosted
+              ? "le fournisseur d'IA configuré sur l'instance, ou celui dont vous avez branché votre propre clé, pour la seule analyse décrite en section 4 (aucun tiers si c'est un modèle local),"
+              : "Mistral AI, le fournisseur d'IA du service en ligne, ou celui dont vous avez branché votre propre clé, pour la seule analyse décrite en section 4,",
             'Stripe, uniquement si vous souscrivez un abonnement,',
             "l'hébergeur de l'instance, qui héberge la base de données.",
           ]}
