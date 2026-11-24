@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+// bestRoute is the route an edition would use for a provider when everything
+// is configured: the first one it offers, since routes are ordered best first.
+func bestRoute(key string, e Edition) (Route, error) {
+	p, err := Lookup(key)
+	if err != nil {
+		return Route{}, err
+	}
+	for _, r := range p.Routes {
+		if r.Offers(e) {
+			return r, nil
+		}
+	}
+	return Route{}, ErrNotInEdition
+}
+
 // THE invariant. A shared OAuth client is capped by Google at 100
 // authorizations for the lifetime of the Cloud project, and the cap cannot be
 // reset. The hosted edition therefore must never resolve to the Gmail API,
@@ -21,12 +36,12 @@ func TestHostedEditionNeverReachesTheGmailAPI(t *testing.T) {
 
 	// And the two Google providers must still be reachable there, by IMAP.
 	for _, key := range []string{KeyGmail, KeyWorkspace} {
-		route, err := Pick(key, EditionHosted)
+		route, err := bestRoute(key, EditionHosted)
 		if err != nil {
-			t.Fatalf("Pick(%q, hosted) = %v, want a usable route: the hosted edition must still serve Google users", key, err)
+			t.Fatalf("bestRoute(%q, hosted) = %v, want a usable route: the hosted edition must still serve Google users", key, err)
 		}
 		if route.Transport != TransportIMAP || route.Auth != AuthAppPassword {
-			t.Errorf("Pick(%q, hosted) = %s/%s, want imap/app-password", key, route.Transport, route.Auth)
+			t.Errorf("bestRoute(%q, hosted) = %s/%s, want imap/app-password", key, route.Transport, route.Auth)
 		}
 	}
 }
@@ -34,22 +49,22 @@ func TestHostedEditionNeverReachesTheGmailAPI(t *testing.T) {
 // The self-hosted edition exists to unlock what the hosted one cannot do. If
 // these two stop being true, it has no reason to exist.
 func TestSelfHostedUnlocksTheGmailAPIAndProton(t *testing.T) {
-	route, err := Pick(KeyGmail, EditionSelfHosted)
+	route, err := bestRoute(KeyGmail, EditionSelfHosted)
 	if err != nil {
-		t.Fatalf("Pick(gmail, self-hosted) = %v, want the full API route", err)
+		t.Fatalf("bestRoute(gmail, self-hosted) = %v, want the full API route", err)
 	}
 	if route.Transport != TransportGmailAPI {
-		t.Errorf("Pick(gmail, self-hosted) transport = %s, want %s: the user's own Cloud project is what buys full fidelity", route.Transport, TransportGmailAPI)
+		t.Errorf("bestRoute(gmail, self-hosted) transport = %s, want %s: the user's own Cloud project is what buys full fidelity", route.Transport, TransportGmailAPI)
 	}
 	if !route.Caps.Has(CapLabels | CapProviderSearch | CapStableIDs) {
 		t.Error("the Gmail API route must declare labels, provider search and stable ids: they are the reason to prefer it")
 	}
 
-	if _, err := Pick(KeyProton, EditionSelfHosted); err != nil {
-		t.Errorf("Pick(proton, self-hosted) = %v, want a route: Bridge runs on the same machine", err)
+	if _, err := bestRoute(KeyProton, EditionSelfHosted); err != nil {
+		t.Errorf("bestRoute(proton, self-hosted) = %v, want a route: Bridge runs on the same machine", err)
 	}
-	if _, err := Pick(KeyProton, EditionHosted); !errors.Is(err, ErrNotInEdition) {
-		t.Errorf("Pick(proton, hosted) = %v, want ErrNotInEdition: Bridge binds to 127.0.0.1 and no remote server can dial it", err)
+	if _, err := bestRoute(KeyProton, EditionHosted); !errors.Is(err, ErrNotInEdition) {
+		t.Errorf("bestRoute(proton, hosted) = %v, want ErrNotInEdition: Bridge binds to 127.0.0.1 and no remote server can dial it", err)
 	}
 }
 
@@ -264,8 +279,8 @@ func TestLookupRejectsAnUnknownKey(t *testing.T) {
 	if _, err := Lookup("nope"); !errors.Is(err, ErrUnknownProvider) {
 		t.Errorf("Lookup(nope) = %v, want ErrUnknownProvider", err)
 	}
-	if _, err := Pick("nope", EditionHosted); !errors.Is(err, ErrUnknownProvider) {
-		t.Errorf("Pick(nope) = %v, want ErrUnknownProvider", err)
+	if _, err := bestRoute("nope", EditionHosted); !errors.Is(err, ErrUnknownProvider) {
+		t.Errorf("bestRoute(nope) = %v, want ErrUnknownProvider", err)
 	}
 }
 
@@ -273,9 +288,9 @@ func TestLookupRejectsAnUnknownKey(t *testing.T) {
 // domain, so its absence would turn a miss into a provider with no routes.
 func TestGenericFallbackExistsInBothEditions(t *testing.T) {
 	for _, e := range []Edition{EditionSelfHosted, EditionHosted} {
-		r, err := Pick(KeyGeneric, e)
+		r, err := bestRoute(KeyGeneric, e)
 		if err != nil {
-			t.Fatalf("Pick(generic, %s) = %v, want the IMAP fallback", e, err)
+			t.Fatalf("bestRoute(generic, %s) = %v, want the IMAP fallback", e, err)
 		}
 		if r.Transport != TransportIMAP {
 			t.Errorf("the generic fallback is %s, want imap", r.Transport)
@@ -322,8 +337,8 @@ func TestPickIMAPFindsTheRouteAPasswordCanUse(t *testing.T) {
 	}
 	// Installed at home, Gmail's best route is the API, yet a password still
 	// connects over IMAP: that is the whole point of PickIMAP.
-	if best, _ := Pick(KeyGmail, EditionSelfHosted); best.Transport != TransportGmailAPI {
-		t.Fatalf("Pick(gmail, self-hosted) = %s, want gmail-api (test premise)", best.Transport)
+	if best, _ := bestRoute(KeyGmail, EditionSelfHosted); best.Transport != TransportGmailAPI {
+		t.Fatalf("bestRoute(gmail, self-hosted) = %s, want gmail-api (test premise)", best.Transport)
 	}
 	if r, err := PickIMAP(KeyGmail, EditionSelfHosted); err != nil || r.IMAP.Host != "imap.gmail.com" {
 		t.Errorf("PickIMAP(gmail, self-hosted) = %v / %v, want imap.gmail.com", r.IMAP, err)
