@@ -84,8 +84,9 @@ func (c *Client) Fetch(ctx context.Context, folder, uid string) (Message, error)
 	return out, nil
 }
 
-// fetchOne fetches the message uid in folder with these options, and fails
-// when the folder holds no message under that number.
+// fetchOne fetches the message uid in folder with these options. A folder
+// that holds no message under that number is ErrMessageGone: the list showed
+// it, so another mail client (the person's phone) moved or deleted it since.
 func (c *Client) fetchOne(folder, uid string, options *imapv2.FetchOptions) (*imapclient.FetchMessageBuffer, error) {
 	num, err := parseUID(uid)
 	if err != nil {
@@ -99,7 +100,7 @@ func (c *Client) fetchOne(folder, uid string, options *imapv2.FetchOptions) (*im
 		return nil, fmt.Errorf("imap: fetch message %s in %q: %w", uid, folder, err)
 	}
 	if len(msgs) == 0 {
-		return nil, fmt.Errorf("imap: no message with uid %s in %q", uid, folder)
+		return nil, fmt.Errorf("%w: uid %s in %q", ErrMessageGone, uid, folder)
 	}
 	return msgs[0], nil
 }

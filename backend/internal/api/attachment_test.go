@@ -1,31 +1,32 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	gmailapi "google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
 )
 
-func TestSafeAttachmentName(t *testing.T) {
-	cases := map[string]string{
-		"facture.pdf":            "facture.pdf",
-		"  facture.pdf  ":        "facture.pdf",
-		"../../../etc/passwd":    "passwd",
-		`C:\Users\bob\rapport.x`: "rapport.x",
-		"quo\"te.txt":            "quote.txt",
-		"line\r\nbreak.txt":      "linebreak.txt",
-		"":                       fallbackAttachmentName,
-		"..":                     fallbackAttachmentName,
-		"/":                      fallbackAttachmentName,
-		"reçu-été.pdf":           "reçu-été.pdf",
+// The name a download is saved under is cleaned the way the reader's list
+// is (attachment.SafeName): a bidirectional control does not reach the
+// header, in either parameter.
+func TestContentDispositionCleansTheName(t *testing.T) {
+	got := contentDisposition("../facture\u202Efdp.exe")
+	want := `attachment; filename="facturefdp.exe"; filename*=UTF-8''facturefdp.exe`
+	if got != want {
+		t.Errorf("contentDisposition(...) = %q, want %q", got, want)
 	}
-	for in, want := range cases {
-		if got := safeAttachmentName(in); got != want {
-			t.Errorf("safeAttachmentName(%q) = %q, want %q", in, got, want)
-		}
+	if got := contentDisposition(""); !strings.Contains(got, `filename="`+attachment.Unnamed+`"`) {
+		t.Errorf("contentDisposition(\"\") = %q, want it named %q", got, attachment.Unnamed)
 	}
 }
 
@@ -72,6 +73,10 @@ func TestListAttachmentsExposesAttachmentID(t *testing.T) {
 		MimeType: "multipart/mixed",
 		Parts: []*gmailapi.MessagePart{
 			{
+				MimeType: "text/html",
+				Body:     &gmailapi.MessagePartBody{Data: "PGltZyBzcmM9ImNpZDpsb2dvIj4"},
+			},
+			{
 				Filename: "facture.pdf",
 				MimeType: "application/pdf",
 				Body:     &gmailapi.MessagePartBody{AttachmentId: "att-1", Size: 2048},
@@ -85,7 +90,7 @@ func TestListAttachmentsExposesAttachmentID(t *testing.T) {
 		},
 	}}
 
-	got := listAttachments(msg)
+	got := listAttachments(msg, `<img src="cid:logo">`)
 	if len(got) != 1 {
 		t.Fatalf("listAttachments returned %d parts, want only the real attachment: %#v", len(got), got)
 	}
@@ -141,5 +146,95 @@ func TestAttachmentRouteDoesNotShadowMessageRoutes(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("GET %s (%s route) = %d, want 401", tc.path, tc.want, rec.Code)
 		}
+	}
+}
+
+// Over the Gmail API the files follow the rule IMAP follows
+// (attachment.Listed). It used to hide every part with a Content-ID, an
+// X-Attachment-Id or an inline disposition: the file attached from Gmail's
+// web interface and the PDF Apple Mail sends inline were not shown.
+func TestListAttachmentsFollowsTheSharedRule(t *testing.T) {
+	header := func(name, value string) *gmailapi.MessagePartHeader {
+		return &gmailapi.MessagePartHeader{Name: name, Value: value}
+	}
+	body := func(id string) *gmailapi.MessagePartBody {
+		return &gmailapi.MessagePartBody{AttachmentId: id, Size: 100}
+	}
+	msg := &gmailapi.Message{Payload: &gmailapi.MessagePart{
+		MimeType: "multipart/mixed",
+		Parts: []*gmailapi.MessagePart{
+			{MimeType: "multipart/related", Parts: []*gmailapi.MessagePart{
+				{MimeType: "text/html", Body: &gmailapi.MessagePartBody{Data: "eA"}},
+				{Filename: "logo.png", MimeType: "image/png", Body: body("logo"),
+					Headers: []*gmailapi.MessagePartHeader{header("Content-Disposition", "inline; filename=logo.png"), header("Content-ID", "<logo@acme>"), header("X-Attachment-Id", "logo")}},
+			}},
+			{Filename: "facture.pdf", MimeType: "application/pdf", Body: body("gmail-web"),
+				Headers: []*gmailapi.MessagePartHeader{header("Content-Disposition", `attachment; filename="facture.pdf"`), header("Content-ID", "<f_abc>"), header("X-Attachment-Id", "f_abc")}},
+			{Filename: "devis.pdf", MimeType: "application/pdf", Body: body("apple-inline"),
+				Headers: []*gmailapi.MessagePartHeader{header("Content-Disposition", `inline; filename="devis.pdf"`)}},
+			{Filename: "photo.jpg", MimeType: "image/jpeg", Body: body("photo"),
+				Headers: []*gmailapi.MessagePartHeader{header("Content-Disposition", "inline"), header("Content-ID", "<photo@iphone>")}},
+			{MimeType: "application/octet-stream", Body: body("unnamed"),
+				Headers: []*gmailapi.MessagePartHeader{header("Content-Disposition", "attachment")}},
+			{MimeType: "message/rfc822", Body: body("forwarded")},
+			{Filename: "facture\u202Efdp.exe", MimeType: "application/octet-stream", Body: body("bidi"),
+				Headers: []*gmailapi.MessagePartHeader{header("Content-Disposition", "attachment")}},
+			{MimeType: "text/plain", Body: &gmailapi.MessagePartBody{Data: "eA"}},
+		},
+	}}
+
+	got := listAttachments(msg, `<p>Bonjour</p><img src="cid:logo@acme">`)
+	var names []string
+	for _, a := range got {
+		names = append(names, a.Filename+" ("+a.AttachmentID+")")
+	}
+	want := []string{
+		"facture.pdf (gmail-web)",
+		"devis.pdf (apple-inline)",
+		"photo.jpg (photo)",
+		attachment.Unnamed + " (unnamed)",
+		attachment.UnnamedMail + " (forwarded)",
+		"facturefdp.exe (bidi)",
+	}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("listAttachments(...) = %q, want %q", names, want)
+	}
+}
+
+// A read of the mailbox that fails answers a French sentence and nothing
+// of the error, which goes to the log; a mail that is no longer there is a
+// 404 of its own, on both transports.
+func TestWriteMailboxFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		code int
+		said string
+	}{
+		{"imap, a mail moved from the phone", fmt.Errorf("%w: uid 12 in \"INBOX\"", imap.ErrMessageGone), http.StatusNotFound, attachmentGoneMessage},
+		{"gmail, a mail deleted", &googleapi.Error{Code: http.StatusNotFound, Message: "Requested entity was not found."}, http.StatusNotFound, attachmentGoneMessage},
+		{"gmail, wrapped", fmt.Errorf("get: %w", &googleapi.Error{Code: http.StatusNotFound}), http.StatusNotFound, attachmentGoneMessage},
+		{"gmail, down", &googleapi.Error{Code: http.StatusServiceUnavailable, Message: "Backend Error"}, http.StatusBadGateway, attachmentFailedMessage},
+		{"imap, the connection dropped", errors.New("imap: fetch message 12 in \"INBOX\": EOF"), http.StatusBadGateway, attachmentFailedMessage},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			writeMailboxFailure(rec, tc.err, "test", attachmentGoneMessage, attachmentFailedMessage)
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %q is not the JSON envelope: %v", rec.Body.String(), err)
+			}
+			if rec.Code != tc.code || body.Error != tc.said {
+				t.Errorf("writeMailboxFailure(%v) = %d %q, want %d %q", tc.err, rec.Code, body.Error, tc.code, tc.said)
+			}
+			for _, leak := range []string{"imap", "googleapi", "uid", "EOF", "Backend", "entity"} {
+				if strings.Contains(rec.Body.String(), leak) {
+					t.Errorf("writeMailboxFailure(%v) sent %q, which names the error (%q)", tc.err, rec.Body.String(), leak)
+				}
+			}
+		})
 	}
 }

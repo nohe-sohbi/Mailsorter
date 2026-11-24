@@ -126,8 +126,8 @@ func (c *Client) Attachments(folder string, uids []string) (map[string]bool, err
 // text and HTML (multipart/alternative) carries the same text twice. And an
 // HTML mail draws its pictures from parts of its own, which it points to by
 // their Content-ID (cid:), sometimes under a file name (image001.png): the
-// Gmail reader leaves those out of its attachment list for the same reason
-// (isInlinePart in internal/api/message.go).
+// reader leaves those out of its attachment list for the same reason
+// (attachment.Listed, on both transports).
 func hasAttachment(bs imapv2.BodyStructure) bool {
 	if bs == nil {
 		return false

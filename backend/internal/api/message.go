@@ -2,11 +2,15 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
@@ -15,6 +19,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
 )
 
 // messageView is one fully loaded message. It deliberately carries both body
@@ -39,6 +44,41 @@ type attachmentView struct {
 	MimeType     string `json:"mimeType"`
 	Size         int64  `json:"size"`
 	AttachmentID string `json:"attachmentId,omitempty"`
+}
+
+// What the reader and the download answer when the mailbox could not hand a
+// message over: sentences for the screen, which shows what the server says.
+// The error itself, in English and in the protocol's words ("imap: fetch
+// message 12 in \"INBOX\": ...", "googleapi: Error 404"), goes to the log.
+const (
+	messageGoneMessage      = "Ce mail n'est plus dans votre boîte : il a été déplacé ou supprimé entre-temps."
+	messageFailedMessage    = "Ce mail n'a pas pu être chargé depuis votre boîte. Réessayez dans un instant."
+	attachmentGoneMessage   = "Ce mail n'est plus dans votre boîte : la pièce jointe ne peut plus être téléchargée."
+	attachmentFailedMessage = "Cette pièce jointe n'a pas pu être téléchargée depuis votre boîte. Réessayez dans un instant."
+)
+
+// mailGone says whether err means the message is no longer in the mailbox:
+// moved or deleted from another mail client (the person's phone) since the
+// list showed it. Over IMAP its UID no longer names anything in its folder;
+// over the Gmail API its id answers 404.
+func mailGone(err error) bool {
+	if errors.Is(err, imap.ErrMessageGone) {
+		return true
+	}
+	var apiErr *googleapi.Error
+	return errors.As(err, &apiErr) && apiErr.Code == http.StatusNotFound
+}
+
+// writeMailboxFailure answers a read of the mailbox that failed: 404 with
+// gone when the message is no longer there, 502 with failed otherwise, on
+// either transport. What went wrong is logged after what, never sent.
+func writeMailboxFailure(w http.ResponseWriter, err error, what, gone, failed string) {
+	log.Printf("%s: %v", what, err)
+	if mailGone(err) {
+		writeError(w, http.StatusNotFound, gone)
+		return
+	}
+	writeError(w, http.StatusBadGateway, failed)
 }
 
 // GetEmail returns a single message with its decoded body.
@@ -89,7 +129,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 
 	msg, err := h.gmailService.GetMessage(gmailClient, messageID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Impossible de charger cet email : "+err.Error())
+		writeMailboxFailure(w, err, fmt.Sprintf("message: %s for %s", messageID, userEmail), messageGoneMessage, messageFailedMessage)
 		return
 	}
 
@@ -128,7 +168,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 			UnsubOneClick: oneClick,
 		},
 		BodyHTML:    html,
-		Attachments: listAttachments(msg),
+		Attachments: listAttachments(msg, html),
 	}
 
 	opts := options.Update().SetUpsert(true)
@@ -141,41 +181,31 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// isInlinePart reports whether a named MIME part is embedded in the message body
-// rather than attached to it.
-func isInlinePart(part *gmailapi.MessagePart) bool {
-	for _, h := range part.Headers {
-		switch strings.ToLower(h.Name) {
-		case "content-id", "x-attachment-id":
-			if strings.TrimSpace(h.Value) != "" {
-				return true
-			}
-		case "content-disposition":
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(h.Value)), "inline") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// listAttachments walks the MIME tree for parts that carry a filename.
-func listAttachments(msg *gmailapi.Message) []attachmentView {
+// listAttachments lists the files of a Gmail message, by the rule both
+// transports share (attachment.Listed), html being the HTML the reader
+// renders for it.
+//
+// The rule changed for Gmail when IMAP mailboxes got their attachments. A
+// part with a Content-ID, an X-Attachment-Id or an inline disposition used
+// to be hidden whatever it was: that hid every file attached from Gmail's
+// own web interface, which gives each one a Content-ID and an
+// X-Attachment-Id, and the PDF Apple Mail sends inline. Now only an image
+// that html shows through cid: is hidden, as on IMAP. A part without a name
+// is listed when it is declared an attachment ("piece-jointe") or is a
+// forwarded mail ("message.eml"), and every name is cleaned
+// (attachment.SafeName) before the screen gets it.
+func listAttachments(msg *gmailapi.Message, html string) []attachmentView {
 	if msg == nil || msg.Payload == nil {
 		return nil
 	}
+	shown := attachment.ShownBy(html)
 	var out []attachmentView
 	var walk func(part *gmailapi.MessagePart, depth int)
 	walk = func(part *gmailapi.MessagePart, depth int) {
 		if part == nil || depth > 12 {
 			return
 		}
-		// A filename alone does not make an attachment: Gmail names the inline
-		// images a newsletter references with cid: too (image001.png, logo.gif),
-		// so listing every named part turned a normal marketing email into a row
-		// of meaningless chips. An inline part announces itself with a
-		// Content-ID, or with Content-Disposition: inline.
-		if part.Filename != "" && !isInlinePart(part) {
+		if name, ok := attachment.Listed(gmailPart(part), shown); ok {
 			var size int64
 			var attachmentID string
 			if part.Body != nil {
@@ -183,7 +213,7 @@ func listAttachments(msg *gmailapi.Message) []attachmentView {
 				attachmentID = part.Body.AttachmentId
 			}
 			out = append(out, attachmentView{
-				Filename:     part.Filename,
+				Filename:     name,
 				MimeType:     part.MimeType,
 				Size:         size,
 				AttachmentID: attachmentID,
@@ -195,6 +225,20 @@ func listAttachments(msg *gmailapi.Message) []attachmentView {
 	}
 	walk(msg.Payload, 0)
 	return out
+}
+
+// gmailPart is what a part Gmail hands over says about itself.
+func gmailPart(part *gmailapi.MessagePart) attachment.Part {
+	p := attachment.Part{Filename: part.Filename, MediaType: part.MimeType}
+	for _, h := range part.Headers {
+		switch strings.ToLower(h.Name) {
+		case "content-disposition":
+			p.Disposition = h.Value
+		case "content-id":
+			p.ContentID = h.Value
+		}
+	}
+	return p
 }
 
 // getEmailIMAP is the IMAP half of GetEmail.
@@ -209,7 +253,7 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 
 	msg, err := session.imapc.Fetch(ctx, ref.Folder, ref.ID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Impossible de charger cet email : "+err.Error())
+		writeMailboxFailure(w, err, fmt.Sprintf("message: %s in %q for %s", ref.ID, ref.Folder, userEmail), messageGoneMessage, messageFailedMessage)
 		return
 	}
 

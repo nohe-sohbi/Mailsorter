@@ -475,29 +475,50 @@ to display.
 renders the HTML, the deterministic rule engine matches on the text. Either may
 be absent.
 
+`attachments` follows one rule on both transports (`internal/attachment`,
+`Listed`): a leaf part with a file name (`filename` of `Content-Disposition`,
+else `name` of `Content-Type`) is a file; so is an unnamed part declared
+`Content-Disposition: attachment`, listed as `piece-jointe`, and an unnamed
+forwarded mail (`message/rfc822`), listed as `message.eml`. The one exception
+is an image the HTML in `bodyHtml` shows through a `cid:` URL, whatever its
+disposition. A `Content-ID`, an `X-Attachment-Id` or an inline disposition
+alone hides nothing. `filename` is cleaned before it is sent: no directory,
+no control character, no quote, no bidirectional control (U+061C, U+200E,
+U+200F, U+202A to U+202E, U+2066 to U+2069), the same name the download's
+`Content-Disposition` carries.
+
+Over the Gmail API this rule replaced the one it had, which hid
+every part with a `Content-ID`, an `X-Attachment-Id` or an inline
+disposition: the files attached from Gmail's web interface (each one carries a
+`Content-ID` and an `X-Attachment-Id`), a PDF Apple Mail sends inline and an
+image no HTML shows were missing from the list, and are now in it.
+
 `attachmentId` is the handle the bytes live behind (see the download route
 below). A part without one carries its data inline in the message payload and is
-not downloadable; inline images a newsletter references are filtered out
-entirely.
+not downloadable.
 
 On a mailbox reached over IMAP the fetch PEEKS: it downloads the body without
 setting `\Seen`, so opening a message stays distinct from reading it and only
 `markRead=1` changes the flag. The star comes as `isStarred`, read off the
 server. `labelIds` comes back empty there. `attachments`
-is read out of the message's MIME tree: every leaf part with a file name
-(`filename` of `Content-Disposition`, else `name` of `Content-Type`, decoded
-from RFC 2047 or RFC 2231), except a part the HTML shows (a `Content-ID`
-without `Content-Disposition: attachment`). `attachmentId` is the part's IMAP
-number (`"2"`, `"1.3"`), `mimeType` the declared type without its parameters,
-and `size` the size of the decoded file, as on Gmail, not of its base64. A
-file whose transfer encoding does not decode is left out of the list and
-logged.
+is read out of the message's MIME tree, file names decoded from RFC 2047 or
+RFC 2231 (in any charset the server's mail may use, ISO-8859-1 or windows-1252
+included). `attachmentId` is the part's IMAP number (`"2"`, `"1.3"`),
+`mimeType` the declared type without its parameters, and `size` the size of
+the decoded file, as on Gmail, not of its base64. A file whose transfer
+encoding does not decode is left out of the list and logged.
 
 **Error Responses:**
 - `400 Bad Request`: Missing id
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `404 Not Found`: the message is no longer in the mailbox, moved or deleted
+  from another mail client since the list showed it (an IMAP UID its folder no
+  longer holds, a Gmail id that answers 404): `{"error": "Ce mail n'est plus
+  dans votre boîte : il a été déplacé ou supprimé entre-temps."}`
 - `428 Precondition Required`: no mailbox is connected to this account yet
-- `502 Bad Gateway`: the mailbox could not return the message
+- `502 Bad Gateway`: the mailbox could not return the message: `{"error": "Ce
+  mail n'a pas pu être chargé depuis votre boîte. Réessayez dans un
+  instant."}`. The error itself is logged, never sent
 
 ---
 
@@ -513,20 +534,27 @@ fetches the bytes.
 Only a part of the named message may be served: an attachment id the message
 does not carry is a 404, never a passthrough to Gmail.
 
-Over IMAP the file is inside the message. The route fetches the whole message
-with `BODY.PEEK[]` (saving a file does not mark the mail read), walks it the
-way the reader does, and serves the part only when that walk lists a file
-under `attachmentId`. Any other id, the text of the mail (`"1"`), a section
-name (`"TEXT"`), a part past the last one or a file of another mail, is a
-404 `{"error": "Cette pièce jointe est introuvable dans ce mail."}` and
-nothing else. The bytes are the file as sent: the transfer encoding (base64,
-quoted-printable) is undone, the charset of a text file is left as it is.
+Over IMAP the file is inside the message. The route first asks the server
+for the message's `BODYSTRUCTURE`: a file whose stored size cannot fit under
+30 MiB once decoded is a 413 before a byte of it is read. Then it fetches the
+whole message with `BODY.PEEK[]` (saving a file does not mark the mail read),
+reading it as it arrives rather than into memory, walks it the way the reader
+does, and serves the part only when that walk lists a file under
+`attachmentId`. The file is read through the 30 MiB cap, so no more than that
+of it is ever held, and the rest of the message is not kept. The request's
+60 s deadline ends the IMAP command too (the connection is closed). Any other
+id, the text of the mail (`"1"`), a section name (`"TEXT"`), a part past the
+last one or a file of another mail, is a 404 `{"error": "Cette pièce jointe
+est introuvable dans ce mail."}` and nothing else. The bytes are the file as
+sent: the transfer encoding (base64, quoted-printable) is undone, the charset
+of a text file is left as it is.
 
 **Response:** `200 OK`, the raw file, with:
 - `Content-Type`: the part's MIME type when it parses, `application/octet-stream` otherwise
 - `Content-Disposition`: `attachment`, with the filename sanitized (no directory
-  components, no control characters) and published in both the quoted and the
-  RFC 5987 `filename*` form so accents survive
+  components, no control or bidirectional control characters, the name the
+  reader lists) and published in both the quoted and the RFC 5987 `filename*`
+  form so accents survive
 - `X-Content-Type-Options: nosniff`
 
 The route is session-authenticated, so a plain `<a href>` cannot fetch it: the
@@ -537,11 +565,16 @@ SPA downloads through the API client and hands the browser an object URL.
 - `401 Unauthorized`: Missing or expired session
 - `404 Not Found`: This message carries no such attachment ("Pièce jointe
   introuvable" over the Gmail API, "Cette pièce jointe est introuvable dans ce
-  mail." over IMAP)
+  mail." over IMAP), or the message is no longer in the mailbox, moved or
+  deleted from another mail client since the list showed it ("Ce mail n'est
+  plus dans votre boîte : la pièce jointe ne peut plus être téléchargée.", on
+  both transports)
 - `413 Payload Too Large`: Over 30 MiB
 - `428 Precondition Required`: no mailbox is connected to this account yet
 - `502 Bad Gateway`: the mailbox could not return the message or the bytes,
-  or, over IMAP, the file's transfer encoding does not decode
+  or, over IMAP, the file's transfer encoding does not decode: "Cette pièce
+  jointe n'a pas pu être téléchargée depuis votre boîte. Réessayez dans un
+  instant.". The error itself is logged, never sent
 
 ---
 

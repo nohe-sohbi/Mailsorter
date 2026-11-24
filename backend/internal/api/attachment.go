@@ -7,12 +7,13 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
@@ -22,10 +23,6 @@ import (
 // real message part; the cap exists so a crafted (or corrupt) size can't make
 // the server hold an arbitrary allocation.
 const maxAttachmentBytes = 30 << 20 // 30 MiB
-
-// fallbackAttachmentName is used when a part's filename is empty or sanitizes
-// away to nothing. A download must always land with a usable name.
-const fallbackAttachmentName = "piece-jointe"
 
 // attachmentNotInMailIMAP is the answer to a download of a file the mail on
 // an IMAP mailbox does not have.
@@ -70,17 +67,20 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	gmailClient := session.gmail
 
+	failed := fmt.Sprintf("attachment: %s of message %s for %s", attachmentID, messageID, userEmail)
 	msg, err := h.gmailService.GetMessage(gmailClient, messageID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Impossible de charger cet email : "+err.Error())
+		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
 		return
 	}
 
 	// Only a part of THIS message may be served. Without the lookup the route
 	// would forward any attachment id the caller invented straight to Gmail,
 	// turning it into a proxy for reading parts of messages the request never
-	// named.
-	att, ok := findAttachment(listAttachments(msg), attachmentID)
+	// named. The list is the reader's, HTML included, so a part the reader
+	// does not offer is not served either.
+	_, html := gmail.GetEmailBodies(msg)
+	att, ok := findAttachment(listAttachments(msg, html), attachmentID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "Pièce jointe introuvable")
 		return
@@ -92,7 +92,7 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 
 	data, err := h.gmailService.GetAttachment(gmailClient, messageID, attachmentID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Téléchargement impossible : "+err.Error())
+		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
 		return
 	}
 	if len(data) > maxAttachmentBytes {
@@ -109,19 +109,23 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 // part number is easy to guess ("1" is the text of almost every mail), so
 // without that check the route would hand out the text of a mail, or any part
 // of it, as a file.
+//
+// The cap is the client's to hold, because over IMAP the bytes are read to be
+// measured: it asks the server for the file's size first, and never keeps
+// more than the cap of it.
 func (h *Handler) downloadAttachmentIMAP(ctx context.Context, w http.ResponseWriter, session *mailSession, messageID, attachmentID string) {
 	ref := session.RefFor(ctx, messageID)
-	att, data, err := session.imapc.Attachment(ctx, ref.Folder, ref.ID, attachmentID)
-	if errors.Is(err, imap.ErrNoSuchAttachment) {
+	att, data, err := session.imapc.Attachment(ctx, ref.Folder, ref.ID, attachmentID, maxAttachmentBytes)
+	switch {
+	case errors.Is(err, imap.ErrNoSuchAttachment):
 		writeError(w, http.StatusNotFound, attachmentNotInMailIMAP)
 		return
-	}
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "Téléchargement impossible : "+err.Error())
-		return
-	}
-	if len(data) > maxAttachmentBytes {
+	case errors.Is(err, imap.ErrAttachmentTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "Pièce jointe trop volumineuse")
+		return
+	case err != nil:
+		failed := fmt.Sprintf("attachment: %s of message %s in %q for %s", attachmentID, ref.ID, ref.Folder, session.userEmail)
+		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
 		return
 	}
 	writeAttachment(w, att.Filename, att.MimeType, data)
@@ -163,35 +167,13 @@ func attachmentContentType(mimeType string) string {
 	return mimeType
 }
 
-// safeAttachmentName reduces a sender-supplied filename to something safe to put
-// in a header and on a disk: no directory components (a part named
-// "../../.bashrc" must land as ".bashrc"), no control characters, no quotes or
-// backslashes that would let it break out of the quoted-string form.
-func safeAttachmentName(filename string) string {
-	name := strings.TrimSpace(filename)
-	// Both separators, because the name is authored on the sender's machine and
-	// path.Base alone leaves a Windows path intact.
-	name = strings.ReplaceAll(name, "\\", "/")
-	name = path.Base(name)
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r == '"' {
-			return -1
-		}
-		return r
-	}, name)
-	name = strings.TrimSpace(name)
-	if name == "" || name == "." || name == ".." || name == "/" {
-		return fallbackAttachmentName
-	}
-	return name
-}
-
 // contentDisposition builds an attachment disposition that survives a non-ASCII
 // filename. The quoted form is ASCII-only by spec, so an accented name is also
 // published in the RFC 5987 `filename*` form, which every current browser
-// prefers; the plain parameter stays as the fallback.
+// prefers; the plain parameter stays as the fallback. The name is cleaned the
+// way the reader's list cleans it (attachment.SafeName), so the two agree.
 func contentDisposition(filename string) string {
-	name := safeAttachmentName(filename)
+	name := attachment.SafeName(filename, attachment.Unnamed)
 	ascii := asciiFallbackName(name)
 	return fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s", ascii, url.PathEscape(name))
 }
@@ -209,7 +191,7 @@ func asciiFallbackName(name string) string {
 	}
 	out := b.String()
 	if strings.TrimSpace(strings.Trim(out, "_")) == "" {
-		return fallbackAttachmentName
+		return attachment.Unnamed
 	}
 	return out
 }
