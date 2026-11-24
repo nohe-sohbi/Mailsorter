@@ -817,7 +817,11 @@ function Inbox() {
         } else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
         else if (action === 'unread') applied.forEach((id) => patchEmail(id, { isRead: false }));
         else if (action === 'star') applied.forEach((id) => patchEmail(id, { isStarred: true }));
-        else if (action === 'unstar') applied.forEach((id) => patchEmail(id, { isStarred: false }));
+        else if (action === 'unstar') {
+          // Under "Favoris" they leave the list, as one mail does (leavesList).
+          if (leavesList(action, activeQuery)) removeEmails(applied);
+          else applied.forEach((id) => patchEmail(id, { isStarred: false }));
+        }
 
         setSelectedEmails([]);
 
@@ -870,7 +874,7 @@ function Inbox() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedEmails, confirm]
+    [selectedEmails, confirm, activeQuery]
   );
 
   // Snooze the whole selection to one wake time. Same chunking as runBulk (the
