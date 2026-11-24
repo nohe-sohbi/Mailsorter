@@ -95,7 +95,7 @@ function trust({ undo }) {
     {
       Icon: Lock,
       title: 'Ce que Mailsorter vous demandera',
-      text: "Lire et ranger votre boîte (archiver, étiqueter, corbeille), gérer vos libellés, et vous envoyer le récap quotidien si vous l'activez. Rien d'autre.",
+      text: "Lire votre boîte et y ranger ce que vous validez (archiver, corbeille). Avec l'API Gmail, aussi étiqueter et vous envoyer le récap quotidien si vous l'activez. Rien d'autre.",
     },
     {
       Icon: Sparkles,

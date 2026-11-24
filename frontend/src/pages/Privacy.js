@@ -61,10 +61,16 @@ function Privacy() {
         )}
       </LegalSection>
 
-      <LegalSection n="2" title="Ce que Mailsorter demande à Google">
+      <LegalSection n="2" title="Ce que Mailsorter demande pour accéder à votre boîte">
         <p>
-          À la connexion, Google vous présente les autorisations demandées. Elles sont au nombre de
-          quatre, et chacune sert à une fonction précise :
+          Par IMAP (Orange, iCloud, Gmail sans API, etc.), Mailsorter se connecte avec un mot de
+          passe d'application que vous générez chez votre fournisseur et pouvez révoquer à tout
+          moment ; il est stocké chiffré. Il sert à lire votre boîte et à y ranger ce que vous
+          validez.
+        </p>
+        <p>
+          Par l'API Gmail, Google vous présente à la connexion les autorisations demandées. Elles
+          sont au nombre de quatre, et chacune sert à une fonction précise :
         </p>
         <LegalList
           items={[

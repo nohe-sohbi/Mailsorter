@@ -91,8 +91,8 @@ function Unavailable() {
       <div className="max-w-sm space-y-2">
         <h1 className="font-display text-xl font-bold text-ink-900">Service momentanément indisponible</h1>
         <p className="text-sm text-muted">
-          Mailsorter n'est pas encore connecté à Google sur cette instance. La connexion sera
-          rétablie dès que l'exploitant aura terminé la configuration.
+          Cette instance de Mailsorter n'offre encore aucune façon de se connecter. Elle sera
+          ouverte dès que l'exploitant aura terminé la configuration.
         </p>
       </div>
       <a href={`mailto:${CONTACT_EMAIL}`} className="btn-secondary">
