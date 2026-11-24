@@ -820,7 +820,7 @@ function Rules() {
             hotelTitle="Aucune règle pour l'instant."
             hotelDescription={
               !rulesRun
-                ? "Une règle dit quoi faire de ce qui revient chaque semaine : l'archiver, le supprimer, le marquer comme lu. Sans IA."
+                ? "Une règle dit quoi faire de ce qui revient chaque semaine (l'archiver, le supprimer, le marquer comme lu). Sans IA."
                 : selfHosted
                 ? 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA.'
                 : 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota.'
