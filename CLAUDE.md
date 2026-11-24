@@ -92,9 +92,8 @@ Rules for the sentences in this project:
    must justify why it cannot be a rule or a cache hit.
 6. **No em dashes, en dashes, ellipsis characters or curly quotes in anything you write**
    (code, comments, docs, commit messages, UI copy). Plain ASCII punctuation only. The
-   backend code and the docs carry none; some frontend files still do, and
-   `git grep -nP '[\x{2014}\x{2013}\x{2026}\x{201C}\x{201D}\x{2018}\x{2019}]'` lists
-   them. Strip them from any file you touch.
+   repository carries none outside docs/superpowers and .claude:
+   `git grep -nP '[\x{2014}\x{2013}\x{2026}\x{201C}\x{201D}\x{2018}\x{2019}]'` proves it.
 
 ## Project Structure
 

@@ -37,10 +37,9 @@ const (
 	// mail in the database indefinitely, under a screen promising erasure.
 	DatasetEmails Dataset = "emails"
 	// DatasetLabels is the per-user label cache. Nothing writes it today, so it
-	// exports as an empty list, but the collection and its unique index exist in
-	// every deployment: listing it here means the day something does start
-	// writing it, export and erasure already cover it instead of silently
-	// drifting apart.
+	// exports as an empty list (older deployments may still hold the collection):
+	// listing it here means the day something does start writing it, export and
+	// erasure already cover it instead of silently drifting apart.
 	DatasetLabels Dataset = "labels"
 	// DatasetMailAccounts is the mailbox connection: which provider, over which
 	// transport, under which username. It is listed here because erasure must
