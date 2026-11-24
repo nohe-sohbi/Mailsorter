@@ -818,6 +818,21 @@ func (p *imapPerson) actAnswer(uid, action string) answer {
 	return answer{code: code, body: out}
 }
 
+// protect is "Protéger" in the reader, as this person (handleProtect in
+// Inbox.js): POST /api/protected with the sender as the mail shows it, name
+// included, which the server reduces to the address. testApp.protect does the
+// same for the person on Gmail, who is not this one. It stops the scenario
+// when the server does not take it: a sentence about a protected sender proves
+// nothing about a sender that is not.
+func (p *imapPerson) protect(from string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/protected", map[string]string{"value": from})
+	if code != http.StatusCreated && code != http.StatusOK {
+		a.fatalf("« Protéger » l'expéditeur %q de %s a répondu %d (attendu 201) : %v : le scénario ne prouve rien", from, p.email, code, out)
+	}
+}
+
 // actTwiceAtOnce is a row's button clicked twice before the first answer
 // comes back (a double click, or the same mail in two tabs): two requests of
 // the single-message action, released at the same instant. It returns both
@@ -1627,4 +1642,86 @@ func (p *imapPerson) actionTakenDaysAgo(line historyLine, days int) {
 		bson.M{"$set": bson.M{"leftAt": then}}); err != nil {
 		a.fatalf("recul de %d jours de la sortie de la boîte de réception du mail n°%s de %s : %v", days, line.MessageID, p.email, err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The Règles screen, as this person
+// ---------------------------------------------------------------------------
+
+// rule saves a sorting rule as this person, the way the editor of the Règles
+// screen does: one condition, then the actions in order. testApp.rule does the
+// same for the person on Gmail. It stops the scenario when the server does not
+// take it: a sentence about what a rule does proves nothing about a rule that
+// was never saved.
+func (p *imapPerson) rule(name string, priority int, field, operator, value string, actions ...models.RuleAction) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/rules", models.SortingRuleInput{
+		Name:       name,
+		Enabled:    true,
+		MatchAll:   true,
+		Conditions: []models.RuleCondition{{Field: field, Operator: operator, Value: value}},
+		Actions:    actions,
+		Priority:   priority,
+	})
+	if code != http.StatusCreated && code != http.StatusOK {
+		a.fatalf("la règle %q de %s n'a pas pu être enregistrée : POST /api/rules a répondu %d (attendu 201) : %v : le scénario ne prouve rien", name, p.email, code, out)
+	}
+}
+
+// applyRules is "Appliquer maintenant" on the Règles screen (applyNow in
+// Rules.js), what the sentences call « Appliquer mes règles », as this person.
+// It returns the answer, whatever it is.
+func (p *imapPerson) applyRules() answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/rules/apply", nil)
+	return answer{code: code, body: out}
+}
+
+// previewRules is "Aperçu" on the Règles screen (runPreview in Rules.js), as
+// this person. It returns the answer, whatever it is.
+func (p *imapPerson) previewRules() answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/rules/preview", nil)
+	return answer{code: code, body: out}
+}
+
+// autoApplyRulesOn is whether the Règles screen shows the option "appliquer
+// mes règles automatiquement" on ("Appliquer à chaque synchronisation"), as
+// the screen loads it (GET /api/account/settings).
+func (p *imapPerson) autoApplyRulesOn() bool {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/account/settings", nil)
+	if code != http.StatusOK {
+		a.fatalf("les réglages de %s ne s'affichent pas : GET /api/account/settings a répondu %d : %v", p.email, code, out)
+	}
+	on, ok := out["autoApplyRules"].(bool)
+	if !ok {
+		a.fatalf("réponse de GET /api/account/settings illisible pour %s : pas d'option autoApplyRules dans %v", p.email, out)
+	}
+	return on
+}
+
+// setAutoApplyRules flips that option as this person (toggleAutoApply in
+// Rules.js), then reads it back the way the screen loads it: a sentence about
+// the option on proves nothing if it did not stay on.
+func (p *imapPerson) setAutoApplyRules(on bool) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPut, "/api/account/settings", map[string]bool{"autoApplyRules": on})
+	if code != http.StatusOK {
+		a.fatalf("l'option « appliquer mes règles automatiquement » de %s n'a pas pu être réglée : PUT /api/account/settings a répondu %d : %v : le scénario ne prouve rien", p.email, code, out)
+	}
+	if got := p.autoApplyRulesOn(); got != on {
+		a.fatalf("l'option « appliquer mes règles automatiquement » de %s devrait être %s, l'écran Règles la montre %s : le scénario ne prouve rien", p.email, onOff(on), onOff(got))
+	}
+}
+
+// onOff is an option's state in a failure message.
+func onOff(on bool) string {
+	if on {
+		return "activée"
+	}
+	return "coupée"
 }
