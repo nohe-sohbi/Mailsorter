@@ -16,7 +16,14 @@ package api
 // Gmail API the app hands that address to the person's own mail program. Over
 // IMAP the mail leaves through the sending server of the mailbox, the one the
 // daily recap leaves through, logged in with the person's address and app
-// password (acceptance_smtp_test.go).
+// password (acceptance_smtp_test.go). Then the screen has nothing left to
+// open: the answer says it is done.
+//
+// A list that offers the unsubscribe in one click is called by the server,
+// but only at an address the outbound guard allows (internal/egress). No
+// public site can run in a scenario, so the sentence is the guard's: a link
+// aimed at a private address is not called, and goes back to the person to
+// open (acceptance_unsubscribe_test.go).
 
 import (
 	"strings"
@@ -47,6 +54,18 @@ var mailtoOnlyLetter = incoming{
 	From:        "Le Journal <lettre@journal.fr>",
 	Subject:     "La lettre du lundi",
 	Unsubscribe: "<mailto:" + letterUnsubscribeAddress + "?subject=" + letterUnsubscribeSubject + ">",
+}
+
+// shopUnsubscribePage is the unsubscribe page the shop's newsletter names: a
+// page to open in the browser, not offered in one click, so the server calls
+// nothing. On a .invalid name (RFC 2606), which no resolver ever answers, so
+// that nothing could leave for the internet even if it did.
+const shopUnsubscribePage = "https://desabonnement.boutique.invalid/lettre"
+
+// withUnsubscribe is the mail m carrying this List-Unsubscribe link.
+func withUnsubscribe(m incoming, link string) incoming {
+	m.Unsubscribe = "<" + link + ">"
+	return m
 }
 
 func TestScenarios_IMAPWholeSender(t *testing.T) {
@@ -82,6 +101,66 @@ func TestScenarios_IMAPWholeSender(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP, se désabonner d'une lettre d'information en demandant de ranger ses mails range tous ses mails de ta boîte de réception, et seulement les siens.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				const shop = "info@boutique.com"
+				sale := withUnsubscribe(shopSaleNoName, shopUnsubscribePage)
+				news := withUnsubscribe(shopNewsNoName, shopUnsubscribePage)
+				moi, uids := syncedIMAPInbox(app, sale, shopBilling, news, shopCommunity)
+
+				// "Se désabonner" on the sale, with "et archiver ses mails".
+				moi.unsubscribeFrom(uids[0], true)
+
+				for _, m := range []incoming{sale, news} {
+					moi.expectOnServer(serverArchive, m.Subject)
+					moi.expectNotOnServer(serverInbox, m.Subject, "tu viens de te désabonner de "+shop+" en demandant de ranger ses mails")
+					moi.expectDoesNotShow(m.Subject, "tu viens de te désabonner de "+shop+" en demandant de ranger ses mails")
+				}
+				// Only his: the two senders whose address contains his stay
+				// where they were, on the server and on the screen.
+				for i, m := range []incoming{shopBilling, shopCommunity} {
+					uid := []string{uids[1], uids[3]}[i]
+					moi.expectOnServer(serverInbox, m.Subject)
+					moi.expectNotOnServer(serverArchive, m.Subject, "il n'est pas de "+shop)
+					moi.expectShows(uid, m.Subject)
+				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, se désabonner d'une lettre d'information dont le lien en un clic vise une adresse privée ne l'appelle pas et te donne le lien à ouvrir.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				// The list's site, on the server's own machine: a private
+				// address, which a call made without the guard would reach.
+				site := startFakeSite(app)
+				link := site.link("/desabonnement")
+				letter := incoming{
+					From:            "Le Journal <lettre@journal.fr>",
+					Subject:         "La lettre du mardi",
+					Unsubscribe:     "<" + link + ">",
+					UnsubscribePost: "List-Unsubscribe=One-Click",
+				}
+				moi, uids := syncedIMAPInbox(app, letter)
+				site.expectReachable(app)
+
+				got := moi.unsubscribeFrom(uids[0], false)
+
+				if calls := site.received(); len(calls) > 0 {
+					app.failf("pour %s, se désabonner de lettre@journal.fr ne devrait pas appeler son lien en un clic %s, qui vise une adresse privée : le site a reçu %s", moi.email, link, describeCalls(calls))
+				}
+				// What the screen does with the answer (handleUnsubscribe in
+				// Inbox.js): "done" says it is over; otherwise it opens "url"
+				// in a new tab.
+				if done, _ := got["done"].(bool); done {
+					app.failf("la réponse au désabonnement de %s ne devrait pas dire que c'est fait, puisque le lien n'est pas appelé : elle le dit (%v)", moi.email, got)
+				}
+				if url, _ := got["url"].(string); url != link {
+					app.failf("la réponse au désabonnement de %s devrait donner le lien %s à ouvrir, elle donne %q", moi.email, link, url)
+				}
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP, se désabonner d'une lettre d'information qui ne propose qu'une adresse de désabonnement envoie le mail de désabonnement par le serveur d'envoi de ta boîte, depuis ton adresse.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
@@ -110,6 +189,31 @@ func TestScenarios_IMAPWholeSender(t *testing.T) {
 				}
 				if !onlyAddress(m.from, moi.email) || !strings.EqualFold(m.envelopeFrom, moi.email) {
 					app.failf("le mail de désabonnement de %s devrait partir de son adresse, il part de %s (enveloppe : %q)", moi.email, strings.Join(m.from, ", "), m.envelopeFrom)
+				}
+			},
+		},
+		{
+			phrase: "Dans ce cas (désabonnement par adresse sur une boîte IMAP), l'écran n'ouvre pas en plus ta messagerie : la réponse dit que c'est fait.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, mailtoOnlyLetter)
+				moi.withSendingServer()
+
+				got := moi.unsubscribeFrom(uids[0], false)
+
+				// "C'est fait" must be true: the mail has left.
+				if sent := moi.sentThroughBox(); len(sent) != 1 || !onlyAddress(sent[0].envelopeTo, letterUnsubscribeAddress) {
+					app.failf("le serveur d'envoi de %s devrait avoir reçu le mail de désabonnement pour %s, et lui seul, il a reçu : %s (%s)", moi.email, letterUnsubscribeAddress, describeSent(sent), moi.sendingServer().seen())
+				}
+				// What the screen does with the answer (handleUnsubscribe in
+				// Inbox.js): on "done" it says it is over; without it, it
+				// opens the person's mail program on "mailto", which would
+				// write the same request a second time.
+				if done, _ := got["done"].(bool); !done {
+					app.failf("la réponse au désabonnement de %s devrait dire que c'est fait (done), elle ne le dit pas : %v", moi.email, got)
+				}
+				if mailto, _ := got["mailto"].(string); mailto != "" {
+					app.failf("la réponse au désabonnement de %s ne devrait plus donner d'adresse à ouvrir dans sa messagerie, elle donne %q", moi.email, mailto)
 				}
 			},
 		},

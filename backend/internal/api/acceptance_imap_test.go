@@ -388,6 +388,9 @@ func (p *imapPerson) receive(mails ...incoming) []string {
 		if m.Unsubscribe != "" {
 			fmt.Fprintf(&raw, "List-Unsubscribe: %s\r\n", m.Unsubscribe)
 		}
+		if m.UnsubscribePost != "" {
+			fmt.Fprintf(&raw, "List-Unsubscribe-Post: %s\r\n", m.UnsubscribePost)
+		}
 		raw.WriteString("MIME-Version: 1.0\r\n")
 		writeMailContent(&raw, m, body)
 
