@@ -725,6 +725,94 @@ func TestScenarios_IMAPUndo(t *testing.T) {
 			},
 		},
 		{
+			phrase: "Sur une boîte IMAP, « Annuler » envoyé deux fois en même temps depuis l'historique sur un archivage dont un autre logiciel a déjà sorti le mail de là où Mailsorter l'avait rangé répond les deux fois « Ce mail n'est plus là où Mailsorter l'avait rangé. », et l'historique ne marque pas la ligne annulée.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				// Two requests at once are a race the app can win by chance,
+				// so the sentence is tried on doubleHistoryUndosGone mails,
+				// one after the other, and must hold for each. The first mail
+				// is not touched: it is the control.
+				archived := numberedMails("La facture du mois n°%d", doubleHistoryUndosGone)
+				moi, uids := syncedIMAPInbox(app, append([]incoming{bankStatement}, archived...)...)
+				// The two places another mail program takes a mail out of the
+				// archives to: a folder of the person's own, and back to the
+				// inbox. Every other mail goes to each.
+				moi.newFolderElsewhere(ownFolder)
+
+				var answered, marked []string
+				for i, m := range archived {
+					uid := uids[i+1]
+					to, how := ownFolder, "déplacé de "+serverArchive+" vers "+ownFolder
+					if i%2 == 1 {
+						to, how = serverInbox, "remis de "+serverArchive+" dans la boîte de réception"
+					}
+					what := fmt.Sprintf("n°%s %q, qu'un autre logiciel a %s", uid, m.Subject, how)
+
+					// Each mail's five requests get the time the server's
+					// throttle needs to give them back (20 requests a second
+					// per person, rateLimiter in middleware.go), as in the
+					// sentence about two archives at once. The two "Annuler"
+					// themselves still leave together.
+					time.Sleep(300 * time.Millisecond)
+
+					// "Archiver" on its row; the Historique screen then offers
+					// "Annuler" on the line of that archive. A line never
+					// offered proves nothing.
+					moi.act(uid, "archive")
+					moi.requireOnServer(serverArchive, m.Subject, "tu viens de l'archiver")
+					line := moi.historyLineFor(uid, "archive")
+					if line.Undone || !line.Undoable {
+						app.fatalf("juste après l'archivage, l'historique de %s devrait proposer « Annuler » sur la ligne de l'archivage du mail n°%s %q : elle est marquée annulée=%v, annulable=%v, le scénario ne prouve rien", moi.email, uid, m.Subject, line.Undone, line.Undoable)
+					}
+
+					// On the phone, another mail program takes it out of the
+					// archives. No "Synchroniser" after: the Historique screen
+					// left open still offers "Annuler" on the line.
+					moi.movedFromElsewhere(serverArchive, m.Subject, to)
+
+					// "Annuler" on that line, confirmed twice before the first
+					// answer comes back (a double click, or the history open in
+					// two tabs): two POST /api/activity/undo at once. Each one
+					// a refusal, as History.js shows one: a 4xx status and its
+					// "error" field (apiError in services/api.js). On a 2xx the
+					// screen announces the mail restored and shows the line
+					// "Annulé" until it loads again.
+					got := moi.undoFromHistoryTwiceAtOnce(line)
+					for _, g := range got {
+						if g.code/100 != 4 || g.said() != notWhereFiled {
+							answered = append(answered, fmt.Sprintf("%s (%s, puis %s)", what, got[0], got[1]))
+							break
+						}
+					}
+
+					// The Historique screen, as it loads again: the line is
+					// still there, and not marked undone.
+					shown := false
+					for _, l := range moi.historyScreen() {
+						if l.ID != line.ID {
+							continue
+						}
+						shown = true
+						if l.Undone {
+							marked = append(marked, what+" (la ligne est marquée annulée)")
+						}
+					}
+					if !shown {
+						marked = append(marked, what+" (l'historique ne montre plus la ligne)")
+					}
+				}
+
+				if len(answered) > 0 {
+					app.failf("« Annuler » envoyé deux fois en même temps depuis l'historique sur un archivage dont un autre logiciel a déjà sorti le mail de %s devrait répondre les deux fois %q : ce n'est pas le cas pour %d des %d mails : %s", serverArchive, notWhereFiled, len(answered), len(archived), strings.Join(answered, " ; "))
+				}
+				if len(marked) > 0 {
+					app.failf("après « Annuler » envoyé deux fois en même temps depuis l'historique sur un archivage dont un autre logiciel a déjà sorti le mail de %s, l'historique de %s devrait montrer la ligne de l'archivage sans la marquer annulée : ce n'est pas le cas pour %d des %d mails : %s", serverArchive, moi.email, len(marked), len(archived), strings.Join(marked, " ; "))
+				}
+				// The control: the mail nobody touched is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
 			phrase: "Sur une boîte IMAP, archiver depuis deux écrans restés ouverts un mail qu'un autre logiciel a déjà sorti de ta boîte de réception répond sans erreur les deux fois, et n'ajoute rien à l'historique.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
@@ -1053,3 +1141,12 @@ const doubleUndos = 12
 // an empty COPYUID its client cannot read. Twelve, so a change that only
 // narrows the race does not pass by chance.
 const doubleHistoryUndos = 12
+
+// doubleHistoryUndosGone is how many mails the sentence about "Annuler" sent
+// twice at once from the history, on a mail another program took out of the
+// archives, is tried on. When it was written the app already held it (6 runs
+// out of 6). With the wait for the other "Annuler" in putBackOnce replaced by
+// an immediate "already back", the second request answered 200 on 8 to 12 of
+// the 12 mails in each of 5 runs, on both places the mail went. Twelve, so a
+// change that only narrows the race does not pass by chance.
+const doubleHistoryUndosGone = 12
