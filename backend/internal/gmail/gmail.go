@@ -3,7 +3,6 @@ package gmail
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"html"
 	"net"
@@ -739,33 +738,6 @@ func (s *Service) OneClickUnsubscribe(rawURL string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("unsubscribe endpoint returned %d", resp.StatusCode)
-	}
-	return nil
-}
-
-func TokenToJSON(token *oauth2.Token) (string, error) {
-	data, err := json.Marshal(token)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-func TokenFromJSON(data string) (*oauth2.Token, error) {
-	var token oauth2.Token
-	err := json.Unmarshal([]byte(data), &token)
-	if err != nil {
-		return nil, err
-	}
-	return &token, nil
-}
-
-func ValidateToken(token *oauth2.Token) error {
-	if token.AccessToken == "" {
-		return fmt.Errorf("access token is empty")
-	}
-	if token.Expiry.Before(time.Now()) {
-		return fmt.Errorf("token expired")
 	}
 	return nil
 }

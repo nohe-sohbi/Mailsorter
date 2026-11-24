@@ -91,7 +91,6 @@ Rules for the sentences in this project:
 ```
 backend/
   cmd/server/            main: config -> db -> indexes -> services -> router -> serve
-  cmd/test_decrypt/      one-off ops tool, reads the legacy gmail_config document
   internal/api/          the ONLY I/O layer: handlers, routes, middleware, schedulers
   internal/{account,activity,digest,egress,mailbox,mailer,metrics,protect,
             provider,rules,schedule,snooze,unsubscribe}/

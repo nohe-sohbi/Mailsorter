@@ -83,15 +83,6 @@ type Email struct {
 	CreatedAt     time.Time `json:"createdAt" bson:"createdAt"`
 }
 
-type Label struct {
-	ID        string    `json:"id" bson:"_id,omitempty"`
-	UserID    string    `json:"userId" bson:"userId"`
-	GmailID   string    `json:"gmailId" bson:"gmailId"`
-	Name      string    `json:"name" bson:"name"`
-	Color     string    `json:"color" bson:"color"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
-}
-
 // RegisterRequest is the body for POST /api/auth/register.
 type RegisterRequest struct {
 	Email    string `json:"email"`
@@ -568,8 +559,8 @@ type WaitlistInput struct {
 // The APIKey is encrypted at rest via the instance's Encryptor.
 type AIProviderSettings struct {
 	UserID    string    `json:"userId" bson:"userId"`
-	Provider  string    `json:"provider" bson:"provider"`     // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
-	APIKey    string    `json:"-" bson:"apiKey"`               // encrypted, never in JSON responses
+	Provider  string    `json:"provider" bson:"provider"` // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
+	APIKey    string    `json:"-" bson:"apiKey"`          // encrypted, never in JSON responses
 	Model     string    `json:"model" bson:"model"`
 	BaseURL   string    `json:"baseUrl" bson:"baseUrl"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`

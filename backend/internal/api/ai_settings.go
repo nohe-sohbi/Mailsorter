@@ -289,7 +289,6 @@ func (h *Handler) DeleteAISettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-
 // resolveAnalyzer returns a Registry configured for the given user:
 // if the user has custom BYOK settings saved, they take precedence over
 // the instance-wide providers with instance-wide providers as fallback.

@@ -11,12 +11,12 @@ import (
 
 // ProviderConfig describes how to reach one AI backend.
 type ProviderConfig struct {
-	Name       string `json:"name" bson:"name"`           // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
-	APIKey     string `json:"apiKey" bson:"apiKey"`        // encrypted at rest when stored in DB
-	Model      string `json:"model" bson:"model"`          // e.g. "gpt-6-luna"
-	BaseURL    string `json:"baseUrl" bson:"baseUrl"`      // custom endpoint (Ollama, Azure, etc.)
+	Name       string `json:"name" bson:"name"`             // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
+	APIKey     string `json:"apiKey" bson:"apiKey"`         // encrypted at rest when stored in DB
+	Model      string `json:"model" bson:"model"`           // e.g. "gpt-6-luna"
+	BaseURL    string `json:"baseUrl" bson:"baseUrl"`       // custom endpoint (Ollama, Azure, etc.)
 	MaxRetries int    `json:"maxRetries" bson:"maxRetries"` // extra attempts on transient failures
-	Priority   int    `json:"priority" bson:"priority"`    // lower = tried first
+	Priority   int    `json:"priority" bson:"priority"`     // lower = tried first
 	Enabled    bool   `json:"enabled" bson:"enabled"`
 }
 
@@ -82,16 +82,6 @@ func (r *Registry) Available() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.providers) > 0
-}
-
-// Primary returns the highest-priority analyzer, or nil.
-func (r *Registry) Primary() Analyzer {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if len(r.providers) == 0 {
-		return nil
-	}
-	return r.providers[0].analyzer
 }
 
 // ProviderNames returns the names of all active providers, in priority order.

@@ -729,15 +729,6 @@ func mailboxSignInAvailable() bool {
 }
 
 // Helper functions
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
 func parseInt64(s string) (int64, error) {
 	var n int64
 	_, err := fmt.Sscanf(s, "%d", &n)
