@@ -388,7 +388,7 @@ function GmailAccount({ address }) {
         <h2 className="text-lg font-bold text-ink-900">Compte Gmail</h2>
       </div>
       <p className="mb-5 text-sm text-muted">
-        Rejouez l'autorisation Google si le digest n'arrive plus, si le tri échoue soudainement, ou si vous avez
+        Rejouez l'autorisation Google si le récap n'arrive plus, si le tri échoue soudainement, ou si vous avez
         révoqué l'accès depuis votre compte Google.{' '}
         <span className="font-semibold text-ink-700">Vos règles, protections et historique sont conservés.</span>
       </p>

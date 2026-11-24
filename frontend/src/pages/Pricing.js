@@ -10,7 +10,12 @@ import PublicFooter from '../components/PublicFooter';
 import { hasJoinedWaitlist, rememberWaitlistJoin, waitlistEmail as getWaitlistEmail } from '../lib/waitlist';
 import { Logo, Check, Bolt, Sparkles, Shield, Google, Clock } from '../ui/icons';
 import { actionMeta } from '../ui/actions';
+import { canPromise } from '../components/landing/features';
 
+// A line with a `feature` is only sold where this instance can deliver it, the
+// rule both landings follow (canPromise, landing/features.js): without Google
+// credentials every mailbox is IMAP, and those features answer "not available"
+// there.
 const PLANS = [
   {
     name: 'Gratuit',
@@ -22,9 +27,9 @@ const PLANS = [
     features: [
       '200 emails analysés / mois',
       'Tri IA + suggestions',
-      'Actions en masse par expéditeur',
-      'Auto-pilote par expéditeur',
-      'Raccourcis clavier & Inbox Zero',
+      { label: 'Actions en masse par expéditeur', feature: 'sender' },
+      { label: 'Auto-pilote par expéditeur', feature: 'sender' },
+      'Raccourcis clavier pour vider votre boîte',
     ],
   },
   {
@@ -36,8 +41,8 @@ const PLANS = [
     highlight: true,
     features: [
       'Emails analysés illimités',
-      'Tri automatique à chaque synchro',
-      'Digest quotidien par email',
+      { label: 'Règles appliquées à chaque synchronisation', feature: 'rules' },
+      { label: 'Récap quotidien par email', feature: 'digest' },
       // Le multi-comptes demande un modèle `account` distinct du userId, qui
       // n'existe pas (docs/ROADMAP.md, "Reste à brancher"). La ligne reste,
       // marquée : la vendre sans le dire était la seule ligne fausse du plan.
@@ -70,8 +75,10 @@ function Pricing() {
   // billing off there, the state that cannot promise a checkout we may not be
   // able to honour. null means "not answered yet", which is why the CTA waits
   // rather than flashing the wrong button.
-  const { loading: instanceUnknown, billingOn: canBuyPro } = useInstance();
+  const { loading: instanceUnknown, billingOn: canBuyPro, isConfigured } = useInstance();
   const billingOn = instanceUnknown ? null : canBuyPro;
+  const autopilot = canPromise('sender', isConfigured);
+  const offered = (f) => typeof f === 'string' || !f.feature || canPromise(f.feature, isConfigured);
 
   useEffect(() => {
     if (!loggedIn) return;
@@ -204,7 +211,9 @@ function Pricing() {
               <p className="mt-3 text-xs text-muted">
                 {isPro
                   ? 'Analyses illimitées. Gérez votre abonnement à tout moment.'
-                  : "Le cache et l'auto-pilote ne consomment pas votre quota."}
+                  : autopilot
+                  ? "Le cache et l'auto-pilote ne consomment pas votre quota."
+                  : 'Les analyses déjà en cache ne consomment pas votre quota.'}
               </p>
               {isPro && billingOn && (
                 <button onClick={handleManage} disabled={managing} className="btn-secondary mt-4 w-full">
@@ -280,7 +289,7 @@ function Pricing() {
                 <span className="text-sm text-muted">{plan.cadence}</span>
               </div>
               <ul className="mt-6 space-y-3">
-                {plan.features.map((f) => {
+                {plan.features.filter(offered).map((f) => {
                   const label = typeof f === 'string' ? f : f.label;
                   const soon = typeof f === 'string' ? false : f.soon;
                   return (

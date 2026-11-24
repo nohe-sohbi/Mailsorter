@@ -73,7 +73,7 @@ function steps(isConfigured) {
   ];
 }
 
-function facts({ selfHosted, undo }) {
+function facts({ selfHosted, undo, autopilot }) {
   return [
     {
       big: '0',
@@ -83,7 +83,13 @@ function facts({ selfHosted, undo }) {
     { big: 'AES-256', small: 'chiffré au repos', title: "Vos identifiants et jetons sont scellés en AES-256-GCM avant d'atteindre la base." },
     selfHosted
       ? { big: '200', small: "caractères lus par l'IA, au plus", title: AI_READS }
-      : { big: '200', small: 'emails analysés / mois offerts', title: "Quota du plan gratuit. Le cache et l'auto-pilote ne le consomment pas." },
+      : {
+          big: '200',
+          small: 'emails analysés / mois offerts',
+          title: autopilot
+            ? "Quota du plan gratuit. Le cache et l'auto-pilote ne le consomment pas."
+            : 'Quota du plan gratuit. Les analyses déjà en cache ne le consomment pas.',
+        },
     undo
       ? { big: '1 clic', small: 'pour annuler une action', title: "Chaque action est journalisée avec son inverse, et annulable depuis l'historique." }
       : { big: '0', small: 'action sans votre accord', title: "Rien ne bouge sans votre validation, et chaque action est inscrite dans l'historique." },
@@ -115,7 +121,7 @@ function trust({ undo }) {
   ];
 }
 
-function faq({ selfHosted, billingOn, isConfigured, undo, rules }) {
+function faq({ selfHosted, billingOn, isConfigured, undo, rules, autopilot }) {
   return [
     {
       q: 'Est-ce que vous lisez mes emails ?',
@@ -145,7 +151,9 @@ function faq({ selfHosted, billingOn, isConfigured, undo, rules }) {
         ? "Sur votre instance, Mailsorter ne vous facture rien, et il n'y a pas de limite d'analyses. Seule une IA en ligne, si l'instance en utilise une, se paie chez son fournisseur."
         : `200 emails analysés par mois, gratuitement et sans carte bancaire. ${
             billingOn ? 'Au-delà, le plan Pro lève la limite.' : 'Au-delà, il y aura un plan Pro.'
-          } Le cache et l'auto-pilote ne consomment pas votre quota${rules ? ', et les règles sont gratuites et illimitées' : ''}.`,
+          } ${autopilot ? "Le cache et l'auto-pilote ne consomment pas" : 'Les analyses déjà en cache ne consomment pas'} votre quota${
+            rules ? ', et les règles sont gratuites et illimitées' : ''
+          }.`,
     },
     {
       q: 'Puis-je récupérer ou effacer mes données ?',
@@ -396,6 +404,7 @@ function Login() {
   );
   const undo = canPromise('undo', isConfigured);
   const rules = canPromise('rules', isConfigured);
+  const autopilot = canPromise('sender', isConfigured);
   // The single rule every provider list follows (landing/features.js): what
   // cannot be connected here yet is listed apart, as "bientôt".
   const reachable = providers.filter((p) => canConnect(p, isConfigured));
@@ -569,7 +578,7 @@ function Login() {
 
         {/* Faits vérifiables */}
         <section className="mt-14 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {facts({ selfHosted, undo }).map(({ big, small, title }) => (
+          {facts({ selfHosted, undo, autopilot }).map(({ big, small, title }) => (
             <div key={small} className="card p-5 text-center" title={title}>
               <div className="font-display text-3xl font-bold text-ink-900">{big}</div>
               <div className="mt-1 text-xs text-ink-500">{small}</div>
@@ -680,7 +689,7 @@ function Login() {
             Les questions qu'on nous pose.
           </h2>
           <div className="mt-8 space-y-2.5">
-            {faq({ selfHosted, billingOn, isConfigured, undo, rules }).map(({ q, a }) => (
+            {faq({ selfHosted, billingOn, isConfigured, undo, rules, autopilot }).map(({ q, a }) => (
               <details key={q} className="card group p-5 [&_summary::-webkit-details-marker]:hidden">
                 <summary className="flex cursor-pointer items-center justify-between gap-4 text-base font-bold text-ink-900">
                   {q}

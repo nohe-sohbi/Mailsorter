@@ -14,6 +14,7 @@ import Vault from '../ui/hotel/Vault';
 import PageHead from '../components/hotel/PageHead';
 import { initials } from '../components/hotel/avatar';
 import { useInstance } from '../contexts/InstanceContext';
+import { useMailbox } from '../contexts/EmailContext';
 import { AI_READS } from '../components/landing/features';
 
 // Go zero-value dates come back as year 1, which would render as "1 janvier 1".
@@ -142,6 +143,9 @@ function Account() {
   // the way to the pricing page (which redirects away there) are the online
   // service's only.
   const { selfHosted } = useInstance();
+  // The auto-pilot runs on a mailbox reached through the Gmail API only (the
+  // IMAP analysis skips it), so it is named only there.
+  const { fullFeatures: autopilot } = useMailbox();
   const [profile, setProfile] = useState(null);
   const [usage, setUsage] = useState(null);
   const [activity, setActivity] = useState(null);
@@ -255,7 +259,11 @@ function Account() {
         )}
         <p className="mt-3 text-xs text-muted">
           {usage?.period ? `Période ${usage.period}. ` : ''}
-          {unlimited ? '' : "Le cache et l'auto-pilote ne consomment pas votre quota."}
+          {unlimited
+            ? ''
+            : autopilot
+            ? "Le cache et l'auto-pilote ne consomment pas votre quota."
+            : 'Les analyses déjà en cache ne consomment pas votre quota.'}
         </p>
 
         <div className="mt-5 flex flex-wrap gap-3">

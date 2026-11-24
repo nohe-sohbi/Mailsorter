@@ -8,6 +8,9 @@
 // line here: the corridor badges, the key-board legend, the hall, the demo and
 // the "Outlook" answer all follow.
 // Each label carries its article, because it is used inside sentences.
+// `sender` is acting on a whole sender at once: archiving or deleting all of
+// its emails, and its auto-pilot (the AI's verdict applied by itself at each
+// analysis), which the IMAP analysis skips.
 export const GMAIL_ONLY = {
   label: 'le classement',
   undo: "l'annulation",
@@ -15,6 +18,7 @@ export const GMAIL_ONLY = {
   snooze: 'le report',
   unsubscribe: 'le désabonnement',
   digest: 'le récap',
+  sender: 'les actions par expéditeur',
 };
 
 export function isGmailOnly(feature) {
