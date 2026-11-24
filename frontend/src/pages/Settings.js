@@ -271,7 +271,7 @@ function DigestSettings({ settings, onSaved, gmailCard }) {
             {loadingPreview ? <Spinner size={15} /> : <Search size={15} />} Voir un aperçu
           </button>
           <button onClick={sendTest} disabled={sendingTest} className="btn-ghost btn-sm">
-            {sendingTest ? <Spinner size={15} /> : <Mail size={15} />} M'envoyer un test
+            {sendingTest ? <Spinner size={15} /> : <Mail size={15} />} Envoyer un test
           </button>
           <span className="text-xs text-muted">Un test ne remplace pas le récap du jour.</span>
         </div>
