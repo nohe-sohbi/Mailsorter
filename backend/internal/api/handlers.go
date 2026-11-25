@@ -18,6 +18,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -512,6 +513,12 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 // knows there are two ways to perform it.
 func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
 	session, err := h.openSession(ctx, userEmail)
+	if errors.Is(err, imap.ErrUnreachable) {
+		// Not a password refused: the mailbox did not answer, or not in
+		// time. Logged with what it was; the user is told to try again.
+		log.Printf("sync: the mailbox of %s could not be opened: %v", userEmail, err)
+		return 0, 0, 0, errMailboxNoAnswer
+	}
 	if err != nil {
 		return 0, 0, 0, err
 	}

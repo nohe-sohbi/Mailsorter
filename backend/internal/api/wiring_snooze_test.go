@@ -4,25 +4,35 @@ package api
 
 // Reporting a mail on an IMAP mailbox, around the locked sentences of
 // scenarios_1_imap_snooze_test.go: what the background sweep costs (one
-// connection per mailbox, whatever the number of mails due) and what it does
-// when the mailbox fails it (the report waits for the next pass, counted once
-// or not at all, and comes back once), "Annuler" on a report, which ends it,
-// and "Réactiver" while the sweep holds a report, on both transports. Wiring, like wiring_imap_test.go: on
-// the acceptance harness (a real MongoDB, a real IMAP server over TLS), not in
-// the report. `scripts/scenarios.sh -run '^TestAcceptance'` runs them, and so
-// does CI, in the scenarios job.
+// connection per mailbox, whatever the number of mails due); what it does
+// when a mailbox fails it (silent at LOGIN, unavailable, out of reach, a
+// connection dropped, a return refused: the report waits for the next pass,
+// counted once or not at all, comes back once, and the other accounts' come
+// back all the same); a mail found back in the inbox by another way; a mail
+// that could not be found again, refused; "Annuler" on a report, which ends
+// it, and "Réactiver" while the sweep holds a report, on both transports.
+// Wiring, like wiring_imap_test.go: on the acceptance harness (a real
+// MongoDB, a real IMAP server over TLS), not in the report.
+// `scripts/scenarios.sh -run '^TestAcceptance'` runs them, and so does CI, in
+// the scenarios job.
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	imapv2 "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -542,5 +552,312 @@ func TestAcceptance_GmailSnoozeReactivateWhileTheSweepHoldsIt(t *testing.T) {
 	}
 	if n := returns(); n != 1 {
 		app.failf("le retour du mail %q devrait être écrit 1 fois dans l'historique, il l'est %d fois", subject, n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A mailbox that fails the sweep
+// ---------------------------------------------------------------------------
+
+// shortSweepBound shortens the time the sweep gives each mailbox for the
+// length of the test, so a mailbox that never answers costs a second, not 30.
+func shortSweepBound(a *testApp) {
+	a.t.Helper()
+	before := snoozeAccountBound
+	snoozeAccountBound = time.Second
+	a.t.Cleanup(func() { snoozeAccountBound = before })
+}
+
+// loginServer is an IMAP server over TLS that greets, then answers LOGIN with
+// answer (given the command's tag): nothing at all, a refusal, a BYE. It
+// returns its port.
+func loginServer(a *testApp, answer func(tag string, conn net.Conn)) int {
+	a.t.Helper()
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", imapServerTLS)
+	if err != nil {
+		a.fatalf("démarrage d'un serveur IMAP de test : %v", err)
+	}
+	a.t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			a.t.Cleanup(func() { _ = conn.Close() })
+			go func() {
+				fmt.Fprint(conn, "* OK [CAPABILITY IMAP4rev1 IMAP4rev2 AUTH=PLAIN] ready\r\n")
+				lines := bufio.NewReader(conn)
+				for {
+					line, err := lines.ReadString('\n')
+					if err != nil {
+						return
+					}
+					fields := strings.Fields(line)
+					if len(fields) >= 2 && strings.EqualFold(fields[1], "LOGIN") {
+						answer(fields[0], conn)
+						continue
+					}
+					if len(fields) >= 2 {
+						fmt.Fprintf(conn, "%s BAD unexpected\r\n", fields[0])
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// sweepWithin runs the sweep once and stops the test when it has not
+// returned after limit: a sweep that never returns brings no report back,
+// for anyone.
+func sweepWithin(a *testApp, limit time.Duration) {
+	a.t.Helper()
+	done := make(chan struct{})
+	go func() {
+		a.h.wakeDueSnoozes()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(limit):
+		a.fatalf("le réveil des reports n'a pas fini après %v : plus aucun report ne revient, pour aucun compte", limit)
+	}
+}
+
+// A server that greets and then says nothing at LOGIN holds the sweep only for
+// the time the sweep gives that mailbox, the opening of its session
+// included: the pass ends, the report of another account due at the same
+// pass comes back, and the silent mailbox's report waits, uncounted.
+func TestAcceptance_IMAPSnoozeSweepGetsPastAMailboxSilentAtLogin(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	shortSweepBound(app)
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	reportedOnIMAP(moi, uids[1], shopOrder)
+	autre := app.imapPerson("autre-boite@exemple.org")
+	autreUIDs := autre.receive(travelOffer)
+	autre.sync()
+	reportedOnIMAP(autre, autreUIDs[0], travelOffer)
+
+	moi.reachThrough(loginServer(app, func(string, net.Conn) {}))
+	moi.reportDue()
+	autre.reportDue()
+
+	sweepWithin(app, 20*time.Second)
+
+	expectUnreadInServerInbox(autre, travelOffer)
+	expectNotReported(autre, travelOffer, "son heure est venue")
+	expectReported(moi, shopOrder)
+	if s := moi.storedReport(shopOrder.Subject); s.Attempts != 0 || s.Status != "scheduled" {
+		app.failf("un report d'une boîte muette au LOGIN devrait rester prévu sans compter d'essai, il est %q après %d essai(s)", s.Status, s.Attempts)
+	}
+}
+
+// A server that answers LOGIN "unavailable" did not refuse the password: the
+// sync says the mailbox did not answer, never that the password was
+// refused, and the sweep tries the report again at the next pass, uncounted.
+func TestAcceptance_IMAPUnavailableAtLoginIsNotARefusedPassword(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	reportedOnIMAP(moi, uids[1], shopOrder)
+	moi.reportDue()
+
+	moi.reachThrough(loginServer(app, func(tag string, c net.Conn) {
+		fmt.Fprintf(c, "%s NO [UNAVAILABLE] Temporary authentication failure\r\n", tag)
+	}))
+
+	code, out := moi.syncAnswer()
+	msg, _ := out["error"].(string)
+	if code == http.StatusOK || !strings.Contains(msg, "votre boîte n'a pas répondu") || strings.Contains(strings.ToLower(msg), "authentication") {
+		app.failf("« Synchroniser » sur une boîte indisponible au LOGIN devrait dire que la boîte n'a pas répondu, il a répondu %d : %q", code, msg)
+	}
+
+	sweepWithin(app, 20*time.Second)
+	if s := moi.storedReport(shopOrder.Subject); s.Attempts != 0 || s.Status != "scheduled" {
+		app.failf("un report d'une boîte indisponible devrait rester prévu sans compter d'essai, il est %q après %d essai(s)", s.Status, s.Attempts)
+	}
+}
+
+// cuttingTLSProxy sits between Mailsorter and a person's IMAP server, both
+// sides over TLS, and drops the connection, without passing it on, at the
+// first command of Mailsorter that holds word: a connection lost in the
+// middle of a pass. It returns its port.
+func cuttingTLSProxy(a *testApp, serverPort int, word string) int {
+	a.t.Helper()
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", imapServerTLS)
+	if err != nil {
+		a.fatalf("démarrage du relais vers le serveur IMAP : %v", err)
+	}
+	a.t.Cleanup(func() { _ = ln.Close() })
+	upstream := fmt.Sprintf("127.0.0.1:%d", serverPort)
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer client.Close()
+				server, err := tls.Dial("tcp", upstream, &tls.Config{ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
+				if err != nil {
+					return
+				}
+				defer server.Close()
+				go func() {
+					_, _ = io.Copy(client, server)
+					_ = client.Close()
+				}()
+				buf := make([]byte, 4096)
+				for {
+					n, err := client.Read(buf)
+					if n > 0 {
+						if bytes.Contains(bytes.ToUpper(buf[:n]), []byte(word)) {
+							return
+						}
+						if _, werr := server.Write(buf[:n]); werr != nil {
+							return
+						}
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// A connection lost in the middle of a pass: the report whose return it cut
+// is not counted, the next one is not tried on a connection that is gone,
+// and the next pass brings both back.
+func TestAcceptance_IMAPSnoozeStopsWhenTheConnectionDrops(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	later := reportedOnIMAP(moi, uids[1], shopOrder)
+	reportedOnIMAP(moi, uids[2], travelOffer)
+	moi.reportDue()
+
+	moi.reachThrough(cuttingTLSProxy(app, moi.port, "MOVE"))
+	sweepWithin(app, 20*time.Second)
+
+	for _, m := range []incoming{shopOrder, travelOffer} {
+		expectReported(moi, m)
+		if s := moi.storedReport(m.Subject); s.Attempts != 0 || s.Status != "scheduled" {
+			app.failf("une connexion coupée pendant le réveil devrait laisser le report du mail %q prévu sans compter d'essai, il est %q après %d essai(s)", m.Subject, s.Status, s.Attempts)
+		}
+		moi.expectOnServer(later, m.Subject)
+	}
+
+	moi.reachThrough(moi.port)
+	app.h.wakeDueSnoozes()
+	for _, m := range []incoming{shopOrder, travelOffer} {
+		expectUnreadInServerInbox(moi, m)
+		expectNotReported(moi, m, "la connexion est revenue, lui aussi")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A mail that could not be found again, a mail found back already
+// ---------------------------------------------------------------------------
+
+// withoutUIDPlus serves this person's mailbox on a second server over TLS
+// that does not say where a move lands (no UIDPLUS, no IMAP4rev2). It
+// returns its port.
+func withoutUIDPlus(p *imapPerson) int {
+	a := p.app
+	a.t.Helper()
+	mem := imapmemserver.New()
+	mem.AddUser(p.mailbox)
+	srv := imapserver.New(&imapserver.Options{
+		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			return mem.NewSession(), nil, nil
+		},
+		Caps: imapv2.CapSet{imapv2.CapIMAP4rev1: {}},
+	})
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", imapServerTLS)
+	if err != nil {
+		a.fatalf("démarrage d'un serveur IMAP sans UIDPLUS : %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	a.t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// A mail without a Message-ID, on a server that does not say where a move
+// lands, could not be found again at its hour: "Reporter" refuses it before
+// anything moves or is made. On a server that says it, the same mail is
+// reported.
+func TestAcceptance_IMAPSnoozeRefusesAMailItCouldNotFindAgain(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, bankStatement)
+	const subject = "Sans identifiant"
+	raw := "From: Ami <ami@exemple.fr>\r\nTo: " + moi.email + "\r\nSubject: " + subject +
+		"\r\nDate: " + time.Now().Add(-time.Minute).Format(time.RFC1123Z) +
+		"\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nBonjour.\r\n"
+	data, err := moi.mailbox.Append("INBOX", bytes.NewReader([]byte(raw)), &imapv2.AppendOptions{Time: time.Now()})
+	if err != nil {
+		app.fatalf("dépôt d'un mail sans Message-ID : %v", err)
+	}
+	uid := fmt.Sprint(uint32(data.UID))
+	moi.sync()
+	moi.expectShows(uid, subject)
+
+	moi.reachThrough(withoutUIDPlus(moi))
+	got := moi.snoozeAnswer(uid)
+	msg, _ := got.body["error"].(string)
+	if got.code != http.StatusUnprocessableEntity || msg != cannotFindAgainMessage {
+		app.failf("reporter un mail sans Message-ID sur un serveur qui ne dit pas où il le range devrait répondre 422 %q, il a répondu %s", cannotFindAgainMessage, got)
+	}
+	moi.expectOnServer(serverInbox, subject)
+	if _, ok := moi.folderOnServer(laterFolder); ok {
+		app.failf("un report refusé ne devrait pas créer le dossier « %s »", laterFolder)
+	}
+	moi.expectShows(uid, subject)
+
+	// The control: the server that says where a move lands takes it.
+	moi.reachThrough(moi.port)
+	if got := moi.snoozeAnswer(uid); got.code != http.StatusOK {
+		app.failf("le même mail, sur un serveur qui dit où il le range, devrait être reporté (200), il a répondu %s", got)
+	}
+	expectInLater(moi, incoming{Subject: subject})
+}
+
+// A reported mail that another mail program put back in the inbox before its
+// hour is back: its hour marks it unread, writes its return, and the inbox
+// shows it once, whether a sync stored it again in between or not.
+func TestAcceptance_IMAPSnoozeFindsTheMailBackInTheInbox(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	moi.openMail(uids[1])
+	moi.openMail(uids[2])
+	later := reportedOnIMAP(moi, uids[1], shopOrder)
+	reportedOnIMAP(moi, uids[2], travelOffer)
+
+	// One put back, then a sync stores it under its new number; the other
+	// put back after that sync.
+	moi.movedFromElsewhere(later, shopOrder.Subject, serverInbox)
+	moi.sync()
+	moi.movedFromElsewhere(later, travelOffer.Subject, serverInbox)
+
+	moi.timeComesForSnoozes()
+
+	for i, m := range []incoming{shopOrder, travelOffer} {
+		expectUnreadInServerInbox(moi, m)
+		expectNotReported(moi, m, "il était déjà revenu dans la boîte de réception")
+		if status := reportStatus(app, moi.email, m.Subject); status != "done" {
+			app.failf("le report du mail %q, retrouvé dans la boîte de réception, devrait être « done », il est %q", m.Subject, status)
+		}
+		if n := moi.returnsJournaled(uids[i+1]); n != 1 {
+			app.failf("le retour du mail %q devrait être écrit 1 fois dans l'historique, il l'est %d fois", m.Subject, n)
+		}
+		moi.expectBackInInbox(m.Subject, "à son heure, sans synchronisation")
+		if row, ok := rowBySubject(moi.inbox(), m.Subject); ok && row.IsRead {
+			app.failf("à son heure, la boîte de réception montre le mail %q marqué lu : il devrait être non lu", m.Subject)
+		}
+	}
+	moi.sync()
+	for _, m := range []incoming{shopOrder, travelOffer} {
+		moi.expectBackInInbox(m.Subject, "à son heure, puis une synchronisation")
 	}
 }

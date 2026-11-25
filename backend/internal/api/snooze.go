@@ -43,12 +43,14 @@ const snoozeSweepInterval = time.Minute
 // was hard deleted) would be re-attempted on every sweep indefinitely.
 const maxSnoozeWakeAttempts = 5
 
-// snoozeAccountBound is how long the sweep gives one IMAP mailbox to bring its
-// due reports back, through its one connection. Past it the connection is
-// dropped (imap.Client.Abort): a server that stops answering would otherwise
-// hold the sweep, and every other account's reports, with it. What it did not
-// reach waits for the next pass, untouched and not counted.
-const snoozeAccountBound = 30 * time.Second
+// snoozeAccountBound is how long the sweep gives one mailbox to bring its due
+// reports back, through its one session, the opening of that session
+// included (imap.Connect stops with its context). Past it the connection is
+// dropped (imap.Client.Abort): a server that stops answering, at LOGIN or
+// later, would otherwise hold the sweep, and every other account's reports,
+// with it. What it did not reach waits for the next pass, untouched and not
+// counted. A variable, so a test can shorten it.
+var snoozeAccountBound = 30 * time.Second
 
 // Snooze pulls a message out of the inbox until a chosen wake time. It resolves
 // the wake time from a friendly preset (or an explicit timestamp) and takes the
@@ -99,6 +101,8 @@ func (h *Handler) Snooze(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "already", "wakeAt": wakeAt})
 		case errors.Is(err, errLeftInbox):
 			writeError(w, http.StatusNotFound, leftInboxMessage)
+		case errors.Is(err, errCannotFindAgain):
+			writeError(w, http.StatusUnprocessableEntity, cannotFindAgainMessage)
 		case err != nil:
 			if why, ok := filingRefusal(err); ok {
 				writeError(w, http.StatusBadGateway, "Report impossible : "+why)
@@ -200,6 +204,14 @@ func (h *Handler) snoozeMessage(ctx context.Context, gmailClient *gmailapi.Servi
 	return nil
 }
 
+// errCannotFindAgain is reporting, over IMAP, a mail that could not be found
+// again at its hour: it has no Message-ID header, and the server does not say
+// where a move lands (imap.Client.SaysWhereMovesLand). Nothing moved.
+var errCannotFindAgain = errors.New("api: the mail could not be found again once reported")
+
+// cannotFindAgainMessage is what the user reads for errCannotFindAgain.
+const cannotFindAgainMessage = "Ce mail ne peut pas être reporté sur cette boîte : Mailsorter ne pourrait pas le retrouver à l'heure prévue."
+
 // snoozedRow is a stored inbox message, as reporting it over IMAP reads it.
 // Spelled out rather than embedding movedRow: the bson codec skips an
 // embedded struct of an unexported type, and the Message-ID would read empty.
@@ -229,6 +241,13 @@ func (h *Handler) snoozeIMAP(ctx context.Context, session *mailSession, userEmai
 			return errLeftInbox
 		}
 		return fmt.Errorf("read the stored copy of message %s: %w", messageID, err)
+	}
+	// Its hour finds it in "Plus tard" by the number the server gives it
+	// there, or else by its Message-ID header. A server that does not say
+	// where a move lands, with a mail that has no Message-ID, would leave it
+	// there for good: refused before anything moves or is made.
+	if before.HeaderMessageID == "" && !session.imapc.SaysWhereMovesLand() {
+		return errCannotFindAgain
 	}
 
 	into := mailbox.Mutation{Action: mailbox.ActionLabel, LabelID: snoozeFolderName}
@@ -605,14 +624,19 @@ func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.S
 	case errors.Is(wakeErr, errNotWhereLeft):
 		outcome = snooze.Gone
 		log.Printf("snooze: report %s of %s cancelled: message %s is no longer in %q, another mail program took it out", s.ID, s.UserID, s.MessageID, s.Folder)
-	case byHand || ctx.Err() != nil:
-		// Cut short by the time bound, or the user's to try again.
+	case byHand || ctx.Err() != nil || session.imapc.Closed():
+		// Cut short by the time bound or by a connection that went away
+		// (nothing to say about the mail itself), or the user's to try
+		// again.
 		outcome = snooze.Untried
 	default:
 		outcome = snooze.Failed
 	}
-	if wakeErr != nil && outcome != snooze.Gone {
+	switch {
+	case outcome == snooze.Failed:
 		log.Printf("snooze: failed to restore %s for %s (attempt %d): %v", s.MessageID, s.UserID, s.Attempts+1, wakeErr)
+	case wakeErr != nil && outcome == snooze.Untried:
+		log.Printf("snooze: did not restore %s for %s (not counted, tried again later): %v", s.MessageID, s.UserID, wakeErr)
 	}
 	sctx, cancel := settleCtx(ctx)
 	defer cancel()
@@ -751,7 +775,11 @@ func (h *Handler) wakeDueSnoozes() {
 // wakeAccount brings back the due reports of one account, through one session.
 func (h *Handler) wakeAccount(ctx context.Context, due []models.Snooze) {
 	userEmail := due[0].UserID
-	session, err := h.openSession(ctx, userEmail)
+	// The bound starts before the session opens: an IMAP server that greets
+	// and then says nothing at LOGIN must not hold the sweep either.
+	bounded, cancel := context.WithTimeout(ctx, snoozeAccountBound)
+	defer cancel()
+	session, err := h.openSession(bounded, userEmail)
 	if err != nil {
 		log.Printf("snooze: cannot open the mailbox of %s: %v", userEmail, err)
 		if errors.Is(err, imap.ErrAuth) {
@@ -773,13 +801,13 @@ func (h *Handler) wakeAccount(ctx context.Context, due []models.Snooze) {
 	defer session.Close()
 
 	if session.Transport == provider.TransportIMAP {
-		bounded, cancel := context.WithTimeout(ctx, snoozeAccountBound)
-		defer cancel()
 		stop := context.AfterFunc(bounded, session.imapc.Abort)
 		defer stop()
 		for _, s := range due {
-			if bounded.Err() != nil {
-				// Out of time: the rest waits for the next pass, uncounted.
+			if bounded.Err() != nil || session.imapc.Closed() {
+				// Out of time, or the connection is gone (the server
+				// dropped it): the rest waits for the next pass, untouched
+				// and uncounted.
 				return
 			}
 			_ = h.wakeIMAP(bounded, session, s, false)

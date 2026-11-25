@@ -273,7 +273,11 @@ free pass. Over it: `429` with `Retry-After: 3`.
 - `401 Unauthorized`: the provider refused the credentials. An unknown address
   and a wrong password answer identically: the provider is what refused, and it
   does not say which. Distinguishing them would make this route an address
-  oracle
+  oracle. Only a real refusal counts as one: a `NO [AUTHENTICATIONFAILED]` to
+  LOGIN, or a `NO` with no code saying the server is unavailable. A `NO
+  [UNAVAILABLE]` (or `[SERVERBUG]`, `[LIMIT]`, `[INUSE]`, `[TOOMANY]`, or a
+  text speaking of too many connections), a `BYE`, a dropped connection or a
+  server that does not answer in time is the `502` below
 - `409 Conflict`: this address already holds Google credentials. A stored
   mailbox row takes precedence over a Google token (see "Transports and what
   works on each"), so accepting here would move the account to IMAP for whoever
@@ -735,14 +739,20 @@ Works on both transports, the same requests and answers:
 
 The background sweep (every minute) wakes the due snoozes account by account,
 through one session per account: one Gmail client, or one IMAP connection for
-all of that mailbox's due mails, bounded to 30 s (the connection is dropped
-past it, and what was not reached waits for the next pass). A failed wake
-stays `scheduled` and is tried again at the next pass; the fifth failure parks
-it as `failed`. A mailbox that cannot be reached is tried again without
-counting, except a password the server refuses, which counts. Over IMAP a mail
-no longer in `Plus tard` when its hour comes (another mail program took it
-out) is left where it is, and its snooze becomes `cancelled`, logged, out of
-every list. "Annuler" on a snooze (its line in the history, or the verb that
+all of that mailbox's due mails, bounded to 30 s, the opening of the session
+included (the connection is dropped past it, and what was not reached waits
+for the next pass): a server that greets and then says nothing at LOGIN holds
+its own account for 30 s, never the others. A failed wake stays `scheduled`
+and is tried again at the next pass; the fifth failure parks it as `failed`.
+A mailbox that cannot be reached, or whose connection drops during the pass,
+is tried again without counting (the rest of its due mails wait for the next
+pass, untouched), except a password the server refuses, which counts. Over
+IMAP a mail no longer in `Plus tard` when its hour comes is looked for in the
+inbox by its `Message-ID`: put back there by another mail program (or by a
+return whose answer the connection lost), it is back, marked unread, and its
+return is written. Found nowhere (another mail program took it elsewhere), it
+is left where it is, and its snooze becomes `cancelled`, logged, out of every
+list. "Annuler" on a snooze (its line in the history, or the verb that
 undoes the move, see `POST /api/activity/undo` and `POST /api/emails/action`)
 brings the mail back and ends the snooze the same way, on both transports.
 The sweep, "Annuler" and `POST /api/snoozes/{id}/wake` claim the snooze
@@ -770,12 +780,17 @@ time but a date picker can. It must be in the future and within one year
 
 Over IMAP, a mail already out of the inbox (snoozed a moment ago, or moved
 by another mail client) answers `200 { "status": "already", "wakeAt": ... }`:
-nothing moved, nothing is recorded.
+nothing moved, nothing is recorded (the inbox then says "Ce mail n'est plus
+dans votre boîte de réception."). A mail without a `Message-ID` header, on a
+server that does not say where a move lands (no UIDPLUS, which IMAP4rev2
+includes), could not be found again at its hour: it is refused before
+anything moves or is made, `422`.
 
 **Error Responses:**
 - `400 Bad Request`: Unknown preset, or a wake time in the past or beyond one year
 - `401 Unauthorized`: Missing or expired session
 - `404 Not Found`: Over IMAP, a mail the stored inbox does not hold ("Ce mail n'est plus dans votre boîte de réception.")
+- `422 Unprocessable Entity`: Over IMAP, a mail that could not be found again at its hour ("Ce mail ne peut pas être reporté sur cette boîte : Mailsorter ne pourrait pas le retrouver à l'heure prévue.")
 - `502 Bad Gateway`: The mailbox refused the label, the folder or the move
 
 ### Snooze a whole selection
@@ -794,7 +809,8 @@ At most 200 ids per request. Protected senders are shielded exactly as in
 list exists to veto, and a sender that could not be established is treated as
 possibly protected rather than assumed harmless. Over IMAP the sender is the
 one the stored inbox holds, and a mail already out of the inbox is neither in
-`snoozed` nor counted as `failed`.
+`snoozed` nor counted as `failed`; one that could not be found again at its
+hour (see above) is counted as `failed`.
 
 **Response:** `200 OK`
 ```json
@@ -1048,6 +1064,13 @@ Two consequences worth knowing:
   `500` "votre boîte n'a pas répondu jusqu'au bout de la synchronisation,
   réessayez dans un instant"; a connection that cannot be opened again,
   `500` "la connexion à votre boîte a été perdue pendant la synchronisation".
+  A mailbox that cannot be opened at all for a reason other than its password
+  (out of reach, too slow for the request's 30 s, or answering LOGIN that it is
+  unavailable, see `POST /api/auth/mailbox`) answers `500` "votre boîte n'a pas
+  répondu, réessayez dans un instant", never a refused password. Opening an
+  IMAP session (the dial, TLS, the greeting, LOGIN, the listing of the
+  folders) stops with the request: a server that greets and then says nothing
+  holds no request past its time.
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 The filters the inbox offers are all answered: `is:unread`, `is:read`,
