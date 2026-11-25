@@ -932,54 +932,80 @@ func moveElsewhere(moi *imapPerson, subject, folder string) {
 // A report without a generation of a mailbox replaced since (its row
 // replaced before the connection could stamp its reports) is not taken for
 // the new mailbox's: made before the new one was connected, it is not listed,
-// and the sweep ends it without moving the mail the new mailbox numbers
-// alike in its own "Plus tard"; its mail stays in the first mailbox's.
+// and it ends without moving the mail the new mailbox numbers alike in its
+// own "Plus tard", whether the sweep meets it first or the new mailbox's
+// sync (clearMailboxCopy); its mail stays in the first mailbox's.
 func TestAcceptance_AReportWithoutGenerationOfAReplacedMailboxEnds(t *testing.T) {
-	app := newTestApp(t, &scenarioResult{})
-	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
-	if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
-		app.fatalf("« Reporter » sur la première boîte de %s a répondu %s", moi.email, got)
+	// replaced reports on a first mailbox, takes the generation off the
+	// report and its Message-ID (as on a server that says where a move
+	// lands), replaces the row without stamping its reports, and connects a
+	// second mailbox whose own mail no. 1 of "Plus tard" another mail program
+	// put there. It returns the person and the first mailbox.
+	replaced := func(app *testApp) (*imapPerson, connectedBox) {
+		app.t.Helper()
+		moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+		if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+			app.fatalf("« Reporter » sur la première boîte de %s a répondu %s", moi.email, got)
+		}
+		first := moi.connectedNow()
+		unstampReports(moi)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := app.h.db.Snoozes().UpdateOne(ctx, bson.M{"userId": moi.email, "subject": shopOrder.Subject},
+			bson.M{"$unset": bson.M{"headerMessageId": ""}}); err != nil {
+			app.fatalf("%v", err)
+		}
+		if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err != nil {
+			app.fatalf("remplacement de la ligne de la première boîte : %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+		moi.connectOtherMailbox(otherMailbox)
+		moi.receive(otherBoxMails...)
+		moveElsewhere(moi, otherBoxMails[2].Subject, snoozeFolderName)
+		return moi, first
 	}
-	first := moi.connectedNow()
-	unstampReports(moi)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	// As on a server that says where a move lands: no Message-ID to check
-	// the number by.
-	if _, err := app.h.db.Snoozes().UpdateOne(ctx, bson.M{"userId": moi.email, "subject": shopOrder.Subject},
-		bson.M{"$unset": bson.M{"headerMessageId": ""}}); err != nil {
-		app.fatalf("%v", err)
+	// untouched checks that nothing moved in either mailbox.
+	untouched := func(app *testApp, moi *imapPerson, first connectedBox) {
+		app.t.Helper()
+		moi.expectOnServer(snoozeFolderName, otherBoxMails[2].Subject)
+		moi.expectNotOnServer(serverInbox, otherBoxMails[2].Subject, "le report de la première boîte ne touche pas la deuxième")
+		if held, ok := first.subjectsIn(snoozeFolderName); !ok || !containsSubject(held, shopOrder.Subject) {
+			app.failf("le mail reporté de la première boîte de %s devrait attendre encore dans son « %s », il y a %s", moi.email, snoozeFolderName, quotedList(held))
+		}
 	}
-	if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err != nil {
-		app.fatalf("remplacement de la ligne de la première boîte : %v", err)
-	}
-	time.Sleep(20 * time.Millisecond)
-	moi.connectOtherMailbox(otherMailbox)
-	moi.receive(otherBoxMails...)
-	// The second mailbox's own "Plus tard", its mail no. 1 there one of its
-	// own, put there by another mail program.
-	moveElsewhere(moi, otherBoxMails[2].Subject, snoozeFolderName)
 
-	if _, ok := moi.reportedRow(shopOrder.Subject); ok {
-		app.failf("le report de la première boîte de %s ne devrait pas s'afficher avec la deuxième", moi.email)
-	}
-	moi.reportDue()
-	app.h.wakeDueSnoozes()
-	if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" {
-		app.failf("le passage devrait finir le report de la première boîte de %s sans rien déplacer (cancelled), il est %q, génération %q", moi.email, got.Status, got.Generation)
-	}
-	moi.expectOnServer(snoozeFolderName, otherBoxMails[2].Subject)
-	moi.expectNotOnServer(serverInbox, otherBoxMails[2].Subject, "le report de la première boîte ne touche pas la deuxième")
-	if held, ok := first.subjectsIn(snoozeFolderName); !ok || !containsSubject(held, shopOrder.Subject) {
-		app.failf("le mail reporté de la première boîte de %s devrait attendre encore dans son « %s », il y a %s", moi.email, snoozeFolderName, quotedList(held))
-	}
+	t.Run("le passage", func(t *testing.T) {
+		app := newTestApp(t, &scenarioResult{})
+		moi, first := replaced(app)
+		if _, ok := moi.reportedRow(shopOrder.Subject); ok {
+			app.failf("le report de la première boîte de %s ne devrait pas s'afficher avec la deuxième", moi.email)
+		}
+		moi.reportDue()
+		app.h.wakeDueSnoozes()
+		if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" {
+			app.failf("le passage devrait finir le report de la première boîte de %s sans rien déplacer (cancelled), il est %q, génération %q", moi.email, got.Status, got.Generation)
+		}
+		untouched(app, moi, first)
+	})
+	t.Run("la synchronisation", func(t *testing.T) {
+		app := newTestApp(t, &scenarioResult{})
+		moi, first := replaced(app)
+		moi.sync()
+		// Before its hour: the sync of the second mailbox ended it.
+		if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" {
+			app.failf("la synchronisation de la deuxième boîte de %s devrait finir le report de la première (cancelled), il est %q, génération %q", moi.email, got.Status, got.Generation)
+		}
+		untouched(app, moi, first)
+	})
 }
 
-// Connecting another mailbox gives the reports without a generation of the
-// one it replaces that one's generation (stampReportsOf, called by
-// connectAndStore before the row goes, which no scenario can reach: the
-// connect route only knows the hosts of the catalog), so the next erasing
-// ends them like any report of a mailbox no longer connected.
+// stampReportsOf gives the reports without a generation of the mailbox whose
+// row is about to be replaced that mailbox's generation, so the next erasing
+// ends them like any report of a mailbox no longer connected. This proves
+// stampReportsOf alone, not its call in connectAndStore, which no test can
+// reach (the connect route only knows the hosts of the catalog): that call is
+// the second guard, the first being the bound of adoptReports on the row's
+// createdAt (TestAcceptance_AReportWithoutGenerationOfAReplacedMailboxEnds).
 func TestAcceptance_TheReportsOfAReplacedMailboxTakeItsGeneration(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
 	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)

@@ -333,11 +333,15 @@ const stampTimeout = 5 * time.Minute
 //   - Its reports (snoozes, the ones that carry the folder their mail waits
 //     in), whatever their date: ending one would leave its mail in "Plus
 //     tard", while waking one of a mailbox the row held before moves nothing
-//     there (its return checks the Message-ID, imap.Client.MoveRecorded). One
-//     this misses is not lost either: while its account's IMAP mailbox is
-//     connected, the list, the sweep, "Réactiver", "Annuler" and
-//     clearMailboxCopy give it that mailbox's generation (api adoptReports),
-//     if it was made since that mailbox was connected; an older one ends. The open reports of an
+//     there (its return checks the Message-ID, imap.Client.MoveRecorded). A
+//     report this misses, made since its account's IMAP mailbox was
+//     connected, is not lost either: while that mailbox is connected, the
+//     list, the sweep, "Réactiver", "Annuler" and clearMailboxCopy give it
+//     that mailbox's generation (api adoptReports). An older one ends
+//     (cancelled), its mail left in "Plus tard". The real case: a mailbox
+//     disconnected then connected again on the code before generations has
+//     reports older than its row; if the stamping fails here for that
+//     account, they end. The open reports of an
 //     account with no IMAP mailbox connected end here (cancelled): the sweep
 //     would otherwise try them over the Gmail API.
 func (d *Database) stampGenerations(ctx context.Context) {
