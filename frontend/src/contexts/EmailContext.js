@@ -292,6 +292,10 @@ export function EmailProvider({ children }) {
   // question is asked again by the next screen that needs it, or after
   // MAILBOX_RETRY_MS on the one still open.
   const [mailbox, setMailbox] = useState(undefined);
+  // The generation of the mailbox the screens show (GET /api/mailbox): the
+  // screens that need a mailbox start again from it when it changes
+  // (RequireMailbox in App.js), and load what they show of the new one.
+  const [generation, setGeneration] = useState(null);
   const [mailboxFailed, setMailboxFailed] = useState(false);
   const mailboxRequestRef = useRef(null);
   const mailboxRetryRef = useRef(null);
@@ -328,6 +332,9 @@ export function EmailProvider({ children }) {
     // and what was loaded of the mailbox before goes. Not after a new app
     // password (sameMailbox): the same mailbox, the same generation; what
     // was loaded goes only if the answer names another.
+    // The mailbox the screens held, to tell, once the answer is in, that it
+    // went away with none in its place.
+    const previous = generationRef.current;
     if (force && !sameMailbox) {
       setMailbox(undefined);
       forgetMailbox();
@@ -341,8 +348,12 @@ export function EmailProvider({ children }) {
         if (seq !== mailboxSeqRef.current) return;
         const generation = data?.generation || '';
         if (generationRef.current !== null && generationRef.current !== generation) forgetMailbox();
+        // A mailbox the screens held is gone, none connected in its place: the
+        // screens that need one lead to /connect (RequireMailbox in App.js).
+        if (!data?.mailbox && previous) localStorage.removeItem('hasMailbox');
         generationRef.current = generation;
         setMailboxGeneration(generation);
+        setGeneration(generation);
         setMailbox(data?.mailbox || null);
         setMailboxFailed(false);
       })
@@ -390,6 +401,7 @@ export function EmailProvider({ children }) {
     isCacheValid,
     mailbox,
     mailboxFailed,
+    generation,
     loadMailbox,
   };
 
@@ -476,7 +488,7 @@ export function useEmails() {
 // controls that depend on it (RequireMailbox in App.js), so they do not appear
 // or vanish under the user's eyes.
 export function useMailbox() {
-  const { mailbox, mailboxFailed, loadMailbox } = useEmails();
+  const { mailbox, mailboxFailed, generation, loadMailbox } = useEmails();
   useEffect(() => {
     if (mailbox === undefined) loadMailbox();
   }, [mailbox, loadMailbox]);
@@ -492,5 +504,8 @@ export function useMailbox() {
     isGmail: mailbox?.transport === 'gmail',
     fullFeatures: known && !isImap,
     reload: () => loadMailbox({ force: true }),
+    // Which mailbox it is, for a screen to start again on another (null until
+    // known).
+    generation,
   };
 }

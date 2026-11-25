@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useEmails, useMailbox } from '../../contexts/EmailContext';
 import { useInstance } from '../../contexts/InstanceContext';
 import { canApplyVerdict } from '../landing/features';
-import { aiService, emailService, senderService, apiError } from '../../services/api';
+import { aiService, emailService, senderService, apiError, isMailboxChanged } from '../../services/api';
 import { useToast } from '../../ui/Toast';
 import { useConfirm } from '../../ui/Confirm';
 import { track } from '../../lib/analytics';
@@ -140,9 +140,11 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       else toast.success('Tri annulé');
     } catch (err) {
       toast.error(apiError(err, "Impossible d'annuler."));
-    } finally {
-      refresh();
+      // A mailbox changed since the page was loaded is loaded again as a
+      // whole (whenMailboxChanged): nothing of this one to refresh.
+      if (isMailboxChanged(err)) return;
     }
+    refresh();
   };
 
   // Optimistic, like the single apply always was: the rows and the emails leave
@@ -205,7 +207,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
         toast.error(data.message);
       }
     } catch (err) {
-      refresh();
+      if (!isMailboxChanged(err)) refresh();
       toast.error(apiError(err, "Le tri n'a pas pu être appliqué. Réessayez."));
     }
   };
@@ -256,7 +258,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
         toast.info(`${ids.length} suggestion${plural(ids.length)} ignorée${plural(ids.length)}`, { duration: 2500 });
       }
     } catch (err) {
-      restoreSuggestions(items);
+      if (!isMailboxChanged(err)) restoreSuggestions(items);
       toast.error(apiError(err, 'Impossible de les ignorer. Réessayez.'));
     }
   };

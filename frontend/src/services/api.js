@@ -56,15 +56,31 @@ apiClient.interceptors.response.use(
         window.location.assign('/');
       }
     }
-    // The mailbox changed since the screen was loaded: it is loaded again
-    // (EmailContext), and the request's own screen shows the server's
-    // sentence, "Votre boîte a changé depuis l'ouverture de cette page".
-    if (error.response?.status === 409 && error.response?.data?.mailboxChanged) {
+    // The mailbox changed since the screen was loaded (409 mailboxChanged),
+    // or the one it loaded is no longer connected at all (a 428 other than a
+    // refused password, to a request that named it): it is loaded again
+    // (EmailContext), which empties what the screens hold of the other one,
+    // and the request's own screen shows the server's sentence. A request
+    // that named no mailbox (the reload's own) never triggers it again.
+    const named = error.config?.headers?.['X-Mailbox-Generation'];
+    if (
+      isMailboxChanged(error) ||
+      (named && error.response?.status === 428 && !error.response?.data?.passwordRefused)
+    ) {
       mailboxChangedHandler?.();
     }
     return Promise.reject(error);
   }
 );
+
+// Whether a request was refused because the screen was loaded on another
+// mailbox than the one connected now (409 marked mailboxChanged). The screen
+// shows the server's sentence and nothing else: what it held of the other
+// mailbox is being loaded again (whenMailboxChanged), so it neither puts back
+// what it took out optimistically nor reloads its own list.
+export function isMailboxChanged(err) {
+  return err?.response?.status === 409 && Boolean(err.response.data?.mailboxChanged);
+}
 
 // Where a 428 leads, the mailbox to connect again: the new password form when
 // the provider refuses the one on file (passwordRefused), the connect screen
