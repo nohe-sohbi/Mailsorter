@@ -781,16 +781,7 @@ function EmailReader({
               onRetry={() => loadMessage(messageId)}
             />
           ) : html ? (
-            <>
-              <div className="email-body" dangerouslySetInnerHTML={{ __html: html }} />
-              {hiddenPictures > 0 && (
-                <p className="mt-3 text-xs text-muted">
-                  {hiddenPictures === 1
-                    ? "1 image de ce mail n'est pas affichée."
-                    : `${hiddenPictures} images de ce mail ne sont pas affichées.`}
-                </p>
-              )}
-            </>
+            <div className="email-body" dangerouslySetInnerHTML={{ __html: html }} />
           ) : text ? (
             <div className="email-body-plain">{text}</div>
           ) : (
@@ -801,6 +792,15 @@ function EmailReader({
                 Cet email ne contient pas de texte affichable.
               </div>
             </div>
+          )}
+          {/* Said whatever is left to show: a mail made only of pictures that
+              are not drawn still says so, under its plain text or the notice. */}
+          {!loading && !loadError && hiddenPictures > 0 && (
+            <p className="mt-3 text-xs text-muted">
+              {hiddenPictures === 1
+                ? "1 image de ce mail n'est pas affichée."
+                : `${hiddenPictures} images de ce mail ne sont pas affichées.`}
+            </p>
           )}
         </div>
 
