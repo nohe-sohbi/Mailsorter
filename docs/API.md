@@ -334,7 +334,9 @@ reader fetches the one it opens (`GET /api/emails/{id}`).
 
 `senderAddress` is the sender's address as the server reads it out of `from`
 (RFC 5322, never an address in the display name, a local part quoted when it
-is not a dot-atom), the one the screens show and act on; it is absent when
+is not a dot-atom; a display name nobody quoted, `Doe, John <j@x.com>`, is read
+again in quotes when it holds no `<`, `>` or quote), the one the screens show
+and act on; it is absent when
 `from` does not read as one address, and the screens then show `from` as it
 is rather than read an address out of it. `GET /api/emails/{id}` carries it
 too.
@@ -870,7 +872,11 @@ silently server-side (one-click) or by handing back the link to open.
 
 Aggregates the senders in the stored mailbox that advertise an unsubscribe link,
 ranked by volume (at most 100). It reads the datastore only, so it answers on
-both transports.
+both transports. Senders are grouped by their raw From header; `senderEmail` is
+the address read out of it as for `senderAddress` (see `GET /api/emails`), and
+"" for a From that does not read as one address: such a row can still be
+unsubscribed through its `sampleMessageId`, but nothing is archived or recorded
+for it.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
