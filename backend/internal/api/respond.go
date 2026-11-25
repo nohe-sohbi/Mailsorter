@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -14,10 +15,23 @@ import (
 // clears the session and restarts OAuth instead of looping on opaque 500s.
 var errReauthRequired = errors.New("gmail authorization expired; re-authentication required")
 
+// mailboxRejectedMessage is what the user reads when their mail provider
+// refuses the address and the app password Mailsorter holds: on the connect
+// screen as everywhere else.
+const mailboxRejectedMessage = "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application."
+
+// mailboxNoAnswerMessage is what the user reads when their mailbox could not
+// be opened for another reason: out of reach, too slow, or unavailable.
+const mailboxNoAnswerMessage = "Votre boîte n'a pas répondu, réessayez dans un instant."
+
 // writeAuthError maps a getUserToken / gmailClientFor / openSession failure to
-// the right status: 401 when the grant is dead (SPA re-runs OAuth), 404 when the
-// account row is gone, 501 when the path has not been ported to the caller's
-// transport, 500 for anything else.
+// the right status: 401 when the Google grant is dead (SPA re-runs OAuth), 428
+// when no mailbox is connected or when the provider refuses the IMAP password
+// on file (to be connected again on /connect: a 401 would sign the person out
+// of Mailsorter, whose session is fine), 502 when the mailbox did not answer,
+// 404 when the account row is gone, 501 when the path has not been ported to
+// the caller's transport, 500 for anything else. In French, as the screens
+// show them.
 //
 // The 501 branch is the visible half of the guard in gmailClientFor. Every
 // handler already routes its credential failures through here, so adding the
@@ -29,12 +43,16 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusPreconditionRequired, "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.")
 	case errors.Is(err, errReauthRequired):
 		writeError(w, http.StatusUnauthorized, "Gmail authorization expired. Please reconnect your account.")
+	case errors.Is(err, imap.ErrAuth):
+		writeError(w, http.StatusPreconditionRequired, mailboxRejectedMessage)
+	case errors.Is(err, imap.ErrUnreachable):
+		writeError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
 	case errors.Is(err, errWrongTransport):
 		writeTransportError(w)
 	case errors.Is(err, mongo.ErrNoDocuments):
 		writeError(w, http.StatusNotFound, "User not found")
 	default:
-		writeError(w, http.StatusInternalServerError, "Failed to get user credentials")
+		writeError(w, http.StatusInternalServerError, "Impossible d'ouvrir votre boîte pour le moment, réessayez dans un instant.")
 	}
 }
 

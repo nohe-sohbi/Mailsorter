@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -88,6 +89,38 @@ func TestWriteAuthError(t *testing.T) {
 			}
 			if env["error"] == nil {
 				t.Fatalf("missing error field: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// A mailbox that cannot be opened says why, in French, and with a status the
+// SPA does not take for a dead Mailsorter session (a 401 signs out): a
+// password the provider refuses is the connect screen's sentence and 428 (to
+// be connected again), a mailbox that did not answer is 502, anything else
+// a French 500.
+func TestWriteAuthErrorWordsAMailboxThatCannotBeOpened(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		code int
+		want string
+	}{
+		{"password refused", fmt.Errorf("open: %w: NO [AUTHENTICATIONFAILED]", imap.ErrAuth), http.StatusPreconditionRequired, mailboxRejectedMessage},
+		{"did not answer", fmt.Errorf("open: %w: login: EOF", imap.ErrUnreachable), http.StatusBadGateway, mailboxNoAnswerMessage},
+		{"no mailbox", errNoMailboxConnected, http.StatusPreconditionRequired, "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une."},
+		{"anything else", errors.New("boom"), http.StatusInternalServerError, "Impossible d'ouvrir votre boîte pour le moment, réessayez dans un instant."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeAuthError(w, c.err)
+			var env map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("not JSON: %v", err)
+			}
+			if w.Code != c.code || env["error"] != c.want {
+				t.Errorf("writeAuthError(%v) = %d %q, want %d %q", c.err, w.Code, env["error"], c.code, c.want)
 			}
 		})
 	}

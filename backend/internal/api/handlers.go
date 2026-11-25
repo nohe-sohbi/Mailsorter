@@ -484,7 +484,9 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 
 	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
-		if errors.Is(err, errReauthRequired) {
+		// A dead Google grant, and an IMAP password the provider refuses,
+		// say so in the words of the connect screen (writeAuthError).
+		if errors.Is(err, errReauthRequired) || errors.Is(err, imap.ErrAuth) {
 			writeAuthError(w, err)
 			return
 		}

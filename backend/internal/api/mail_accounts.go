@@ -150,8 +150,7 @@ func writeMailboxConnectError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity,
 			"Cette boîte ne se connecte pas par IMAP sur cette instance.")
 	case errors.Is(err, errMailboxRejected):
-		writeError(w, http.StatusUnauthorized,
-			"Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.")
+		writeError(w, http.StatusUnauthorized, mailboxRejectedMessage)
 	case errors.Is(err, errMailboxUnreachable):
 		writeError(w, http.StatusBadGateway, "Connexion au serveur de mail impossible.")
 	default:
