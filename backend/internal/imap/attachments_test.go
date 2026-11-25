@@ -923,7 +923,8 @@ func (s heldFetch) Fetch(w *imapserver.FetchWriter, numSet imapv2.NumSet, option
 	return s.SessionIMAP4rev2.Fetch(w, numSet, options)
 }
 
-// Opening a mail and downloading a file end with their request: a server
+// Opening a mail, downloading a file and reading texts for the rules end
+// with their request: a server
 // that does not answer is left when the context ends, not when the client's
 // own timeout would.
 func TestReadsEndWithTheirContext(t *testing.T) {
@@ -934,6 +935,11 @@ func TestReadsEndWithTheirContext(t *testing.T) {
 		},
 		"Attachment": func(c *Client, ctx context.Context, uid string) error {
 			_, _, err := c.Attachment(ctx, "INBOX", uid, "2", testLimit)
+			return err
+		},
+		// The rules reading the text of the mails they judge.
+		"Texts": func(c *Client, ctx context.Context, uid string) error {
+			_, err := c.Texts(ctx, "INBOX", []string{uid})
 			return err
 		},
 	}

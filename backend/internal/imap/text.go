@@ -46,15 +46,26 @@ type Text struct {
 
 // Texts reads the text of these messages of folder, by UID, in one FETCH of
 // the first textBytes of each, peeked: the messages stay unread. A UID the
-// folder no longer holds is simply not in the answer. A context already done
-// reads nothing: a caller reading batch after batch stops at the next one.
+// folder no longer holds is simply not in the answer. The read is bound to ctx
+// (within): when it ends, the connection is closed and the FETCH stops with
+// it; a context already done reads nothing.
 //
 // A message go-imap cannot read fails the whole FETCH and closes the
 // connection with it: read a batch through ReadInHalves.
 func (c *Client) Texts(ctx context.Context, folder string, uids []string) (map[string]Text, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("imap: read the text of %d messages in %q: %w", len(uids), folder, err)
+	var out map[string]Text
+	err := c.within(ctx, fmt.Sprintf("read the text of %d messages in %q", len(uids), folder), func() error {
+		var err error
+		out, err = c.texts(folder, uids)
+		return err
+	})
+	if err != nil {
+		return nil, err
 	}
+	return out, nil
+}
+
+func (c *Client) texts(folder string, uids []string) (map[string]Text, error) {
 	out := make(map[string]Text, len(uids))
 	if len(uids) == 0 {
 		return out, nil

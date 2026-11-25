@@ -148,7 +148,9 @@ func IsUnreadableAnswer(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return false
 	}
-	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+	// A read its context ended (within closed the connection under it) says
+	// nothing of the message either, whatever the decoder reported.
+	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
 	msg := err.Error()
