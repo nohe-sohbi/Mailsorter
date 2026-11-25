@@ -1208,7 +1208,7 @@ function Inbox() {
 
   const handleProtect = async (email) => {
     try {
-      const { data } = await protectService.add(email.from);
+      const { data } = await protectService.add(email.from, '', { fromMail: true });
       toast.action(`${data.value} est désormais protégé.`, 'Gérer', () => navigate('/settings'));
     } catch (err) {
       toast.error(apiError(err, 'Protection impossible.'));

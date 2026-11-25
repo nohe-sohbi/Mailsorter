@@ -159,7 +159,11 @@ export const snoozeService = {
 
 export const protectService = {
   list: () => apiClient.get('/api/protected'),
-  add: (value, note = '') => apiClient.post('/api/protected', { value, note }),
+  // `fromMail`: value is a mail's From header ("Protéger" in the reader); the
+  // server protects the sender's address exactly as it reads it out of that
+  // header. Without it, value is what the person typed in the settings.
+  add: (value, note = '', { fromMail = false } = {}) =>
+    apiClient.post('/api/protected', fromMail ? { value, note, fromMail: true } : { value, note }),
   remove: (id) => apiClient.delete(`/api/protected/${id}`),
 };
 
