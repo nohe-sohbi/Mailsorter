@@ -10,10 +10,35 @@ func TestNormalizeAddress(t *testing.T) {
 		"No Address Here":               "no address here",
 		"Broken <unterminated":          "unterminated",
 		"":                              "",
+		// The display name is the sender's: an address in it is not theirs.
+		`"<boss@corp.com>" <spam@evil.io>`:         "spam@evil.io",
+		`"Boss <boss@corp.com>" <spam@evil.io>`:    "spam@evil.io",
+		`<boss@corp.com> <spam@evil.io>`:           "spam@evil.io",
+		`boss@corp.com <spam@evil.io>`:             "spam@evil.io",
+		`Spam <spam@evil.io> (boss@corp.com)`:      "spam@evil.io",
+		`=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>`: "news@reseau.fr",
 	}
 	for in, want := range cases {
 		if got := NormalizeAddress(in); got != want {
 			t.Errorf("NormalizeAddress(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Address keeps the address as written (NormalizeAddress lowercases it), and
+// never takes it from the display name.
+func TestAddress(t *testing.T) {
+	cases := map[string]string{
+		"Lettre <Lettre@Journal.fr>":                "Lettre@Journal.fr",
+		`"<patron@victime.fr>" <lettre@journal.fr>`: "lettre@journal.fr",
+		`<patron@victime.fr> <lettre@journal.fr>`:   "lettre@journal.fr",
+		"  bare@acme.com  ":                         "bare@acme.com",
+		"Name <x@y.com> trail":                      "x@y.com",
+		`"a\" <b@c.fr" <real@journal.fr>`:           "real@journal.fr",
+	}
+	for in, want := range cases {
+		if got := Address(in); got != want {
+			t.Errorf("Address(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -48,14 +73,15 @@ func TestMatch(t *testing.T) {
 		from string
 		want bool
 	}{
-		{"The Boss <boss@corp.com>", true},  // exact address
-		{"boss@corp.com", true},             // bare address
-		{"Boss <BOSS@CORP.COM>", true},      // case-insensitive
-		{"colleague@corp.com", false},       // same domain, not listed as domain
-		{"Promo <deals@acme.com>", true},    // domain entry
-		{"News <news@mail.acme.com>", true}, // subdomain of domain entry
-		{"news@notacme.com", false},         // suffix but not a subdomain
-		{"someone@evilacme.com", false},     // must not match acme.com as substring
+		{"The Boss <boss@corp.com>", true},          // exact address
+		{"boss@corp.com", true},                     // bare address
+		{"Boss <BOSS@CORP.COM>", true},              // case-insensitive
+		{"colleague@corp.com", false},               // same domain, not listed as domain
+		{"Promo <deals@acme.com>", true},            // domain entry
+		{`"<boss@corp.com>" <spam@evil.io>`, false}, // the address in a display name is not the sender's
+		{"News <news@mail.acme.com>", true},         // subdomain of domain entry
+		{"news@notacme.com", false},                 // suffix but not a subdomain
+		{"someone@evilacme.com", false},             // must not match acme.com as substring
 		{"", false},
 	}
 	for _, tc := range cases {
@@ -90,6 +116,8 @@ func TestSameAddress(t *testing.T) {
 		{"subdomain", "info@boutique.com.evil.io", "info@boutique.com", false},
 		{"other sender on the domain", "Service client <contact@boutique.com>", "info@boutique.com", false},
 		{"address in the display name only", "info@boutique.com <spoof@evil.io>", "info@boutique.com", false},
+		{"address in a quoted display name", `"<info@boutique.com>" <spoof@evil.io>`, "info@boutique.com", false},
+		{"the real one behind a quoted address", `"<spoof@evil.io>" <info@boutique.com>`, "info@boutique.com", true},
 		// No usable address on the sweep side must reach nothing, not everything.
 		{"empty addr", "info@boutique.com", "", false},
 		{"empty addr, empty from", "", "", false},

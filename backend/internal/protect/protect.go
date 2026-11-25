@@ -15,7 +15,10 @@
 // sweep and the guard in front of it cannot disagree about who the sender is.
 package protect
 
-import "strings"
+import (
+	"net/mail"
+	"strings"
+)
 
 // Destructive actions remove an email from the user's attention (out of the
 // inbox or into the trash). These are the only actions the protection vetoes:
@@ -67,11 +70,19 @@ const (
 	KindDomain  = "domain"
 )
 
-// NormalizeAddress extracts the bare, lower-cased email address from a raw From
-// header. It handles the "Display Name <addr@host>" form and trims stray
-// punctuation, returning "" when no plausible address is present.
-func NormalizeAddress(raw string) string {
+// Address is the address a From header names, as written: the addr-spec,
+// never the display name. The display name is the sender's to choose, and it
+// may hold another address ("<boss@corp.com>" <spam@evil.io>), so reading the
+// first "<...>" of the header hands the sender anyone's address. The header is
+// read the way RFC 5322 says (net/mail: quoted names, comments, encoded
+// words); one that does not parse falls back to its LAST "<...>", which is
+// where a mail program writes the address, and then to the value itself,
+// trimmed of stray punctuation.
+func Address(raw string) string {
 	s := strings.TrimSpace(raw)
+	if a, err := mail.ParseAddress(s); err == nil {
+		return a.Address
+	}
 	if i := strings.LastIndex(s, "<"); i >= 0 {
 		if j := strings.Index(s[i:], ">"); j >= 0 {
 			s = s[i+1 : i+j]
@@ -82,7 +93,13 @@ func NormalizeAddress(raw string) string {
 	s = strings.TrimFunc(s, func(r rune) bool {
 		return r == '"' || r == '\'' || r == ' ' || r == '\t'
 	})
-	return strings.ToLower(strings.TrimSpace(s))
+	return strings.TrimSpace(s)
+}
+
+// NormalizeAddress extracts the bare, lower-cased email address from a raw From
+// header (Address), returning "" when no plausible address is present.
+func NormalizeAddress(raw string) string {
+	return strings.ToLower(Address(raw))
 }
 
 // Domain returns the lower-cased domain part of an address (or of a bare domain

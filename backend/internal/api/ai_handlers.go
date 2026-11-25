@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/mail"
 	"regexp"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -1066,38 +1068,42 @@ func (h *Handler) ensureLabel(ctx context.Context, gmailClient interface{}, user
 	return gmailLabelID, nil
 }
 
+// The sender helpers below read a stored From header: the raw header on the
+// Gmail API, "Name" <address> as the IMAP listing writes it. The address is
+// always the one protect.Address reads, never one in the display name, which
+// the sender chooses: "<boss@corp.com>" <spam@evil.io> is spam@evil.io, and
+// unsubscribing from it, archiving its mail or making a rule of it must not
+// reach boss@corp.com.
+
+// extractDomain returns the domain of the sender's address, or the input,
+// trimmed, when it holds no "@".
 func extractDomain(email string) string {
-	// Handle "Name <email@domain.com>" format
-	if idx := strings.Index(email, "<"); idx >= 0 {
-		email = email[idx+1:]
-		if idx := strings.Index(email, ">"); idx >= 0 {
-			email = email[:idx]
-		}
+	addr := protect.Address(email)
+	if idx := strings.LastIndex(addr, "@"); idx >= 0 {
+		return addr[idx+1:]
 	}
-	if idx := strings.Index(email, "@"); idx >= 0 {
-		return email[idx+1:]
-	}
-	return email
+	return addr
 }
 
-// extractSenderAddress returns the bare email address from a "Name <addr>" header,
-// or the trimmed input if no angle brackets are present.
+// extractSenderAddress returns the sender's bare address out of a From header
+// (protect.Address), as written.
 func extractSenderAddress(from string) string {
-	if idx := strings.Index(from, "<"); idx >= 0 {
-		rest := from[idx+1:]
-		if j := strings.Index(rest, ">"); j >= 0 {
-			return strings.TrimSpace(rest[:j])
-		}
-	}
-	return strings.TrimSpace(from)
+	return protect.Address(from)
 }
 
+// extractSenderName returns the display name of a From header, or the header
+// itself when it has none.
 func extractSenderName(from string) string {
-	// Handle "Name <email@domain.com>" format
-	if idx := strings.Index(from, "<"); idx > 0 {
-		name := strings.TrimSpace(from[:idx])
-		name = strings.Trim(name, "\"")
-		return name
+	if a, err := mail.ParseAddress(strings.TrimSpace(from)); err == nil {
+		if a.Name != "" {
+			return a.Name
+		}
+		return from
+	}
+	// Not a header net/mail reads: the name is what comes before the address,
+	// the last "<...>".
+	if idx := strings.LastIndex(from, "<"); idx > 0 {
+		return strings.Trim(strings.TrimSpace(from[:idx]), "\"")
 	}
 	return from
 }

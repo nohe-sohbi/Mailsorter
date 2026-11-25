@@ -10,11 +10,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"mime/quotedprintable"
 	"net"
+	"net/http"
 	"net/mail"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -227,5 +230,179 @@ func TestAcceptance_SelectionSaysWhatHadAlreadyLeft(t *testing.T) {
 	}
 	for _, m := range []incoming{bankStatement, travelOffer} {
 		moi.expectOnServer(serverInbox, m.Subject)
+	}
+}
+
+// The display name of a From header is the sender's to write. These mails
+// come from lettre@journal.fr and carry another address in their name: the
+// address of a third party (the person's boss), whose own mail sits in the
+// same inbox.
+const trappedFrom = `"<patron@victime.fr>" <lettre@journal.fr>`
+
+var (
+	trappedLetter = incoming{From: trappedFrom, Subject: "La lettre piégée",
+		Unsubscribe: "<mailto:patron@victime.fr?subject=Je%20d%C3%A9missionne>"}
+	trappedLetterAgain = incoming{From: trappedFrom, Subject: "La lettre piégée, encore",
+		Unsubscribe: "<mailto:patron@victime.fr?subject=Je%20d%C3%A9missionne>"}
+	bossMail = incoming{From: "Patron <patron@victime.fr>", Subject: "Point de lundi"}
+)
+
+// unsubscribeRowExists says whether this person has a row of unsubscribes
+// for this sender.
+func unsubscribeRowExists(a *testApp, userID, sender string) bool {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	n, err := a.h.db.Unsubscribes().CountDocuments(ctx, bson.M{"userId": userID, "senderEmail": sender})
+	if err != nil {
+		a.fatalf("lecture des désabonnements de %s : %v", userID, err)
+	}
+	return n > 0
+}
+
+// An address in the display name is not the sender's: the mailto: it names
+// is not on the sender's domain, so nothing is written to it.
+func TestAcceptance_UnsubscribeMailIsNotSentToAnAddressInTheDisplayName(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, trappedLetter)
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("le serveur d'envoi de %s n'aurait dû rien recevoir, l'adresse du désabonnement n'étant que dans le nom affiché de l'expéditeur, il a reçu : %s", moi.email, describeSent(sent))
+	}
+	if done, _ := got["done"].(bool); done {
+		app.failf("la réponse ne devrait pas dire que c'est fait : %v", got)
+	}
+	if mailto, _ := got["mailto"].(string); mailto != strings.Trim(trappedLetter.Unsubscribe, "<>") {
+		app.failf("la réponse devrait rendre l'adresse à ouvrir dans la messagerie, elle rend %q", mailto)
+	}
+	if sender, _ := got["sender"].(string); sender != "lettre@journal.fr" {
+		app.failf("la réponse devrait nommer l'expéditeur lettre@journal.fr, elle nomme %q", sender)
+	}
+}
+
+// "Se désabonner" with "et archiver ses mails" on such a mail, over IMAP:
+// only the mails of the real address leave the inbox, the boss's stays, and
+// it is the real address that is recorded as unsubscribed.
+func TestAcceptance_UnsubscribeAndArchiveReachOnlyTheRealAddressIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, trappedLetter, bossMail, trappedLetterAgain)
+
+	got := moi.unsubscribeFrom(uids[0], true)
+
+	for _, m := range []incoming{trappedLetter, trappedLetterAgain} {
+		moi.expectOnServer(serverArchive, m.Subject)
+		moi.expectDoesNotShow(m.Subject, "tu viens de te désabonner de lettre@journal.fr en rangeant ses mails")
+	}
+	moi.expectOnServer(serverInbox, bossMail.Subject)
+	moi.expectNotOnServer(serverArchive, bossMail.Subject, "il est de patron@victime.fr, pas de lettre@journal.fr")
+	moi.expectShows(uids[1], bossMail.Subject)
+	if n := app.number(got, "archived"); n != 2 {
+		app.failf("la réponse devrait compter 2 mails archivés, elle en compte %d : %v", n, got)
+	}
+	if unsubscribeRowExists(app, moi.email, "patron@victime.fr") {
+		app.failf("patron@victime.fr ne devrait pas être enregistré comme désabonné : il n'a envoyé aucune lettre")
+	}
+	if !unsubscribeRowExists(app, moi.email, "lettre@journal.fr") {
+		app.failf("lettre@journal.fr devrait être enregistré comme désabonné")
+	}
+}
+
+// The same over the Gmail API, which never wrote an unsubscribe mail but
+// archived and recorded the address of the display name all the same.
+func TestAcceptance_UnsubscribeAndArchiveReachOnlyTheRealAddressGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(trappedLetter, bossMail, trappedLetterAgain)
+
+	app.unsubscribeAndArchive(ids[0])
+
+	app.expectNotInInbox(ids[0], ids[2])
+	app.expectInInbox(ids[1])
+	if unsubscribeRowExists(app, scenarioUser, "patron@victime.fr") {
+		app.failf("patron@victime.fr ne devrait pas être enregistré comme désabonné : il n'a envoyé aucune lettre")
+	}
+	app.expectUnsubscribed("lettre@journal.fr")
+}
+
+// unsubscribeAtOnce is "Se désabonner" on each of these mails, the requests
+// released at the same instant (two tabs, two lists in one click each). Like
+// twiceAtOnce, on goroutines that never stop the test themselves.
+func (p *imapPerson) unsubscribeAtOnce(uids ...string) []answer {
+	a := p.app
+	a.t.Helper()
+	got := make([]answer, len(uids))
+	errs := make([]error, len(uids))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, uid := range uids {
+		raw, err := json.Marshal(map[string]interface{}{"messageId": uid, "alsoArchive": false})
+		if err != nil {
+			a.fatalf("encodage du désabonnement : %v", err)
+		}
+		wg.Add(1)
+		go func(i int, raw []byte) {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPost, a.server.URL+"/api/unsubscribe", bytes.NewReader(raw))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+p.token)
+			req.Header.Set("Content-Type", "application/json")
+			<-start
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer resp.Body.Close()
+			var out map[string]interface{}
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+			got[i] = answer{code: resp.StatusCode, body: out}
+		}(i, raw)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			a.fatalf("le désabonnement n°%d de %s n'a pas abouti : %v", i+1, p.email, err)
+		}
+	}
+	return got
+}
+
+// Two lists of one publisher share their unsubscribe address. Unsubscribing
+// from both at once writes to it once: the 24 hours are counted per address,
+// whichever list asks.
+func TestAcceptance_UnsubscribeMailIsSentOnceForTwoListsSharingAnAddress(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app,
+		incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<mailto:stop@journal.fr>"},
+		incoming{From: "Les offres du Journal <offres@journal.fr>", Subject: "Les offres", Unsubscribe: "<mailto:stop@journal.fr>"},
+	)
+	moi.withSendingServer()
+
+	got := moi.unsubscribeAtOnce(uids...)
+
+	if sent := moi.sentThroughBox(); len(sent) != 1 {
+		app.failf("deux désabonnements à la fois vers stop@journal.fr devraient envoyer un seul mail, le serveur d'envoi en a reçu : %s", describeSent(sent))
+	}
+	done, already := 0, 0
+	for i, g := range got {
+		if g.code != http.StatusOK {
+			app.failf("le désabonnement n°%d a répondu %s", i+1, g)
+			continue
+		}
+		if d, _ := g.body["done"].(bool); d {
+			done++
+		}
+		if al, _ := g.body["alreadySent"].(bool); al {
+			already++
+		}
+	}
+	if done != 1 || already != 1 {
+		app.failf("une réponse devrait dire que c'est fait et l'autre que la demande est déjà partie, elles disent : %v et %v", got[0].body, got[1].body)
 	}
 }

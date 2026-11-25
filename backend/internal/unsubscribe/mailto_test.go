@@ -112,6 +112,12 @@ func TestParseMailtoRefuses(t *testing.T) {
 		{"a line break in the address", "mailto:a@example.com%0D%0ABcc:b@example.com", ErrBadRecipient},
 		{"a line break in the subject", "mailto:a@example.com?subject=a%0D%0ABcc:%20x@evil.example", ErrBadSubject},
 		{"a tab in the subject", "mailto:a@example.com?subject=a%09b", ErrBadSubject},
+		{"a right-to-left override in the subject", "mailto:a@example.com?subject=a%E2%80%AEb", ErrBadSubject},
+		{"a zero-width space in the subject", "mailto:a@example.com?subject=a%E2%80%8Bb", ErrBadSubject},
+		{"a zero-width joiner in the subject", "mailto:a@example.com?subject=a%E2%80%8Db", ErrBadSubject},
+		{"a byte order mark in the subject", "mailto:a@example.com?subject=%EF%BB%BFstop", ErrBadSubject},
+		{"a line separator in the subject", "mailto:a@example.com?subject=a%E2%80%A8b", ErrBadSubject},
+		{"a paragraph separator in the subject", "mailto:a@example.com?subject=a%E2%80%A9b", ErrBadSubject},
 		{"a subject over MaxSubject characters", "mailto:a@example.com?subject=" + strings.Repeat("a", MaxSubject+1), ErrBadSubject},
 		{"a broken escape", "mailto:a@example.com?subject=%zz", ErrBadEncoding},
 	}
@@ -201,6 +207,48 @@ func TestForSender(t *testing.T) {
 			name:   "a sender without a domain matches nothing",
 			mailto: "mailto:stop@journal.fr",
 			sender: "lettre",
+			err:    ErrBadSender,
+		},
+		{
+			name:   "an address hidden in the display name is not the sender",
+			mailto: "mailto:patron@victime.fr?subject=stop",
+			sender: `"<patron@victime.fr>" <lettre@journal.fr>`,
+			err:    ErrOtherDomain,
+		},
+		{
+			name:   "the same, unquoted",
+			mailto: "mailto:patron@victime.fr",
+			sender: `Patron <patron@victime.fr> <lettre@journal.fr>`,
+			err:    ErrBadSender,
+		},
+		{
+			name:   "the real address behind such a display name still unsubscribes at home",
+			mailto: "mailto:desabonnement@journal.fr",
+			sender: `"<patron@victime.fr>" <lettre@journal.fr>`,
+			want:   Request{To: "desabonnement@journal.fr", Subject: DefaultSubject},
+		},
+		{
+			name:   "a From of two addresses",
+			mailto: "mailto:stop@journal.fr",
+			sender: "Journal <lettre@journal.fr>, Autre <x@journal.fr>",
+			err:    ErrBadSender,
+		},
+		{
+			name:   "an empty From",
+			mailto: "mailto:stop@journal.fr",
+			sender: "",
+			err:    ErrBadSender,
+		},
+		{
+			name:   "two IP addresses are no shared domain",
+			mailto: "mailto:stop@10.0.0.1",
+			sender: "lettre@192.168.0.1",
+			err:    ErrOtherDomain,
+		},
+		{
+			name:   "two domain literals are no shared domain",
+			mailto: "mailto:stop@[10.0.0.1]",
+			sender: "lettre@[10.0.0.1]",
 			err:    ErrOtherDomain,
 		},
 		{
@@ -238,6 +286,11 @@ func TestSameRegistrableDomain(t *testing.T) {
 		{"a@fr", "b@fr", false},
 		{"a@co.uk", "b@co.uk", false},
 		{"a@", "b@", false},
+		{"a@10.0.0.1", "b@192.168.0.1", false},
+		{"a@10.0.0.1", "b@10.0.0.1", false},
+		{"a@[10.0.0.1]", "b@[10.0.0.1]", false},
+		{"a@[IPv6:2001:db8::1]", "b@[IPv6:2001:db8::1]", false},
+		{"a@2001:db8::1", "b@2001:db8::1", false},
 		{"", "", false},
 	}
 	for _, tc := range cases {

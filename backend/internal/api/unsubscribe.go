@@ -117,6 +117,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	status := "opened"
 	done := false
 	sentTo := ""
+	var sentAt time.Time
 	alreadySent := false
 
 	switch {
@@ -137,14 +138,14 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		sendCtx, cancelSend := context.WithTimeout(r.Context(), unsubscribeSendBudget)
-		to, err := h.sendUnsubscribeMail(sendCtx, account, userEmail, senderAddr, mailto)
+		to, at, err := h.sendUnsubscribeMail(sendCtx, account, userEmail, from, mailto)
 		cancelSend()
 		var already *alreadySentError
 		switch {
 		case err == nil:
 			// Sent: the client has nothing left to open, and opening the
 			// person's mail program on it would write the request twice.
-			status, done, mailto, sentTo = "done", true, "", to
+			status, done, mailto, sentTo, sentAt = "done", true, "", to, at
 		case errors.As(err, &already):
 			// Written already, a moment ago: nothing to open either.
 			status, mailto, sentTo, alreadySent = "done", "", already.to, true
@@ -162,15 +163,20 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	// On its own clock: the archive may have used the request's.
 	recordCtx, cancelRecord := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancelRecord()
+	record := bson.M{
+		"method":     method,
+		"status":     status,
+		"senderName": senderName,
+		"updatedAt":  time.Now(),
+	}
+	if !sentAt.IsZero() {
+		// Who was written to in the person's name, and when.
+		record["sentTo"], record["sentAt"] = sentTo, sentAt
+	}
 	if _, err := h.db.Unsubscribes().UpdateOne(recordCtx,
 		bson.M{"userId": userEmail, "senderEmail": senderAddr},
 		bson.M{
-			"$set": bson.M{
-				"method":     method,
-				"status":     status,
-				"senderName": senderName,
-				"updatedAt":  time.Now(),
-			},
+			"$set": record,
 			"$setOnInsert": bson.M{
 				"userId":      userEmail,
 				"senderEmail": senderAddr,
@@ -262,94 +268,80 @@ func (e *alreadySentError) Error() string {
 
 // sendUnsubscribeMail writes the mail a list's mailto: asks for, from the
 // mailbox's own address (the one subscribed), through the mailbox's sending
-// server: the recap's way out. It returns the address it wrote to.
+// server: the recap's way out. from is the From header of the mail that
+// carries the mailto:. It returns the address it wrote to, and when.
 //
 // Nobody sees this mail before it leaves, from the person's real address,
 // and the header that asks for it was written by whoever sent the mail. So it
-// is written only to an address on the sender's own registrable domain, with
-// a subject of one short line and a body that is always the same
-// (unsubscribe.ForSender; errNotWrittenForYou otherwise), and only once per
-// address in unsubscribeResendWindow (alreadySentError), counted on the
-// sender's row of unsubscribes, which keeps where it went (sentTo) and when
-// (sentAt).
-func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAccount, userEmail, senderAddr, mailto string) (string, error) {
-	request, err := unsubscribe.ForSender(mailto, senderAddr)
+// is written only to an address on the registrable domain of the sender's
+// real address (never one in its display name), with a subject of one short
+// line and a body that is always the same (unsubscribe.ForSender;
+// errNotWrittenForYou otherwise), and only once per address in
+// unsubscribeResendWindow (claimUnsubscribeMail; alreadySentError otherwise).
+func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAccount, userEmail, from, mailto string) (string, time.Time, error) {
+	request, err := unsubscribe.ForSender(mailto, from)
 	if err != nil {
-		log.Printf("unsubscribe: the mailto of %s is not written for %s, handed to the screen: %v", senderAddr, userEmail, err)
-		return "", fmt.Errorf("%w: %w", errNotWrittenForYou, err)
+		log.Printf("unsubscribe: the mailto of %q is not written for %s, handed to the screen: %v", from, userEmail, err)
+		return "", time.Time{}, fmt.Errorf("%w: %w", errNotWrittenForYou, err)
 	}
 	to := strings.ToLower(request.To)
 	now := time.Now().Truncate(time.Millisecond)
-	claimed, sentTo, err := h.claimUnsubscribeMail(ctx, userEmail, senderAddr, to, now)
+	claimed, err := h.claimUnsubscribeMail(ctx, userEmail, to, now)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if !claimed {
-		return "", &alreadySentError{to: sentTo}
+		return "", time.Time{}, &alreadySentError{to: to}
 	}
-	from := account.Username
+	sender := account.Username
 	message := mailer.Build(mailer.Message{
-		From:    from,
+		From:    sender,
 		To:      to,
 		Subject: request.Subject,
 		Text:    unsubscribe.Body,
 		Date:    now,
-		ID:      mailer.MessageID(rand.Text(), from),
+		ID:      mailer.MessageID(rand.Text(), sender),
 	})
 	if err := h.sendThroughBox(ctx, account, to, message); err != nil {
 		// Not sent: the window must not refuse the next try. On a clock of
 		// its own, the send's may be spent.
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, rErr := h.db.Unsubscribes().UpdateOne(releaseCtx,
-			bson.M{"userId": userEmail, "senderEmail": senderAddr, "sentAt": now},
-			bson.M{"$unset": bson.M{"sentTo": "", "sentAt": ""}},
+		if _, rErr := h.db.UnsubscribeMails().DeleteOne(releaseCtx,
+			bson.M{"userId": userEmail, "address": to, "sentAt": now},
 		); rErr != nil {
 			log.Printf("unsubscribe: the mail to %s for %s did not leave, and the next try stays refused for 24 h: %v", to, userEmail, rErr)
 		}
-		return "", err
+		return "", time.Time{}, err
 	}
-	return to, nil
+	return to, now, nil
 }
 
-// claimUnsubscribeMail reserves the unsubscribe mail to `to` for this person,
-// at now, on the row of the sender in unsubscribes. It answers false, with
-// the address the earlier mail went to, when a mail to that address left for
-// them less than unsubscribeResendWindow ago, whatever the sender, or when
-// one left for this sender in that time (the row is unique per sender, so of
-// two clicks at once only one writes).
-func (h *Handler) claimUnsubscribeMail(ctx context.Context, userEmail, senderAddr, to string, now time.Time) (bool, string, error) {
+// claimUnsubscribeMail reserves, at now, the unsubscribe mail to the address
+// `to` for this person: one document per address in unsubscribe_mails,
+// unique on (userId, address), whose sentAt is set only when it is older than
+// unsubscribeResendWindow. false when a mail to that address left for them in
+// that time, whatever the sender: two lists sharing one unsubscribe address,
+// or two clicks at once, write once. A document from before the window is
+// taken over; when there is none, the upsert creates it, and the unique index
+// lets only one of two concurrent upserts do so.
+func (h *Handler) claimUnsubscribeMail(ctx context.Context, userEmail, to string, now time.Time) (bool, error) {
 	since := now.Add(-unsubscribeResendWindow)
-	n, err := h.db.Unsubscribes().CountDocuments(ctx, bson.M{"userId": userEmail, "sentTo": to, "sentAt": bson.M{"$gte": since}})
-	if err != nil {
-		return false, "", fmt.Errorf("look for an unsubscribe mail to %s already sent: %w", to, err)
-	}
-	if n > 0 {
-		return false, to, nil
-	}
-	_, err = h.db.Unsubscribes().UpdateOne(ctx,
-		bson.M{"userId": userEmail, "senderEmail": senderAddr, "sentAt": bson.M{"$not": bson.M{"$gte": since}}},
+	_, err := h.db.UnsubscribeMails().UpdateOne(ctx,
+		bson.M{"userId": userEmail, "address": to, "sentAt": bson.M{"$not": bson.M{"$gte": since}}},
 		bson.M{
-			"$set":         bson.M{"sentTo": to, "sentAt": now},
+			"$set":         bson.M{"sentAt": now},
 			"$setOnInsert": bson.M{"createdAt": now},
 		},
 		options.Update().SetUpsert(true),
 	)
 	if mongo.IsDuplicateKeyError(err) {
-		// The sender's row holds a recent mail: say where it went.
-		var row models.Unsubscribe
-		if fErr := h.db.Unsubscribes().FindOne(ctx, bson.M{"userId": userEmail, "senderEmail": senderAddr}).Decode(&row); fErr != nil || row.SentTo == "" {
-			if fErr != nil {
-				log.Printf("unsubscribe: read where the last unsubscribe mail of %s to %s went: %v", userEmail, senderAddr, fErr)
-			}
-			return false, to, nil
-		}
-		return false, row.SentTo, nil
+		return false, nil
 	}
 	if err != nil {
-		return false, "", fmt.Errorf("reserve the unsubscribe mail to %s: %w", to, err)
+		return false, fmt.Errorf("reserve the unsubscribe mail to %s: %w", to, err)
 	}
-	return true, to, nil
+	return true, nil
 }
 
 // archiveBySender archives every stored email sent from senderAddr, whatever

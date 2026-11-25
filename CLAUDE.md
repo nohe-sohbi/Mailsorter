@@ -213,7 +213,7 @@ in its package doc:
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses. `SendingServer` is where a connected IMAP mailbox sends from: the server recorded on its row, or that route's in the catalog for a row from before | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `SendingServer`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
 | `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `IMAPIsStarred`, `Folder*`, `Flag*`, and `MatchLabel` / `LabelKey`: a label the model proposed matched with one the user has (case, accents and a plural aside, never a part of a name) |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
-| `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched. Plus the mail Mailsorter may write, unseen, from the person's address, for a `mailto:` of it (RFC 6068): exactly one plain address, on the sender's own registrable domain, a subject of one line of at most 100 characters, and always the same body; anything else is opened by the client instead | `Parse`, `SplitAngleList`, `Links`, `ParseMailto`, `ForSender`, `SameRegistrableDomain`, `Request`, `Body` |
+| `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched. Plus the mail Mailsorter may write, unseen, from the person's address, for a `mailto:` of it (RFC 6068): exactly one plain address, on the registrable domain of the sender's real address (the From header read by `net/mail`, never its display name; no IP, no domain literal), a subject of one line of at most 100 characters with nothing unseen in it (no control, format or separator character), and always the same body; anything else is opened by the client instead | `Parse`, `SplitAngleList`, `Links`, `ParseMailto`, `ForSender`, `SameRegistrableDomain`, `Request`, `Body`, `ErrOtherDomain`, `ErrBadSender` |
 
 The outbound clients and primitives:
 
@@ -252,7 +252,7 @@ The outbound clients and primitives:
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
 | `protected.go` | VIP list CRUD and `protectedValues` lookup |
-| `unsubscribe.go` | `List-Unsubscribe` (RFC 2369) and one-click POST (RFC 8058), on both transports. The backlog is archived first, on the request's time; the unsubscribe after it, on its own (`unsubscribeSendBudget`). Over IMAP the headers are read from the stored inbox, and a `mailto:` that `unsubscribe.ForSender` accepts is sent from here (`sendUnsubscribeMail`, through `sendThroughBox`), at most once per address in 24 hours (`claimUnsubscribeMail`, on the `sentTo` / `sentAt` of the sender's `unsubscribes` row) |
+| `unsubscribe.go` | `List-Unsubscribe` (RFC 2369) and one-click POST (RFC 8058), on both transports. The backlog is archived first, on the request's time; the unsubscribe after it, on its own (`unsubscribeSendBudget`). Over IMAP the headers are read from the stored inbox, and a `mailto:` that `unsubscribe.ForSender` accepts is sent from here (`sendUnsubscribeMail`, through `sendThroughBox`), at most once per address in 24 hours, whichever list asks (`claimUnsubscribeMail`: one document per address in `unsubscribe_mails`, unique on the account and the address); the sender's `unsubscribes` row keeps `sentTo` / `sentAt` |
 | `history.go` | Action log view and undo |
 | `ledger.go` | `logAction` plus the `Source*` vocabulary. Read this before adding a mutating action |
 | `account.go` | Settings, usage, profile, activity and digest preview, `FreeMonthlyLimit = 200` and `analysisCapFor` (only free accounts of the hosted edition are capped) |
@@ -306,7 +306,7 @@ ran on a fresh Compose volume, never on CI, the scenarios or an existing databas
 
 `users`, `emails`, `labels`, `gmail_config` (legacy, read-only fallback),
 `ai_suggestions`, `sender_preferences`, `smart_labels`, `analysis_jobs`,
-`analysis_cache`, `usage`, `unsubscribes`, `sorting_rules`, `protected_senders`,
+`analysis_cache`, `usage`, `unsubscribes`, `unsubscribe_mails`, `sorting_rules`, `protected_senders`,
 `snoozes`, `action_log`, `saved_searches`, `waitlist`, `mail_accounts`,
 `ai_settings`.
 

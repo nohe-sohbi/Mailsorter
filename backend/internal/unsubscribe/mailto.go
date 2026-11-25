@@ -2,6 +2,7 @@ package unsubscribe
 
 import (
 	"errors"
+	"net"
 	"net/mail"
 	"net/url"
 	"strings"
@@ -53,7 +54,9 @@ var (
 	// differently from the way it was written.
 	ErrBadRecipient = errors.New("unsubscribe: the mailto address is not a plain address")
 	// ErrBadSubject is a subject longer than MaxSubject characters, or one
-	// that holds a line break or another control character.
+	// that holds a control character, a line or paragraph separator, or an
+	// invisible format character (a bidirectional override such as U+202E,
+	// a zero-width space): what a person would not see in it.
 	ErrBadSubject = errors.New("unsubscribe: the mailto subject is not one short line")
 	// ErrBadEncoding is a percent-encoding that does not decode.
 	ErrBadEncoding = errors.New("unsubscribe: the mailto link is not correctly encoded")
@@ -62,30 +65,44 @@ var (
 	// address elsewhere (a group to join, a third party) is a stranger
 	// choosing who the person writes to.
 	ErrOtherDomain = errors.New("unsubscribe: the mailto address is not on the sender's domain")
+	// ErrBadSender is a From header that is not exactly one address, as RFC
+	// 5322 reads it: who sent the mail is not known well enough to write on
+	// the person's behalf to an address of theirs.
+	ErrBadSender = errors.New("unsubscribe: the sender of the mail is not one plain address")
 )
 
-// ForSender reads the mailto: of a mail sent from sender (a bare address)
-// into the mail Mailsorter may write for it, or says why it may not.
+// ForSender reads the mailto: of a mail whose From header is from into the
+// mail Mailsorter may write for it, or says why it may not.
 //
-// Its address must be on the same registrable domain as the sender (the
-// public suffix plus one label, from the Public Suffix List, private
-// suffixes included): lettre@journal.fr may ask for desabonnement@journal.fr
-// or for stop@listes.journal.fr, never for anyone@googlegroups.com, and a
-// sender on foo.github.io never for bar.github.io.
-func ForSender(mailto, sender string) (Request, error) {
+// The sender is the address of the From header as RFC 5322 reads it
+// (net/mail), never an address in its display name, which the sender writes:
+// "<patron@victime.fr>" <lettre@journal.fr> is lettre@journal.fr. A header
+// that does not read as exactly one address is refused (ErrBadSender) rather
+// than guessed at. The mailto: address must be on the same registrable domain
+// as the sender (the public suffix plus one label, from the Public Suffix
+// List, private suffixes included): lettre@journal.fr may ask for
+// desabonnement@journal.fr or for stop@listes.journal.fr, never for
+// anyone@googlegroups.com, and a sender on foo.github.io never for
+// bar.github.io. An IP address or a domain literal is no registrable domain.
+func ForSender(mailto, from string) (Request, error) {
 	req, err := ParseMailto(mailto)
 	if err != nil {
 		return Request{}, err
 	}
-	if !SameRegistrableDomain(req.To, sender) {
+	sender, err := mail.ParseAddress(strings.TrimSpace(from))
+	if err != nil {
+		return Request{}, ErrBadSender
+	}
+	if !SameRegistrableDomain(req.To, sender.Address) {
 		return Request{}, ErrOtherDomain
 	}
 	return req, nil
 }
 
-// SameRegistrableDomain reports whether two addresses are on the same
+// SameRegistrableDomain reports whether two bare addresses are on the same
 // registrable domain (eTLD+1). An address whose domain has none (a bare
-// public suffix, no domain at all) matches nothing.
+// public suffix, no domain at all, an IP address or a domain literal such as
+// [192.0.2.1]) matches nothing.
 func SameRegistrableDomain(a, b string) bool {
 	da, okA := registrableDomain(a)
 	db, okB := registrableDomain(b)
@@ -98,7 +115,9 @@ func registrableDomain(address string) (string, bool) {
 		return "", false
 	}
 	domain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(address[at+1:])), ".")
-	if domain == "" {
+	// An IP is no name: the Public Suffix List would read 192.168.0.1 and
+	// 10.0.0.1 as the same "0.1".
+	if domain == "" || strings.ContainsAny(domain, "[]:") || net.ParseIP(domain) != nil {
 		return "", false
 	}
 	site, err := publicsuffix.EffectiveTLDPlusOne(domain)
@@ -177,11 +196,18 @@ func ParseMailto(raw string) (Request, error) {
 	}
 
 	subject = strings.TrimSpace(subject)
-	if utf8.RuneCountInString(subject) > MaxSubject || strings.IndexFunc(subject, unicode.IsControl) >= 0 {
+	if utf8.RuneCountInString(subject) > MaxSubject || strings.IndexFunc(subject, unseen) >= 0 {
 		return Request{}, ErrBadSubject
 	}
 	if subject == "" {
 		subject = DefaultSubject
 	}
 	return Request{To: to, Subject: subject}, nil
+}
+
+// unseen is a character a subject must not hold: a control character, a line
+// or paragraph separator (U+2028, U+2029), or an invisible format character
+// (U+202E and the other bidirectional controls, zero-width characters).
+func unseen(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
 }

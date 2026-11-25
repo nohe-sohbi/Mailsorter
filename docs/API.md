@@ -809,11 +809,21 @@ was written by whoever sent the newsletter, so it is written only when
 - the link names exactly one plain address (not in `to`, `cc` or `bcc` fields
   as well, no display name), on the same registrable domain as the sender (the
   public suffix plus one label: `lettre@journal.fr` may ask for
-  `desabonnement@journal.fr`, never for `groupe+subscribe@googlegroups.com`);
-- its `subject` is one line of at most 100 characters (`unsubscribe` when it
-  gives none). Its `body` is ignored: the text is always `unsubscribe`;
+  `desabonnement@journal.fr`, never for `groupe+subscribe@googlegroups.com`).
+  The sender is the address of the From header as RFC 5322 reads it, never an
+  address in its display name, which the sender writes:
+  `"<patron@victime.fr>" <lettre@journal.fr>` is `lettre@journal.fr`, and a
+  From that is not exactly one address writes nothing. An IP address or a
+  domain literal is no registrable domain;
+- its `subject` is one line of at most 100 characters, with no control,
+  format (U+202E, zero-width characters) or line and paragraph separator
+  characters (`unsubscribe` when it gives none). Its `body` is ignored: the
+  text is always `unsubscribe`;
 - no unsubscribe mail went to that address for this account in the last 24
-  hours (counted on the `unsubscribes` rows, which keep `sentTo` and `sentAt`).
+  hours, whichever list asked for it: one document per address in
+  `unsubscribe_mails`, unique on the account and the address, so two lists
+  sharing an address, or two clicks at once, write once. The sender's
+  `unsubscribes` row keeps where the mail went and when (`sentTo`, `sentAt`).
 
 Sent, the answer is `done: true`, `method: "mailto"`, an empty `mailto` (the
 client opens nothing) and `sentTo`, the address written to. Within the 24
@@ -1352,7 +1362,7 @@ Returns a single JSON document with everything Mailsorter stores about the
 caller: a **redacted** account profile (the same one as
 `GET /api/account/profile`), the current settings, plus every user-owned
 dataset (rules, protected senders, snoozes, suggestions, sender preferences,
-smart labels, unsubscribes, usage, action log, analysis jobs, saved searches,
+smart labels, unsubscribes, the unsubscribe mails written, usage, action log, analysis jobs, saved searches,
 the mailbox connection, the AI provider override, a Pro waitlist signup made
 while signed in, labels, and `emails`: the local mirror of the synced messages,
 decoded bodies included). Served as a downloadable attachment. The mailbox
@@ -1382,7 +1392,7 @@ that does not.
 
 Every dataset is a key, an empty list when the user has none: `rules`,
 `protectedSenders`, `snoozes`, `suggestions`, `senderPreferences`,
-`smartLabels`, `unsubscribes`, `usage`, `actionLog`, `analysisJobs`,
+`smartLabels`, `unsubscribes`, `unsubscribeMails`, `usage`, `actionLog`, `analysisJobs`,
 `savedSearches`, `mailAccounts`, `aiSettings`, `waitlist`, `labels`, `emails`.
 
 ### Delete account (RGPD / right to erasure)
