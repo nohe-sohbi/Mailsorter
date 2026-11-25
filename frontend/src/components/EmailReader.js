@@ -14,13 +14,18 @@ import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
 import { proposalText } from './hotel/InboxBits';
 
+// The address of a From header is its LAST "<...>": the display name before
+// it is the sender's to write, and may hold another address.
 function extractEmail(from) {
-  const match = from?.match(/<(.+)>/);
-  return match ? match[1] : from;
+  const open = from ? from.lastIndexOf('<') : -1;
+  if (open < 0) return from;
+  const close = from.indexOf('>', open);
+  return from.slice(open + 1, close < 0 ? undefined : close);
 }
 function extractName(from) {
-  const match = from?.match(/^(.+?)\s*</);
-  return match ? match[1].replace(/"/g, '').trim() : from;
+  const open = from ? from.lastIndexOf('<') : -1;
+  if (open <= 0) return from;
+  return from.slice(0, open).replace(/"/g, '').trim();
 }
 
 // Gmail's own labels are noise in a reader: the user knows the message is in

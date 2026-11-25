@@ -23,17 +23,24 @@ const MOVES = ['delete', 'archive', 'label'];
 
 export const idOf = (s) => s.id || s._id;
 
-// The bare address out of a From header, lowercased. It keys the group, and it
-// is what a sender rule matches (`From contains <address>` on the server).
+// The bare address out of a From header, lowercased: its LAST "<...>", where
+// a mail program writes the address. The display name before it is the
+// sender's to choose and may hold someone else's ("<boss@corp.com>"
+// <spam@evil.io>): read first, it grouped the spam with the boss's mail and
+// made a rule against the boss. It keys the group, and it is what a sender
+// rule matches (`From contains <address>` on the server).
 export function senderAddress(from = '') {
-  const angle = from.match(/<([^>]+)>/);
-  return (angle ? angle[1] : from).trim().toLowerCase();
+  const open = from.lastIndexOf('<');
+  if (open < 0) return from.trim().toLowerCase();
+  const close = from.indexOf('>', open);
+  return from.slice(open + 1, close < 0 ? undefined : close).trim().toLowerCase();
 }
 
 // The display name out of a From header, without the quotes RFC 5322 wraps it
 // in, falling back to the address.
 export function senderName(from = '') {
-  const name = from.split('<')[0].replace(/"/g, '').trim();
+  const open = from.lastIndexOf('<');
+  const name = (open < 0 ? from : from.slice(0, open)).replace(/"/g, '').trim();
   return name || senderAddress(from) || 'Expéditeur inconnu';
 }
 
