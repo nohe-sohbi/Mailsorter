@@ -62,6 +62,8 @@ const SHORTCUTS = [
   ['Suppr / Retour arrière', 'Supprimer'],
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
+  // Once the mailbox is known: a folder over IMAP, a label over Gmail.
+  ['L', 'Classer la sélection (ou le mail, en mode tri)', 'mailbox'],
   // Once the mailbox is known, like the reader's star (see flagAction).
   ['S', 'Mettre en favori', 'mailbox'],
   ['A', 'Ranger les suggestions sûres'],
@@ -808,6 +810,10 @@ function Inbox() {
         let protectedSkipped = 0;
         let reversible = false;
         let hardError = null;
+        // The folder a label went into over IMAP, as the server settled it
+        // ("facture" into "Factures"), and why some were not filed.
+        let filedAs = labelName;
+        let refusal = '';
         for (const chunk of chunks) {
           // Each chunk is caught on its own. A single try around the loop meant
           // a second chunk failing threw away everything the first one had
@@ -820,6 +826,8 @@ function Inbox() {
             failed += data.failed || 0;
             protectedSkipped += data.protectedSkipped || 0;
             reversible = reversible || Boolean(data.reversible);
+            if (data.labelName) filedAs = data.labelName;
+            if (data.message) refusal = data.message;
           } catch (err) {
             failed += chunk.length;
             hardError = err;
@@ -829,9 +837,10 @@ function Inbox() {
         track('bulk_selection', { action, applied: applied.length });
         bumpGamify(applied.length);
 
-        // Archiving and trashing take the message out of the inbox view; a
-        // label or a read flag does not.
-        if (action === 'archive' || action === 'delete') {
+        // Archiving and trashing take the message out of the inbox view, and
+        // so does a label over IMAP, which files it in a folder; a Gmail label
+        // or a read flag does not.
+        if (action === 'archive' || action === 'delete' || (action === 'label' && isImap)) {
           removeEmails(applied);
           plan.settle(applied);
         } else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
@@ -849,7 +858,11 @@ function Inbox() {
 
         setSelectedEmails([]);
 
-        const parts = [`${applied.length} email${plural(applied.length)} ${pastParticiple(action, applied.length)}`];
+        const parts = [
+          `${applied.length} email${plural(applied.length)} ${pastParticiple(action, applied.length, { folders: isImap })}${
+            action === 'label' ? labelPlace(filedAs, { folders: isImap }) : ''
+          }`,
+        ];
         if (data.protectedSkipped)
           parts.push(`${data.protectedSkipped} protégé${plural(data.protectedSkipped)} ignoré${plural(data.protectedSkipped)}`);
         if (alreadyOut.length)
@@ -865,7 +878,9 @@ function Inbox() {
         } else if (applied.length === 0) {
           toast.error(
             hardError
-              ? hardError.response?.data?.trim?.() || "L'action groupée a échoué."
+              ? apiError(hardError, "L'action groupée a échoué.")
+              : refusal
+              ? refusal
               : data.protectedSkipped
               ? 'Aucun email traité : tous sont protégés.'
               : "Aucun email n'a pu être traité."
@@ -897,7 +912,10 @@ function Inbox() {
           toast.success(message);
         }
         if (data.failed && (applied.length > 0 || alreadyOut.length > 0)) {
-          toast.error(`${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`);
+          toast.error(
+            refusal ||
+              `${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`
+          );
         }
       } catch (err) {
         toast.error(err.response?.data?.trim?.() || "L'action groupée a échoué.");
@@ -906,7 +924,7 @@ function Inbox() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedEmails, confirm, activeQuery]
+    [selectedEmails, confirm, activeQuery, isImap]
   );
 
   // Snooze the whole selection to one wake time. Same chunking as runBulk (the
@@ -1096,6 +1114,27 @@ function Inbox() {
     }
   }, [triageIndex, triageIds, emails]);
 
+  // The current mail of the triage left the inbox: it leaves the triage too,
+  // and the next one opens, or the triage ends.
+  const leaveTriageItem = (currentId) => {
+    setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
+    const nextIds = triageIds.filter((id) => id !== currentId);
+    setTriageIds(nextIds);
+
+    if (nextIds.length === 0) {
+      setTriageMode(false);
+      setSelectedEmail(null);
+      toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
+      return;
+    }
+
+    const nextIdx = Math.min(triageIndex, nextIds.length - 1);
+    setTriageIndex(nextIdx);
+    const nextId = nextIds[nextIdx];
+    const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
+    setSelectedEmail(nextEmail);
+  };
+
   const handleTriageAction = useCallback(
     async (action) => {
       const currentId = triageIds[triageIndex];
@@ -1103,23 +1142,7 @@ function Inbox() {
       const cur = emails.find((e) => e.messageId === currentId) || { messageId: currentId };
 
       directAction(cur, action);
-
-      setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
-      const nextIds = triageIds.filter((id) => id !== currentId);
-      setTriageIds(nextIds);
-
-      if (nextIds.length === 0) {
-        setTriageMode(false);
-        setSelectedEmail(null);
-        toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
-        return;
-      }
-
-      const nextIdx = Math.min(triageIndex, nextIds.length - 1);
-      setTriageIndex(nextIdx);
-      const nextId = nextIds[nextIdx];
-      const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
-      setSelectedEmail(nextEmail);
+      leaveTriageItem(currentId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [triageIds, triageIndex, emails, directAction]
@@ -1363,6 +1386,11 @@ function Inbox() {
           handleAiAnalyzeSingle(openEmail);
           return;
         }
+        if ((e.key === 'l' || e.key === 'L') && known) {
+          e.preventDefault();
+          setTriageLabeling(true);
+          return;
+        }
         if (e.key === 'j' || e.key === 'ArrowRight') {
           e.preventDefault();
           handleTriageNext();
@@ -1384,6 +1412,12 @@ function Inbox() {
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
       if (e.key === 'r') { handleSync(); return; }
       if (e.key === 'a' && plan.totals.sure > 0) { plan.applyAll(); return; }
+      // "Classer" (a folder over IMAP) or "Étiqueter" the selection.
+      if ((e.key === 'l' || e.key === 'L') && known && selectedEmails.length > 0 && can('label')) {
+        e.preventDefault();
+        setLabelPickerOpen(true);
+        return;
+      }
       if (view !== 'emails' || emails.length === 0) return;
 
       const cur = emails[focusedIndex];
@@ -1488,10 +1522,10 @@ function Inbox() {
               onPrev: handleTriagePrev,
               onNext: handleTriageNext,
               onKeep: handleTriageKeep,
-              // Labelling by hand goes through the batch route, Gmail API
-              // only: closed over IMAP, where only the AI's proposal files a
-              // mail in a folder so far.
-              onLabel: fullFeatures ? () => setTriageLabeling(true) : undefined,
+              // Labelling by hand goes through the batch route, on both
+              // transports once the mailbox is known: over IMAP it files the
+              // mail in a folder.
+              onLabel: known ? () => setTriageLabeling(true) : undefined,
             }
           : null
       }
@@ -1860,11 +1894,11 @@ function Inbox() {
                     </button>
                     {/* The actions over a selection go through the batch
                         route, on both transports once the mailbox is known.
-                        Labelling is the exception: an IMAP mailbox has no
-                        labels, so the button follows can('label'). */}
+                        Over IMAP a label is a folder: "Classer" files the
+                        selection there (actionMeta with folders). */}
                     {known && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
                   {known && BULK_ACTIONS.filter((key) => key !== 'label' || can('label')).map((key) => {
-                    const meta = actionMeta(key);
+                    const meta = actionMeta(key, { folders: isImap });
                     return (
                       <button
                         key={key}
@@ -2169,9 +2203,10 @@ function Inbox() {
                           {prefMeta.label}
                         </span>
                         {/* The auto-pilot applies this verdict at each sort,
-                            on both transports, but a label has nothing to land
-                            on over IMAP: that one is not offered there. */}
-                        {known && canApplyVerdict(pref.defaultAction, !fullFeatures) && (
+                            on both transports (over IMAP a label files into
+                            the folder of that name), once the mailbox is
+                            known (canApplyVerdict). */}
+                        {known && canApplyVerdict(pref.defaultAction, known) && (
                         <button
                           onClick={() => handleToggleAutoApply(sender)}
                           aria-pressed={Boolean(pref.autoApply)}
@@ -2336,10 +2371,12 @@ function Inbox() {
           ))}
       </div>
 
-      {/* Label picker for the bulk "Étiqueter" action and triage mode */}
+      {/* Label picker for the bulk "Étiqueter" ("Classer" over IMAP) action
+          and triage mode */}
       <LabelPicker
         open={labelPickerOpen || triageLabeling}
         count={triageLabeling ? 1 : selectedEmails.length}
+        folders={isImap}
         onClose={() => {
           setLabelPickerOpen(false);
           setTriageLabeling(false);
@@ -2350,11 +2387,27 @@ function Inbox() {
             const currentId = triageIds[triageIndex];
             if (currentId) {
               try {
-                await emailService.batchAction([currentId], 'label', name);
-                toast.success(`Étiquette "${name}" appliquée`);
-                handleTriageNext();
-              } catch {
-                toast.error("Impossible d'appliquer l'étiquette");
+                const { data } = await emailService.batchAction([currentId], 'label', name);
+                if (!(data.applied || []).length) {
+                  toast.error(
+                    data.message ||
+                      (data.protectedSkipped ? 'Expéditeur protégé : action ignorée.' : "Impossible de classer cet email")
+                  );
+                  return;
+                }
+                toast.success(
+                  `${actionMeta('label', { folders: isImap }).past}${labelPlace(data.labelName || name, { folders: isImap })}`
+                );
+                if (isImap) {
+                  // Filed in a folder: out of the inbox, as an archive.
+                  removeEmails([currentId]);
+                  plan.settle([currentId]);
+                  leaveTriageItem(currentId);
+                } else {
+                  handleTriageNext();
+                }
+              } catch (err) {
+                toast.error(apiError(err, "Impossible de classer cet email"));
               }
             }
           } else {
@@ -2428,8 +2481,9 @@ function Inbox() {
 
 // LabelPicker offers the user's real Gmail labels while still allowing a new
 // one: /api/labels existed and was never called, so labelling meant typing a
-// name blind and hoping it matched.
-function LabelPicker({ open, count, onClose, onPick }) {
+// name blind and hoping it matched. Over IMAP (`folders`) the same route lists
+// the mailbox's own folders, and a label is a folder: the words say so.
+function LabelPicker({ open, count, folders = false, onClose, onPick }) {
   const [labels, setLabels] = useState(null);
   const [value, setValue] = useState('');
   const inputRef = useRef(null);
@@ -2457,21 +2511,25 @@ function LabelPicker({ open, count, onClose, onPick }) {
     <Modal
       open={open}
       onClose={onClose}
-      title="Étiqueter la sélection"
-      description={`${count} email${count > 1 ? 's' : ''} recevront ce libellé.`}
+      title={folders ? 'Classer la sélection' : 'Étiqueter la sélection'}
+      description={
+        folders
+          ? `${count} email${count > 1 ? 's' : ''} ${count > 1 ? 'iront' : 'ira'} dans ce dossier.`
+          : `${count} email${count > 1 ? 's' : ''} recevront ce libellé.`
+      }
       size="sm"
       initialFocusRef={inputRef}
       footer={
         <>
           <button onClick={onClose} className="btn-secondary w-full sm:w-auto">Annuler</button>
           <button onClick={() => onPick(trimmed)} disabled={!trimmed} className="btn-primary w-full sm:w-auto">
-            <Tag size={16} /> Étiqueter
+            <Tag size={16} /> {folders ? 'Classer' : 'Étiqueter'}
           </button>
         </>
       }
     >
       <label className="block">
-        <span className="mb-1.5 block text-sm font-semibold text-ink-700">Libellé</span>
+        <span className="mb-1.5 block text-sm font-semibold text-ink-700">{folders ? 'Dossier' : 'Libellé'}</span>
         <input
           ref={inputRef}
           list="mailsorter-labels"
@@ -2492,7 +2550,7 @@ function LabelPicker({ open, count, onClose, onPick }) {
       </label>
       {isNew && (
         <p className="mt-2 text-xs text-muted">
-          <span className="font-semibold text-caution-700">Nouveau libellé</span> : « {trimmed} » sera créé dans votre boîte.
+          <span className="font-semibold text-caution-700">{folders ? 'Nouveau dossier' : 'Nouveau libellé'}</span> : « {trimmed} » sera créé dans votre boîte.
         </p>
       )}
       {labels && labels.length > 0 && (

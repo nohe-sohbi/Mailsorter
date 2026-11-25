@@ -5,10 +5,11 @@
 // the landing must not promise them to someone who can only connect a
 // mailbox. Porting a feature to IMAP is deleting its line here: the corridor
 // badges, the key-board legend, the hall, the demo and the "Outlook" answer
-// all follow. Classifying left it: over IMAP the AI's proposal files the mail
-// in the folder of that name (internal/mailbox/imap.go). Classifying a
-// selection by hand, and the rules' "Étiqueter", still go through the Gmail
-// API: the screens keep those closed on `fullFeatures`, not on this list.
+// all follow. Classifying left it: over IMAP the AI's proposal, a selection
+// classified by hand and a sender's auto-pilot file the mail in the folder of
+// that name (internal/mailbox/imap.go). The rules' "Étiqueter" still goes
+// through the Gmail API: that screen keeps it closed on `fullFeatures`, not
+// on this list.
 // Each label carries its article, because it is used inside sentences.
 export const GMAIL_ONLY = {
   rules: 'les règles',
