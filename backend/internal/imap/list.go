@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/mail"
 	"net/textproto"
 	"strconv"
 	"strings"
@@ -211,12 +212,18 @@ func flagNames(flags []imapv2.Flag) []string {
 // formatAddress renders a sender the way the rest of the app expects to read
 // one: "Name <address>", the form a mail header uses, which is what the Gmail
 // path stores and what extractSenderAddress and extractSenderName parse back.
+//
+// The address is written the way net/mail reads it back: its local part in
+// quotes when it is not a dot-atom. go-imap hands the local part unquoted, so
+// "<boss@corp.com>"@evil.io came back as <boss@corp.com>@evil.io, which no
+// parser reads as evil.io's address, and a reader falling back on the last
+// "<...>" took it for boss@corp.com.
 func formatAddress(addrs []imapv2.Address) string {
 	if len(addrs) == 0 {
 		return ""
 	}
 	a := addrs[0]
-	addr := a.Addr()
+	addr := addrSpec(a)
 	if a.Name == "" {
 		return addr
 	}
@@ -231,6 +238,17 @@ func formatAddress(addrs []imapv2.Address) string {
 	// stores it.
 	name := strings.ReplaceAll(strings.ReplaceAll(a.Name, `\`, `\\`), `"`, `\"`)
 	return `"` + name + `" <` + addr + `>`
+}
+
+// addrSpec is the address of a, as an RFC 5322 addr-spec: the local part
+// quoted when it needs to be (net/mail's own rule), "" when a has none.
+func addrSpec(a imapv2.Address) string {
+	addr := a.Addr()
+	if addr == "" {
+		return ""
+	}
+	spec := (&mail.Address{Address: addr}).String()
+	return strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
 }
 
 func addressList(addrs []imapv2.Address) []string {

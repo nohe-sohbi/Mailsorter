@@ -11,7 +11,7 @@ func TestExtractDomain(t *testing.T) {
 	cases := map[string]string{
 		"Acme <hello@acme.com>": "acme.com",
 		"hello@acme.com":        "acme.com",
-		"no-at-sign":            "no-at-sign",
+		"no-at-sign":            "",
 		`"Big Co" <a@b.co.uk>`:  "b.co.uk",
 		// The display name is the sender's to choose.
 		`"<patron@victime.fr>" <lettre@journal.fr>`: "journal.fr",
@@ -43,13 +43,17 @@ func TestExtractSenderAddress(t *testing.T) {
 	cases := map[string]string{
 		"Acme <hello@acme.com>": "hello@acme.com",
 		"  bare@acme.com  ":     "bare@acme.com",
-		"Name <x@y.com> trail":  "x@y.com",
+		// A header that does not read as one address gives none: nothing is
+		// guessed out of it.
+		"Name <x@y.com> trail": "",
 		// The bug this guards: the first "<...>" is in the display name, which
 		// the sender writes, and unsubscribing wrote to that address.
 		`"<patron@victime.fr>" <lettre@journal.fr>`:        "lettre@journal.fr",
 		`"Patron <patron@victime.fr>" <lettre@journal.fr>`: "lettre@journal.fr",
-		`<patron@victime.fr> <lettre@journal.fr>`:          "lettre@journal.fr",
-		`Lettre <Lettre@Journal.fr>`:                       "Lettre@Journal.fr",
+		`<patron@victime.fr> <lettre@journal.fr>`:          "",
+		// A quoted local part is the sender's own address, quoted again.
+		`"<patron@victime.fr>"@evil.io`: `"<patron@victime.fr>"@evil.io`,
+		`Lettre <Lettre@Journal.fr>`:    "Lettre@Journal.fr",
 	}
 	for in, want := range cases {
 		if got := extractSenderAddress(in); got != want {

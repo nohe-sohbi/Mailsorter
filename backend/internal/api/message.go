@@ -10,6 +10,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -136,6 +137,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 		opts,
 	)
 
+	view.SenderAddress = protect.Address(view.From)
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -227,8 +229,7 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 		opts,
 	)
 
-	writeJSON(w, http.StatusOK, messageView{
-		Email:    msg.Email,
-		BodyHTML: msg.HTML,
-	})
+	view := messageView{Email: msg.Email, BodyHTML: msg.HTML}
+	view.SenderAddress = protect.Address(view.From)
+	writeJSON(w, http.StatusOK, view)
 }

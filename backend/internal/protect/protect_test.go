@@ -7,16 +7,26 @@ func TestNormalizeAddress(t *testing.T) {
 		"Acme <hi@acme.com>":            "hi@acme.com",
 		`"Jane Doe" <Jane@Example.COM>`: "jane@example.com",
 		"  bob@host.org  ":              "bob@host.org",
-		"No Address Here":               "no address here",
-		"Broken <unterminated":          "unterminated",
 		"":                              "",
 		// The display name is the sender's: an address in it is not theirs.
 		`"<boss@corp.com>" <spam@evil.io>`:         "spam@evil.io",
 		`"Boss <boss@corp.com>" <spam@evil.io>`:    "spam@evil.io",
-		`<boss@corp.com> <spam@evil.io>`:           "spam@evil.io",
-		`boss@corp.com <spam@evil.io>`:             "spam@evil.io",
 		`Spam <spam@evil.io> (boss@corp.com)`:      "spam@evil.io",
+		`<vrai@x.fr> (<boss@corp.com>)`:            "vrai@x.fr",
 		`=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>`: "news@reseau.fr",
+		// A name in a charset net/mail does not decode still gives the address.
+		`=?windows-1252?q?Caf=E9?= <Boss@Corp.com>`: "boss@corp.com",
+		// A local part that is not a dot-atom is the sender's own, quoted:
+		// never the address it looks like.
+		`"<boss@corp.com>"@evil.io`:        `"<boss@corp.com>"@evil.io`,
+		`Spam <"<boss@corp.com>"@evil.io>`: `"<boss@corp.com>"@evil.io`,
+		// What does not read as one address gives none: nothing is guessed.
+		"No Address Here":                "",
+		"Broken <unterminated":           "",
+		`<boss@corp.com> <spam@evil.io>`: "",
+		`boss@corp.com <spam@evil.io>`:   "",
+		`<boss@corp.com>@evil.io`:        "",
+		"a@x.fr, b@x.fr":                 "",
 	}
 	for in, want := range cases {
 		if got := NormalizeAddress(in); got != want {
@@ -25,20 +35,25 @@ func TestNormalizeAddress(t *testing.T) {
 	}
 }
 
-// Address keeps the address as written (NormalizeAddress lowercases it), and
-// never takes it from the display name.
+// Address keeps the address as written (NormalizeAddress lowercases it),
+// never takes it from the display name, and reads back as itself.
 func TestAddress(t *testing.T) {
 	cases := map[string]string{
 		"Lettre <Lettre@Journal.fr>":                "Lettre@Journal.fr",
 		`"<patron@victime.fr>" <lettre@journal.fr>`: "lettre@journal.fr",
-		`<patron@victime.fr> <lettre@journal.fr>`:   "lettre@journal.fr",
 		"  bare@acme.com  ":                         "bare@acme.com",
-		"Name <x@y.com> trail":                      "x@y.com",
 		`"a\" <b@c.fr" <real@journal.fr>`:           "real@journal.fr",
+		`"<boss@corp.com>"@evil.io`:                 `"<boss@corp.com>"@evil.io`,
+		`"a b"@x.com`:                               `"a b"@x.com`,
+		`<patron@victime.fr> <lettre@journal.fr>`:   "",
+		"Name <x@y.com> trail":                      "",
 	}
 	for in, want := range cases {
 		if got := Address(in); got != want {
 			t.Errorf("Address(%q) = %q, want %q", in, got, want)
+		}
+		if got := Address(in); got != "" && Address(got) != got {
+			t.Errorf("Address(Address(%q)) = %q, want it to read back as %q", in, Address(got), got)
 		}
 	}
 }
@@ -79,6 +94,7 @@ func TestMatch(t *testing.T) {
 		{"colleague@corp.com", false},               // same domain, not listed as domain
 		{"Promo <deals@acme.com>", true},            // domain entry
 		{`"<boss@corp.com>" <spam@evil.io>`, false}, // the address in a display name is not the sender's
+		{`"<boss@corp.com>"@evil.io`, false},        // nor one in a quoted local part
 		{"News <news@mail.acme.com>", true},         // subdomain of domain entry
 		{"news@notacme.com", false},                 // suffix but not a subdomain
 		{"someone@evilacme.com", false},             // must not match acme.com as substring
@@ -159,6 +175,21 @@ func TestIsDestructiveAndAllowed(t *testing.T) {
 	// Destructive action on an unprotected sender is allowed.
 	if !Allowed("delete", "other@corp.com", entries) {
 		t.Error("delete on unprotected sender should be allowed")
+	}
+	// Fail safe: a sender that cannot be read is spared while anyone is
+	// protected (an unreadable header must not bypass the list), and is
+	// fair game when nobody is.
+	for _, from := range []string{"", `<vip@corp.com> <x@evil.io>`, "Broken <unterminated"} {
+		if Allowed("archive", from, entries) || AllowedOnFolders("label", from, entries) {
+			t.Errorf("a destructive action on the unreadable sender %q should be blocked while someone is protected", from)
+		}
+		if !Allowed("archive", from, nil) {
+			t.Errorf("archive on the unreadable sender %q should be allowed when nobody is protected", from)
+		}
+	}
+	// The odd but real address "<vip@corp.com>"@evil.io is not vip@corp.com.
+	if !Allowed("archive", `"<vip@corp.com>"@evil.io`, entries) {
+		t.Error(`archive on "<vip@corp.com>"@evil.io should be allowed: its sender is on evil.io`)
 	}
 }
 

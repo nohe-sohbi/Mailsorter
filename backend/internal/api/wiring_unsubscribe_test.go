@@ -512,3 +512,103 @@ func TestAcceptance_AutopilotFilesIntoAFolder(t *testing.T) {
 	moi.expectOnServer(serverInbox, bankStatement.Subject)
 	moi.expectShows(uids[0], bankStatement.Subject)
 }
+
+// A From whose local part is quoted and looks like someone else's address:
+// "<boss@corp.com>"@evil.io is an address on evil.io. Stored unquoted, it read
+// as boss@corp.com, and "Se désabonner et archiver" on this spam archived the
+// boss's mail and recorded him unsubscribed.
+var (
+	quotedLocalSpam = incoming{From: `"<boss@corp.com>"@evil.io`, Subject: "Promo au nom piégé",
+		Unsubscribe: "<mailto:boss@corp.com?subject=unsubscribe>"}
+	realBossMail = incoming{From: "Patron <boss@corp.com>", Subject: "Réunion de demain"}
+)
+
+// listedSenderAddress is the senderAddress GET /api/emails gives the mail of
+// this subject, and whether it lists that mail.
+func listedSenderAddress(a *testApp, token, subject string) (string, bool) {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	list, _ := out["emails"].([]interface{})
+	for _, raw := range list {
+		m, _ := raw.(map[string]interface{})
+		if s, _ := m["subject"].(string); s == subject {
+			addr, _ := m["senderAddress"].(string)
+			return addr, true
+		}
+	}
+	return "", false
+}
+
+func TestAcceptance_QuotedLocalPartIsNotTheAddressItLooksLikeIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, quotedLocalSpam, realBossMail)
+	moi.withSendingServer()
+
+	if addr, ok := listedSenderAddress(app, moi.token, quotedLocalSpam.Subject); !ok || addr != `"<boss@corp.com>"@evil.io` {
+		app.failf("la liste devrait donner l'adresse \"<boss@corp.com>\"@evil.io au spam, elle donne %q (listé : %v)", addr, ok)
+	}
+
+	got := moi.unsubscribeFrom(uids[0], true)
+
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("rien ne devrait partir vers boss@corp.com, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+	moi.expectOnServer(serverInbox, realBossMail.Subject)
+	moi.expectNotOnServer(serverArchive, realBossMail.Subject, "il est de boss@corp.com, pas de evil.io")
+	moi.expectShows(uids[1], realBossMail.Subject)
+	moi.expectOnServer(serverArchive, quotedLocalSpam.Subject)
+	if unsubscribeRowExists(app, moi.email, "boss@corp.com") {
+		app.failf("boss@corp.com ne devrait pas être enregistré comme désabonné")
+	}
+	if sender, _ := got["sender"].(string); sender != `"<boss@corp.com>"@evil.io` {
+		app.failf("la réponse devrait nommer l'expéditeur \"<boss@corp.com>\"@evil.io, elle nomme %q", sender)
+	}
+}
+
+func TestAcceptance_QuotedLocalPartIsNotTheAddressItLooksLikeGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(quotedLocalSpam, realBossMail)
+
+	app.unsubscribeAndArchive(ids[0])
+
+	app.expectNotInInbox(ids[0])
+	app.expectInInbox(ids[1])
+	if unsubscribeRowExists(app, scenarioUser, "boss@corp.com") {
+		app.failf("boss@corp.com ne devrait pas être enregistré comme désabonné")
+	}
+}
+
+// A subject that is not an unsubscribe command is not written in the
+// person's name, even on the sender's own domain: the screen opens it.
+func TestAcceptance_UnsubscribeMailWithASentenceAsSubjectIsNotSent(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre du jeudi",
+		Unsubscribe: "<mailto:desabonnement@journal.fr?subject=Je%20d%C3%A9missionne%20avec%20effet%20imm%C3%A9diat>"})
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("un sujet qui n'est pas une commande ne devrait pas partir, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+	if mailto, _ := got["mailto"].(string); mailto == "" {
+		app.failf("la réponse devrait rendre l'adresse à ouvrir dans la messagerie : %v", got)
+	}
+}
+
+// The mail goes to the address as the list wrote it; only the 24-hour count
+// ignores its case.
+func TestAcceptance_UnsubscribeMailGoesToTheAddressAsWritten(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre du vendredi",
+		Unsubscribe: "<mailto:Desabonnement+Lettre@journal.fr>"})
+	moi.withSendingServer()
+
+	moi.unsubscribeFrom(uids[0], false)
+	sent := moi.sentThroughBox()
+	if len(sent) != 1 || len(sent[0].envelopeTo) != 1 || sent[0].envelopeTo[0] != "Desabonnement+Lettre@journal.fr" {
+		app.failf("le mail devrait partir vers Desabonnement+Lettre@journal.fr tel qu'écrit, il est parti : %s", describeSent(sent))
+	}
+}

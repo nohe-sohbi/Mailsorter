@@ -70,12 +70,14 @@ var batchInverse = map[string]string{
 // request, over whichever transport the mailbox uses. Selecting emails in the
 // inbox used to only scope AI analysis: there was no way to archive, trash,
 // label or mark the selection as read without going through the model. This
-// is the deterministic, quota-free path. Labelling stays Gmail's: over IMAP it
-// answers 501, as a single "label" verdict does.
+// is the deterministic, quota-free path. Over IMAP a label is a folder:
+// "label" files the selection there ("Classer"), the name settled once
+// (FilingName), the folder made if missing, the whole selection in one move
+// (MoveOutMany), a special folder refused with 422 (filingRefusal).
 //
 // Protected senders are shielded from destructive actions exactly as they are
-// in the bulk-by-sender and rules paths; non-destructive actions still run on
-// them. Failures are counted rather than aborting the batch, so one bad message
+// in the bulk-by-sender and rules paths, and over IMAP from filing too
+// (allowsOn); non-destructive actions still run on them. Failures are counted rather than aborting the batch, so one bad message
 // never costs the user the other 99.
 func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")

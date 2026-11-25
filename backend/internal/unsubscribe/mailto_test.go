@@ -30,9 +30,29 @@ func TestParseMailto(t *testing.T) {
 		},
 		{
 			name: "the subject is percent-decoded, and a plus stays a plus",
-			raw:  "mailto:stop@example.com?subject=D%C3%A9sabonnement%20lettre+1",
-			want: Request{To: "stop@example.com", Subject: "Désabonnement lettre+1"},
+			raw:  "mailto:stop@example.com?subject=unsubscribe%20lettre+1",
+			want: Request{To: "stop@example.com", Subject: "unsubscribe lettre+1"},
 			why:  "RFC 6068 is not a form encoding: + is not a space",
+		},
+		{
+			name: "a command word in capitals, with a key after a colon",
+			raw:  "mailto:stop@example.com?subject=UNSUBSCRIBE:news-8f3a",
+			want: Request{To: "stop@example.com", Subject: "UNSUBSCRIBE:news-8f3a"},
+		},
+		{
+			name: "the French command word, accented",
+			raw:  "mailto:stop@example.com?subject=D%C3%A9sinscription",
+			want: Request{To: "stop@example.com", Subject: "Désinscription"},
+		},
+		{
+			name: "a command word and its token, glued",
+			raw:  "mailto:stop@example.com?subject=unsub_8f3a@list",
+			want: Request{To: "stop@example.com", Subject: "unsub_8f3a@list"},
+		},
+		{
+			name: "one token alone",
+			raw:  "mailto:stop@example.com?subject=leave-8f3a.list:42",
+			want: Request{To: "stop@example.com", Subject: "leave-8f3a.list:42"},
 		},
 		{
 			name: "field names are matched case-insensitively",
@@ -66,10 +86,9 @@ func TestParseMailto(t *testing.T) {
 			want: Request{To: "stop@example.com", Subject: DefaultSubject},
 		},
 		{
-			name: "a subject of exactly MaxSubject characters",
-			raw:  "mailto:stop@example.com?subject=" + strings.Repeat("é", MaxSubject),
-			want: Request{To: "stop@example.com", Subject: strings.Repeat("é", MaxSubject)},
-			why:  "the bound counts characters, not bytes",
+			name: "a token of 100 characters",
+			raw:  "mailto:stop@example.com?subject=" + strings.Repeat("a", 100),
+			want: Request{To: "stop@example.com", Subject: strings.Repeat("a", 100)},
 		},
 		{
 			name: "an unknown field is ignored",
@@ -118,7 +137,12 @@ func TestParseMailtoRefuses(t *testing.T) {
 		{"a byte order mark in the subject", "mailto:a@example.com?subject=%EF%BB%BFstop", ErrBadSubject},
 		{"a line separator in the subject", "mailto:a@example.com?subject=a%E2%80%A8b", ErrBadSubject},
 		{"a paragraph separator in the subject", "mailto:a@example.com?subject=a%E2%80%A9b", ErrBadSubject},
-		{"a subject over MaxSubject characters", "mailto:a@example.com?subject=" + strings.Repeat("a", MaxSubject+1), ErrBadSubject},
+		{"a token over 100 characters", "mailto:a@example.com?subject=" + strings.Repeat("a", 101), ErrBadSubject},
+		{"a command and a token over 80 characters", "mailto:a@example.com?subject=stop%20" + strings.Repeat("a", 81), ErrBadSubject},
+		{"a sentence", "mailto:a@example.com?subject=Je%20d%C3%A9missionne%20avec%20effet%20imm%C3%A9diat", ErrBadSubject},
+		{"a command word, then a sentence", "mailto:a@example.com?subject=unsubscribe%20I%20quit", ErrBadSubject},
+		{"a confirmation of someone else's token", "mailto:a@example.com?subject=confirm%20a1b2c3d4", ErrBadSubject},
+		{"accents in a token", "mailto:a@example.com?subject=d%C3%A9mission", ErrBadSubject},
 		{"a broken escape", "mailto:a@example.com?subject=%zz", ErrBadEncoding},
 	}
 	for _, tc := range cases {
@@ -150,10 +174,12 @@ func TestForSender(t *testing.T) {
 			err:    ErrOtherDomain,
 		},
 		{
+			// Refused twice over: the address is elsewhere, and the subject is
+			// no unsubscribe command. The subject is read first.
 			name:   "confirming a token in the person's name",
 			mailto: "mailto:groupe+subscribe@googlegroups.com?subject=confirm%20a1b2c3d4",
 			sender: "promo@spam.example",
-			err:    ErrOtherDomain,
+			err:    ErrBadSubject,
 		},
 		{
 			name:   "writing to the person's boss",
@@ -226,6 +252,18 @@ func TestForSender(t *testing.T) {
 			mailto: "mailto:desabonnement@journal.fr",
 			sender: `"<patron@victime.fr>" <lettre@journal.fr>`,
 			want:   Request{To: "desabonnement@journal.fr", Subject: DefaultSubject},
+		},
+		{
+			name:   "an address quoted as a local part is the sender's own, on its domain",
+			mailto: "mailto:boss@corp.com",
+			sender: `"<boss@corp.com>"@evil.io`,
+			err:    ErrOtherDomain,
+		},
+		{
+			name:   "the same, unquoted, reads as no address at all",
+			mailto: "mailto:boss@corp.com",
+			sender: `<boss@corp.com>@evil.io`,
+			err:    ErrBadSender,
 		},
 		{
 			name:   "a From of two addresses",

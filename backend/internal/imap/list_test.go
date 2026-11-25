@@ -2,6 +2,7 @@ package imap
 
 import (
 	"context"
+	"net/mail"
 	"testing"
 
 	imapv2 "github.com/emersion/go-imap/v2"
@@ -310,10 +311,25 @@ func TestFormatAddress(t *testing.T) {
 		{[]imapv2.Address{{Mailbox: "bare", Host: "acme.com"}}, "bare@acme.com"},
 		{[]imapv2.Address{{Name: "No Address"}}, "No Address"},
 		{nil, ""},
+		// A local part that is not a dot-atom goes back in its quotes: unquoted,
+		// "<boss@corp.com>"@evil.io read as boss@corp.com's address.
+		{[]imapv2.Address{{Mailbox: "<boss@corp.com>", Host: "evil.io"}}, `"<boss@corp.com>"@evil.io`},
+		{[]imapv2.Address{{Name: "Spam", Mailbox: "<boss@corp.com>", Host: "evil.io"}}, `"Spam" <"<boss@corp.com>"@evil.io>`},
+		{[]imapv2.Address{{Mailbox: "a b", Host: "x.com"}}, `"a b"@x.com`},
+		{[]imapv2.Address{{Mailbox: "jean.luc", Host: "x.fr"}}, "jean.luc@x.fr"},
 	}
 	for _, tc := range cases {
-		if got := formatAddress(tc.in); got != tc.want {
+		got := formatAddress(tc.in)
+		if got != tc.want {
 			t.Errorf("formatAddress(%+v) = %q, want %q", tc.in, got, tc.want)
+		}
+		// What is stored reads back, through net/mail, as the address the
+		// server gave.
+		if len(tc.in) == 1 && tc.in[0].Host != "" {
+			a, err := mail.ParseAddress(got)
+			if err != nil || a.Address != tc.in[0].Addr() {
+				t.Errorf("formatAddress(%+v) = %q reads back as %v (%v), want %q", tc.in, got, a, err, tc.in[0].Addr())
+			}
 		}
 	}
 }

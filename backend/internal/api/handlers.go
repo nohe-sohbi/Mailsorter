@@ -21,6 +21,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
@@ -419,6 +420,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 			UnsubMailto:   unsubMailto,
 			UnsubOneClick: oneClick,
 			CreatedAt:     time.Now(),
+			SenderAddress: protect.Address(from),
 		}
 		emails = append(emails, email)
 	}

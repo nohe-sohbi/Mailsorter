@@ -106,7 +106,12 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	var notDone []string
 
 	archived, notArchived := 0, 0
-	if req.AlsoArchive {
+	switch {
+	case req.AlsoArchive && senderAddr == "":
+		// A From header that does not read as one address names nobody:
+		// nothing is swept in its name.
+		notDone = append(notDone, unreadableSenderMessage)
+	case req.AlsoArchive:
 		archived, notArchived = h.archiveBySender(ctx, session, userEmail, senderAddr)
 		if notArchived > 0 {
 			notDone = append(notDone, notArchivedMessage(notArchived))
@@ -173,7 +178,10 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		// Who was written to in the person's name, and when.
 		record["sentTo"], record["sentAt"] = sentTo, sentAt
 	}
-	if _, err := h.db.Unsubscribes().UpdateOne(recordCtx,
+	if senderAddr == "" {
+		// Nobody to record as unsubscribed: the sender cannot be read.
+		log.Printf("unsubscribe: the sender of message %s of %s cannot be read (%q), not recorded", req.MessageID, userEmail, from)
+	} else if _, err := h.db.Unsubscribes().UpdateOne(recordCtx,
 		bson.M{"userId": userEmail, "senderEmail": senderAddr},
 		bson.M{
 			"$set": record,
@@ -210,6 +218,10 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, answer)
 }
+
+// unreadableSenderMessage is why "et archiver ses mails" archived nothing for
+// a mail whose From header does not read as one address.
+const unreadableSenderMessage = "L'adresse de l'expéditeur de ce mail ne se lit pas : ses mails ne sont pas archivés."
 
 // notArchivedMessage says how many of a sender's mails the archive left.
 func notArchivedMessage(n int) string {
@@ -274,8 +286,8 @@ func (e *alreadySentError) Error() string {
 // Nobody sees this mail before it leaves, from the person's real address,
 // and the header that asks for it was written by whoever sent the mail. So it
 // is written only to an address on the registrable domain of the sender's
-// real address (never one in its display name), with a subject of one short
-// line and a body that is always the same (unsubscribe.ForSender;
+// real address (never one in its display name), with a subject that is an
+// unsubscribe command and a body that is always the same (unsubscribe.ForSender;
 // errNotWrittenForYou otherwise), and only once per address in
 // unsubscribeResendWindow (claimUnsubscribeMail; alreadySentError otherwise).
 func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAccount, userEmail, from, mailto string) (string, time.Time, error) {
@@ -284,9 +296,12 @@ func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAc
 		log.Printf("unsubscribe: the mailto of %q is not written for %s, handed to the screen: %v", from, userEmail, err)
 		return "", time.Time{}, fmt.Errorf("%w: %w", errNotWrittenForYou, err)
 	}
-	to := strings.ToLower(request.To)
+	// Written to as the list wrote it; lowercased only to count it once in
+	// the window, since an address is the same in any case.
+	to := request.To
+	key := strings.ToLower(to)
 	now := time.Now().Truncate(time.Millisecond)
-	claimed, err := h.claimUnsubscribeMail(ctx, userEmail, to, now)
+	claimed, err := h.claimUnsubscribeMail(ctx, userEmail, key, now)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -308,7 +323,7 @@ func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAc
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if _, rErr := h.db.UnsubscribeMails().DeleteOne(releaseCtx,
-			bson.M{"userId": userEmail, "address": to, "sentAt": now},
+			bson.M{"userId": userEmail, "address": key, "sentAt": now},
 		); rErr != nil {
 			log.Printf("unsubscribe: the mail to %s for %s did not leave, and the next try stays refused for 24 h: %v", to, userEmail, rErr)
 		}
@@ -348,11 +363,12 @@ func (h *Handler) claimUnsubscribeMail(ctx context.Context, userEmail, to string
 // display name each one carries, and returns how many were archived, and how
 // many of his were not (a failure, or no time left).
 //
-// The datastore query is only a narrowing: a case-insensitive substring of the
-// address, which every mail of that sender contains. protect.SameAddress is what
-// decides, because the same substring is also inside longer addresses (a prefix
-// on the local part, a longer domain), other senders this sweep used to archive
-// too.
+// The datastore query is only a narrowing: the address's domain, which every
+// mail of that sender holds as written (its local part may be quoted in the
+// header and not in the address: "<x@y>"@evil.io). protect.SameAddress is what
+// decides, because the same domain is also inside other senders' addresses (a
+// prefix on the local part, a longer domain), whom this sweep used to archive
+// too. A senderAddr with no local part or no domain reaches nothing.
 //
 // A protected sender is still unsubscribed but its mail stays in the inbox, as
 // with every other sweep, and is not counted either way.
@@ -360,10 +376,14 @@ func (h *Handler) claimUnsubscribeMail(ctx context.Context, userEmail, to string
 // Best-effort past the listing: the unsubscribe itself is not tied to it, so a
 // mail that fails to move is logged and counted rather than failing the call.
 func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, userEmail, senderAddr string) (archived, notArchived int) {
+	at := strings.LastIndex(senderAddr, "@")
+	if at <= 0 || at == len(senderAddr)-1 {
+		return 0, 0
+	}
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId":    userEmail,
 		"leftInbox": notLeftInbox,
-		"from":      bson.M{"$regex": regexp.QuoteMeta(senderAddr), "$options": "i"},
+		"from":      bson.M{"$regex": regexp.QuoteMeta(senderAddr[at+1:]), "$options": "i"},
 	})
 	if err != nil {
 		log.Printf("unsubscribe: listing the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)

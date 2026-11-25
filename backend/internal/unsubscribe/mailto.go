@@ -5,10 +5,10 @@ import (
 	"net"
 	"net/mail"
 	"net/url"
+	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -20,8 +20,8 @@ import (
 // through their own sending server, and nobody sees it before it leaves. The
 // address, the subject and the body all come from a header a stranger wrote,
 // so each of them is bounded here: the body is never theirs, the subject is
-// one short line, and the address must be on the sender's own domain (see
-// ForSender). Anything else is not sent by the server: the client opens the
+// a command word or one token (commandSubject), and the address must be on
+// the sender's own domain (see ForSender). Anything else is not sent by the server: the client opens the
 // mailto: in the person's own mail program, where they see it first.
 type Request struct {
 	To      string
@@ -37,9 +37,16 @@ const Body = "unsubscribe"
 // 2369's own example uses.
 const DefaultSubject = "unsubscribe"
 
-// MaxSubject bounds the subject, in characters. An unsubscribe subject is a
-// word or a short command; a longer one is not written for the person.
-const MaxSubject = 100
+// commandSubject is what an unsubscribe subject may be, case aside: a
+// command word, followed at most by one ASCII token without a space (the
+// list's id, a key: "unsubscribe 8f3a", "remove:news"), or one such token
+// alone ("leave-8f3a"). A list asks for a command; a sentence ("Je
+// démissionne avec effet immédiat", "unsubscribe I quit") is a stranger
+// writing in the person's name, and is not sent for them.
+var commandSubject = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^(unsubscribe|unsub|remove|stop|désinscription|desinscription)([ :_=-]?[A-Za-z0-9._@+=-]{1,80})?$`),
+	regexp.MustCompile(`^[A-Za-z0-9._@+=:-]{1,100}$`),
+}
 
 var (
 	// ErrNotMailto is a link that is not a mailto: at all.
@@ -53,11 +60,9 @@ var (
 	// name, a comment, quotes or anything else a header would carry
 	// differently from the way it was written.
 	ErrBadRecipient = errors.New("unsubscribe: the mailto address is not a plain address")
-	// ErrBadSubject is a subject longer than MaxSubject characters, or one
-	// that holds a control character, a line or paragraph separator, or an
-	// invisible format character (a bidirectional override such as U+202E,
-	// a zero-width space): what a person would not see in it.
-	ErrBadSubject = errors.New("unsubscribe: the mailto subject is not one short line")
+	// ErrBadSubject is a subject that is not a command (commandSubject):
+	// a sentence, a long text, a character a person would not see.
+	ErrBadSubject = errors.New("unsubscribe: the mailto subject is not an unsubscribe command")
 	// ErrBadEncoding is a percent-encoding that does not decode.
 	ErrBadEncoding = errors.New("unsubscribe: the mailto link is not correctly encoded")
 	// ErrOtherDomain is a mailto: address that is not on the registrable
@@ -74,11 +79,11 @@ var (
 // ForSender reads the mailto: of a mail whose From header is from into the
 // mail Mailsorter may write for it, or says why it may not.
 //
-// The sender is the address of the From header as RFC 5322 reads it
-// (net/mail), never an address in its display name, which the sender writes:
-// "<patron@victime.fr>" <lettre@journal.fr> is lettre@journal.fr. A header
-// that does not read as exactly one address is refused (ErrBadSender) rather
-// than guessed at. The mailto: address must be on the same registrable domain
+// The sender is the address of the From header as protect.Address reads it
+// (RFC 5322, net/mail), never an address in its display name, which the
+// sender writes: "<patron@victime.fr>" <lettre@journal.fr> is
+// lettre@journal.fr. A header that does not read as exactly one address is
+// refused (ErrBadSender) rather than guessed at. The mailto: address must be on the same registrable domain
 // as the sender (the public suffix plus one label, from the Public Suffix
 // List, private suffixes included): lettre@journal.fr may ask for
 // desabonnement@journal.fr or for stop@listes.journal.fr, never for
@@ -89,11 +94,11 @@ func ForSender(mailto, from string) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	sender, err := mail.ParseAddress(strings.TrimSpace(from))
-	if err != nil {
+	sender := protect.Address(from)
+	if sender == "" {
 		return Request{}, ErrBadSender
 	}
-	if !SameRegistrableDomain(req.To, sender.Address) {
+	if !SameRegistrableDomain(req.To, sender) {
 		return Request{}, ErrOtherDomain
 	}
 	return req, nil
@@ -132,7 +137,7 @@ func registrableDomain(address string) (string, bool) {
 //
 // "+" stays a plus, as RFC 6068 says (it is not a form encoding). A body is
 // ignored (Body is the text), a subject the link does not give is
-// DefaultSubject, and one that is not one short line is refused.
+// DefaultSubject, and one that is not a command (commandSubject) is refused.
 func ParseMailto(raw string) (Request, error) {
 	const scheme = "mailto:"
 	raw = strings.TrimSpace(raw)
@@ -196,18 +201,21 @@ func ParseMailto(raw string) (Request, error) {
 	}
 
 	subject = strings.TrimSpace(subject)
-	if utf8.RuneCountInString(subject) > MaxSubject || strings.IndexFunc(subject, unseen) >= 0 {
-		return Request{}, ErrBadSubject
-	}
 	if subject == "" {
 		subject = DefaultSubject
+	}
+	if !isCommand(subject) {
+		return Request{}, ErrBadSubject
 	}
 	return Request{To: to, Subject: subject}, nil
 }
 
-// unseen is a character a subject must not hold: a control character, a line
-// or paragraph separator (U+2028, U+2029), or an invisible format character
-// (U+202E and the other bidirectional controls, zero-width characters).
-func unseen(r rune) bool {
-	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
+// isCommand says whether subject is one commandSubject accepts.
+func isCommand(subject string) bool {
+	for _, re := range commandSubject {
+		if re.MatchString(subject) {
+			return true
+		}
+	}
+	return false
 }

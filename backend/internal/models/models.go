@@ -103,6 +103,12 @@ type Email struct {
 	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`
 	UnsubOneClick bool      `json:"unsubOneClick,omitempty" bson:"unsubOneClick,omitempty"`
 	CreatedAt     time.Time `json:"createdAt" bson:"createdAt"`
+
+	// SenderAddress is the sender's address as the server reads it out of
+	// From (protect.Address: never one in the display name, "" when From does
+	// not read as one address). Set on the way out of a listing and the
+	// reader, for the screens to group, show and make rules by; never stored.
+	SenderAddress string `json:"senderAddress,omitempty" bson:"-"`
 }
 
 // RegisterRequest is the body for POST /api/auth/register.

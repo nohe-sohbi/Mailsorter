@@ -16,6 +16,8 @@
 package protect
 
 import (
+	"io"
+	"mime"
 	"net/mail"
 	"strings"
 )
@@ -60,7 +62,7 @@ func AllowedOnFolders(action, from string, entries []string) bool {
 	if !IsDestructiveOnFolders(action) {
 		return true
 	}
-	return !Match(from, entries)
+	return !shielded(from, entries)
 }
 
 // Kind classifies a protected entry as a full address (contains "@" with a local
@@ -70,30 +72,30 @@ const (
 	KindDomain  = "domain"
 )
 
-// Address is the address a From header names, as written: the addr-spec,
-// never the display name. The display name is the sender's to choose, and it
-// may hold another address ("<boss@corp.com>" <spam@evil.io>), so reading the
-// first "<...>" of the header hands the sender anyone's address. The header is
-// read the way RFC 5322 says (net/mail: quoted names, comments, encoded
-// words); one that does not parse falls back to its LAST "<...>", which is
-// where a mail program writes the address, and then to the value itself,
-// trimmed of stray punctuation.
+// fromParser reads a From header the way RFC 5322 says (net/mail: quoted
+// names, comments, encoded words). A name encoded in a charset net/mail does
+// not decode (windows-1252, iso-8859-15) is kept as its bytes: the name is
+// not what is read here, and refusing the whole header for it would leave a
+// French sender with no address.
+var fromParser = mail.AddressParser{WordDecoder: &mime.WordDecoder{
+	CharsetReader: func(_ string, input io.Reader) (io.Reader, error) { return input, nil },
+}}
+
+// Address is the address a From header names: the addr-spec, never the
+// display name, which the sender chooses and may fill with another address
+// ("<boss@corp.com>" <spam@evil.io>). It is written the way net/mail reads it
+// back, its local part quoted when it is not a dot-atom ("<boss@corp.com>"@
+// evil.io is a real, if odd, address on evil.io), so that reading it again
+// gives itself. A header that does not read as exactly one address gives no
+// address at all, "": no address is guessed out of it, so nothing is swept,
+// unsubscribed or made a rule of in its name.
 func Address(raw string) string {
-	s := strings.TrimSpace(raw)
-	if a, err := mail.ParseAddress(s); err == nil {
-		return a.Address
+	a, err := fromParser.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
 	}
-	if i := strings.LastIndex(s, "<"); i >= 0 {
-		if j := strings.Index(s[i:], ">"); j >= 0 {
-			s = s[i+1 : i+j]
-		} else {
-			s = s[i+1:]
-		}
-	}
-	s = strings.TrimFunc(s, func(r rune) bool {
-		return r == '"' || r == '\'' || r == ' ' || r == '\t'
-	})
-	return strings.TrimSpace(s)
+	spec := (&mail.Address{Address: a.Address}).String()
+	return strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
 }
 
 // NormalizeAddress extracts the bare, lower-cased email address from a raw From
@@ -202,10 +204,23 @@ func SameAddress(from, addr string) bool {
 
 // Allowed reports whether action may be applied to an email from `from`, given
 // the user's protected entries. Non-destructive actions are always allowed; a
-// destructive action is blocked only when the sender is protected.
+// destructive action is blocked when the sender is protected.
+//
+// Fail safe: when the user protects anyone, a mail whose sender cannot be read
+// (Address gives nothing) is spared rather than assumed harmless. The
+// protected list must not be bypassed by a header nobody can read.
 func Allowed(action, from string, entries []string) bool {
 	if !IsDestructive(action) {
 		return true
 	}
-	return !Match(from, entries)
+	return !shielded(from, entries)
+}
+
+// shielded says whether a mail from `from` is out of reach of a destructive
+// action: its sender is protected, or cannot be read while someone is.
+func shielded(from string, entries []string) bool {
+	if len(entries) > 0 && NormalizeAddress(from) == "" {
+		return true
+	}
+	return Match(from, entries)
 }
