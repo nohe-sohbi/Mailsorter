@@ -2539,7 +2539,7 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `428` | No mailbox is connected to this account yet | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }` |
 | `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter is far lower | `{ "error": "Too many requests", "status": 429 }` |
 | `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
-| `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a label on IMAP, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
+| `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
 | `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe | `{ "error": "Report impossible : ...", "status": 502 }` |
 | `503` | A dependency is not configured (AI, billing), or the datastore is unreachable (`/health`) | `{ "error": "Aucune IA n'est configurée sur cette instance.", "status": 503 }` |
 
