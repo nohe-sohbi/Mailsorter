@@ -1028,8 +1028,15 @@ function Inbox() {
     removeEmails(email.messageId);
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
-      await emailService.snooze(email.messageId, choice);
+      const { data } = await emailService.snooze(email.messageId, choice);
       plan.settle(email.messageId);
+      // Over IMAP the mail had already left the inbox (reported a moment ago,
+      // or moved by another mail program): nothing was reported, so the
+      // screen does not say it was.
+      if (data?.status === 'already') {
+        toast.info("Ce mail n'est plus dans votre boîte de réception.");
+        return;
+      }
       // `custom` rather than the instant itself: an exact wake time is personal
       // data and product analytics only needs to know the affordance was used.
       track('snooze', { preset: choice.preset || 'custom' });
