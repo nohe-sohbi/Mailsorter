@@ -461,33 +461,47 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
+	var wakeErr error
 	if session.Transport == provider.TransportIMAP {
-		err := h.wakeIMAP(ctx, session, s, true)
-		switch {
-		case err == nil, errors.Is(err, errAlreadyBack):
-			writeJSON(w, http.StatusOK, map[string]string{"status": "woken"})
-		case errors.Is(err, errNotWhereLeft):
-			// Taken out of "Plus tard" by another mail program: nothing to
-			// bring back, and the report left the list.
-			writeError(w, http.StatusNotFound, notWhereLeftMessage)
-		case errors.Is(err, errWakeBusy):
-			writeError(w, http.StatusLocked, wakeBusyMessage)
-		default:
-			writeError(w, http.StatusBadGateway, "Réactivation impossible : "+err.Error())
-		}
-		return
+		wakeErr = h.wakeIMAP(ctx, session, s, true)
+	} else {
+		wakeErr = h.wakeGmail(ctx, session, s)
 	}
-
-	if err := h.restoreSnoozed(ctx, session.gmail, userEmail, s.MessageID); err != nil {
-		writeError(w, http.StatusBadGateway, "Réactivation impossible : "+err.Error())
-		return
+	switch {
+	case wakeErr == nil, errors.Is(wakeErr, errAlreadyBack):
+		// Back already (the sweep, a moment ago): nothing more moved or written.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "woken"})
+	case errors.Is(wakeErr, errNotWhereLeft):
+		// Cancelled: over IMAP taken out of "Plus tard" by another mail
+		// program, or brought back by "Annuler". Nothing to bring back.
+		writeError(w, http.StatusNotFound, notWhereLeftMessage)
+	case errors.Is(wakeErr, errWakeBusy):
+		writeError(w, http.StatusLocked, wakeBusyMessage)
+	default:
+		writeError(w, http.StatusBadGateway, "Réactivation impossible : "+wakeErr.Error())
 	}
+}
 
-	h.db.Snoozes().UpdateOne(ctx, bson.M{"_id": oid},
-		bson.M{"$set": bson.M{"status": snooze.StatusDone, "updatedAt": time.Now()}})
-	h.logActionMeta(ctx, userEmail, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "woken"})
+// wakeGmail is "Réactiver" over the Gmail API: back to the inbox, unread, the
+// snooze label stripped (restoreSnoozed). Claimed like every return
+// (claimReport), so a press at the very moment the sweep wakes the same mail
+// neither moves it twice nor writes its return twice in the history. A report
+// given up (failed) may be retried this way, and a failure is the user's to
+// retry: not counted.
+func (h *Handler) wakeGmail(ctx context.Context, session *mailSession, s models.Snooze) error {
+	claim, err := h.claimReport(ctx, s, []string{snooze.StatusScheduled, snooze.StatusFailed})
+	if err != nil {
+		return err
+	}
+	restoreErr := h.restoreSnoozed(ctx, session.gmail, s.UserID, s.MessageID)
+	outcome := snooze.Woken
+	if restoreErr != nil {
+		outcome = snooze.Untried
+	}
+	sctx, cancel := settleCtx(ctx)
+	defer cancel()
+	h.settleWake(sctx, s, claim, outcome)
+	return restoreErr
 }
 
 // restoreSnoozed returns a message to the inbox, marks it unread and strips the
@@ -774,7 +788,8 @@ func (h *Handler) wakeAccount(ctx context.Context, due []models.Snooze) {
 	}
 
 	for _, s := range due {
-		// Claimed as over IMAP: an "Annuler" holding it moves it itself.
+		// Claimed (claimReport): a "Réactiver" or an "Annuler" holding it
+		// moves it itself.
 		claim, err := h.claimReport(ctx, s, []string{snooze.StatusScheduled})
 		if err != nil {
 			continue

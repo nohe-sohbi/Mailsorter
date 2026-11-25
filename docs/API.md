@@ -440,7 +440,7 @@ IMAP `unlabel`) on a mail with a scheduled snooze ends that snooze: it becomes
 **Error Responses:**
 - `400 Bad Request`: Missing `messageId`, unsupported `action`, or `label` (and over the Gmail API `unlabel`), which need a name this route does not carry
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
-- `423 Locked`: the mail has a snooze the wake sweep is bringing back at that moment; nothing moved ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
+- `423 Locked`: the mail has a snooze the wake sweep or a "Réactiver" is bringing back at that moment; nothing moved ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
 - `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: the mailbox refused the action
 
@@ -745,9 +745,9 @@ out) is left where it is, and its snooze becomes `cancelled`, logged, out of
 every list. "Annuler" on a snooze (its line in the history, or the verb that
 undoes the move, see `POST /api/activity/undo` and `POST /api/emails/action`)
 brings the mail back and ends the snooze the same way, on both transports.
-The sweep, "Annuler" and, over IMAP, `POST /api/snoozes/{id}/wake` claim the
-snooze before moving its mail, so two of them reaching it at once move it
-once. Listing snoozes reads the datastore.
+The sweep, "Annuler" and `POST /api/snoozes/{id}/wake` claim the snooze
+before moving its mail, on both transports, so two of them reaching it at
+once move it once and write its return once. Listing snoozes reads the datastore.
 
 ### Snooze an email
 
@@ -826,13 +826,14 @@ Returns `{ "snoozes": [ ... ] }`, soonest wake first (`status` defaults to
 Brings the email back to the inbox immediately, marked unread. Answers
 `{ "status": "woken" }`.
 
-Over IMAP, a snooze `scheduled` or `failed` is claimed first, so that this
-route and the sweep reaching it at once move the mail once: a snooze already
-back answers `200` again, without moving or recording anything.
+A snooze `scheduled` or `failed` is claimed first, on both transports, so
+that this route and the sweep reaching it at once move the mail once and
+write its return once: a snooze already back answers `200` again, without
+moving or recording anything.
 
 **Error Responses:**
-- `404 Not Found`: No such snooze; or, over IMAP, the mail is no longer in `Plus tard` ("Ce mail n'est plus là où Mailsorter l'avait rangé."), and the snooze is `cancelled`
-- `423 Locked`: Over IMAP, the sweep is bringing it back at that moment ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
+- `404 Not Found`: No such snooze; or a snooze `cancelled` ("Ce mail n'est plus là où Mailsorter l'avait rangé."): brought back by "Annuler", or, over IMAP, taken out of `Plus tard` by another mail program
+- `423 Locked`: The sweep or an "Annuler" is bringing it back at that moment ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
 - `502 Bad Gateway`: The mailbox refused the return; nothing is counted, try again
 
 ---
@@ -1336,7 +1337,8 @@ reversible; others return `400`. Undoing the line of a snooze (an `archive`
 from source `snooze`), or any reversal that brings back to the inbox a mail
 with a scheduled snooze, ends that snooze: it becomes `cancelled` and leaves
 the scheduled list at once, and its hour moves nothing. While the wake sweep
-is bringing that mail back, nothing moves and the answer is `423`.
+or a "Réactiver" is bringing that mail back, nothing moves and the answer is
+`423`.
 
 **Request Body:** `{ "id": "665..." }`
 
@@ -1348,7 +1350,7 @@ entry stays not undone); `409` already undone, except that a request within
 answers `200` like it (two clicks, two tabs): once the mail was archived again,
 a screen left open on the old line gets `409`; `423` "Ce mail est déjà en train
 de revenir dans votre boîte, réessayez dans un instant." while the wake sweep
-brings back the mail of a snooze; `500` "Annulation impossible à
+or a "Réactiver" brings back the mail of a snooze; `500` "Annulation impossible à
 vérifier, réessayez." when the actions since cannot be read; `502` the provider
 refused the reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette

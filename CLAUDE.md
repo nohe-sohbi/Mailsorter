@@ -247,7 +247,7 @@ The outbound clients and primitives:
 | `tokens.go` | Stored credentials: `sealToken` / `openToken` for Google's (with the legacy-plaintext migration), `sealSecret` / `openSecret` for IMAP passwords, all AES-256-GCM behind the `enc:v1:` prefix, and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
-| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, "Réactiver", plus the 1 min wake sweeper, on both transports. Over IMAP (`snoozeIMAP`) a reported mail is moved into the folder "Plus tard" (`snoozeFolderName`, made like a filing folder, by `Destination`) through `mirroredIMAP`, like an archive, and the snooze records where it landed (`folder`, `folderUid`, `headerMessageId`); its pending AI proposal is set moot. The sweep goes account by account (`snooze.ByAccount`), one session each, an IMAP one bounded by `snoozeAccountBound` (30 s, then `Abort`); the sweep, "Réactiver" over IMAP and "Annuler" claim the snooze first (`claimReport`, `wakingAt`) so two of them move the mail once, and `settleWake` writes the outcome (`snooze.Settle`) and the ledger entry. "Annuler" that brings back a mail with a scheduled snooze (`UndoAction`, `EmailAction`) ends it (`endReportOnReturn`: `cancelled`, out of the scheduled list at once; `423` while the sweep holds it) |
+| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, "Réactiver", plus the 1 min wake sweeper, on both transports. Over IMAP (`snoozeIMAP`) a reported mail is moved into the folder "Plus tard" (`snoozeFolderName`, made like a filing folder, by `Destination`) through `mirroredIMAP`, like an archive, and the snooze records where it landed (`folder`, `folderUid`, `headerMessageId`); its pending AI proposal is set moot. The sweep goes account by account (`snooze.ByAccount`), one session each, an IMAP one bounded by `snoozeAccountBound` (30 s, then `Abort`); the sweep, "Réactiver" (`wakeIMAP`, `wakeGmail`) and "Annuler" claim the snooze first (`claimReport`, `wakingAt`), on both transports, so two of them move the mail once and write its return once, and `settleWake` writes the outcome (`snooze.Settle`) and the ledger entry. "Annuler" that brings back a mail with a scheduled snooze (`UndoAction`, `EmailAction`) ends it (`endReportOnReturn`: `cancelled`, out of the scheduled list at once; `423` while the sweep or a "Réactiver" holds it) |
 | `attachment.go` | Attachment download, on both transports: the one route that streams bytes rather than JSON. Over IMAP the id is a part number, served only when the reader's list of that message has a file under it, or an image of `inlineImages` |
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
@@ -555,8 +555,8 @@ as a side effect of another change.
   IMAP: what the model is told, the shield at analysis, "unlabel" right after
   "Appliquer", the direct "label" without a folder, and `wiring_snooze_test.go`
   for the report's wake over IMAP: one connection per mailbox, a mailbox out of
-  reach, a failed return tried again, "Réactiver" while the sweep holds it, and
-  "Annuler" ending a report on both transports): not in the report, run by
+  reach, a failed return tried again, and on both transports "Réactiver" while
+  the sweep holds a report and "Annuler" ending one): not in the report, run by
   `scripts/scenarios.sh -run '^TestAcceptance'` and by its own CI step.
 
 ### React

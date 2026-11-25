@@ -6,8 +6,8 @@ package api
 // scenarios_1_imap_snooze_test.go: what the background sweep costs (one
 // connection per mailbox, whatever the number of mails due) and what it does
 // when the mailbox fails it (the report waits for the next pass, counted once
-// or not at all, and comes back once), and "Annuler" on a report, which ends
-// it, on both transports. Wiring, like wiring_imap_test.go: on
+// or not at all, and comes back once), "Annuler" on a report, which ends it,
+// and "Réactiver" while the sweep holds a report, on both transports. Wiring, like wiring_imap_test.go: on
 // the acceptance harness (a real MongoDB, a real IMAP server over TLS), not in
 // the report. `scripts/scenarios.sh -run '^TestAcceptance'` runs them, and so
 // does CI, in the scenarios job.
@@ -471,5 +471,76 @@ func TestAcceptance_GmailSnoozeUndoneFromTheHistoryEndsTheReport(t *testing.T) {
 		if l.Action == "unarchive" && l.Source == SourceSnooze {
 			app.failf("un report annulé ne devrait pas revenir à son heure, l'historique montre son retour")
 		}
+	}
+}
+
+// scheduledReportID is the id of the Gmail person's scheduled report of the
+// mail with this subject, as the "Prévus" tab holds it for "Réactiver".
+func scheduledReportID(a *testApp, subject string) string {
+	a.t.Helper()
+	code, out := a.call(http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	if code != http.StatusOK {
+		a.fatalf("les mails reportés ne s'affichent pas : GET /api/snoozes a répondu %d : %v", code, out)
+	}
+	rows, _ := out["snoozes"].([]interface{})
+	for _, r := range rows {
+		if row, ok := r.(map[string]interface{}); ok && row["subject"] == subject {
+			id, _ := row["id"].(string)
+			return id
+		}
+	}
+	a.fatalf("les mails reportés ne montrent pas le mail %q : il n'y a pas de « Réactiver » à presser", subject)
+	return ""
+}
+
+// "Réactiver" over the Gmail API takes the report the way the sweep does:
+// pressed while the sweep holds it, nothing is done and the user is told to
+// try again; pressed again once the mail is back, nothing more is done. The
+// history holds one return, never two.
+func TestAcceptance_GmailSnoozeReactivateWhileTheSweepHoldsIt(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const subject = "Votre rendez-vous"
+	ids := app.receiveAndSync(incoming{From: "Garage <rdv@garage.fr>", Subject: subject})
+	app.act(ids[0], "read")
+	app.snooze(ids[0])
+	id := scheduledReportID(app, subject)
+	reactivate := func() (int, map[string]interface{}) {
+		return app.call(http.MethodPost, "/api/snoozes/"+id+"/wake", nil)
+	}
+	returns := func() int {
+		n := 0
+		for _, l := range app.history(ids[0]) {
+			if l.Action == "unarchive" && l.Source == SourceSnooze {
+				n++
+			}
+		}
+		return n
+	}
+
+	release := holdReport(app, scenarioUser, subject)
+	if code, out := reactivate(); code != http.StatusLocked {
+		app.failf("« Réactiver » sur un report que le réveil tient déjà devrait répondre 423, il a répondu %d : %v", code, out)
+	}
+	app.expectNotInInbox(ids[0])
+	if n := returns(); n != 0 {
+		app.failf("« Réactiver » refusé ne devrait écrire aucun retour dans l'historique, il en écrit %d", n)
+	}
+	release()
+
+	if code, out := reactivate(); code != http.StatusOK {
+		app.fatalf("« Réactiver » une fois la réservation levée devrait répondre 200, il a répondu %d : %v", code, out)
+	}
+	app.expectInInbox(ids[0])
+	app.expectUnread(ids[0])
+	if status := reportStatus(app, scenarioUser, subject); status != "done" {
+		app.failf("le report réactivé devrait être « done », il est %q", status)
+	}
+	// The sweep woke it a moment before a second press: answered like the
+	// first, nothing written again.
+	if code, out := reactivate(); code != http.StatusOK {
+		app.failf("un second « Réactiver » sur un mail déjà revenu devrait répondre 200, il a répondu %d : %v", code, out)
+	}
+	if n := returns(); n != 1 {
+		app.failf("le retour du mail %q devrait être écrit 1 fois dans l'historique, il l'est %d fois", subject, n)
 	}
 }
