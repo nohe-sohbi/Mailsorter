@@ -353,7 +353,7 @@ function EmailReader({
   // What the server read for the sender (`senderLabel`, protect.Label), or
   // the From as it is when a mail kept from before has none: never a cut of
   // it, since the display name is the sender's to write and may hold another
-  // address. The address shown under it is the server's (`senderAddress`).
+  // address. The address shown under it is the server's (`senderAddressShown`).
   const name = merged.senderLabel || merged.from || 'Expéditeur inconnu';
   const rendered = full?.bodyHtml
     ? renderHtml(full.bodyHtml, drawn, new Set(Object.keys(full.inlineImages || {})))
@@ -557,7 +557,14 @@ function EmailReader({
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate font-semibold text-ink-900">{name}</div>
-            <div className="truncate text-sm text-muted">{merged.senderAddress || merged.from}</div>
+            {/* The address as the server shows it (`senderAddressShown`):
+                a character that would hide or reorder what follows is made
+                visible, never dropped, so it never reads as another address.
+                None for a From that names no sender: the name above is its
+                text. */}
+            {merged.senderAddressShown && (
+              <div className="truncate text-sm text-muted">{merged.senderAddressShown}</div>
+            )}
           </div>
           {merged.receivedDate && (
             <time

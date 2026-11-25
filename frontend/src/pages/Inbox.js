@@ -659,7 +659,9 @@ function Inbox() {
         setJob(null);
         setAnalyzing(false);
         await fetchData({ forceRefresh: true, sync: false });
-        if (data.status === 'error') toast.error('Analyse interrompue. Réessayez.');
+        // The job says why in French when the person can act on it (the
+        // protected senders could not be read); the generic sentence else.
+        if (data.status === 'error') toast.error(data.error || 'Analyse interrompue. Réessayez.');
         else announceResult(data);
         return;
       }
@@ -1069,9 +1071,9 @@ function Inbox() {
         return;
       }
       settle();
-    } catch {
+    } catch (err) {
       if (rollback) patchEmail(email.messageId, rollback);
-      toast.error("L'action a échoué");
+      toast.error(apiError(err, "L'action a échoué"));
     }
   };
 
