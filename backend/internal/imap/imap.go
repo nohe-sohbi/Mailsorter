@@ -41,6 +41,14 @@ import (
 // not a 500 and a retry. It is the IMAP counterpart of errReauthRequired.
 var ErrAuth = errors.New("imap: authentication rejected")
 
+// ErrUnreachable means the mailbox could not be opened for a reason other than
+// its credentials: the server could not be reached, did not answer in time,
+// dropped the connection, or said it was not available (NO [UNAVAILABLE], a
+// connection limit, BYE). Typed apart from ErrAuth because the user has
+// nothing to fix: telling them their password was refused would send them to
+// regenerate a good one. Trying again later may work.
+var ErrUnreachable = errors.New("imap: the mailbox could not be reached")
+
 // ErrNoSuchFolder means the server has no mailbox for a special folder the
 // action needs. Typed for the same reason: it is a fact about the account, not
 // a transient failure, and retrying cannot fix it.
@@ -97,15 +105,6 @@ type Client struct {
 	selected string
 }
 
-// Connect opens, encrypts and authenticates a connection, then resolves the
-// server's special folders.
-//
-// The TLS mode is not a guess: implicit means the socket is encrypted before a
-// byte is exchanged (993), STARTTLS means it is upgraded after the greeting
-// (143). Getting it backwards does not fail cleanly, it hangs, which is why the
-// catalog carries the mode per route rather than leaving it to be sniffed here.
-// There is no third branch: an unencrypted connection would send the user's app
-// password in the clear and is not offered at all.
 // clientOptions are the connection options for a server named host.
 func clientOptions(host string) *imapclient.Options {
 	return &imapclient.Options{
@@ -118,26 +117,69 @@ func clientOptions(host string) *imapclient.Options {
 	}
 }
 
+// Connect opens, encrypts and authenticates a connection, then resolves the
+// server's special folders.
+//
+// The TLS mode is not a guess: implicit means the socket is encrypted before a
+// byte is exchanged (993), STARTTLS means it is upgraded after the greeting
+// (143). Getting it backwards does not fail cleanly, it hangs, which is why the
+// catalog carries the mode per route rather than leaving it to be sniffed here.
+// There is no third branch: an unencrypted connection would send the user's app
+// password in the clear and is not offered at all.
+//
+// The whole opening (the dial, the TLS handshake, the greeting, STARTTLS,
+// LOGIN and the listing of the folders) runs under ctx: when ctx ends first,
+// the connection is closed, which interrupts whatever is waiting on it, and
+// Connect answers ErrUnreachable. go-imap itself waits for an answer with no
+// time limit, so without this a server that greets and then says nothing at
+// LOGIN would hold its caller forever: a request, a sync, or the sweep that
+// brings every account's reports back.
 func Connect(ctx context.Context, creds Credentials) (*Client, error) {
 	addr := net.JoinHostPort(creds.Endpoint.Host, fmt.Sprint(creds.Endpoint.Port))
 	options := clientOptions(creds.Endpoint.Host)
 
 	var (
-		raw *imapclient.Client
-		err error
+		conn net.Conn
+		err  error
 	)
 	switch creds.Endpoint.TLS {
 	case provider.TLSImplicit:
-		raw, err = imapclient.DialTLS(addr, options)
+		// As imapclient.DialTLS does, but under ctx (the dialer's timeout
+		// bounds the handshake too).
+		config := options.TLSConfig.Clone()
+		if config.NextProtos == nil {
+			config.NextProtos = []string{"imap"}
+		}
+		conn, err = (&tls.Dialer{NetDialer: options.Dialer, Config: config}).DialContext(ctx, "tcp", addr)
 	case provider.TLSSTARTTLS:
-		raw, err = imapclient.DialStartTLS(addr, options)
+		conn, err = options.Dialer.DialContext(ctx, "tcp", addr)
 	default:
 		return nil, fmt.Errorf("imap: unsupported TLS mode %q", creds.Endpoint.TLS)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("imap: dial %s: %w", addr, err)
+		return nil, fmt.Errorf("%w: dial %s: %w", ErrUnreachable, addr, err)
 	}
-	return newClient(raw, creds.Username, creds.Password)
+
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	client, err := func() (*Client, error) {
+		if creds.Endpoint.TLS == provider.TLSSTARTTLS {
+			raw, err := imapclient.NewStartTLS(conn, options)
+			if err != nil {
+				return nil, fmt.Errorf("%w: starttls with %s: %w", ErrUnreachable, addr, err)
+			}
+			return newClient(raw, creds.Username, creds.Password)
+		}
+		return newClient(imapclient.New(conn, options), creds.Username, creds.Password)
+	}()
+	if !stop() {
+		// ctx ended during the opening: the connection is closed, and what
+		// came of the opening says nothing about the mailbox.
+		if client != nil {
+			client.Abort()
+		}
+		return nil, fmt.Errorf("%w: opening %s stopped: %w", ErrUnreachable, addr, ctx.Err())
+	}
+	return client, err
 }
 
 // newClient authenticates an already-connected socket and resolves its folders.
@@ -147,18 +189,58 @@ func Connect(ctx context.Context, creds Credentials) (*Client, error) {
 // not covered that way, because trusting a test certificate would mean giving
 // this package a way to relax its own TLS, and a seam that can weaken
 // production TLS is worth more than the coverage it buys.
+//
+// A LOGIN that fails is ErrAuth only when the server refused the credentials
+// (refusedCredentials); anything else is ErrUnreachable.
 func newClient(raw *imapclient.Client, username, password string) (*Client, error) {
 	if err := raw.Login(username, password).Wait(); err != nil {
 		raw.Close()
-		return nil, fmt.Errorf("%w: %v", ErrAuth, err)
+		if refusedCredentials(err) {
+			return nil, fmt.Errorf("%w: %v", ErrAuth, err)
+		}
+		return nil, fmt.Errorf("%w: login: %w", ErrUnreachable, err)
 	}
 
 	client := &Client{c: raw}
 	if err := client.resolveFolders(); err != nil {
-		client.Close()
-		return nil, err
+		client.Abort()
+		return nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
 	return client, nil
+}
+
+// refusedCredentials says whether a failed LOGIN is the server refusing the
+// address and the password, which only the user can fix, rather than the
+// server being unable to take it now.
+//
+// A tagged NO is a refusal when it says so ([AUTHENTICATIONFAILED], RFC 5530)
+// or says nothing more, which is how most servers word a wrong password. It is
+// not one when its code says the server is unavailable ([UNAVAILABLE],
+// [SERVERBUG], [LIMIT], [INUSE], [TOOMANY]), nor when its text speaks of too
+// many connections, which is how Gmail says it ("[ALERT] Too many simultaneous
+// connections"). Anything that is not a NO (a cut connection, a BYE, a BAD, a
+// time limit) is not a refusal either. Pure, so every wording is tested.
+func refusedCredentials(err error) bool {
+	var resp *imapv2.Error
+	if !errors.As(err, &resp) || resp.Type != imapv2.StatusResponseTypeNo {
+		return false
+	}
+	switch resp.Code {
+	case imapv2.ResponseCodeAuthenticationFailed:
+		return true
+	case imapv2.ResponseCodeUnavailable, imapv2.ResponseCodeServerBug, imapv2.ResponseCodeLimit,
+		imapv2.ResponseCodeInUse, imapv2.ResponseCodeTooMany:
+		return false
+	}
+	return !strings.Contains(strings.ToLower(resp.Text), "too many")
+}
+
+// SaysWhereMovesLand says whether this server answers a move with the number
+// the message takes in its new folder (COPYUID: UIDPLUS, which IMAP4rev2
+// includes). Without it, a message that carries no Message-ID header cannot
+// be named again once moved.
+func (c *Client) SaysWhereMovesLand() bool {
+	return c.c.Caps().Has(imapv2.CapUIDPlus)
 }
 
 // Close ends the session. Logout is attempted first so the server can release
