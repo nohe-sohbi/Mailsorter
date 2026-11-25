@@ -119,10 +119,16 @@ const finalHint = (e, folders) =>
 // What a line says was done: the verb in the past, and for a label where it
 // filed the mail ("Classé dans « Factures »" over IMAP, where it is a folder).
 const placeOf = (e, folders) => (e.action === 'label' ? labelPlace(e.labelName, { folders }) : '');
-const pastOf = (e, folders) => `${actionMeta(e.action, { folders }).past}${placeOf(e, folders)}`;
+// A report leaves the inbox and comes back to it: the ledger records it as an
+// archive and an unarchive, which is what it does on the mailbox, but the
+// person reads what they did: « Reporté », then « Revenu dans la boîte ».
+const SNOOZE_PAST = { archive: 'Reporté', unarchive: 'Revenu dans la boîte' };
+const verbOf = (e, folders) =>
+  (e.source === 'snooze' && SNOOZE_PAST[e.action]) || actionMeta(e.action, { folders }).past;
+const pastOf = (e, folders) => `${verbOf(e, folders)}${placeOf(e, folders)}`;
 // Inside a sentence: the verb in lower case, the folder or label as the user
 // named it (« classé dans « Livraisons » », not « livraisons »).
-const pastInSentence = (e, folders) => `${actionMeta(e.action, { folders }).past.toLowerCase()}${placeOf(e, folders)}`;
+const pastInSentence = (e, folders) => `${verbOf(e, folders).toLowerCase()}${placeOf(e, folders)}`;
 
 // What the right-hand side of a row says. `undoOk` waits for the mailbox to be
 // known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
