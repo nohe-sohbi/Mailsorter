@@ -9,8 +9,8 @@ package api
 // maintenant" on the Règles screen, the "Aperçu" that moves nothing, and each
 // sync once "appliquer mes règles automatiquement" is on). These sentences
 // are the IMAP counterpart of "Tes règles" (scenarios_4_rules_test.go). Over
-// IMAP a mail a rule archives or deletes MOVES to another folder of the
-// server, so each sentence is read on the server itself, as another mail
+// IMAP a mail a rule archives, deletes or labels MOVES to another folder of
+// the server, so each sentence is read on the server itself, as another mail
 // program sees it, and on the inbox screen, which is served from the stored
 // copy of the inbox (mirror.go). Each mailbox is a real IMAP server over TLS
 // (acceptance_imap_test.go).
@@ -35,12 +35,15 @@ package api
 // finds was already there, whatever its date. So a sentence about what a sync
 // does with mails that arrive syncs once before they do.
 //
-// Filing a mail into a folder by a rule ("Étiqueter Factures" over IMAP) is
-// not here: it comes with the filing of a mail into a folder.
+// A rule that labels ("Étiqueter Factures") files the mail, over IMAP, in
+// the folder of that name, made when it is missing, as a proposal of the AI
+// to label it does (scenarios_8_imap_ai_test.go): there the folder stands
+// for the label, and the mail leaves the inbox for it.
 
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -69,7 +72,17 @@ var (
 	// refundDone and refundLater say "remboursement" in their text only.
 	refundDone  = incoming{From: "Boutique <info@boutique.com>", Subject: "Suite à votre demande", Body: "Bonjour, votre remboursement de 42 euros a bien été effectué."}
 	refundLater = incoming{From: "Boutique <info@boutique.com>", Subject: "Votre avoir", Body: "Le remboursement apparaîtra sur votre compte sous trois jours."}
+	// phoneInvoice says "facture" in its subject, as shopInvoice and invoice
+	// (scenarios_8_imap_ai_test.go) do, from a third sender.
+	phoneInvoice = incoming{From: "Mobile <factures@mobile.fr>", Subject: "Votre facture de téléphone"}
+	// gasInvoice is a second mail from the sender of invoice, at the same
+	// address, so protecting that sender protects both.
+	gasInvoice = incoming{From: "Énergie <factures@energie.fr>", Subject: "Votre facture de gaz"}
 )
+
+// newMailboxOwner is the person of a second mailbox in one sentence: one
+// where a sync, not "Appliquer mes règles", is the first to file a mail.
+const newMailboxOwner = "boite-neuve@exemple.fr"
 
 // ruleLineFor returns the newest line of the person's Historique screen that a
 // rule wrote for the mail with this number, with one of these actions, and
@@ -119,6 +132,40 @@ func heldOnServer(moi *imapPerson, folder, subject string) bool {
 		}
 	}
 	return false
+}
+
+// requireNoFolder stops the scenario when the person's server already has a
+// folder by this name: a sentence about a folder made when it is missing
+// proves nothing on a server that has it.
+func requireNoFolder(moi *imapPerson, folder string) {
+	moi.app.t.Helper()
+	if moi.hasFolder(folder) {
+		moi.app.fatalf("le serveur IMAP de %s ne devrait pas encore avoir de dossier %q : le scénario ne prouve rien (dossiers : %s)", moi.email, folder, strings.Join(moi.folders(), ", "))
+	}
+}
+
+// filedByRule checks that the rule filed these mails in the folder of this
+// name: on the server, as another mail program sees it, and on the inbox
+// screen, which no longer shows them. when says at which moment.
+func filedByRule(moi *imapPerson, folder, rule, when string, mails ...incoming) {
+	app := moi.app
+	app.t.Helper()
+	has := moi.hasFolder(folder)
+	if !has {
+		subjects := make([]string, 0, len(mails))
+		for _, m := range mails {
+			subjects = append(subjects, m.Subject)
+		}
+		app.failf("%s, le serveur IMAP de %s devrait avoir un dossier %q, créé s'il n'existait pas, où la règle « %s » range %s, il n'en a pas (dossiers : %s)", when, moi.email, folder, rule, quotedList(subjects), strings.Join(moi.folders(), ", "))
+	}
+	for _, m := range mails {
+		why := fmt.Sprintf("la règle « %s » le range dans le dossier %s, %s", rule, folder, when)
+		if has {
+			moi.expectOnServer(folder, m.Subject)
+		}
+		moi.expectNotOnServer(serverInbox, m.Subject, why)
+		moi.expectDoesNotShow(m.Subject, why)
+	}
 }
 
 func TestScenarios_IMAPRules(t *testing.T) {
@@ -731,6 +778,128 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				moi.expectNotOnServer(serverInbox, shopSale.Subject, "il est arrivé après que tu as branché ta boîte, l'option activée, la règle « Archiver la boutique » l'archive à la synchronisation qui le reçoit")
 				moi.expectDoesNotShow(shopSale.Subject, "il est arrivé après que tu as branché ta boîte, l'option activée, la règle « Archiver la boutique » l'archive à la synchronisation qui le reçoit")
 				stayed("même à la synchronisation qui a rangé un mail arrivé ensuite")
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, une règle qui étiquette « Factures » range les mails qui lui correspondent dans le dossier « Factures » de ta boîte, créé s'il n'existait pas, à « Appliquer » comme à la synchronisation.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				const folder = "Factures"
+				const rule = "Étiqueter les factures"
+				toInvoices := models.RuleAction{Type: rules.ActionLabel, LabelName: folder}
+
+				// Two invoices from two senders, and a mail the rule does
+				// not concern. Where the sentence starts: no folder
+				// "Factures" on the server, so filing a mail there has to
+				// make it.
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopInvoice, invoice)
+				requireNoFolder(moi, folder)
+				moi.rule(rule, 1, rules.FieldSubject, rules.OpContains, "facture", toInvoices)
+				invoices := []incoming{shopInvoice, invoice}
+
+				// "Aperçu": it counts the two invoices, and moves nothing.
+				got := moi.previewRules()
+				if got.code != http.StatusOK {
+					app.failf("l'aperçu de la règle « %s » sur la boîte IMAP de %s devrait répondre 200 avec les mails qu'elle rangerait dans %q, le serveur a répondu %s", rule, moi.email, folder, got)
+				} else {
+					subjects, announced := previewedMails(app, got)
+					count := map[string]int{}
+					for _, s := range subjects {
+						count[s]++
+					}
+					for _, m := range invoices {
+						if count[m.Subject] != 1 {
+							app.failf("l'aperçu de la règle « %s » devrait montrer une fois le mail %q, qu'elle rangerait dans %q, il le montre %d fois (il montre : %s)", rule, m.Subject, folder, count[m.Subject], quotedList(subjects))
+						}
+					}
+					if count[bankStatement.Subject] > 0 {
+						app.failf("l'aperçu de la règle « %s » ne devrait pas montrer le mail %q (son sujet ne dit pas « facture »), il le montre", rule, bankStatement.Subject)
+					}
+					if announced != len(invoices) {
+						app.failf("l'aperçu de la règle « %s » devrait annoncer %d mails concernés, ceux qu'elle rangerait dans %q, il en annonce %d", rule, len(invoices), folder, announced)
+					}
+				}
+				for _, m := range invoices {
+					moi.requireOnServer(serverInbox, m.Subject, "il y était avant l'aperçu, qui ne déplace rien")
+				}
+
+				// "Appliquer mes règles": the folder is made, and the two
+				// invoices are filed in it.
+				if got := moi.applyRules(); got.code != http.StatusOK {
+					app.failf("« Appliquer mes règles » sur la boîte IMAP de %s devrait répondre 200 et ranger dans %q les mails que la règle « %s » concerne, le serveur a répondu %s", moi.email, folder, rule, got)
+				}
+				filedByRule(moi, folder, rule, "après « Appliquer mes règles »", invoices...)
+				// The control: the mail the rule does not concern stays.
+				moi.expectOnServer(serverInbox, bankStatement.Subject)
+				moi.expectShows(uids[0], bankStatement.Subject)
+
+				// At the sync that receives a mail arriving once the option
+				// is on (syncedIMAPInbox ran the first sync, which judges no
+				// arrival), into the folder now there.
+				moi.setAutoApplyRules(true)
+				arrived := moi.arrive(phoneInvoice, travelOffer)
+				moi.sync()
+				filedByRule(moi, folder, rule, "à la synchronisation qui l'a reçu", phoneInvoice)
+				moi.expectOnServer(serverInbox, travelOffer.Subject)
+				moi.expectShows(arrived[1], travelOffer.Subject)
+
+				// And a mailbox where a sync is the first to file a mail in
+				// "Factures": the folder is made there too.
+				neuve := app.imapPerson(newMailboxOwner)
+				neuve.rule(rule, 1, rules.FieldSubject, rules.OpContains, "facture", toInvoices)
+				neuve.setAutoApplyRules(true)
+				neuve.sync()
+				requireNoFolder(neuve, folder)
+				arrivedThere := neuve.arrive(phoneInvoice, travelOffer)
+				neuve.sync()
+				filedByRule(neuve, folder, rule, "à la synchronisation qui l'a reçu, sur une boîte sans dossier « Factures »", phoneInvoice)
+				neuve.expectOnServer(serverInbox, travelOffer.Subject)
+				neuve.expectShows(arrivedThere[1], travelOffer.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, une règle qui étiquette ne range jamais dans un dossier le mail d'un expéditeur protégé : il reste dans ta boîte de réception.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				const folder = "Factures"
+				const rule = "Étiqueter les factures"
+
+				// An invoice from a protected sender and one from a sender
+				// nobody protects: the control, which the same rule files,
+				// so it is the protection that keeps the first one in the
+				// inbox.
+				moi, uids := syncedIMAPInbox(app, invoice, shopInvoice)
+				moi.protect(invoice.From)
+				moi.rule(rule, 1, rules.FieldSubject, rules.OpContains, "facture", models.RuleAction{Type: rules.ActionLabel, LabelName: folder})
+
+				// stayed checks that the protected sender's mail is still in
+				// the inbox, on the server and on the screen, and not in the
+				// folder. when says at which moment.
+				stayed := func(uid string, m incoming, when string) {
+					app.t.Helper()
+					if moi.hasFolder(folder) {
+						moi.expectNotOnServer(folder, m.Subject, fmt.Sprintf("son expéditeur est protégé, la règle « %s » ne doit pas le ranger dans un dossier, %s", rule, when))
+					}
+					moi.expectOnServer(serverInbox, m.Subject)
+					moi.expectShows(uid, m.Subject)
+				}
+
+				// "Appliquer mes règles".
+				if got := moi.applyRules(); got.code != http.StatusOK {
+					app.failf("« Appliquer mes règles » sur la boîte IMAP de %s devrait répondre 200 et appliquer la règle « %s », le serveur a répondu %s", moi.email, rule, got)
+				}
+				stayed(uids[0], invoice, "après « Appliquer mes règles »")
+				filedByRule(moi, folder, rule, "après « Appliquer mes règles », son expéditeur n'étant pas protégé", shopInvoice)
+
+				// At the sync that receives two mails arriving once the
+				// option is on (syncedIMAPInbox ran the first sync, which
+				// judges no arrival): one from the protected sender, one
+				// from a sender nobody protects.
+				moi.setAutoApplyRules(true)
+				arrived := moi.arrive(gasInvoice, phoneInvoice)
+				moi.sync()
+				stayed(arrived[0], gasInvoice, "à la synchronisation qui l'a reçu")
+				filedByRule(moi, folder, rule, "à la synchronisation qui l'a reçu, son expéditeur n'étant pas protégé", phoneInvoice)
 			},
 		},
 	})
