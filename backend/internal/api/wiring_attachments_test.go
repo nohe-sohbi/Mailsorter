@@ -33,8 +33,8 @@ const notesMail = "From: Ami <ami@exemple.fr>\r\n" +
 	"Des notes.\r\n" +
 	"--b--\r\n"
 
-// ruleRow is what the sync stored of a message's attachments.
-type ruleRow struct {
+// attachmentsRow is what the sync stored of a message's attachments.
+type attachmentsRow struct {
 	HasAttachments *bool `bson:"hasAttachments"`
 	Rule           int   `bson:"hasAttachmentsRule"`
 }
@@ -52,9 +52,9 @@ func TestAcceptance_SyncCountsAgainWhatAnOlderRuleCounted(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	row := func(subject string) ruleRow {
+	row := func(subject string) attachmentsRow {
 		t.Helper()
-		var r ruleRow
+		var r attachmentsRow
 		if err := app.h.db.Emails().FindOne(ctx, bson.M{"userId": moi.email, "subject": subject}).Decode(&r); err != nil {
 			app.fatalf("lecture du mail %q dans la copie de %s : %v", subject, moi.email, err)
 		}

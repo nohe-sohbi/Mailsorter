@@ -191,6 +191,18 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	if in.AutoApplyRules != nil && *in.AutoApplyRules {
+		// When it is turned on, from off only: saving it on again moves
+		// nothing. Over IMAP the sync sorts on its own the mails received
+		// after it (syncRulesFor), never the ones already there.
+		if _, err := h.db.Users().UpdateOne(ctx,
+			bson.M{"email": userEmail, "autoApplyRules": bson.M{"$ne": true}},
+			bson.M{"$set": bson.M{"autoApplyRulesSince": time.Now()}},
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer les réglages.")
+			return
+		}
+	}
 	if _, err := h.db.Users().UpdateOne(ctx,
 		bson.M{"email": userEmail},
 		bson.M{"$set": set},

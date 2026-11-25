@@ -23,6 +23,18 @@ The server derives the user identity from this token; clients must **not** send 
 raw `X-User-Email` header (any client-supplied value is stripped server-side).
 Requests without a valid token receive `401 Unauthorized`.
 
+A signed-in screen also names the mailbox it loaded, in
+`X-Mailbox-Generation: <generation>`, the value `GET /api/mailbox` answers
+(`generation`). A request naming another mailbox than the one connected now
+(another was connected since the screen loaded, from another tab or device)
+is refused with `409` "Votre boîte a changé depuis l'ouverture de cette page :
+rechargez-la." and `mailboxChanged: true` (the screen then loads the mailbox
+again and forgets what it held of the other one), before anything is read or
+done: over IMAP a message number
+names a mail of one mailbox only, and the next one gives the same numbers to
+its own. A request without the header is not checked (see "Mailbox
+generations").
+
 Public endpoints (no token needed): `/health`, `/metrics`, `/api/auth/*`,
 `/api/config/status`, `/api/providers`, `/api/waitlist`, and
 `/api/billing/webhook` (which authenticates via its Stripe signature). On a
@@ -361,13 +373,78 @@ that have left the inbox since the last sync, however old: it asks the server
 for the UID of every message in the inbox (one `UID SEARCH`), not only the
 ones it listed. The background sync (`autoSyncEnabled`) runs the same code.
 Over IMAP, `500` when the mirror could not be brought in line with the inbox
-(the listing itself is stored).
+(the listing itself is stored). A sync reads and writes the copy of the
+mailbox it opened (its generation, see "Mailbox generations"): one still
+running once another mailbox is connected in its place writes rows that are
+never read, and each sync starts by erasing what is not of the mailbox
+connected now.
 
-Over the Gmail API, when `autoApplyRules` is on, the deterministic rules run on
-each synced message (protected senders shielded, each action journaled with
-source `rule`), and `rulesApplied` counts the messages a rule acted on. Over
-IMAP rules do not run and `rulesApplied` is `0`; the listing reads the messages
-with PEEK, so syncing never marks them read.
+**Query parameters:** `notice=1` (optional) asks for the count of messages the
+rules gave up on, kept on the mailbox's row until a sync asks for it, then
+cleared (see `rulesMessage` below). The screen sends it only where it shows the answer:
+the "Synchroniser" button and the page load.
+
+When `autoApplyRules` is on, the deterministic rules run at the sync
+(protected senders shielded, each action journaled with source `rule`), and
+`rulesApplied` counts the messages a rule acted on. Over the Gmail API they run
+on each synced message. Over IMAP they run on the messages that arrive. A
+listed message arrives when this sync stores it for the first time and its
+server received it (INTERNALDATE, to the second) no earlier than the later of
+two moments: the option turned on (stamped when it goes from off to on) and
+the mailbox connected (`mail_accounts.createdAt`, set when a mailbox is
+connected; another address or another server connected in its place gets a
+row of its own; connecting the same mailbox again, with a new app password,
+keeps it). So turning the option on, or connecting a mailbox with the option
+on, sorts nothing already in the inbox (`POST /api/rules/apply` does).
+INTERNALDATE is written by the mail server's clock and the two moments by
+Mailsorter's: a gap between the two clocks moves the line by as much (a mail
+received just before the option was turned on may count as arrived, or the
+reverse). That is why the very first sync of a mailbox judges no message as
+arrived, whatever its date: all it lists was there when it was connected. The
+first sync is the one of a mailbox Mailsorter never synced (`firstSyncedAt`
+unset on its row) whose stored copy holds nothing; an empty inbox, once synced,
+has had it. Nor is a message one whose Message-ID the
+stored copy holds under another number when the sync starts: a message put
+back by "Annuler" when the server did not say its new number, one Mailsorter
+moved out in the last 30 days and another mail program moved back, or one
+another program moved out and back between two syncs. One another program
+moved out, then back after a sync went by, is not recognized: that sync
+dropped it from the copy, and it is judged as a message that arrives if its
+INTERNALDATE allows it.
+
+An arrival is marked as it is stored, then judged. Tried again at the next
+syncs, 3 syncs in all: a message whose text read the server stopped or that
+ran out of time, and a message on which an action of its rule failed (a move
+the server refused, for instance). The actions its rule already did are kept
+on its row and not done again: a message starred, then refused by the
+archive, is not starred a second time, nor written twice in the history, nor
+counted twice (`appliedCount` counts it at its first action), and one marked
+read then unread again by its owner stays unread. Not tried again: a message
+whose text cannot be parsed, and one whose text was not read in full (see
+"Sorting Rules Endpoints"): left aside, logged. After 3 syncs a message is
+given up (logged, left in the inbox). A marked message that left the inbox
+meanwhile is not judged, nor counted. A sync holds the messages it judges, and
+`POST /api/rules/apply` the ones it judges, for at most 10 minutes (longer
+than any sync runs), each leaving alone a message the other holds; so two
+syncs, or a sync and `POST /api/rules/apply`, do not act on one message at
+once.
+
+The sync still answers `200` when its rules could not judge every message,
+since the messages were read and listed. `rulesApplied` counts the messages
+whose rule did everything it does (something at least), `rulesPending` the
+messages left for the next sync: a message is in one or the other.
+`rulesMessage` says it for the screen to show as information, in French:
+"Vos règles n'ont pas pu être appliquées à 2 nouveaux mails : la prochaine
+synchronisation réessaiera." for this sync's pending messages, and "1 mail n'a
+pas pu être rangé par vos règles : laissé dans la boîte." for the messages
+given up since it was last told, whichever sync gave them up, the background
+one included: the mailbox's row keeps the count until a call of this route
+with `notice=1` answers it, once (a mailbox connected in its place has a row
+of its own, which is not told about this one's). `rulesMessage` is absent when there is nothing to
+tell. A rule on
+`body` or `snippet` reads the text of those messages from the server first.
+The listing, and that text, are read with PEEK, so syncing never marks a
+message read.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -377,9 +454,12 @@ with PEEK, so syncing never marks them read.
 {
   "synced": 42,
   "total": 50,
-  "rulesApplied": 3
+  "rulesApplied": 3,
+  "rulesPending": 0
 }
 ```
+
+`rulesPending` is always `0` over the Gmail API.
 
 Every error is a French sentence the inbox shows as is, alone; what failed
 is logged. The 5xx ones carry `"syncMessage": true`, which is what the inbox
@@ -712,7 +792,10 @@ folder of that name, and undoing it brings the mail back to the inbox from the
 folder it was filed in. Marking as read stays one-way on purpose.
 
 The matching ledger entries are marked undone so the history does not offer a
-second "Annuler" on the same work. Note that on the Gmail API the per-entry
+second "Annuler" on the same work. Over IMAP a message whose latest entry for
+this action is of another mailbox than the one connected now (its generation,
+see "Mailbox generations") is not touched, and not counted as restored: its
+number names a mail of the mailbox connected now. Note that on the Gmail API the per-entry
 history undo (`POST /api/activity/undo`) still cannot reverse a labelling: most
 action log lines name no label, so it would have nothing to remove. Over IMAP
 it can (see there).
@@ -860,7 +943,12 @@ hour (see above) is counted as `failed`.
 #### GET /api/snoozes?status=scheduled
 
 Returns `{ "snoozes": [ ... ] }`, soonest wake first (`status` defaults to
-`scheduled`; the others are `done`, `failed` and `cancelled`).
+`scheduled`; the others are `done`, `failed` and `cancelled`). Only the
+snoozes of the mailbox connected now (see "Mailbox generations"): a snooze
+carries the mailbox it was made on. Those of a mailbox disconnected or
+replaced since are ended (`cancelled`) when that happens, their mails left
+where they wait (over IMAP, in `Plus tard` of that mailbox), and the sweep
+ends without moving anything one it still meets.
 
 ### Wake a snooze now
 
@@ -876,6 +964,7 @@ moving or recording anything.
 
 **Error Responses:**
 - `404 Not Found`: No such snooze; or a snooze `cancelled` ("Ce mail n'est plus là où Mailsorter l'avait rangé."): brought back by "Annuler", or, over IMAP, taken out of `Plus tard` by another mail program
+- `410 Gone`: A snooze of another mailbox than the one connected now: "Ce report concerne une boîte débranchée depuis."; nothing moved on the mailbox connected now
 - `409 Conflict`: Over IMAP, several messages of `Plus tard` carry the mail's `Message-ID` and its number there no longer names it: "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie." (`severalCopies: true`); nothing moved, nothing counted. The sweep does count those attempts: after five passes the snooze is `failed` ("En échec"), where this route still answers this `409`
 - `423 Locked`: The sweep or an "Annuler" is bringing it back at that moment ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
 - `502 Bad Gateway`: The mailbox refused the return: "Ce mail n'a pas pu être ramené, réessayez dans un instant." (what failed is logged); nothing is counted
@@ -1017,7 +1106,7 @@ mailbox is on IMAP, rather than acting on the wrong message.
 
 | Works on IMAP | Answers 501 on IMAP |
 |---|---|
-| `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
+| `POST /api/emails/sync` (rules on the messages that arrive), `POST /api/rules/apply`, `POST /api/rules/preview` (on the stored mailbox, see "Sorting Rules Endpoints") | |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
 | `GET /api/emails/{id}` (body and attachment list included), `GET /api/emails/{id}/attachments/{attachmentId}` | |
 | `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message, archived, deleted or filed in a folder, is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
@@ -1029,8 +1118,6 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
 | `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `POST /api/smart-labels` |
 | `GET /api/labels` (the user's own folders) | |
-
-A rule can be created on an IMAP account, but nothing runs it there.
 
 ### The listing is served from the stored mailbox on IMAP
 
@@ -1131,6 +1218,85 @@ encryption key's threat model never covered.
 
 One connection per account: connecting again replaces the stored one.
 
+### Mailbox generations
+
+An IMAP message number only names a mail in one mailbox: the next mailbox
+connected gives the same numbers to its own mails. So what Mailsorter keeps of
+an IMAP mailbox carries the mailbox it belongs to, its generation: the `id`
+of its `mail_accounts` row. The stored copy of the inbox, the AI's proposals
+and the history entries carry it.
+
+- Another mailbox connected (another address or another server, a Google
+  consent included) gets a row of its own, so a generation of its own. The
+  same mailbox connected again by the same route keeps its row, its
+  generation and what was kept of it; once disconnected (its row deleted), it
+  comes back as a new generation.
+- Every read (the list, its filters, the counters, the reader, the senders,
+  the subscriptions, the AI's plan, the rules and their preview, the history's
+  "Annuler") is of the generation connected now. Every write carries the
+  generation of the operation that makes it: a sync, a run of the rules, an
+  analysis or an "Annuler" still running on a mailbox since replaced writes
+  only rows that are never read.
+- What is not of the generation connected now is erased (the copy, and the
+  pending proposals), and its snoozes still open end (`cancelled`, their mails
+  left where they wait): when a mailbox is connected, when it is
+  disconnected, and at the start of each sync. The history stays; its entries
+  of another mailbox are final (`mailboxGone`, see `GET /api/activity/log`).
+  A snooze carries its mailbox's generation too: "Réactiver" one of another
+  mailbox answers `410`, and its hour moves nothing in the mailbox connected
+  now. A new app password (`PUT /api/mailbox/password`) keeps the row, so the
+  generation and everything of it.
+- A screen sends the generation it loaded (`X-Mailbox-Generation`, see
+  "Authentication"): one loaded on another mailbox gets `409` and acts on
+  nothing. An analysis started from it (`POST /api/ai/analyze-async`) runs on
+  the mailbox it was started on, or ends with the same sentence.
+
+The Gmail API names a message on the account: its rows carry no generation.
+What was kept before generations existed is given, at boot, the generation of
+the IMAP mailbox connected then, as far as it is known to be that mailbox's:
+before generations, connecting another address wrote over the same row and
+erased nothing, so the row's last connection (`updatedAt`, which a new app
+password moves too) is the line. The
+rows of its copy still in the inbox (each sync rewrites or drops them against
+the inbox it lists), a row kept for "Annuler" if the mail left the inbox
+since that connection, and the proposals and history entries made since; and
+its snoozes, whatever their date (ending one would leave its mail in `Plus
+tard`, while the return of one the row held for another mailbox checks the
+mail's Message-ID and moves nothing there). What comes before stays without a
+generation: final in the history (on an IMAP mailbox), and erased from the
+copy. So are the rows of the copies of the accounts with no IMAP mailbox
+connected, and their open snoozes end (`cancelled`). A mailbox whose stamping
+failed keeps its rows unread until its next sync erases them and rebuilds its
+copy from the inbox (the rows kept for "Annuler" go then, and the "Annuler" of
+those moves). A snooze over IMAP without a generation (one the boot missed)
+made since the connected IMAP mailbox was connected is that mailbox's: the
+list, the sweep, "Réactiver", "Annuler" and the erasing give it that
+generation, so no mail stays in `Plus tard` for want of it. An older one may
+be of a mailbox connected before, whose mails have the same numbers: it ends
+(`cancelled`) where it is met, its mail left in `Plus tard`. Connecting
+another mailbox first gives the snooze without a generation of the one it
+replaces that one's generation, so they end with it. This runs under its own time, after the indexes, and the boot log
+says how many rows it stamped, erased and ended. The index on (userId,
+messageId, generation) is built unique before the one it replaces, on
+(userId, messageId), is dropped; should it fail (duplicates, the boot's time),
+a plain one is built, the old one kept, and the boot log says so.
+
+A one-time limit of the update that brings generations: the line is the
+row's last connection (`updatedAt`), which a new app password (`PUT
+/api/mailbox/password`) or the same mailbox connected again also moved. When
+that happened before the update, the history entries older than it become
+final ("Annuler" no longer offered), and the rows kept for "Annuler" from
+before it are erased. Nothing moves by mistake: what is in doubt is only made
+final.
+
+A limit remains for the history entries of an IMAP mailbox disconnected before
+generations existed: they carry none, like the Gmail API's, so once a Gmail
+mailbox is connected through Google they are offered "Annuler". Gmail knows no
+message by their number and refuses it: the answer is `404` "Ce mail n'est pas
+dans votre boîte Gmail : cette action ne peut pas être annulée d'ici.", nothing
+moves, and the entry stays not undone. On a mailbox connected over IMAP they
+are final like any entry of another mailbox.
+
 ### Read the connected mailbox
 
 #### GET /api/mailbox
@@ -1139,9 +1305,13 @@ One connection per account: connecting again replaces the stored one.
 - `Authorization: Bearer <session-token>` (required)
 
 **Response:** `200 OK`. `mailbox` is `null` when nothing is connected, which is
-a normal state rather than an error.
+a normal state rather than an error. `generation` names the mailbox for the
+screen, which sends it back with its requests (`X-Mailbox-Generation`, see
+"Mailbox generations"): the row's `id` over IMAP, `"gmail"` through Google,
+`""` when nothing is connected.
 ```json
 {
+  "generation": "665...",
   "mailbox": {
     "id": "665...",
     "provider": "orange",
@@ -1215,6 +1385,15 @@ seconds, burst 5, keyed on the account and on the address tried; over it, `429`
 "Trop de tentatives. Patientez quelques instants." with `Retry-After: 3`, and
 the provider is not asked.
 
+Connecting the mailbox already connected again (the same address on the same
+server, a new app password) keeps everything. Connecting another one (another
+address, or another server) in its place starts from nothing, as a disconnect
+then a connect would: it gets a row of its own (a new `id`, a new generation,
+see "Mailbox generations"), connected now (`createdAt`), whose next sync is a
+first one (see `POST /api/emails/sync`); the stored copy of the previous inbox
+and the AI's pending proposals about it are erased. The history stays, final
+on the previous mailbox.
+
 **Response:** `200 OK`, the stored mailbox, in the shape `GET /api/mailbox`
 returns under `mailbox`.
 
@@ -1229,6 +1408,8 @@ returns under `mailbox`.
   server in the running edition (see above)
 - `429 Too Many Requests`: throttled before any LOGIN, see above
 - `500 Internal Server Error`: the connection worked but could not be stored
+  (what was kept of the previous mailbox is no longer read either way, and an
+  erasing that fails is done again at the first sync)
 - `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
   répondu, réessayez dans un instant.")
 
@@ -1242,9 +1423,10 @@ the provider refuses the one on file (a `428` with `passwordRefused: true`, see
 the error table). The password is proved against the server the mailbox was
 connected on (its stored host, never one from the request, nor the catalog's
 again, which would make it a new connection), then only it is replaced: the
-mailbox row (its creation included), its server, its sending server, the
-stored copy of its inbox, the proposals and the history, with what "Annuler"
-can still bring back, all stay. A password the provider refuses replaces
+mailbox row (its creation included, so its generation, see "Mailbox
+generations"), its server, its sending server, the stored copy of its inbox,
+the proposals, the reports and the history, with what "Annuler" can still
+bring back, all stay. A password the provider refuses replaces
 nothing. The body names no address, so no other mailbox can be reached.
 
 **Body:** `{ "password": "xxxx xxxx xxxx xxxx" }`
@@ -1258,6 +1440,8 @@ under `mailbox`.
   "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
   d'application.", marked `"mailboxRejected": true`, which the SPA does not
   take for a dead session
+- `409 Conflict`: a screen loaded on another mailbox than the one connected
+  now (`X-Mailbox-Generation`, see "Authentication")
 - `422 Unprocessable Entity`: a mailbox reached through the Gmail API: "Cette
   boîte est branchée par Google : son mot de passe ne se change pas ici."
 - `428 Precondition Required`: no mailbox connected over IMAP, or the mailbox
@@ -1276,17 +1460,26 @@ under `mailbox`.
 
 #### DELETE /api/mailbox
 
-Forgets the connection: deletes the stored mailbox row (app password included)
-and removes the Google tokens from the account. This is also how a user revokes
-Mailsorter's access without going through their provider. The mailbox itself is
-never touched, and the account remains: its mailbox routes answer `428` until a
-mailbox is connected again.
+Forgets the connection: it deletes the stored mailbox row (app password
+included) and removes the Google tokens from the account. For a mailbox
+connected over IMAP it then erases what Mailsorter kept of it: the stored copy
+of its inbox and the AI's pending proposals (no generation is connected any
+more, see "Mailbox generations"). The history stays, but its lines no longer
+offer "Annuler" (`mailboxGone`): they name messages by numbers the next
+mailbox gives to its own, and an "Annuler" would act on one of those. A
+mailbox reached through the Gmail API keeps its listing and its proposals. This is also how a user revokes Mailsorter's access
+without going through their provider. The mailbox itself is never touched, and
+the account remains: its mailbox routes answer `428` until a mailbox is
+connected again, whose inbox then shows its own mails only.
 
 **Response:** `200 OK`, `{ "disconnected": true }`, whether or not anything was
 connected.
 
 **Error Responses:**
-- `500 Internal Server Error`: the stored row could not be deleted
+- `500 Internal Server Error`: the stored row could not be deleted (nothing
+  is disconnected). An erasing that fails once the row is deleted is logged
+  and done again at the next connection: nothing of that mailbox is read
+  meanwhile.
 
 ---
 
@@ -1375,7 +1568,11 @@ flagged `undoable` (it has a clean inverse and has not been undone yet). On
 IMAP an archive, a delete or a label (a filing into a folder) is `undoable`
 only while Mailsorter knows where it put the message (30 days, and never for a
 move made before it recorded that), and a read change only while the message
-is still in the inbox.
+is still in the inbox. An entry of another mailbox than the one connected now
+(an IMAP mailbox since disconnected or replaced by another, or, once an IMAP
+mailbox is connected, one reached through Google before; see "Mailbox
+generations") carries `mailboxGone: true` and is never `undoable`: the screen
+shows it "Définitif", "Cette action concerne une boîte débranchée depuis."
 
 **Query parameters:**
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
@@ -1452,12 +1649,19 @@ où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
 entry stays not undone); `409` already undone, except that a request within
 2 minutes of another one that undid it, with nothing done to the mail since,
 answers `200` like it (two clicks, two tabs): once the mail was archived again,
-a screen left open on the old line gets `409`; over IMAP, `409` with
-`severalCopies: true` "Plusieurs copies de ce mail sont dans votre boîte :
-Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie."
-when the mail is no longer under the number Mailsorter recorded and several
-messages carry its `Message-ID` there (nothing moves; the entry stays not
-undone); `423` "Ce mail est déjà en train
+a screen left open on the old line gets `409`, and so does a screen loaded on
+another mailbox than the one connected now (`X-Mailbox-Generation`); over
+IMAP, `409` with `severalCopies: true` "Plusieurs copies de ce mail sont dans
+votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre
+messagerie." when the mail is no longer under the number Mailsorter recorded
+and several messages carry its `Message-ID` there (nothing moves; the entry
+stays not undone); `410` "Cette action concerne une boîte débranchée depuis."
+for an entry of another mailbox than the one connected now (`mailboxGone`),
+nothing moving; on the Gmail API, `404` "Ce mail n'est pas dans votre boîte
+Gmail : cette action ne peut pas être annulée d'ici." when Gmail knows no
+message by that id (deleted for good, or an entry of an IMAP mailbox
+disconnected before history entries carried their generation, see "Mailbox
+generations"), nothing moving; `423` "Ce mail est déjà en train
 de revenir dans votre boîte, réessayez dans un instant." while the wake sweep
 or a "Réactiver" brings back the mail of a snooze; `500` "Annulation impossible à
 vérifier, réessayez." when the actions since cannot be read; `502` the provider
@@ -1545,7 +1749,8 @@ mailbox: through the Gmail API, or through the sending server of a mailbox
 connected over IMAP (see `POST /api/account/digest/test`).
 When `autoSyncEnabled` is true, a background scheduler syncs the inbox at most
 every 30 minutes with no manual click, and applies rules when `autoApplyRules`
-is on (Gmail API only). Returns the full, merged settings.
+is on (over IMAP, to the messages that arrive: see `POST /api/emails/sync`).
+Returns the full, merged settings.
 
 > On the Gmail API, accounts connected before the digest feature must
 > **reconnect Gmail** to grant the `gmail.send` scope before delivery can succeed.
@@ -1905,8 +2110,10 @@ tidied it by hand): nothing moves, nothing is recorded, and the proposal
 becomes `moot`.
 
 **Error Responses:** `400` invalid id; `404` no such suggestion for this caller;
-`422` over IMAP, a label naming a special folder or a name no folder is made
-under; `428` no mailbox connected;
+`410` "Cette proposition concerne une boîte débranchée depuis." for a
+suggestion about another mailbox than the one connected now (see "Mailbox
+generations"), nothing moving; `422` over IMAP, a label naming a special
+folder or a name no folder is made under; `428` no mailbox connected;
 `500` the mailbox refused the action.
 
 ### Apply many suggestions
@@ -1927,13 +2134,17 @@ answers in `message`; several reasons are joined, each once. Each filing
 settles its folder's name as `apply` does. A suggestion whose mail already left the
 inbox (tidied by hand, from a screen loaded before) is counted neither in
 `applied` nor in `failed`, and becomes `moot`; nor is a suggestion already
-`moot`.
+`moot`. A suggestion about another mailbox than the one connected now (see
+"Mailbox generations") is not applied either: counted in `mailboxGone`, and
+said in `message`, "1 proposition concernait une boîte débranchée depuis :
+elle n'a pas été appliquée." (or "2 propositions concernaient ... elles n'ont
+pas été appliquées.").
 
 **Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
 
 **Response:** `200 OK`
 ```json
-{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1, "reversible": true }
+{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1, "mailboxGone": 0, "reversible": true }
 ```
 
 `reversible` says whether `POST /api/emails/batch-undo` can reverse what this
@@ -2133,8 +2344,8 @@ and any learned preference. Reads the datastore only.
 
 Turn a sender into a permanent deterministic rule: every email whose `From`
 contains the sender gets the action whenever the rules run (at sync time with
-`autoApplyRules`, or on `POST /api/rules/apply`; Gmail API only, see "Sorting
-Rules Endpoints").
+`autoApplyRules`, or on `POST /api/rules/apply`, see "Sorting Rules
+Endpoints").
 
 **Request body:**
 ```json
@@ -2162,15 +2373,49 @@ section for its shape).
 ## Sorting Rules Endpoints
 
 Deterministic, **AI-free** triage. A rule pairs conditions with an action; when
-the conditions match an email, the action is applied directly via Gmail: no
-model call, no quota consumed. Rules are the free, predictable complement to the
-AI suggestions, and the AI analysis does not consult them.
+the conditions match an email, the action is applied directly to the mailbox:
+no model call, no quota consumed. Rules are the free, predictable complement to
+the AI suggestions, and the AI analysis does not consult them.
 
-Rules run in two places only: at sync time when `autoApplyRules` is on, and on
-`POST /api/rules/apply`. Both are Gmail API only: over IMAP the sync skips them
-and `apply` / `preview` answer `501`. Creating, editing, reordering, exporting
-and importing rules read and write the datastore only and answer on both
-transports.
+Rules run in two places only: at sync time when `autoApplyRules` is on (see
+`POST /api/emails/sync`: over IMAP, on the messages that arrive), and on
+`POST /api/rules/apply`, both transports. Creating, editing, reordering,
+exporting and importing rules read and write the datastore only.
+
+Over IMAP, `apply` and `preview` judge the stored copy of the inbox, what the
+inbox screen shows (see "The listing is served from the stored mailbox on
+IMAP"): a message moved out of the inbox is not there, and one that arrived
+since the last sync not yet. The copy keeps no text, so when an enabled rule
+has a condition on `body` or `snippet`, the text of those messages is read from
+the server, with PEEK (the messages stay unread), the first 256 KiB of each,
+20 messages a FETCH, checking the request's time limit between two FETCHes.
+A message whose text cannot be parsed is left out, logged, and so is a message
+whose text was not read in full: larger than what is read, and either no text
+part was found in its beginning (a file before the text) or the read stopped
+inside the text part a rule would judge (the plain text, or the HTML when there
+is none: a text or an HTML larger than 256 KiB, a text after a large file, a
+message that is all text and larger). No rule on `body` or `snippet` judges
+such a message, not even "does not contain", which would match what was not
+read; rules on the sender, the subject or the recipients still do. A read the
+server stops, or that runs out of time, fails the request (`502`). `apply`
+leaves out a message a sync holds at that moment. A mail judged by `apply` is
+no longer marked for the sync (see `POST /api/emails/sync`).
+
+Over IMAP a label is a folder: a rule's `label` files the message in the
+user's folder of that name, as an AI proposal to label it does (the name
+matched with an existing folder, case, accents and a plural aside; made,
+subscribed, when there is none; never a special folder, and at most 10 new
+folders a request), out of the inbox like an archive, written in the history
+with the folder and undone like an archive. A protected sender's message is
+not filed. And a message moves once: the flags first, then one move chosen by
+what the rule means, whatever the order written: the trash if the rule has
+`trash`, else the folder if it has a `label` (the first written), else the
+archive. So "label Factures, then archive", the Gmail way of filing a message
+out of the inbox, files it in Factures. A folder
+no message is filed into (a special one, a name no folder is made under) is
+left aside, logged, and not tried again; one new folder too many is tried
+again at the next sync. The preview shows, for each message, what applying the
+rule does there: the flags, then the one folder.
 
 A rule has the shape:
 
@@ -2204,11 +2449,17 @@ A rule has the shape:
   `regex`); temporal: `olderThan` / `newerThan`, whose `value` is a **number of
   days** compared against the email's received date (an undated email never
   matches a temporal condition).
-- **`actions`** : an **ordered list** of actions applied in sequence (e.g.
-  *label* then *archive*). Each is `{ "type": ..., "labelName": ... }` where
-  `type` is `archive`, `trash`, `label` (requires `labelName`), `markRead` or
-  `star`. A protected (VIP) sender has destructive actions (archive/trash)
-  skipped while non-destructive actions in the same rule still run.
+- **`actions`** : an **ordered list** of actions, all applied on the Gmail API
+  (e.g. *label* and *archive*). Each is `{ "type": ..., "labelName": ... }`
+  where `type` is `archive`, `trash`, `label` (requires `labelName`),
+  `markRead` or `star`. The ones that change the message where it is (`label`,
+  `markRead`, `star`) run first, in the order written, then the ones that move
+  it out of the inbox (`archive`, `trash`): over IMAP a moved message takes a
+  new number in its new folder, so "archive then star" still stars it. Over
+  IMAP a `label` is a move too (the folder of that name), and a message moves
+  once: the trash, else the folder, else the archive (see above). A protected (VIP) sender has
+  destructive actions (archive/trash, and over IMAP the filing) skipped while
+  the other actions in the same rule still run.
 - **`action` / `labelName`** : legacy single-action fields, kept for backward
   compatibility. A client may send either shape; the server normalizes them and
   mirrors the primary (first) action onto these fields. Rules created before
@@ -2259,9 +2510,10 @@ Deletes a rule. **Response:** `{ "status": "deleted" }`.
 
 #### POST /api/rules/apply
 
-Runs every **enabled** rule across the current inbox (up to 200 messages). Each
-email is matched in priority order and the first match's action is applied. Never
-calls the AI, never consumes quota.
+Runs every **enabled** rule across the current inbox (up to 200 messages, the
+most recent; over IMAP, the stored copy of the inbox). Each email is matched in
+priority order and the first match's actions are applied, each journaled with
+source `rule`. Never calls the AI, never consumes quota.
 
 **Response:**
 ```json
@@ -2272,6 +2524,11 @@ calls the AI, never consumes quota.
   "protectedSkipped": 0
 }
 ```
+
+**Error Responses:**
+- `500`: the stored copy of an IMAP inbox could not be read
+- `502`: the mailbox could not be read (the Gmail listing, or the text of IMAP
+  messages a rule needs)
 
 ### Preview Sorting Rules (dry run)
 
@@ -2298,7 +2555,13 @@ it: it runs the same matching function as `POST /api/rules/apply`.
 }
 ```
 `samples` is capped server-side. When the user has no rules, `willApply` is `0`
-and the arrays are empty.
+and the arrays are empty. It does not model the protected senders: `willApply`
+is what `apply` would at most act on. Over IMAP it counts the messages a rule
+would file in a folder, as the ones it would archive or delete, and shows for
+each what applying the rule does there: the flags, then the one move (the
+trash, else the folder, else the archive); and it opens the mailbox only when
+a rule reads the text, the rest being in the stored copy. Errors as for
+`POST /api/rules/apply`.
 
 ### Reorder the ruleset
 
@@ -2707,7 +2970,7 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `402` | The hosted service's free monthly AI quota is spent (`analyze` and `analyze-async` only) | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
 | `404` | No such resource for this caller, or no such route | `{ "error": "Rule not found", "status": 404 }` |
 | `405` | The route exists, not with this method | `{ "error": "Method not allowed on this route", "status": 405 }` |
-| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro; or, over IMAP, an "Annuler" that finds several copies of the mail where Mailsorter put it (`severalCopies: true`, nothing moved) | `{ "error": "Action déjà annulée", "status": 409 }`, `{ "error": "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie.", "status": 409, "severalCopies": true }` |
+| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro; over IMAP, an "Annuler" that finds several copies of the mail where Mailsorter put it (`severalCopies: true`, nothing moved); or a screen loaded on another mailbox than the one connected now (`X-Mailbox-Generation`, `mailboxChanged: true`) | `{ "error": "Action déjà annulée", "status": 409 }`, `{ "error": "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie.", "status": 409, "severalCopies": true }` |
 | `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Requête trop volumineuse.", "status": 413 }` |
 | `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
 | `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est branchée à ce compte.", "status": 428 }` (the screens then offer "Brancher une boîte", to `/connect`), `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428, "passwordRefused": true }` (the screens then lead to the new password form, `/connect?motdepasse=1`) |

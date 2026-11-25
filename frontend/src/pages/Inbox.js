@@ -2,7 +2,18 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { useEmails, useMailbox, DEFAULT_QUERY } from '../contexts/EmailContext';
 import { useInstance } from '../contexts/InstanceContext';
-import { aiService, senderService, emailService, subscriptionService, protectService, labelService, searchService, apiError, aiError } from '../services/api';
+import {
+  aiService,
+  senderService,
+  emailService,
+  subscriptionService,
+  protectService,
+  labelService,
+  searchService,
+  apiError,
+  aiError,
+  isMailboxChanged,
+} from '../services/api';
 import { canApplyVerdict, canPromise } from '../components/landing/features';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
@@ -298,12 +309,21 @@ function Inbox() {
   // Switch to the async worker beyond this many emails so the UI never blocks.
   const ASYNC_THRESHOLD = 10;
 
+  // What a sync that worked has to say besides (over IMAP, rules that could
+  // not run on some new mails, or gave up on some): shown as information,
+  // whichever sync brought it, the page load's included. The server tells a
+  // mail given up once, to the first sync from the screen after it.
+  const showSyncNotice = (result) => {
+    if (result?.syncNotice) toast.info(result.syncNotice);
+  };
+  const syncAgain = () => fetchData({ forceRefresh: true, sync: true, notice: true }).then(showSyncNotice);
+
   useEffect(() => {
     if (!localStorage.getItem('userEmail')) {
       navigate('/');
       return;
     }
-    fetchData();
+    fetchData({ notice: true }).then(showSyncNotice);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
@@ -523,7 +543,7 @@ function Inbox() {
     // sync: true forces the round-trip to the mailbox. Previously this button
     // reused the five-minute sync throttle, so pressing it twice in a row
     // reported "Boîte synchronisée" without having synchronised anything.
-    const result = await fetchData({ forceRefresh: true, sync: true });
+    const result = await fetchData({ forceRefresh: true, sync: true, notice: true });
     setSyncing(false);
     track('inbox_sync');
     // Success only on success. A failed sync used to be swallowed and
@@ -545,7 +565,10 @@ function Inbox() {
         }`
       );
     } else if (!result?.listError) {
-      toast.success('Boîte synchronisée');
+      // Rules that could not run on some new mails do not make the sync a
+      // failure: the mails were read and are listed. Told as information.
+      if (result?.syncNotice) toast.info(`Boîte synchronisée. ${result.syncNotice}`);
+      else toast.success('Boîte synchronisée');
     }
   };
 
@@ -699,9 +722,15 @@ function Inbox() {
       // the email stayed exactly where it was. A 422 says why in the user's
       // words (a folder Mailsorter does not file into); anything else stays
       // generic.
+      // A mailbox changed since the page was loaded: the proposal was the
+      // other one's, and the plan is being loaded again.
+      if (isMailboxChanged(err)) {
+        showMailboxError(err);
+        return;
+      }
       restoreSuggestions([suggestion]);
       toast.error(
-        err?.response?.status === 422
+        [410, 422].includes(err?.response?.status)
           ? apiError(err, "Action impossible. L'email reste en place.")
           : "Action impossible. L'email reste en place."
       );
@@ -711,7 +740,10 @@ function Inbox() {
   const handleRejectSuggestion = async (suggestion) => {
     const id = suggestion.id || suggestion._id;
     removeSuggestion(id);
-    aiService.rejectSuggestion(id).catch(() => restoreSuggestions([suggestion]));
+    aiService.rejectSuggestion(id).catch((err) => {
+      if (isMailboxChanged(err)) showMailboxError(err);
+      else restoreSuggestions([suggestion]);
+    });
   };
 
   const handleAiAnalyzeSingle = async (emailToAnalyze) => {
@@ -864,7 +896,7 @@ function Inbox() {
         if (applied.length === 0) {
           toast.error(
             hardError
-              ? hardError.response?.data?.trim?.() || "L'action groupée a échoué."
+              ? apiError(hardError, "L'action groupée a échoué.")
               : data.protectedSkipped
               ? 'Aucun email traité : tous sont protégés.'
               : "Aucun email n'a pu être traité."
@@ -888,8 +920,8 @@ function Inbox() {
               else if (missing) toast.error(`${missing} email${plural(missing)} n'${missing > 1 ? 'ont' : 'a'} pas pu être remis.`);
               else toast.success('Action annulée');
               fetchData({ forceRefresh: true, sync: false });
-            } catch {
-              toast.error("Impossible d'annuler");
+            } catch (err) {
+              showMailboxError(err, "Impossible d'annuler.");
             }
           });
         } else {
@@ -899,7 +931,7 @@ function Inbox() {
           toast.error(`${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`);
         }
       } catch (err) {
-        toast.error(err.response?.data?.trim?.() || "L'action groupée a échoué.");
+        showMailboxError(err, "L'action groupée a échoué.");
       } finally {
         setBulkBusy(false);
       }
@@ -921,6 +953,7 @@ function Inbox() {
         const snoozed = [];
         let failed = 0;
         let protectedSkipped = 0;
+        let hardError = null;
         for (let i = 0; i < ids.length; i += BATCH_LIMIT) {
           const chunk = ids.slice(i, i + BATCH_LIMIT);
           try {
@@ -930,6 +963,7 @@ function Inbox() {
             protectedSkipped += data.protectedSkipped || 0;
           } catch (err) {
             failed += chunk.length;
+            hardError = err;
           }
         }
 
@@ -940,11 +974,11 @@ function Inbox() {
         setSelectedEmails([]);
 
         if (snoozed.length === 0) {
-          toast.error(
-            protectedSkipped
-              ? 'Aucun email reporté : tous sont protégés.'
-              : "Aucun email n'a pu être reporté."
-          );
+          if (hardError) showMailboxError(hardError, "Aucun email n'a pu être reporté.");
+          else
+            toast.error(
+              protectedSkipped ? 'Aucun email reporté : tous sont protégés.' : "Aucun email n'a pu être reporté."
+            );
           return;
         }
         const parts = [`${snoozed.length} email${plural(snoozed.length)} reporté${plural(snoozed.length)}`];
@@ -979,8 +1013,11 @@ function Inbox() {
       bumpGamify(1);
       undoToast(email.messageId, action, action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
     } catch (err) {
-      toast.error("L'action a échoué");
-      fetchData({ forceRefresh: true, sync: false });
+      // The server's sentence. A mailbox changed since the page was loaded is
+      // loaded again as a whole (whenMailboxChanged): this list is not
+      // refreshed nor the row put back, they are the other mailbox's.
+      showMailboxError(err, "L'action a échoué");
+      if (!isMailboxChanged(err)) fetchData({ forceRefresh: true, sync: false });
     }
   };
 
@@ -1009,8 +1046,8 @@ function Inbox() {
         await emailService.action(email.messageId, action);
         settle();
       } catch (err) {
-        if (rollback) patchEmail(email.messageId, rollback);
-        toast.error(apiError(err, "L'action a échoué"));
+        if (rollback && !isMailboxChanged(err)) patchEmail(email.messageId, rollback);
+        showMailboxError(err, "L'action a échoué");
         // 404: it is no longer in the inbox (moved from another device):
         // the row goes, as it would at the next sync.
         if (err?.response?.status === 404) removeEmails(email.messageId);
@@ -1029,9 +1066,9 @@ function Inbox() {
         return;
       }
       settle();
-    } catch {
-      if (rollback) patchEmail(email.messageId, rollback);
-      toast.error("L'action a échoué");
+    } catch (err) {
+      if (rollback && !isMailboxChanged(err)) patchEmail(email.messageId, rollback);
+      showMailboxError(err, "L'action a échoué");
     }
   };
 
@@ -1061,7 +1098,7 @@ function Inbox() {
       toast.success('Email reporté, il reviendra au bon moment');
     } catch (err) {
       showMailboxError(err, 'Report impossible. Réessayez.');
-      fetchData({ forceRefresh: true, sync: false });
+      if (!isMailboxChanged(err)) fetchData({ forceRefresh: true, sync: false });
     }
   };
 
@@ -1220,7 +1257,7 @@ function Inbox() {
       if (alsoArchive || data.archived) fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
       if (err.response?.status === 422) toast.error("Cet expéditeur ne propose pas de désabonnement automatique");
-      else toast.error('Désabonnement impossible. Réessayez.');
+      else showMailboxError(err, 'Désabonnement impossible. Réessayez.');
     } finally {
       setUnsubscribing(null);
     }
@@ -1281,7 +1318,7 @@ function Inbox() {
       toast.success(`${response.data.applied} email${response.data.applied > 1 ? 's' : ''} traité${response.data.applied > 1 ? 's' : ''}`);
       fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
-      toast.error('Traitement en masse impossible');
+      showMailboxError(err, 'Traitement en masse impossible');
     }
   };
 
@@ -1915,7 +1952,7 @@ function Inbox() {
                     : error}
                 </span>
                 {errorRetryable ? (
-                  <button onClick={() => fetchData({ forceRefresh: true, sync: true })} className="btn-secondary btn-sm">
+                  <button onClick={syncAgain} className="btn-secondary btn-sm">
                     Réessayer
                   </button>
                 ) : (
@@ -1949,7 +1986,7 @@ function Inbox() {
               <ErrorState
                 title="Impossible de charger votre boîte"
                 message={error}
-                onRetry={() => fetchData({ forceRefresh: true, sync: true })}
+                onRetry={syncAgain}
               />
             ) : emails.length === 0 ? (
               <EmptyState

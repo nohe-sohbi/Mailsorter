@@ -350,3 +350,63 @@ func TestMailboxRowWritesTheSendingServerOfTheRoute(t *testing.T) {
 		})
 	}
 }
+
+// The moment a mailbox was connected (createdAt) is when the rules a sync
+// applies on its own start judging its mails, and the mark of its first sync
+// (firstSyncedAt) is what makes the next ones judge them: connecting the same
+// mailbox again (a new app password) writes over its row and keeps both;
+// another mailbox gets a row of its own (connectAndStore deletes the previous
+// one), so both start anew.
+func TestMailboxRowKeepsTheMomentOfTheRowItWritesOver(t *testing.T) {
+	now := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
+	before := now.Add(-48 * time.Hour)
+	server := &provider.Endpoint{Host: "imap.exemple.fr", Port: 993, TLS: provider.TLSImplicit}
+	route := provider.Route{Transport: provider.TransportIMAP, IMAP: server}
+	synced := before.Add(time.Hour)
+	prev := bson.M{"userId": "moi@exemple.fr", "username": "moi@exemple.fr", "host": "imap.exemple.fr", "port": 993, "createdAt": before, "firstSyncedAt": synced}
+
+	for _, tc := range []struct {
+		name       string
+		prev       bson.M
+		want       time.Time
+		wantSynced time.Time // zero: the next sync is a first one
+	}{
+		{"the same mailbox again", prev, before, synced},
+		{"a new row", nil, now, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", route, "sealed", now)
+			row := readRow(t, applyUpsert(t, tc.prev, update))
+			if !row.CreatedAt.Equal(tc.want) {
+				t.Errorf("createdAt = %v, want %v", row.CreatedAt, tc.want)
+			}
+			if !row.FirstSyncedAt.Equal(tc.wantSynced) {
+				t.Errorf("firstSyncedAt = %v, want %v", row.FirstSyncedAt, tc.wantSynced)
+			}
+		})
+	}
+}
+
+func TestSameMailbox(t *testing.T) {
+	server := &provider.Endpoint{Host: "imap.exemple.fr", Port: 993, TLS: provider.TLSImplicit}
+	route := provider.Route{Transport: provider.TransportIMAP, IMAP: server}
+	prev := models.MailAccount{Username: "Moi@Exemple.fr", Host: "imap.exemple.fr", Port: 993}
+	for _, tc := range []struct {
+		name    string
+		prev    models.MailAccount
+		address string
+		route   provider.Route
+		want    bool
+	}{
+		{"same address, same server", prev, "moi@exemple.fr", route, true},
+		{"another address", prev, "autre@exemple.fr", route, false},
+		{"another server", prev, "moi@exemple.fr", provider.Route{Transport: provider.TransportIMAP, IMAP: &provider.Endpoint{Host: "imap.ailleurs.fr", Port: 993}}, false},
+		{"another port", prev, "moi@exemple.fr", provider.Route{Transport: provider.TransportIMAP, IMAP: &provider.Endpoint{Host: "imap.exemple.fr", Port: 143}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameMailbox(tc.prev, tc.address, tc.route); got != tc.want {
+				t.Errorf("sameMailbox(%+v, %q, %+v) = %v, want %v", tc.prev, tc.address, tc.route.IMAP, got, tc.want)
+			}
+		})
+	}
+}

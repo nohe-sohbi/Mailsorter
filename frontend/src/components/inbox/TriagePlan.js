@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useEmails, useMailbox } from '../../contexts/EmailContext';
 import { useInstance } from '../../contexts/InstanceContext';
 import { canApplyVerdict } from '../landing/features';
-import { aiService, emailService, senderService, apiError } from '../../services/api';
+import { aiService, emailService, senderService, apiError, isMailboxChanged } from '../../services/api';
 import { useToast } from '../../ui/Toast';
 import { useConfirm } from '../../ui/Confirm';
 import { track } from '../../lib/analytics';
@@ -78,10 +78,10 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   const { suggestions, removeSuggestions, restoreSuggestions, removeEmails, fetchData } = useEmails();
   // Every verdict applies on both transports: over IMAP a label is a folder,
   // so it reads "Classer" there (`isImap`). A label waits until the mailbox is
-  // known (canApplyVerdict). Rules are never applied over IMAP, so
-  // "Toujours..." is not offered there, nor while the mailbox is not known or
-  // its answer failed (`fullFeatures`, the same rule as the other screens).
-  const { fullFeatures, isImap, known } = useMailbox();
+  // known (canApplyVerdict). Rules run on both transports too, so a sender
+  // becomes a rule on either once the mailbox is known (`known`), a rule that
+  // labels included: over IMAP it files in the folder, as the verdict does.
+  const { isImap, known } = useMailbox();
   const canApply = useCallback((g) => canApplyVerdict(g.action, known), [known]);
   const [applyingAll, setApplyingAll] = useState(false);
   const [ruling, setRuling] = useState(null);
@@ -140,9 +140,11 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       else toast.success('Tri annulé');
     } catch (err) {
       toast.error(apiError(err, "Impossible d'annuler."));
-    } finally {
-      refresh();
+      // A mailbox changed since the page was loaded is loaded again as a
+      // whole (whenMailboxChanged): nothing of this one to refresh.
+      if (isMailboxChanged(err)) return;
     }
+    refresh();
   };
 
   // Optimistic, like the single apply always was: the rows and the emails leave
@@ -169,18 +171,22 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
 
       const protectedSkipped = data?.protectedSkipped || 0;
       const failed = data?.failed || 0;
+      // Proposals about a mailbox no longer connected: not applied, and the
+      // server's message says how many.
+      const gone = data?.mailboxGone || 0;
       if (applied.length === 0) {
-        if (!protectedSkipped && !failed) {
+        if (!protectedSkipped && !failed && !gone) {
           // Nothing applied and nothing failed: every mail had already left
           // the inbox (tidied by hand, or from another device).
           toast.success(items.length > 1 ? 'Ces mails étaient déjà rangés.' : 'Ce mail était déjà rangé.');
           return;
         }
         toast.error(
-          protectedSkipped
+          protectedSkipped && !gone
             ? 'Rien appliqué : ces expéditeurs sont protégés.'
             : // The server says why when trying again would not help (a
-              // folder Mailsorter does not file into, too many new folders).
+              // folder Mailsorter does not file into, too many new folders,
+              // a mailbox no longer connected).
               data?.message || "Le tri n'a pas pu être appliqué. Réessayez."
         );
         return;
@@ -197,9 +203,11 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
         // many new folders at once over IMAP).
         const why = data?.message ? ` ${data.message}` : '';
         toast.error(`${emailsCount(failed)} n'${failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(failed)}.${why}`);
+      } else if (gone && data?.message) {
+        toast.error(data.message);
       }
     } catch (err) {
-      refresh();
+      if (!isMailboxChanged(err)) refresh();
       toast.error(apiError(err, "Le tri n'a pas pu être appliqué. Réessayez."));
     }
   };
@@ -250,7 +258,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
         toast.info(`${ids.length} suggestion${plural(ids.length)} ignorée${plural(ids.length)}`, { duration: 2500 });
       }
     } catch (err) {
-      restoreSuggestions(items);
+      if (!isMailboxChanged(err)) restoreSuggestions(items);
       toast.error(apiError(err, 'Impossible de les ignorer. Réessayez.'));
     }
   };
@@ -301,7 +309,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
     groups,
     totals,
     canApply,
-    rulesAvailable: fullFeatures,
+    rulesAvailable: known,
     // A label is a folder on this mailbox (IMAP): the verdicts say "Classer".
     folders: isImap,
     applyingAll,
@@ -347,7 +355,10 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
   const where = group.action === 'label' && group.labelName ? ` dans « ${group.labelName} »` : '';
   const ruleAction = RULE_ACTION[group.action];
   const canRule = Boolean(
-    plan.rulesAvailable && ruleAction && group.address && (group.action !== 'label' || group.labelName)
+    plan.rulesAvailable &&
+      ruleAction &&
+      group.address &&
+      (group.action !== 'label' || group.labelName)
   );
   const ruled = plan.ruled.has(group.key);
 
@@ -470,7 +481,8 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
                   title={selfHosted ? 'Les règles trient sans IA' : 'Les règles trient sans IA ni quota'}
                 >
                   {plan.ruling === group.key ? <Spinner size={14} /> : <Bolt size={14} />}
-                  Toujours {meta.label.toLowerCase()} ses emails{where ? ` « ${group.labelName} »` : ''}
+                  Toujours {meta.label.toLowerCase()} ses emails
+                  {group.action === 'label' ? labelPlace(group.labelName, { folders: plan.folders }) : ''}
                 </button>
               ))}
           </div>

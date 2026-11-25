@@ -256,6 +256,7 @@ func TestIsUnreadableAnswer(t *testing.T) {
 		{"BAD", &imapv2.Error{Type: imapv2.StatusResponseTypeBad, Text: "imapwire: quoted in a refusal"}, false},
 		{"a network time limit", timeout, false},
 		{"a deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), false},
+		{"a request cancelled, the connection closed under the decoder", fmt.Errorf("imap: x: %w (%v)", context.Canceled, errors.New("imapwire: unexpected EOF")), false},
 		{"a connection gone", io.ErrUnexpectedEOF, false},
 		{"a connection reset", errors.New("read tcp: connection reset by peer"), false},
 	}

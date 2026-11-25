@@ -58,12 +58,18 @@ func (h *Handler) runAnalysis(
 	protectedList := h.protectedValues(ctx, userEmail)
 
 	session, serr := h.openSession(ctx, userEmail)
+	if errors.Is(serr, errMailboxChanged) {
+		// Asked from a screen loaded on another mailbox: its ids are the
+		// other one's.
+		return p, suggestions, serr
+	}
 	if serr == nil {
 		defer session.Close()
 	} else {
 		log.Printf("runAnalysis: openSession for %s: %v", userEmail, serr)
 	}
-	transport := h.analysisTransport(ctx, userEmail, session)
+	// The mailbox the proposals are about (see generation.go).
+	transport, gen := h.analysisMailbox(ctx, userEmail, session)
 	// The Gmail labels Mailsorter made are matched over the Gmail API only.
 	// Over IMAP only the folders count (fileVerdict): an account that came
 	// from Gmail keeps its smart labels, and matching "Facture" with one of
@@ -79,8 +85,8 @@ func (h *Handler) runAnalysis(
 	emails := make([]models.Email, 0, len(emailIDs))
 	for _, id := range emailIDs {
 		var e models.Email
-		findErr := h.db.Emails().FindOne(ctx, bson.M{"messageId": id, "userId": userEmail}).Decode(&e)
-		if findErr == nil && session != nil && session.Transport == provider.TransportIMAP && h.leftInbox(ctx, userEmail, id) {
+		findErr := h.db.Emails().FindOne(ctx, bson.M{"messageId": id, "userId": userEmail, "generation": inGeneration(gen)}).Decode(&e)
+		if findErr == nil && session != nil && session.Transport == provider.TransportIMAP && h.leftInbox(ctx, userEmail, gen, id) {
 			// Tidied since the screen was loaded: a proposal about it would
 			// invite tidying it a second time, and cost an analysis.
 			continue
@@ -98,8 +104,9 @@ func (h *Handler) runAnalysis(
 					e = msg.Email
 					e.UserID = userEmail
 					e.Folder = ref.Folder
+					e.Generation = gen
 					opts := options.Update().SetUpsert(true)
-					h.db.Emails().UpdateOne(ctx, bson.M{"messageId": id, "userId": userEmail}, bson.M{"$set": e}, opts)
+					h.db.Emails().UpdateOne(ctx, bson.M{"messageId": id, "userId": userEmail, "generation": gen}, bson.M{"$set": e}, opts)
 					emails = append(emails, e)
 					fetched = true
 				} else {
@@ -187,7 +194,7 @@ func (h *Handler) runAnalysis(
 		key := analysisCacheKey(email.From, email.Subject)
 		if cached, ok := h.cacheLookup(ctx, key); ok {
 			cached = fileVerdict(protectAnalysis(cached, email.From, protectedList, transport), session)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, email, cached, knownLabels, transport); inserted {
+			if s, inserted := h.persistSuggestion(ctx, userEmail, gen, email, cached, knownLabels, transport); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -231,7 +238,7 @@ func (h *Handler) runAnalysis(
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(chunk[0].From, chunk[0].Subject), *single)
 			verdict := fileVerdict(protectAnalysis(*single, chunk[0].From, protectedList, transport), session)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, chunk[0], verdict, knownLabels, transport); inserted {
+			if s, inserted := h.persistSuggestion(ctx, userEmail, gen, chunk[0], verdict, knownLabels, transport); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -267,7 +274,7 @@ func (h *Handler) runAnalysis(
 			p.Analyzed++
 			h.cacheStore(ctx, analysisCacheKey(email.From, email.Subject), a)
 			a = fileVerdict(protectAnalysis(a, email.From, protectedList, transport), session)
-			if s, inserted := h.persistSuggestion(ctx, userEmail, email, a, knownLabels, transport); inserted {
+			if s, inserted := h.persistSuggestion(ctx, userEmail, gen, email, a, knownLabels, transport); inserted {
 				suggestions = append(suggestions, s)
 				p.SuggestionsCreated++
 			}
@@ -288,20 +295,20 @@ func (h *Handler) runAnalysis(
 	return p, suggestions, nil
 }
 
-// analysisTransport is the transport the analysis shields protected senders
-// for: the session's, or, when it could not open, the one the account is on.
-// Unknown, it is the Gmail API's reading, where a label leaves the mail in
-// the inbox.
-func (h *Handler) analysisTransport(ctx context.Context, userEmail string, session *mailSession) provider.Transport {
+// analysisMailbox is the transport the analysis shields protected senders
+// for, and the generation its proposals are about: the session's, or, when it
+// could not open, the ones the account is on. Unknown, it is the Gmail API's
+// reading, where a label leaves the mail in the inbox.
+func (h *Handler) analysisMailbox(ctx context.Context, userEmail string, session *mailSession) (provider.Transport, string) {
 	if session != nil {
-		return session.Transport
+		return session.Transport, session.generation()
 	}
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		log.Printf("runAnalysis: which transport %s is on: %v", userEmail, err)
-		return ""
+		return "", ""
 	}
-	return transport
+	return transport, generationOf(transport, account)
 }
 
 // protectAnalysis downgrades to "keep" a verdict that would take the mail of
@@ -358,7 +365,7 @@ func fileVerdict(a ai.EmailAnalysis, session *mailSession) ai.EmailAnalysis {
 // have a say there.
 func (h *Handler) persistSuggestion(
 	ctx context.Context,
-	userEmail string,
+	userEmail, gen string,
 	email models.Email,
 	a ai.EmailAnalysis,
 	knownLabels []string,
@@ -372,6 +379,7 @@ func (h *Handler) persistSuggestion(
 		Confidence: a.Confidence,
 		Reasoning:  a.Reasoning,
 		Status:     "pending",
+		Generation: gen,
 		CreatedAt:  time.Now(),
 	}
 
@@ -385,9 +393,10 @@ func (h *Handler) persistSuggestion(
 	}
 
 	h.db.AISuggestions().DeleteMany(ctx, bson.M{
-		"userId":  userEmail,
-		"emailId": email.MessageID,
-		"status":  "pending",
+		"userId":     userEmail,
+		"generation": inGeneration(gen),
+		"emailId":    email.MessageID,
+		"status":     "pending",
 	})
 
 	res, err := h.db.AISuggestions().InsertOne(ctx, suggestion)

@@ -173,7 +173,7 @@ func TestMirrorFilterKeepsBothEndsOfADateWindow(t *testing.T) {
 func TestListFromMirrorRefusesAQueryItCannotAnswer(t *testing.T) {
 	h := newTestHandler(t)
 
-	page, err := h.listFromMirror(cancelledContext(), "u@example.com", "in:inbox label:Factures", 50, "")
+	page, err := h.listFromMirror(cancelledContext(), "u@example.com", "", "in:inbox label:Factures", 50, "")
 	if err == nil {
 		t.Fatal("a query with an unanswerable term returned a page instead of an error")
 	}
@@ -197,7 +197,7 @@ func TestListFromMirrorRefusesAQueryItCannotAnswer(t *testing.T) {
 func TestListFromMirrorDoesNotReportAnUnreachableDatastoreAsAnEmptyInbox(t *testing.T) {
 	h := newTestHandler(t)
 
-	page, err := h.listFromMirror(cancelledContext(), "u@example.com", "in:inbox", 50, "")
+	page, err := h.listFromMirror(cancelledContext(), "u@example.com", "", "in:inbox", 50, "")
 	if err == nil {
 		t.Fatalf("an unreachable datastore produced a page: %v", page)
 	}
@@ -208,7 +208,7 @@ func TestListFromMirrorDoesNotReportAnUnreachableDatastoreAsAnEmptyInbox(t *test
 func TestStatsFromMirrorDoesNotReportAnUnreachableDatastoreAsZero(t *testing.T) {
 	h := newTestHandler(t)
 
-	stats, err := h.statsFromMirror(cancelledContext(), "u@example.com")
+	stats, err := h.statsFromMirror(cancelledContext(), "u@example.com", "")
 	if err == nil {
 		t.Fatalf("an unreachable datastore produced stats: %+v", stats)
 	}
@@ -247,7 +247,7 @@ func TestParseOffsetToken(t *testing.T) {
 func TestListFromMirrorRefusesAForeignPageToken(t *testing.T) {
 	h := newTestHandler(t)
 
-	if _, err := h.listFromMirror(cancelledContext(), "u@example.com", "in:inbox", 50, "not-an-offset"); err == nil {
+	if _, err := h.listFromMirror(cancelledContext(), "u@example.com", "", "in:inbox", 50, "not-an-offset"); err == nil {
 		t.Error("listFromMirror accepted a page token it never handed out")
 	}
 }

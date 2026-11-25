@@ -303,7 +303,12 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also record in mail_accounts that this user's active mailbox is Google Gmail
+	// Also record in mail_accounts that this user's active mailbox is Google Gmail.
+	// A mailbox connected over IMAP before is another mailbox: its row goes,
+	// and with it what Mailsorter kept of it (see generation.go).
+	if _, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": accountOwner, "transport": bson.M{"$ne": "gmail"}}); err != nil {
+		log.Printf("auth callback: replace the mailbox of %s: %v", accountOwner, err)
+	}
 	now := time.Now()
 	_, _ = h.db.MailAccounts().UpdateOne(ctx,
 		bson.M{"userId": accountOwner},
@@ -321,6 +326,9 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		},
 		options.Update().SetUpsert(true),
 	)
+	if err := h.clearMailboxCopy(ctx, accountOwner); err != nil {
+		log.Printf("auth callback: erase what was kept of the mailbox of %s before, done at the next connection: %v", accountOwner, err)
+	}
 
 	// Hand the browser our own signed session token, never the raw Gmail
 	// access token, which must stay server-side.
@@ -362,7 +370,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	// Get page token for pagination
 	pageToken := r.URL.Query().Get("pageToken")
 
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
@@ -370,7 +378,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	if transport == provider.TransportIMAP {
 		// Served from the stored mailbox rather than from the provider: see the
 		// file comment in mirror.go for why a listing does not open a socket.
-		page, err := h.listFromMirror(ctx, userEmail, query, maxResults, pageToken)
+		page, err := h.listFromMirror(ctx, userEmail, generationOf(transport, account), query, maxResults, pageToken)
 		if err != nil {
 			var unsupported errUnsupportedQuery
 			if errors.As(err, &unsupported) {
@@ -444,13 +452,13 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
 	if transport == provider.TransportIMAP {
-		stats, err := h.statsFromMirror(ctx, userEmail)
+		stats, err := h.statsFromMirror(ctx, userEmail, generationOf(transport, account))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to get mailbox stats: "+err.Error())
 			return
@@ -484,14 +492,15 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), syncRequestTimeout)
 	defer cancel()
 
-	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
+	synced, total, ruled, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
 		// Every answer here is a French sentence the inbox shows as is
 		// (errorMessage in EmailContext.js): what failed is logged.
 		switch {
-		case errors.Is(err, errReauthRequired), errors.Is(err, imap.ErrAuth):
+		case errors.Is(err, errReauthRequired), errors.Is(err, imap.ErrAuth), errors.Is(err, errMailboxChanged):
 			// A dead Google grant, and an IMAP password the provider
-			// refuses, in the words of the connect screen.
+			// refuses, in the words of the connect screen; a screen loaded
+			// on another mailbox (409).
 			writeAuthError(w, err)
 		case errors.Is(err, errMailboxNoAnswer):
 			writeSyncError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
@@ -504,11 +513,27 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	out := map[string]interface{}{
 		"synced":       synced,
 		"total":        total,
-		"rulesApplied": rulesApplied,
-	})
+		"rulesApplied": ruled.applied,
+		// Mails the rules could not judge at this sync, over IMAP: the sync
+		// worked all the same, so this is information, not an error.
+		"rulesPending": ruled.pending,
+	}
+	// The mails the rules gave up on, whichever sync gave them up (the
+	// background one included), are told once, to a sync that asks for it
+	// (?notice=1): the screen sends it from where it shows the answer, the
+	// "Synchroniser" button and the page load. A sync whose answer nobody
+	// shows (a refresh after "Annuler", a search) leaves the count for later.
+	givenUp := 0
+	if r.URL.Query().Get("notice") == "1" {
+		givenUp = h.takeGivenUp(ctx, userEmail)
+	}
+	if msg := rulesMessage(ruled.pending, givenUp); msg != "" {
+		out["rulesMessage"] = msg
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // writeSyncError answers a failed "Synchroniser" with a sentence written for
@@ -553,50 +578,49 @@ func asSentence(s string) string {
 // shorten it.
 var syncRequestTimeout = 30 * time.Second
 
-// syncInbox pulls the user's inbox into MongoDB and, when the user opted into
-// rule autopilot, applies their deterministic rules to each freshly synced email
-// (instant, AI-free, quota-free). It is shared by the manual SyncEmails handler
-// and the background auto-sync scheduler so both behave identically. It returns
-// how many emails were persisted, how many were seen, and how many had a rule
-// applied.
 // syncInbox mirrors the caller's inbox into Mongo, through whichever transport
-// their mailbox is reached by.
+// their mailbox is reached by, and, when the user opted into rule autopilot
+// (autoApplyRules), applies their deterministic rules (instant, AI-free,
+// quota-free). It is shared by the manual SyncEmails handler and the
+// background auto-sync scheduler so both behave identically. It returns how
+// many emails were persisted, how many were seen, and how many had a rule
+// applied, could not be judged yet, or were given up (syncRulesDone).
 //
 // This is the fork the whole edition split was for. Everything above it (the
 // handler, the auto-sync loop) asks for a sync and gets one; only this function
-// knows there are two ways to perform it.
-func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
+// knows there are two ways to perform it. The rules do not judge the same
+// messages on both: every message listed over the Gmail API, only the ones
+// that arrive over IMAP (see syncInboxIMAP).
+func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total int, ruled syncRulesDone, err error) {
 	session, err := h.openSession(ctx, userEmail)
 	if errors.Is(err, imap.ErrUnreachable) {
 		// Not a password refused: the mailbox did not answer, or not in
 		// time. Logged with what it was; the user is told to try again.
 		log.Printf("sync: the mailbox of %s could not be opened: %v", userEmail, err)
-		return 0, 0, 0, errMailboxNoAnswer
+		return 0, 0, syncRulesDone{}, errMailboxNoAnswer
 	}
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 	defer session.Close()
 
 	if session.Transport == provider.TransportIMAP {
-		// Rules do not run on this half yet, so the count is zero rather than a
-		// number the user cannot trust. See syncInboxIMAP.
-		synced, total, err = h.syncInboxIMAP(ctx, userEmail, session)
+		synced, total, ruled, err = h.syncInboxIMAP(ctx, userEmail, session)
 		if err != nil && ctx.Err() != nil {
 			// Its time ran out (the session is bound to ctx): the mailbox
 			// did not answer in time, whatever the command it stopped in.
 			log.Printf("sync: the mailbox of %s did not answer in time: %v", userEmail, err)
-			return synced, total, 0, errMailboxNoAnswer
+			return synced, total, ruled, errMailboxNoAnswer
 		}
-		return synced, total, 0, err
+		return synced, total, ruled, err
 	}
-	return h.syncInboxGmail(ctx, userEmail, session.gmail)
+	return h.syncInboxGmail(ctx, userEmail, session)
 }
 
-func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailClient *gmailapi.Service) (synced, total, rulesApplied int, err error) {
-	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 100)
+func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session *mailSession) (synced, total int, ruled syncRulesDone, err error) {
+	messages, err := h.gmailService.ListMessages(session.gmail, "in:inbox", 100)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 
 	// Autopilot: when the user opted in, run their deterministic rules over each
@@ -642,27 +666,21 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 
 		if len(autoRules) > 0 {
 			if match := rules.FirstMatch(email, autoRules); match != nil {
-				appliedActs, _ := h.applyRuleToMessage(ctx, gmailClient, userEmail, msg.Id, email.From, *match, protectedList, labelCache)
+				appliedActs, _, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache, nil)
 				if len(appliedActs) > 0 {
-					rulesApplied++
+					ruled.applied++
 					byRule[match.Name]++
 					for _, act := range appliedActs {
-						h.logActionMeta(ctx, userEmail, msg.Id, act, SourceRule, email.Subject, email.From)
+						h.logActionFiled(ctx, userEmail, "", msg.Id, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
 					}
 				}
 			}
 		}
 	}
 
-	// Persist per-rule application counts (best-effort).
-	for name, n := range byRule {
-		h.db.SortingRules().UpdateOne(ctx,
-			bson.M{"userId": userEmail, "name": name},
-			bson.M{"$inc": bson.M{"appliedCount": n}},
-		)
-	}
+	h.countRuleHits(ctx, userEmail, byRule)
 
-	return synced, len(messages), rulesApplied, nil
+	return synced, len(messages), ruled, nil
 }
 
 // reversedBy names, for each inverse a client sends right after an action, the
@@ -719,7 +737,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	if returnsToInbox(req.Action, session.Transport) {
 		// "Annuler" right after a move out: on a reported mail, it ends the
 		// report (endReportOnReturn).
-		err = h.endReportOnReturn(ctx, userEmail, req.MessageID, back)
+		err = h.endReportOnReturn(ctx, userEmail, session.generation(), session.account.CreatedAt, req.MessageID, back)
 	} else {
 		err = back()
 	}
@@ -774,7 +792,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		// action it reverses undone, as the history and batch-undo do, or the
 		// history keeps offering "Annuler" on work already reversed.
 		if forward, ok := reversedBy[req.Action]; ok {
-			h.recordUndo(ctx, userEmail, req.MessageID, forward, req.Action)
+			h.recordUndo(ctx, userEmail, session.generation(), req.MessageID, forward, req.Action)
 		}
 	}
 
@@ -794,7 +812,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 			action = "delete"
 		}
 		meta := h.identityIn(ctx, session, userEmail, req.MessageID)
-		h.logActionMeta(ctx, userEmail, req.MessageID, action, SourceDirect, meta.Subject, meta.From)
+		h.logActionMeta(ctx, userEmail, session.generation(), req.MessageID, action, SourceDirect, meta.Subject, meta.From)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})

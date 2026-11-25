@@ -130,10 +130,12 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 // Best-effort past the listing: the unsubscribe itself has already happened, so
 // a mail that fails to move is logged and skipped rather than failing the call.
 func (h *Handler) archiveBySender(ctx context.Context, gmailClient *gmailapi.Service, userEmail, senderAddr string) int {
+	// Over the Gmail API (a Gmail client): its rows carry no generation.
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId":    userEmail,
-		"leftInbox": notLeftInbox,
-		"from":      bson.M{"$regex": regexp.QuoteMeta(senderAddr), "$options": "i"},
+		"userId":     userEmail,
+		"generation": inGeneration(""),
+		"leftInbox":  notLeftInbox,
+		"from":       bson.M{"$regex": regexp.QuoteMeta(senderAddr), "$options": "i"},
 	})
 	if err != nil {
 		log.Printf("unsubscribe: listing the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)
@@ -162,7 +164,7 @@ func (h *Handler) archiveBySender(ctx context.Context, gmailClient *gmailapi.Ser
 			continue
 		}
 		n++
-		h.logActionMeta(ctx, userEmail, e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
+		h.logActionMeta(ctx, userEmail, "", e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
 	}
 	return n
 }
@@ -180,10 +182,17 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
+	// The senders of the mailbox connected now (see generation.go).
+	gen, err := h.currentGeneration(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
 	pipeline := []bson.M{
 		{"$match": bson.M{
-			"userId":    userEmail,
-			"leftInbox": notLeftInbox,
+			"userId":     userEmail,
+			"generation": inGeneration(gen),
+			"leftInbox":  notLeftInbox,
 			"$or": []bson.M{
 				{"unsubUrl": bson.M{"$nin": []interface{}{nil, ""}}},
 				{"unsubMailto": bson.M{"$nin": []interface{}{nil, ""}}},

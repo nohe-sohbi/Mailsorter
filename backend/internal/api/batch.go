@@ -16,6 +16,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
@@ -130,7 +131,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	// VIP's mail would be trashed by a bulk action the moment a sync had not run
 	// (or had failed, which the client swallows). Anything still missing is
 	// resolved straight from Gmail below.
-	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
+	identities := h.emailIdentities(ctx, userEmail, "", req.MessageIDs)
 	protectedList := h.protectedValues(ctx, userEmail)
 	destructive := protect.IsDestructive(req.Action)
 	if len(protectedList) > 0 || len(identities) < len(req.MessageIDs) {
@@ -179,7 +180,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		res.Applied = append(res.Applied, id)
-		h.logActionMeta(ctx, userEmail, id, req.Action, SourceDirect, meta.Subject, meta.From)
+		h.logActionMeta(ctx, userEmail, "", id, req.Action, SourceDirect, meta.Subject, meta.From)
 	}
 
 	writeJSON(w, http.StatusOK, res)
@@ -268,7 +269,7 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		restored++
-		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
+		h.recordUndo(ctx, userEmail, "", id, req.Action, inverse)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)})
@@ -287,6 +288,7 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 	}
 	defer session.Close()
 
+	gen := session.generation()
 	restored, gone, copies := 0, 0, 0
 	for _, id := range req.MessageIDs {
 		if id == "" {
@@ -294,6 +296,12 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 		}
 		if ctx.Err() != nil {
 			break
+		}
+		if h.ofOtherGeneration(ctx, userEmail, gen, id, req.Action) {
+			// The action was on a mailbox no longer connected: this number
+			// names a mail of the one connected now.
+			gone++
+			continue
 		}
 		if err := h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, id), inverse, ""); err != nil {
 			if errors.Is(err, errAlreadyBack) {
@@ -311,7 +319,7 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 			continue
 		}
 		restored++
-		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
+		h.recordUndo(ctx, userEmail, gen, id, req.Action, inverse)
 	}
 	answer := map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)}
 	// The others came back; say why these did not, rather than let the
@@ -331,24 +339,46 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 	writeJSON(w, http.StatusOK, answer)
 }
 
+// ofOtherGeneration says whether the latest entry of this action on this
+// message, not undone, is of another mailbox than the one connected now (gen):
+// final, see ofCurrentGeneration. A store that cannot answer is logged, and
+// the entry taken as another's: acting on the wrong mail is worse than not
+// bringing one back.
+func (h *Handler) ofOtherGeneration(ctx context.Context, userEmail, gen, messageID, action string) bool {
+	var entry models.ActionLog
+	err := h.db.ActionLog().FindOne(ctx,
+		bson.M{"userId": userEmail, "messageId": messageID, "action": action, "undone": bson.M{"$ne": true}},
+		options.FindOne().SetSort(bson.M{"createdAt": -1}).SetProjection(bson.M{"generation": 1}),
+	).Decode(&entry)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return false
+	}
+	if err != nil {
+		log.Printf("batch-undo: read the entry of message %s of %s: %v", messageID, userEmail, err)
+		return true
+	}
+	return !ofCurrentGeneration(entry, gen)
+}
+
 // recordUndo marks the forward entry undone, so the history does not
 // offer a second "Annuler" on work already reversed, and records the reversal
 // itself. Deliberately the MOST RECENT matching entry only: an UpdateMany here
 // would stamp every past archive of the same message as undone, rewriting
 // history the user never touched. Without the reversal entry a batch undo left
 // no trace and the ledger stopped being a truthful account of what Mailsorter
-// did.
-func (h *Handler) recordUndo(ctx context.Context, userEmail, id, action, inverse string) {
+// did. Of the mailbox connected now (gen): an entry of another names another
+// mail.
+func (h *Handler) recordUndo(ctx context.Context, userEmail, gen, id, action, inverse string) {
 	var entry models.ActionLog
 	err := h.db.ActionLog().FindOneAndUpdate(ctx,
-		bson.M{"userId": userEmail, "messageId": id, "action": action, "undone": bson.M{"$ne": true}},
+		bson.M{"userId": userEmail, "generation": inGeneration(gen), "messageId": id, "action": action, "undone": bson.M{"$ne": true}},
 		bson.M{"$set": bson.M{"undone": true, "undoneAt": time.Now()}},
 		options.FindOneAndUpdate().SetSort(bson.M{"createdAt": -1}),
 	).Decode(&entry)
 	if err == nil {
-		h.logActionFiled(ctx, userEmail, id, inverse, SourceUndo, entry.Subject, entry.From, entry.LabelName)
+		h.logActionFiled(ctx, userEmail, gen, id, inverse, SourceUndo, entry.Subject, entry.From, entry.LabelName)
 	} else {
-		h.logAction(ctx, userEmail, id, inverse, SourceUndo)
+		h.logAction(ctx, userEmail, gen, id, inverse, SourceUndo)
 	}
 }
 
@@ -358,15 +388,17 @@ func (h *Handler) recordUndo(ctx context.Context, userEmail, id, action, inverse
 // fillMissingIdentities).
 //
 // The projection matters: without it this pulls every message body in the batch
-// out of Mongo to read two header fields.
-func (h *Handler) emailIdentities(ctx context.Context, userEmail string, messageIDs []string) map[string]models.Email {
+// out of Mongo to read two header fields. gen is the mailbox the ids are of
+// (see generation.go), "" over the Gmail API.
+func (h *Handler) emailIdentities(ctx context.Context, userEmail, gen string, messageIDs []string) map[string]models.Email {
 	out := make(map[string]models.Email, len(messageIDs))
 	if len(messageIDs) == 0 {
 		return out
 	}
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId":    userEmail,
-		"messageId": bson.M{"$in": messageIDs},
+		"userId":     userEmail,
+		"generation": inGeneration(gen),
+		"messageId":  bson.M{"$in": messageIDs},
 	}, options.Find().SetProjection(bson.M{"messageId": 1, "subject": 1, "from": 1, "threadId": 1}))
 	if err != nil {
 		return out
@@ -423,7 +455,7 @@ func (h *Handler) suggestionEmailIDs(ctx context.Context, userEmail string, sugg
 // ledger entries carry an identity at WRITE time, which is what makes them
 // searchable, since the read-time resolution happens after the query has run.
 func (h *Handler) emailIdentity(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID string) models.Email {
-	found := h.emailIdentities(ctx, userEmail, []string{messageID})
+	found := h.emailIdentities(ctx, userEmail, "", []string{messageID})
 	if e, ok := found[messageID]; ok && (e.From != "" || e.Subject != "") {
 		return e
 	}

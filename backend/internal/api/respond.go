@@ -55,9 +55,10 @@ func writeSeveralCopiesAs(w http.ResponseWriter, sentence string) {
 // when no mailbox is connected or when the provider refuses the IMAP password
 // on file (to be connected again on /connect: a 401 would sign the person out
 // of Mailsorter, whose session is fine), 502 when the mailbox did not answer,
-// 404 when the account row is gone, 501 when the path has not been ported to
-// the caller's transport, 500 for anything else. In French, as the screens
-// show them.
+// 409 when the request comes from a screen loaded on another mailbox than the
+// one connected now (errMailboxChanged), 404 when the account row is gone,
+// 501 when the path has not been ported to the caller's transport, 500 for
+// anything else. In French, as the screens show them.
 //
 // The 501 branch is the visible half of the guard in gmailClientFor. Every
 // handler already routes its credential failures through here, so adding the
@@ -79,6 +80,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
 	case errors.Is(err, errWrongTransport):
 		writeTransportError(w)
+	case errors.Is(err, errMailboxChanged):
+		writeMailboxChanged(w)
 	case errors.Is(err, mongo.ErrNoDocuments):
 		writeError(w, http.StatusNotFound, "User not found")
 	default:
