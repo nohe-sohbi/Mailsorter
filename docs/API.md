@@ -342,6 +342,13 @@ syntax (`Undisclosed: a@x.fr;`), when the mail has two From headers, and when
 is rather than read an address out of it. `GET /api/emails/{id}` carries it
 too.
 
+`senderLabel` is what the screens show for the sender (protect.Label): the
+display name, or the address read when the name holds another address
+(`"boss@corp.com" <evil@evil.io>` shows `evil@evil.io`), the address when
+there is no name, and the From's text when it names no sender. The reader, the
+suggestions, the history (`GET /api/activity/log`) and "Plus tard" (`GET
+/api/snoozes`) carry it too. A stored From holds no control byte.
+
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
 set of labels; `folder` carries that folder instead, and `messageId` is the
@@ -867,7 +874,15 @@ Two ways in:
   that reads (a raw `Name <addr>` header is accepted and its address stored), or
   a well-formed domain (`acme.com`, `@acme.com`: letters, digits and hyphens, no
   final dot). Anything else answers `400`: two addresses, a space or a tab in
-  an address, a stray `>`, two `@`, a name, a final dot.
+  an address, a stray `>`, two `@`, a name, a final dot, a domain IDNA refuses.
+
+An accented domain is one domain in any of its forms: an entry's domain is
+stored readable (`café.fr`, whether typed so or as `xn--caf-dma.fr`;
+full-width letters folded, `ｅｘａｍｐｌｅ.fr` is `example.fr`), and every
+comparison of senders is made in ASCII (IDNA's Lookup profile), so `café.fr`
+protects `contact@xn--caf-dma.fr`, the form a header carries, as well as
+`contact@café.fr`. The unsubscribe rules (same registrable domain) and the
+sweep by sender compare the same way.
 
 ### Remove a protected sender
 
@@ -879,7 +894,10 @@ Two ways in:
 
 Detects mailing-list senders via the `List-Unsubscribe` (RFC 2369) and
 `List-Unsubscribe-Post` (RFC 8058) headers, and unsubscribes the user, either
-silently server-side (one-click) or by handing back the link to open.
+silently server-side (one-click) or by handing back the link to open. A mail
+with two `List-Unsubscribe` headers offers no way out on either transport
+(nothing done automatically, nothing to open): the two transports used to keep
+different ones.
 
 ### Get Subscriptions
 
