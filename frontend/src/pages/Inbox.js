@@ -2290,9 +2290,12 @@ function Inbox() {
                   </p>
                 </div>
                 {subscriptions.map((sub) => {
-                  const busy = unsubscribing === sub.senderEmail;
+                  // A sender whose address does not read (senderEmail "") is
+                  // keyed by its mail: two of them are not one row.
+                  const subKey = sub.senderEmail || sub.sampleMessageId;
+                  const busy = unsubscribing === subKey;
                   return (
-                    <div key={sub.senderEmail} className={cn('card flex flex-wrap items-center gap-3 p-4', sub.unsubscribed && 'opacity-60')}>
+                    <div key={subKey} className={cn('card flex flex-wrap items-center gap-3 p-4', sub.unsubscribed && 'opacity-60')}>
                       <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sub.senderEmail))} aria-hidden>
                         {avatarText(sub.senderName || sub.senderEmail)}
                       </span>
@@ -2313,14 +2316,14 @@ function Inbox() {
                       ) : (
                         <div className="flex items-center gap-1.5">
                           <button
-                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, key: sub.senderEmail })}
+                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, key: subKey })}
                             disabled={busy}
                             className="btn-secondary btn-sm"
                           >
                             {busy ? <Spinner size={16} /> : <BellOff size={16} />} Se désabonner
                           </button>
                           <button
-                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, alsoArchive: true, key: sub.senderEmail })}
+                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, alsoArchive: true, key: subKey })}
                             disabled={busy}
                             className="btn-ghost btn-sm btn-icon"
                             aria-label={`Se désabonner et archiver tous les emails de ${sub.senderEmail}`}

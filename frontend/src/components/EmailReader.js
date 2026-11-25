@@ -14,14 +14,10 @@ import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
 import { proposalText } from './hotel/InboxBits';
 
-// The address of a From header is its LAST "<...>": the display name before
-// it is the sender's to write, and may hold another address.
-function extractEmail(from) {
-  const open = from ? from.lastIndexOf('<') : -1;
-  if (open < 0) return from;
-  const close = from.indexOf('>', open);
-  return from.slice(open + 1, close < 0 ? undefined : close);
-}
+// The display name of a From header: what comes before its last "<...>". The
+// address shown under it is the one the server read (`senderAddress`), never
+// one read here: the display name is the sender's to write, and may hold
+// another address.
 function extractName(from) {
   const open = from ? from.lastIndexOf('<') : -1;
   if (open <= 0) return from;
@@ -442,7 +438,7 @@ function EmailReader({
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate font-semibold text-ink-900">{name}</div>
-            <div className="truncate text-sm text-muted">{extractEmail(merged.from)}</div>
+            <div className="truncate text-sm text-muted">{merged.senderAddress || merged.from}</div>
           </div>
           {merged.receivedDate && (
             <time
