@@ -318,6 +318,12 @@ func (s *Service) GetAttachment(gmailService *gmail.Service, messageID, attachme
 	return decodeAttachmentData(body.Data)
 }
 
+// DecodeAttachmentData decodes the bytes of a part as the Gmail API sends them,
+// behind an attachment id or with the message (MessagePartBody.Data).
+func DecodeAttachmentData(data string) ([]byte, error) {
+	return decodeAttachmentData(data)
+}
+
 // decodeAttachmentData decodes an attachment payload from the base64url alphabet
 // (padded or not). Unlike decodeBodyData it refuses to fall back to the raw
 // string: a body that failed to decode is still readable text, whereas handing

@@ -391,13 +391,32 @@ type incoming struct {
 	Attachment *attachedFile
 }
 
-// attachedFile is a file attached to a mail. Its content is filler of Size
-// bytes: what a sentence about attachments or large mails looks at is that
-// the file is there and how much it weighs, never what it says.
+// attachedFile is a file attached to a mail, in one of two uses:
+//
+//   - As incoming.Attachment, its content is filler of Size bytes: what a
+//     sentence about attachments or large mails looks at there is that the
+//     file is there and how much it weighs, never what it says. Data, NameAs
+//     and Transfer stay unset.
+//   - Given to receiveWithFiles (acceptance_imap_test.go), its content is
+//     Data, real bytes written the way the sender's mail program wrote them:
+//     what a sentence about opening or saving the file looks at is the file
+//     itself, byte for byte, under its name. Size stays unset.
+//
+// The harness stops a scenario that mixes the two.
 type attachedFile struct {
 	Name string // e.g. "facture.pdf"
 	Type string // e.g. "application/pdf"
 	Size int    // bytes, before the base64 a mail carries it in
+
+	Data []byte
+	// NameAs is how the program wrote the name: as an RFC 2047 encoded word
+	// inside the parameter, what Gmail and Outlook send, or as an RFC 2231
+	// parameter, what Thunderbird and Apple Mail send. Both are in every
+	// inbox, and only an accented name tells them apart.
+	NameAs nameEncoding
+	// Transfer is how it wrote the bytes: transferBase64, or
+	// transferQuotedPrintable for a text file.
+	Transfer string
 }
 
 // receive delivers mails to the Gmail inbox, unread, oldest first, and returns

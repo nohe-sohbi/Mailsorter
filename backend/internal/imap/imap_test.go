@@ -41,6 +41,24 @@ func newTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) *Cli
 // test that connects more than once (or through something in between).
 func startTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) string {
 	t.Helper()
+	return serveTestServer(t, mailboxes, nil)
+}
+
+// serveTestServer is startTestServer for a test that needs the server to
+// behave in a way of its own: wrap, when set, stands between the server and
+// each session.
+func serveTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr, wrap func(imapserver.SessionIMAP4rev2) imapserver.Session) string {
+	t.Helper()
+	return serveTestServerWith(t, mailboxes, wrap, imapv2.CapSet{
+		imapv2.CapIMAP4rev1: {},
+		imapv2.CapIMAP4rev2: {},
+	})
+}
+
+// serveTestServerWith is serveTestServer for a server with these
+// capabilities: IMAP4rev1 alone is a server without BINARY, like Gmail's.
+func serveTestServerWith(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr, wrap func(imapserver.SessionIMAP4rev2) imapserver.Session, caps imapv2.CapSet) string {
+	t.Helper()
 
 	user := imapmemserver.NewUser(testUser, testPass)
 	for name, attrs := range mailboxes {
@@ -58,13 +76,13 @@ func startTestServer(t *testing.T, mailboxes map[string][]imapv2.MailboxAttr) st
 
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			if wrap != nil {
+				return wrap(mem.NewSession().(imapserver.SessionIMAP4rev2)), nil, nil
+			}
 			return mem.NewSession(), nil, nil
 		},
 		InsecureAuth: true,
-		Caps: imapv2.CapSet{
-			imapv2.CapIMAP4rev1: {},
-			imapv2.CapIMAP4rev2: {},
-		},
+		Caps:         caps,
 	})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -85,6 +103,22 @@ func dialTestServer(t *testing.T, addr string) *Client {
 	client, err := dialTestClient(addr)
 	if err != nil {
 		t.Fatalf("connect to the test server: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return client
+}
+
+// dialTestServerThrough is dialTestServer with wrap standing between the
+// client and its socket, for a test that watches what goes over it.
+func dialTestServerThrough(t *testing.T, addr string, wrap func(net.Conn) net.Conn) *Client {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial test server: %v", err)
+	}
+	client, err := newClient(imapclient.New(wrap(conn), clientOptions("127.0.0.1")), testUser, testPass)
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
 	}
 	t.Cleanup(func() { client.Close() })
 	return client

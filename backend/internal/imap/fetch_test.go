@@ -139,7 +139,9 @@ func TestFetchOnAnHTMLOnlyMessage(t *testing.T) {
 	}
 }
 
-func TestBodies(t *testing.T) {
+// The text and the HTML the reader shows, picked from the server's
+// description of the message and read alone.
+func TestFetchBodies(t *testing.T) {
 	cases := []struct {
 		name      string
 		raw       string
@@ -157,51 +159,64 @@ func TestBodies(t *testing.T) {
 			raw: "From: a@b.com\r\nSubject: S\r\nContent-Type: text/plain\r\n\r\n" +
 				"Juste du texte.\r\n",
 			wantPlain: "Juste du texte.",
-			wantHTML:  "",
 		},
 		{
 			name: "html only",
 			raw: "From: a@b.com\r\nSubject: S\r\nContent-Type: text/html\r\n\r\n" +
 				"<p>Juste du html.</p>\r\n",
-			wantPlain: "",
-			wantHTML:  "<p>Juste du html.</p>",
+			wantHTML: "<p>Juste du html.</p>",
+		},
+		{
+			// A message without MIME headers is text, as RFC 2045 says.
+			name:      "no MIME at all",
+			raw:       "From: a@b.com\r\nSubject: S\r\n\r\nDu texte, sans plus.\r\n",
+			wantPlain: "Du texte, sans plus.",
+		},
+		{
+			name: "in base64 and ISO-8859-1",
+			raw: "From: a@b.com\r\nSubject: S\r\nMIME-Version: 1.0\r\n" +
+				"Content-Type: text/plain; charset=iso-8859-1\r\nContent-Transfer-Encoding: base64\r\n\r\n" +
+				"ROlj7G1icmUu\r\n",
+			wantPlain: "Déc\u00ecmbre.",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plain, html := bodies([]byte(tc.raw))
-			if strings.TrimSpace(plain) != tc.wantPlain {
-				t.Errorf("bodies(...) plain = %q, want %q", strings.TrimSpace(plain), tc.wantPlain)
+			c := newTestServer(t, standardMailboxes())
+			appendRaw(t, c, "INBOX", tc.raw)
+			emails, err := c.List(context.Background(), "INBOX", 10)
+			if err != nil || len(emails) != 1 {
+				t.Fatalf("List = %d mails, %v", len(emails), err)
 			}
-			if strings.TrimSpace(html) != tc.wantHTML {
-				t.Errorf("bodies(...) html = %q, want %q", strings.TrimSpace(html), tc.wantHTML)
+			msg, err := c.Fetch(context.Background(), "INBOX", emails[0].MessageID)
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if strings.TrimSpace(msg.Body) != tc.wantPlain {
+				t.Errorf("Fetch(...).Body = %q, want %q", strings.TrimSpace(msg.Body), tc.wantPlain)
+			}
+			if strings.TrimSpace(msg.HTML) != tc.wantHTML {
+				t.Errorf("Fetch(...).HTML = %q, want %q", strings.TrimSpace(msg.HTML), tc.wantHTML)
 			}
 		})
 	}
 }
 
-// Not every sender produces something the MIME parser accepts, and a message
-// that cannot be walked is still worth showing as text. Returning an error
-// instead would turn one malformed sender into an unopenable message.
-func TestBodiesFallsBackToTheRawPayload(t *testing.T) {
-	plain, html := bodies([]byte("this is not a message at all"))
-	if plain == "" {
-		t.Error("an unparseable payload produced no text at all; the raw bytes are the last resort")
-	}
-	if html != "" {
-		t.Errorf("html = %q, want empty: nothing said this was markup", html)
-	}
-}
-
 // An attachment's bytes are not the body. Treating them as one would paste a
-// base64 blob into the reader.
-func TestBodiesIgnoresAttachments(t *testing.T) {
+// base64 blob into the reader; a text file declared an attachment is not the
+// text of the mail either.
+func TestFetchIgnoresAttachments(t *testing.T) {
 	raw := "From: a@b.com\r\n" +
 		"To: " + testUser + "\r\n" +
 		"Subject: Avec piece jointe\r\n" +
 		"MIME-Version: 1.0\r\n" +
 		"Content-Type: multipart/mixed; boundary=\"sep\"\r\n" +
 		"\r\n" +
+		"--sep\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"Content-Disposition: attachment; filename=\"notes.txt\"\r\n" +
+		"\r\n" +
+		"Des notes jointes.\r\n" +
 		"--sep\r\n" +
 		"Content-Type: text/plain; charset=utf-8\r\n" +
 		"\r\n" +
@@ -214,12 +229,24 @@ func TestBodiesIgnoresAttachments(t *testing.T) {
 		"JVBERi0xLjQKJSVFT0Y=\r\n" +
 		"--sep--\r\n"
 
-	plain, html := bodies([]byte(raw))
-	if strings.TrimSpace(plain) != "Voici le document." {
-		t.Errorf("plain = %q, want only the text part", strings.TrimSpace(plain))
+	c := newTestServer(t, standardMailboxes())
+	appendRaw(t, c, "INBOX", raw)
+	emails, err := c.List(context.Background(), "INBOX", 10)
+	if err != nil || len(emails) != 1 {
+		t.Fatalf("List = %d mails, %v", len(emails), err)
 	}
-	if strings.Contains(plain, "JVBERi") || strings.Contains(html, "JVBERi") {
+	msg, err := c.Fetch(context.Background(), "INBOX", emails[0].MessageID)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if strings.TrimSpace(msg.Body) != "Voici le document." {
+		t.Errorf("Body = %q, want only the text part", strings.TrimSpace(msg.Body))
+	}
+	if strings.Contains(msg.Body, "JVBERi") || strings.Contains(msg.HTML, "JVBERi") {
 		t.Error("the attachment's bytes landed in the body")
+	}
+	if len(msg.Attachments) != 2 {
+		t.Errorf("Attachments = %+v, want notes.txt and facture.pdf", msg.Attachments)
 	}
 }
 

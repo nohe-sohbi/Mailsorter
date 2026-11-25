@@ -102,10 +102,12 @@ export const emailService = {
   // The attachment bytes, as a Blob. Gmail keeps them behind a second call, and
   // the route needs the session header, so a plain <a href> cannot fetch them:
   // the reader downloads through axios and hands the browser an object URL.
-  downloadAttachment: (messageId, attachmentId) =>
+  // options passes an AbortController's signal, for a download the screen
+  // may give up (a picture of a mail the reader has left).
+  downloadAttachment: (messageId, attachmentId, options = {}) =>
     apiClient.get(
       `/api/emails/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
-      { responseType: 'blob' }
+      { responseType: 'blob', ...options }
     ),
   syncEmails: () => apiClient.post('/api/emails/sync'),
   action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
