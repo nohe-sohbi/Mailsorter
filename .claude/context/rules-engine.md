@@ -143,10 +143,11 @@ written in that order would archive without starring. On Gmail the order changes
 nothing visible (only the order of the ledger rows). The editor says so ("Lu,
 favori et étiquette d'abord, puis le rangement"). Over IMAP the order is
 `rules.ApplyOrderOnFolders`: a label is a move there, and a mail moves once,
-so the flags first, then only the LAST move written among archive, trash and
-label (where doing them one after the other would leave it: "Étiqueter
-Factures, puis Archiver" archives, "Archiver, puis Étiqueter Factures" files
-in Factures); the editor says so on IMAP. `ApplyOrder` returns a new slice: the
+so the flags first, then one move chosen by meaning, not by the order written:
+the trash if the rule deletes, else the folder if it labels (the first label
+written), else the archive. "Étiqueter Factures, puis Archiver", the Gmail way
+of filing out of the inbox, files in Factures; the editor says so on IMAP ("un
+mail ne va qu'à un endroit"). `ApplyOrder` returns a new slice: the
 stored rule and the editor keep the order written. Label
 IDs are resolved once per apply pass through a `labelCache map[labelName]labelID`
 and created on demand by `h.ensureLabel` (Gmail only). A failing action is
@@ -547,11 +548,11 @@ Standard library only, table-driven, no mocks. Run with
 |---|---|
 | `backend/internal/rules/rules_test.go` | all seven text operators plus their misses, unknown field, unknown operator, invalid regex, empty value, AND versus OR, disabled and condition-less guards, `FirstMatch` ordering, `Preview` tallies and disabled-rule exclusion, `Validate`, `EffectiveActions`, multi-action validation and preview |
 | `backend/internal/rules/rules_temporal_test.go` | `notContains` / `notEquals` including the empty-value guard, `olderThan` / `newerThan` against 40-day and 2-day emails, undated email, malformed day count, temporal through `MatchesAt` and `PreviewAt`, temporal validation (accepts `0`, rejects non-numeric and negative) |
-| `backend/internal/rules/rules_apply_test.go` | `ApplyOrder` (moves last, the rest in the order written, the rule left as written), `ReadsText` (body, snippet, case, disabled rule, temporal, blank value), `ApplyOrderOnFolders` (a label is a move, one move, the last written), `PreviewOnFolders` (the flags, then the folder) |
+| `backend/internal/rules/rules_apply_test.go` | `ApplyOrder` (moves last, the rest in the order written, the rule left as written), `ReadsText` (body, snippet, case, disabled rule, temporal, blank value), `ApplyOrderOnFolders` (a label is a move, one move: trash, else folder, else archive), `PreviewOnFolders` (the flags, then the folder) |
 | `backend/internal/imap/text_test.go` | `Texts` against the in-memory IMAP server: plain or HTML text, read back off the server as unread, a file after the text not read, a text longer than what is read kept up to the cut, `NotReached` for a file before the text, a done context, a UID the folder does not hold |
 | `backend/internal/api/sync_imap_test.go` | `inboxUpsert` marks only a new row, `arrivalsSince`, `syncRules.arrival` |
 | `backend/internal/api/scenarios_4_rules_test.go`, `scenarios_4_imap_rules_test.go` | the sentences "Tes règles" (Gmail) and "Tes règles sur une boîte IMAP" (acceptance tag, real MongoDB and a real IMAP server) |
-| `backend/internal/api/wiring_imap_test.go` | `TestAcceptance_IMAPRuleMovesAMailOnce` (star then the folder, one move, the folder in the history), `TestAcceptance_AutoRules*`: a mail moved back by another program (after a rule, or held under another number) is not an arrival; a failed sync is judged again at the next one, a mail put away meanwhile not counted; given up after 3 tries. `TestAcceptance_IMAPPreviewReadsTheCopyAndCountsTheFiling`, `TestAcceptance_RulesDoNotJudgeATextNotRead`, `TestAcceptance_AutoApplyRulesStampedWhenTurnedOn` |
+| `backend/internal/api/wiring_imap_test.go` | `TestAcceptance_IMAPRuleMovesAMailOnce` (star then the folder; label and archive filed, one history line with the folder; delete and label to the trash), `TestAcceptance_AutoRules*`: a mail moved back by another program (after a rule, or held under another number) is not an arrival; a failed sync is judged again at the next one, a mail put away meanwhile not counted; given up after 3 tries. `TestAcceptance_IMAPPreviewReadsTheCopyAndCountsTheFiling`, `TestAcceptance_RulesDoNotJudgeATextNotRead`, `TestAcceptance_AutoApplyRulesStampedWhenTurnedOn` |
 | `backend/internal/protect/protect_test.go` | `NormalizeAddress` (display name, quotes, unterminated `<`), `NormalizeEntry` classification, `Match` (exact, case, domain, subdomain, the `evilacme.com` non-match), `IsDestructive` on both vocabularies, `Allowed` in all three combinations |
 | `backend/internal/snooze/snooze_test.go` | the five presets against a fixed Wednesday 10:00, `laterToday` at 20:00, `thisEvening` past 18:00, `weekend` on a Saturday morning, unknown preset |
 | `backend/internal/schedule/schedule_test.go` | `Due` including the zero-`last` and non-positive-interval cases |
@@ -619,9 +620,9 @@ response `protectedSkipped` and that the message is still in the inbox.
 - **A rule on the text costs a read over IMAP.** `withTexts` reads up to 200
   messages, 256 KiB each at most, only when `rules.ReadsText` is true; a text
   not read in full within 256 KiB is not judged by a rule on the text.
-- **A rule moves a mail once over IMAP.** "Étiqueter Factures, puis Archiver"
-  archives: the last move written wins, and the label is not applied
-  (`ApplyOrderOnFolders`). On Gmail both happen.
+- **A rule moves a mail once over IMAP.** "Supprimer" with a label goes to the
+  trash, and the label is not applied; "Étiqueter" with "Archiver" files, and
+  the archive is not done (`ApplyOrderOnFolders`). On Gmail all happen.
 - **Apply and preview are N+1 Gmail calls.** `ListMessages` issues one
   `messages.list` then one `messages.get` with `Format("full")` per message
   (`backend/internal/gmail/gmail.go:141`). A 200-message apply is around 201 Gmail

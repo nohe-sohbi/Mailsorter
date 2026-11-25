@@ -121,24 +121,37 @@ func ApplyOrder(actions []models.RuleAction) []models.RuleAction {
 // ApplyOrderOnFolders is ApplyOrder for a mailbox made of folders (IMAP),
 // where a label is the folder of that name and labelling files the mail
 // there, out of the inbox: a move, like archive and trash. A mail is in one
-// folder, so a rule moves it once: the flags first (mark read, star), in the
-// order written, then the LAST move written, the folder where doing the moves
-// one after the other would leave it ("Étiqueter Factures, puis Archiver"
-// archives; "Archiver, puis Étiqueter Factures" files in Factures). The other
-// moves are not done.
+// folder, so a rule moves it once, the move chosen by what it means, not by
+// where it is written: the flags first (mark read, star), in the order
+// written, then the trash if the rule deletes; else the folder if it labels
+// (the first label written); else the archive. So "Étiqueter Factures, puis
+// Archiver", the Gmail way of filing a mail out of the inbox, files it in
+// Factures. The other moves are not done.
 func ApplyOrderOnFolders(actions []models.RuleAction) []models.RuleAction {
 	out := make([]models.RuleAction, 0, len(actions))
-	var move *models.RuleAction
+	var trash, label, archive *models.RuleAction
 	for i, a := range actions {
 		switch a.Type {
-		case ActionArchive, ActionTrash, ActionLabel:
-			move = &actions[i]
+		case ActionTrash:
+			if trash == nil {
+				trash = &actions[i]
+			}
+		case ActionLabel:
+			if label == nil {
+				label = &actions[i]
+			}
+		case ActionArchive:
+			if archive == nil {
+				archive = &actions[i]
+			}
 		default:
 			out = append(out, a)
 		}
 	}
-	if move != nil {
-		out = append(out, *move)
+	for _, move := range []*models.RuleAction{trash, label, archive} {
+		if move != nil {
+			return append(out, *move)
+		}
 	}
 	return out
 }

@@ -98,10 +98,12 @@ func TestApplyOrderOnFolders(t *testing.T) {
 		want []models.RuleAction
 	}{
 		{"a label is a move: after the flags", []models.RuleAction{bills, star}, []models.RuleAction{star, bills}},
-		{"label then archive: one move, the last written", []models.RuleAction{bills, archive}, []models.RuleAction{archive}},
-		{"archive then label: files in the folder", []models.RuleAction{archive, bills}, []models.RuleAction{bills}},
-		{"two labels: the last one", []models.RuleAction{bills, read, news}, []models.RuleAction{read, news}},
-		{"trash among them, last written", []models.RuleAction{star, bills, trash}, []models.RuleAction{star, trash}},
+		{"label then archive: filed, the Gmail way out of the inbox", []models.RuleAction{bills, archive}, []models.RuleAction{bills}},
+		{"archive then label: filed too", []models.RuleAction{archive, bills}, []models.RuleAction{bills}},
+		{"delete wins over a label", []models.RuleAction{trash, bills}, []models.RuleAction{trash}},
+		{"delete wins whatever its place", []models.RuleAction{star, bills, archive, trash}, []models.RuleAction{star, trash}},
+		{"two labels: the first written", []models.RuleAction{bills, read, news}, []models.RuleAction{read, bills}},
+		{"archive alone", []models.RuleAction{read, archive}, []models.RuleAction{read, archive}},
 		{"flags only: unchanged", []models.RuleAction{read, star}, []models.RuleAction{read, star}},
 		{"none", nil, []models.RuleAction{}},
 	}

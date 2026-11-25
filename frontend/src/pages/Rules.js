@@ -285,12 +285,12 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
           {/* Not the order written: the engine marks read and stars before it
               moves the mail (rules.ApplyOrder, rules.ApplyOrderOnFolders in
               the backend). Over IMAP classifying moves the mail too, and a
-              mail moves once: to the last of these written. */}
+              mail moves once, chosen by what the rule means. */}
           <span className="text-xs text-muted">
             {folders ? (
               <>
-                Lu et favori d'abord, puis un seul rangement : le dernier écrit parmi <em>Archiver</em>,{' '}
-                <em>Supprimer</em> et <em>Classer</em>
+                Sur cette boîte, un mail ne va qu'à un endroit : la corbeille si la règle supprime, sinon le
+                dossier si elle classe, sinon l'archive.
               </>
             ) : (
               <>

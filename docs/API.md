@@ -2098,9 +2098,11 @@ matched with an existing folder, case, accents and a plural aside; made,
 subscribed, when there is none; never a special folder, and at most 10 new
 folders a request), out of the inbox like an archive, written in the history
 with the folder and undone like an archive. A protected sender's message is
-not filed. And a message moves once: the flags first, then only the last move
-the rule writes among `archive`, `trash` and `label` ("label Factures, then
-archive" archives; "archive, then label Factures" files in Factures). A folder
+not filed. And a message moves once: the flags first, then one move chosen by
+what the rule means, whatever the order written: the trash if the rule has
+`trash`, else the folder if it has a `label` (the first written), else the
+archive. So "label Factures, then archive", the Gmail way of filing a message
+out of the inbox, files it in Factures. A folder
 no message is filed into (a special one, a name no folder is made under) is
 left aside, logged, and not tried again; one new folder too many is tried
 again at the next sync. The preview shows, for each message, what applying the
@@ -2146,7 +2148,7 @@ A rule has the shape:
   it out of the inbox (`archive`, `trash`): over IMAP a moved message takes a
   new number in its new folder, so "archive then star" still stars it. Over
   IMAP a `label` is a move too (the folder of that name), and a message moves
-  once: the last move written (see above). A protected (VIP) sender has
+  once: the trash, else the folder, else the archive (see above). A protected (VIP) sender has
   destructive actions (archive/trash, and over IMAP the filing) skipped while
   the other actions in the same rule still run.
 - **`action` / `labelName`** : legacy single-action fields, kept for backward

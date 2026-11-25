@@ -447,39 +447,52 @@ func TestAcceptance_IMAPPreviewReadsTheCopyAndCountsTheFiling(t *testing.T) {
 }
 
 // A rule that stars and files a mail, over IMAP: the star first, then the
-// mail filed once, in the last folder written (a label then an archive: the
-// archive), and the history says which folder.
+// mail moved once, to the place chosen by what the rule means: the trash if
+// it deletes, else the folder if it labels, else the archive. "Étiqueter
+// Voyages, puis Archiver" (the Gmail way out of the inbox) files in Voyages,
+// written once in the history with the folder; "Supprimer" with a label
+// goes to the trash.
 func TestAcceptance_IMAPRuleMovesAMailOnce(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
-	moi, uids := syncedIMAPInbox(app, shopOrder, travelOffer)
+	moi, uids := syncedIMAPInbox(app, shopOrder, travelOffer, bankStatement)
 	moi.rule("Suivre et classer la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com",
 		models.RuleAction{Type: rules.ActionLabel, LabelName: "Boutique"}, models.RuleAction{Type: rules.ActionStar})
 	moi.rule("Classer puis archiver les voyages", 2, rules.FieldFrom, rules.OpContains, "voyages.fr",
 		models.RuleAction{Type: rules.ActionLabel, LabelName: "Voyages"}, models.RuleAction{Type: rules.ActionArchive})
+	moi.rule("Classer et jeter la banque", 3, rules.FieldFrom, rules.OpContains, "banque.fr",
+		models.RuleAction{Type: rules.ActionLabel, LabelName: "Banque"}, models.RuleAction{Type: rules.ActionTrash})
 
 	if got := moi.applyRules(); got.code != http.StatusOK {
 		app.fatalf("« Appliquer mes règles » de %s a répondu %s", moi.email, got)
 	}
+
+	// Star, then the folder.
 	moi.expectOnServer("Boutique", shopOrder.Subject)
 	if !moi.flaggedOnServer("Boutique", shopOrder.Subject) {
 		app.failf("le mail %q de %s devrait être en favori dans le dossier Boutique : la règle le met en favori avant de le classer", shopOrder.Subject, moi.email)
 	}
-	var filedIn string
-	for _, l := range moi.history(uids[0]) {
-		if l.Source == SourceRule && l.Action == rules.ActionLabel {
-			filedIn = l.LabelName
+
+	// Label and archive: filed, once, written with its folder.
+	moi.expectOnServer("Voyages", travelOffer.Subject)
+	moi.expectNotOnServer(serverArchive, travelOffer.Subject, "la règle classe et archive : sur une boîte IMAP elle le classe, une seule fois")
+	moi.expectNotOnServer(serverInbox, travelOffer.Subject, "la règle l'a classé dans Voyages")
+	var filed []string
+	for _, l := range moi.history(uids[1]) {
+		if l.Source == SourceRule {
+			filed = append(filed, l.Action+" "+l.LabelName)
 		}
 	}
-	if filedIn != "Boutique" {
-		app.failf("l'historique de %s devrait noter que la règle a classé le mail %q dans « Boutique », il note %q (%s)", moi.email, shopOrder.Subject, filedIn, describeHistory(moi.historyLinesOf(uids[0])))
+	if len(filed) != 1 || filed[0] != rules.ActionLabel+" Voyages" {
+		app.failf("l'historique de %s devrait noter une seule ligne de la règle pour le mail %q, classé dans « Voyages », il note %v", moi.email, travelOffer.Subject, filed)
 	}
 
-	moi.expectOnServer(serverArchive, travelOffer.Subject)
-	if moi.hasFolder("Voyages") {
-		moi.expectNotOnServer("Voyages", travelOffer.Subject, "la règle le range une seule fois, au dernier rangement écrit : l'archive")
+	// Delete and label: the trash.
+	moi.expectOnServer(serverTrash, bankStatement.Subject)
+	if moi.hasFolder("Banque") {
+		moi.expectNotOnServer("Banque", bankStatement.Subject, "la règle supprime : sur une boîte IMAP le mail va à la corbeille")
 	}
-	if n := ruleLines(moi, uids[1], rules.ActionLabel); n != 0 {
-		app.failf("l'historique de %s ne devrait pas noter de classement du mail %q, rangé une seule fois à l'archive, il en note %d", moi.email, travelOffer.Subject, n)
+	if n := ruleLines(moi, uids[2], rules.ActionLabel); n != 0 {
+		app.failf("l'historique de %s ne devrait pas noter de classement du mail %q, mis à la corbeille, il en note %d", moi.email, bankStatement.Subject, n)
 	}
 }
 
