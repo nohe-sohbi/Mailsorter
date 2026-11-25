@@ -328,6 +328,11 @@ type MailAccount struct {
 	SMTPTLS   string    `json:"smtpTls,omitempty" bson:"smtpTls,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+	// FirstSyncedAt is when Mailsorter first synced this mailbox (IMAP). The
+	// very first sync of a mailbox judges no mail as one that arrives,
+	// whatever its date: the mail server's clock and Mailsorter's may differ.
+	// Unset when another mailbox is connected in its place.
+	FirstSyncedAt time.Time `json:"-" bson:"firstSyncedAt,omitempty"`
 }
 
 // ConnectMailboxRequest is the body of POST /api/mailbox/connect. The provider,

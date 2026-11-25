@@ -258,7 +258,10 @@ mail. Each sentence of "Tes règles sur une boîte IMAP" pins part of this.
   when it goes from off to on; zero for an option turned on before the stamp
   existed) and when the mailbox was connected (`mail_accounts.createdAt`). So
   turning the option on, or connecting a mailbox with it on, sorts nothing
-  already there; "Appliquer maintenant" does.
+  already there; "Appliquer maintenant" does. And the very first sync of a
+  mailbox marks nothing, whatever the dates (`firstSync`: no
+  `mail_accounts.firstSyncedAt` and an empty copy; `markFirstSync` stamps it
+  after the store loop, so an empty inbox once synced has had it).
 - **What comes back is not an arrival.** `comingBack`, read after the listing
   and before `dropStaleInbox` (which may drop the old row), finds the listed
   mails whose Message-ID the copy holds under ANOTHER number, whatever that
@@ -602,9 +605,11 @@ response `protectedSkipped` and that the message is still in the inbox.
   user row (`rulesGivenUp`).
 - **A mail is an arrival by its server's clock.** INTERNALDATE is set by the
   mail server, the option's stamp by Mailsorter's: a skew between the two moves
-  the boundary by as much. A mailbox connected again with another address or
-  server gets a new `createdAt` (`sameMailbox`); its stored copy does not start
-  empty (the copy is per account, not per mailbox).
+  the boundary by as much; hence the first sync of a mailbox marks nothing. A
+  mailbox connected with another address or server gets a new `createdAt`
+  (`sameMailbox`), and what was kept of the previous one is cleared
+  (`clearMailboxCopy`: the IMAP copy, pending AI proposals, `firstSyncedAt`,
+  `users.rulesGivenUp`), as a disconnect does.
 - **A rule on the text costs a read over IMAP.** `withTexts` reads up to 200
   messages, 256 KiB each at most, only when `rules.ReadsText` is true; a text
   not read in full within 256 KiB is not judged by a rule on the text.

@@ -195,6 +195,16 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	const folder = string(mailbox.FolderInbox)
 
 	auto := h.syncRulesFor(ctx, userEmail, session.account)
+	// The very first sync of a mailbox judges nothing as arrived, whatever
+	// the dates: the mail server's clock and Mailsorter's may differ, and
+	// all it lists was there when it was connected.
+	first, firstErr := h.firstSync(ctx, userEmail, session.account)
+	if firstErr != nil {
+		log.Printf("imap sync: whether this is the first sync of the mailbox of %s is not known, no mail of it is marked for the rules: %v", userEmail, firstErr)
+	}
+	if first || firstErr != nil {
+		auto.markNone = true
+	}
 
 	listedAt := time.Now()
 	emails, err := session.imapc.List(ctx, folder, imapListLimit)
@@ -249,6 +259,9 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 			continue
 		}
 		synced++
+	}
+	if first {
+		h.markFirstSync(ctx, userEmail)
 	}
 	// Right after they are stored, before the phases that may lose the
 	// connection.
@@ -341,6 +354,34 @@ func arrivalsSince(optionOn, connected time.Time) time.Time {
 		since = connected
 	}
 	return since.Truncate(time.Second)
+}
+
+// firstSync says whether this is the very first sync of the mailbox: none
+// ever completed its listing (firstSyncedAt unset on its row) and the copy
+// holds no row of it. Both: a mailbox synced before Mailsorter stamped it has
+// rows, and an empty inbox, once synced, is stamped though it has none.
+func (h *Handler) firstSync(ctx context.Context, userEmail string, account models.MailAccount) (bool, error) {
+	if !account.FirstSyncedAt.IsZero() {
+		return false, nil
+	}
+	n, err := h.db.Emails().CountDocuments(ctx, bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox)},
+		options.Count().SetLimit(1))
+	if err != nil {
+		return false, err
+	}
+	return n == 0, nil
+}
+
+// markFirstSync stamps the mailbox as synced once (firstSyncedAt): its next
+// syncs judge the mails that arrive. A failure is logged: the next sync is
+// then a first one again only if the copy is still empty.
+func (h *Handler) markFirstSync(ctx context.Context, userEmail string) {
+	if _, err := h.db.MailAccounts().UpdateOne(ctx,
+		bson.M{"userId": userEmail, "firstSyncedAt": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"firstSyncedAt": time.Now()}},
+	); err != nil {
+		log.Printf("imap sync: the first sync of the mailbox of %s is not recorded: %v", userEmail, err)
+	}
 }
 
 // comingBack is, among the listed mails, the ones whose Message-ID the copy of

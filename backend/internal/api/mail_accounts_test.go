@@ -354,28 +354,35 @@ func TestMailboxRowWritesTheSendingServerOfTheRoute(t *testing.T) {
 // The moment a mailbox was connected (createdAt) is when the rules a sync
 // applies on its own start judging its mails: connecting the same mailbox
 // again (a new app password) keeps it, connecting another one (another
-// address, another server) sets it to now.
+// address, another server) sets it to now, and makes its next sync a first
+// one (firstSyncedAt unset).
 func TestMailboxRowKeepsTheMomentOnlyForTheSameMailbox(t *testing.T) {
 	now := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
 	before := now.Add(-48 * time.Hour)
 	server := &provider.Endpoint{Host: "imap.exemple.fr", Port: 993, TLS: provider.TLSImplicit}
 	route := provider.Route{Transport: provider.TransportIMAP, IMAP: server}
-	prev := bson.M{"userId": "moi@exemple.fr", "username": "moi@exemple.fr", "host": "imap.exemple.fr", "port": 993, "createdAt": before}
+	synced := before.Add(time.Hour)
+	prev := bson.M{"userId": "moi@exemple.fr", "username": "moi@exemple.fr", "host": "imap.exemple.fr", "port": 993, "createdAt": before, "firstSyncedAt": synced}
 
 	for _, tc := range []struct {
-		name string
-		prev bson.M
-		same bool
-		want time.Time
+		name       string
+		prev       bson.M
+		same       bool
+		want       time.Time
+		wantSynced time.Time // zero: the next sync is a first one
 	}{
-		{"the same mailbox again", prev, true, before},
-		{"another mailbox", prev, false, now},
-		{"a first connection", nil, false, now},
+		{"the same mailbox again", prev, true, before, synced},
+		{"another mailbox", prev, false, now, time.Time{}},
+		{"a first connection", nil, false, now, time.Time{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", route, "sealed", now, tc.same)
-			if got := readRow(t, applyUpsert(t, tc.prev, update)).CreatedAt; !got.Equal(tc.want) {
-				t.Errorf("createdAt = %v, want %v", got, tc.want)
+			row := readRow(t, applyUpsert(t, tc.prev, update))
+			if !row.CreatedAt.Equal(tc.want) {
+				t.Errorf("createdAt = %v, want %v", row.CreatedAt, tc.want)
+			}
+			if !row.FirstSyncedAt.Equal(tc.wantSynced) {
+				t.Errorf("firstSyncedAt = %v, want %v", row.FirstSyncedAt, tc.wantSynced)
 			}
 		})
 	}

@@ -230,6 +230,7 @@ func TestAcceptance_AutoRulesLeaveAMailMovedBackElsewhere(t *testing.T) {
 	moi := app.imapPerson(imapInboxOwner)
 	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
 	moi.setAutoApplyRules(true)
+	moi.sync() // the first sync of a mailbox judges nothing as arrived
 
 	moi.arrive(shopOrder)
 	moi.sync()
@@ -297,6 +298,7 @@ func TestAcceptance_AutoRulesJudgeAgainWhatTheyCouldNotRange(t *testing.T) {
 	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
 	moi.setAutoApplyRules(true)
 	archiveFolderGone(moi)
+	moi.sync() // the first sync of a mailbox judges nothing as arrived
 
 	uids := moi.arrive(shopOrder, shopSale)
 	expectRulesPending(moi, "la synchronisation dont les règles n'ont pas pu archiver les mails arrivés", 2,
@@ -339,6 +341,7 @@ func TestAcceptance_AutoRulesGiveUpAfterTries(t *testing.T) {
 	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
 	moi.setAutoApplyRules(true)
 	archiveFolderGone(moi)
+	moi.sync() // the first sync of a mailbox judges nothing as arrived
 
 	uids := moi.arrive(shopOrder)
 	for i := 1; i < maxRuleTries; i++ {
@@ -537,6 +540,7 @@ func TestAcceptance_AutoRulesDoOnlyWhatFailedAgain(t *testing.T) {
 		models.RuleAction{Type: rules.ActionMarkRead}, models.RuleAction{Type: rules.ActionStar}, models.RuleAction{Type: rules.ActionArchive})
 	moi.setAutoApplyRules(true)
 	archiveFolderGone(moi)
+	moi.sync() // the first sync of a mailbox judges nothing as arrived
 
 	uids := moi.arrive(shopOrder)
 	pending := "Vos règles n'ont pas pu être appliquées à 1 nouveau mail : la prochaine synchronisation réessaiera."
@@ -584,6 +588,7 @@ func TestAcceptance_GivenUpInTheBackgroundIsToldByTheScreen(t *testing.T) {
 	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
 	moi.setAutoApplyRules(true)
 	archiveFolderGone(moi)
+	moi.sync() // the first sync of a mailbox judges nothing as arrived
 	moi.arrive(shopOrder)
 
 	ctx, cancel := context.WithTimeout(context.Background(), autoSyncTimeout)
@@ -621,4 +626,71 @@ func TestAcceptance_ApplyRulesLeavesAMailASyncHolds(t *testing.T) {
 	moi.expectOnServer(serverInbox, shopOrder.Subject)
 	moi.expectNotOnServer(serverArchive, shopOrder.Subject, "une synchronisation le juge en ce moment")
 	moi.expectOnServer(serverArchive, shopSale.Subject)
+}
+
+// The very first sync of a mailbox judges nothing as arrived, whatever the
+// dates (the mail server's clock and Mailsorter's may differ): a mail the
+// server dated after the option and the connection is left there. The next
+// syncs judge the mails that arrive.
+func TestAcceptance_FirstSyncOfAMailboxJudgesNoArrival(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapAccount(imapInboxOwner)
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+	moi.setAutoApplyRules(true)
+	moi.connectMailbox()
+
+	uids := moi.arrive(shopOrder)
+	moi.sync()
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	moi.expectNotOnServer(serverArchive, shopOrder.Subject, "la toute première synchronisation de la boîte ne juge aucun mail arrivé")
+	moi.expectShows(uids[0], shopOrder.Subject)
+
+	moi.arrive(shopSale)
+	moi.sync()
+	moi.expectOnServer(serverArchive, shopSale.Subject)
+}
+
+// An empty inbox, once synced, has had its first sync: the first mail that
+// arrives in it afterwards is judged, though the copy held no row before.
+func TestAcceptance_AnEmptyInboxHasHadItsFirstSync(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+	moi.setAutoApplyRules(true)
+	moi.sync()
+
+	moi.arrive(shopOrder)
+	moi.sync()
+	moi.expectOnServer(serverArchive, shopOrder.Subject)
+	moi.expectNotOnServer(serverInbox, shopOrder.Subject, "il est arrivé après la première synchronisation, d'une boîte vide")
+}
+
+// Disconnecting an IMAP mailbox clears what Mailsorter kept of it: the copy
+// of its inbox and the AI's pending proposals about its mails. The history
+// stays.
+func TestAcceptance_DisconnectClearsTheCopyOfTheMailbox(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	moi.act(uids[2], "archive")
+	app.ai.willLabel("Banque", 0.95)
+	moi.analyze(uids[0], uids[1])
+	if len(moi.plan()) == 0 {
+		app.fatalf("le plan de l'IA de %s est vide avant le débranchement : le test ne prouve rien", moi.email)
+	}
+
+	if code, out := app.callAs(moi.token, http.MethodDelete, "/api/mailbox", nil); code != http.StatusOK {
+		app.fatalf("débrancher la boîte de %s a répondu %d : %v", moi.email, code, out)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if n, err := app.h.db.Emails().CountDocuments(ctx, bson.M{"userId": moi.email}); err != nil || n != 0 {
+		app.failf("la copie de la boîte de %s devrait être vide après le débranchement, elle tient %d mail(s) (%v)", moi.email, n, err)
+	}
+	if n, err := app.h.db.AISuggestions().CountDocuments(ctx, bson.M{"userId": moi.email, "status": "pending"}); err != nil || n != 0 {
+		app.failf("les propositions de l'IA en attente de %s devraient être effacées au débranchement, il en reste %d (%v)", moi.email, n, err)
+	}
+	if n, err := app.h.db.ActionLog().CountDocuments(ctx, bson.M{"userId": moi.email}); err != nil || n == 0 {
+		app.failf("l'historique de %s devrait rester au débranchement, il tient %d ligne(s) (%v)", moi.email, n, err)
+	}
 }

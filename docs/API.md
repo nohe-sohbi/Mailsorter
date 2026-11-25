@@ -374,7 +374,11 @@ on, sorts nothing already in the inbox (`POST /api/rules/apply` does).
 INTERNALDATE is written by the mail server's clock and the two moments by
 Mailsorter's: a gap between the two clocks moves the line by as much (a mail
 received just before the option was turned on may count as arrived, or the
-reverse). Nor is a message one whose Message-ID the
+reverse). That is why the very first sync of a mailbox judges no message as
+arrived, whatever its date: all it lists was there when it was connected. The
+first sync is the one of a mailbox Mailsorter never synced (`firstSyncedAt`
+unset on its row) whose stored copy holds nothing; an empty inbox, once synced,
+has had it. Nor is a message one whose Message-ID the
 stored copy holds under another number when the sync starts: a message put
 back by "Annuler" when the server did not say its new number, one Mailsorter
 moved out in the last 30 days and another mail program moved back, or one
@@ -1038,6 +1042,14 @@ global limiter) and no Google check: the caller is already signed in, so
 connecting an IMAP mailbox to an account that holds Google tokens is how that
 account switches to IMAP.
 
+Connecting the mailbox already connected again (the same address on the same
+server, a new app password) keeps everything. Connecting another one (another
+address, or another server) in its place starts from nothing, as a disconnect
+then a connect would: the stored copy of the previous inbox and the AI's
+pending proposals about it are cleared first, the moment of the connection
+(`createdAt`) is now, and the next sync is a first one (see
+`POST /api/emails/sync`). The history stays.
+
 **Response:** `200 OK`, the stored mailbox, in the shape `GET /api/mailbox`
 returns under `mailbox`.
 
@@ -1046,24 +1058,31 @@ returns under `mailbox`.
 - `401 Unauthorized`: no session, or the provider rejected the credentials
 - `422 Unprocessable Entity`: this address has no IMAP route with a known
   server in the running edition (see above)
-- `500 Internal Server Error`: the connection worked but could not be stored
+- `500 Internal Server Error`: the connection worked but could not be stored,
+  or the copy of the previous mailbox could not be cleared
 - `502 Bad Gateway`: the mail server could not be reached
 
 ### Disconnect
 
 #### DELETE /api/mailbox
 
-Forgets the connection: deletes the stored mailbox row (app password included)
-and removes the Google tokens from the account. This is also how a user revokes
-Mailsorter's access without going through their provider. The mailbox itself is
-never touched, and the account remains: its mailbox routes answer `428` until a
-mailbox is connected again.
+Forgets the connection: clears what Mailsorter kept of the mailbox (the stored
+copy of an IMAP inbox, the AI's pending proposals, the count of mails the rules
+gave up on not yet told), then deletes the stored mailbox row (app password
+included) and removes the Google tokens from the account. The history stays:
+its "Annuler" checks a message's Message-ID before acting, so it never acts on
+a mail of another mailbox. This is also how a user revokes Mailsorter's access
+without going through their provider. The mailbox itself is never touched, and
+the account remains: its mailbox routes answer `428` until a mailbox is
+connected again, whose inbox then shows its own mails only.
 
 **Response:** `200 OK`, `{ "disconnected": true }`, whether or not anything was
 connected.
 
 **Error Responses:**
-- `500 Internal Server Error`: the stored row could not be deleted
+- `500 Internal Server Error`: what Mailsorter kept of the mailbox could not be
+  cleared (nothing is disconnected: disconnecting again clears it), or the
+  stored row could not be deleted
 
 ---
 

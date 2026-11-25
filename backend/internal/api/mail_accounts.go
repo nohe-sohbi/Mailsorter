@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -95,6 +96,16 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		return models.MailAccount{}, fmt.Errorf("read the mail account: %w", prevErr)
 	}
 	same := prevErr == nil && sameMailbox(prev, address, route)
+	if !same {
+		// Another mailbox starts from nothing: the copy of the previous one,
+		// and the AI's proposals about it, name mails this one does not hold.
+		// Cleared before the new row is written: if that write fails, the
+		// previous mailbox is still connected, and its next sync, its first
+		// again, judges nothing as arrived.
+		if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
+			return models.MailAccount{}, err
+		}
+	}
 
 	account, update := mailboxRow(userEmail, p.Key, address, route, sealed, time.Now(), same)
 	if same {
@@ -108,6 +119,30 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		return models.MailAccount{}, fmt.Errorf("store mail account: %w", err)
 	}
 	return account, nil
+}
+
+// clearMailboxCopy clears what Mailsorter kept of the mailbox connected over
+// IMAP, when it is disconnected or another one is connected in its place:
+// the stored copy of its inbox (the rows that carry a folder), the AI's
+// pending proposals about its mails, the count of mails its rules gave up on
+// not yet told, and the mark of its first sync, so the next sync is a first
+// one. The history stays: its "Annuler" checks the Message-ID before acting.
+func (h *Handler) clearMailboxCopy(ctx context.Context, userEmail string) error {
+	if _, err := h.db.MailAccounts().UpdateOne(ctx, bson.M{"userId": userEmail},
+		bson.M{"$unset": bson.M{"firstSyncedAt": ""}}); err != nil {
+		return fmt.Errorf("unmark the first sync of the mailbox: %w", err)
+	}
+	if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": bson.M{"$exists": true}}); err != nil {
+		return fmt.Errorf("clear the copy of the mailbox: %w", err)
+	}
+	if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending"}); err != nil {
+		return fmt.Errorf("clear the proposals about the mailbox: %w", err)
+	}
+	if _, err := h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail},
+		bson.M{"$unset": bson.M{"rulesGivenUp": ""}}); err != nil {
+		return fmt.Errorf("clear what the rules of the mailbox gave up on: %w", err)
+	}
+	return nil
 }
 
 // sameMailbox says whether a connection to address over route is the mailbox
@@ -129,7 +164,8 @@ func sameMailbox(prev models.MailAccount, address string, route provider.Route) 
 // just proved. A route without one clears what a mailbox connected before may
 // have left on the row, rather than keep another provider's server. The
 // moment of the connection (createdAt) is kept when it is the same mailbox
-// connected again (same), and is now otherwise.
+// connected again (same), and is now otherwise, the next sync being then the
+// first of this mailbox (firstSyncedAt unset).
 func mailboxRow(userEmail, providerKey, address string, route provider.Route, sealed string, now time.Time, same bool) (models.MailAccount, bson.M) {
 	account := models.MailAccount{
 		UserID:    userEmail,
@@ -164,6 +200,10 @@ func mailboxRow(userEmail, providerKey, address string, route provider.Route, se
 		"$set":         set,
 		"$setOnInsert": onInsert,
 	}
+	unset := bson.M{}
+	if !same {
+		unset["firstSyncedAt"] = ""
+	}
 	if route.SMTP != nil {
 		account.SMTPHost = route.SMTP.Host
 		account.SMTPPort = route.SMTP.Port
@@ -172,7 +212,10 @@ func mailboxRow(userEmail, providerKey, address string, route provider.Route, se
 		set["smtpPort"] = account.SMTPPort
 		set["smtpTls"] = account.SMTPTLS
 	} else {
-		update["$unset"] = bson.M{"smtpHost": "", "smtpPort": "", "smtpTls": ""}
+		unset["smtpHost"], unset["smtpPort"], unset["smtpTls"] = "", "", ""
+	}
+	if len(unset) > 0 {
+		update["$unset"] = unset
 	}
 	return account, update
 }
@@ -287,6 +330,13 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	// What Mailsorter kept of the mailbox goes with it, first: a failure
+	// leaves it connected, and disconnecting again clears it.
+	if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
+		log.Printf("mailbox: disconnect %s: %v", userEmail, err)
+		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
+		return
+	}
 	res, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": userEmail})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")

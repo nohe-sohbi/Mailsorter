@@ -60,7 +60,8 @@ syncInbox(compte)
           (INTERNALDATE, à la seconde) après l'activation de l'option et après le
           branchement de la boîte (remis à la date du jour quand une autre adresse
           ou un autre serveur est branché ; l'horloge du serveur et celle de
-          Mailsorter peuvent différer d'autant) ; pas un mail dont la copie tient le Message-ID sous
+          Mailsorter peuvent différer d'autant, et la toute première synchro d'une
+          boîte ne marque aucun mail) ; pas un mail dont la copie tient le Message-ID sous
           un autre numéro au début de la synchro (remis par "Annuler" sans son nouveau
           numéro, rangé par Mailsorter depuis moins de 30 jours puis remis par un autre
           logiciel, ou sorti puis remis par un autre logiciel entre deux synchros ; pas
