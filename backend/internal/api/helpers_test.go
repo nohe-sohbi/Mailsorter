@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -58,6 +59,48 @@ func TestExtractSenderAddress(t *testing.T) {
 	for in, want := range cases {
 		if got := extractSenderAddress(in); got != want {
 			t.Errorf("extractSenderAddress(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// For every real header that reads (protect's table, both transports), the
+// three acts on its sender reach its address: "Se désabonner" (and "et
+// archiver") through extractSenderAddress, "Créer une règle" through
+// ruleForSender, and the card's domain. A header that does not read gives
+// none, and CreateSenderRule answers 400 for it.
+func TestSenderActsOnRealHeaders(t *testing.T) {
+	cases := map[string]string{
+		`"Nom" <a@b.fr>`:             "a@b.fr",
+		"a@b.fr":                     "a@b.fr",
+		"<a@b.fr>":                   "a@b.fr",
+		"Nom <a@b.fr> (commentaire)": "a@b.fr",
+		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>": "news@reseau.fr",
+		"=?windows-1252?q?Caf=E9?= <cafe@b.fr>":    "cafe@b.fr",
+		"Nom <A@B.FR>":                             "A@B.FR",
+		"john@x.com <john@x.com>":                  "john@x.com",
+		"Doe, John <j@x.com>":                      "j@x.com",
+		"LinkedIn [Jobs] <jobs@linkedin.com>":      "jobs@linkedin.com",
+		"News: daily <n@b.fr>":                     "n@b.fr",
+		`"<boss@corp.com>"@evil.io`:                `"<boss@corp.com>"@evil.io`,
+		"<patron@victime.fr> <lettre@journal.fr>":  "",
+		`"<boss@corp.com>"@evil.io,`:               "",
+	}
+	for from, want := range cases {
+		if got := extractSenderAddress(from); got != want {
+			t.Errorf("extractSenderAddress(%q) = %q, want %q", from, got, want)
+		}
+		if want == "" {
+			if d := extractDomain(from); d != "" {
+				t.Errorf("extractDomain(%q) = %q, want none", from, d)
+			}
+			continue
+		}
+		rule := ruleForSender("me@example.com", models.CreateSenderRuleRequest{SenderEmail: from, Action: "archive"})
+		if len(rule.Conditions) != 1 || rule.Conditions[0].Value != want {
+			t.Errorf("ruleForSender(%q) matches %+v, want From contains %q", from, rule.Conditions, want)
+		}
+		if d := extractDomain(from); d != want[strings.LastIndex(want, "@")+1:] {
+			t.Errorf("extractDomain(%q) = %q, want the domain of %q", from, d, want)
 		}
 	}
 }

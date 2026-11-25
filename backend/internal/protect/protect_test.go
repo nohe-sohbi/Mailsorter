@@ -1,59 +1,85 @@
 package protect
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestNormalizeAddress(t *testing.T) {
-	cases := map[string]string{
-		"Acme <hi@acme.com>":            "hi@acme.com",
-		`"Jane Doe" <Jane@Example.COM>`: "jane@example.com",
-		"  bob@host.org  ":              "bob@host.org",
-		"":                              "",
-		// The display name is the sender's: an address in it is not theirs.
-		`"<boss@corp.com>" <spam@evil.io>`:         "spam@evil.io",
-		`"Boss <boss@corp.com>" <spam@evil.io>`:    "spam@evil.io",
-		`Spam <spam@evil.io> (boss@corp.com)`:      "spam@evil.io",
-		`<vrai@x.fr> (<boss@corp.com>)`:            "vrai@x.fr",
-		`=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>`: "news@reseau.fr",
-		// A name in a charset net/mail does not decode still gives the address.
-		`=?windows-1252?q?Caf=E9?= <Boss@Corp.com>`: "boss@corp.com",
-		// A local part that is not a dot-atom is the sender's own, quoted:
-		// never the address it looks like.
-		`"<boss@corp.com>"@evil.io`:        `"<boss@corp.com>"@evil.io`,
-		`Spam <"<boss@corp.com>"@evil.io>`: `"<boss@corp.com>"@evil.io`,
-		// What does not read as one address gives none: nothing is guessed.
-		"No Address Here":                "",
-		"Broken <unterminated":           "",
-		`<boss@corp.com> <spam@evil.io>`: "",
-		`boss@corp.com <spam@evil.io>`:   "",
-		`<boss@corp.com>@evil.io`:        "",
-		"a@x.fr, b@x.fr":                 "",
-	}
-	for in, want := range cases {
-		if got := NormalizeAddress(in); got != want {
-			t.Errorf("NormalizeAddress(%q) = %q, want %q", in, got, want)
-		}
+// realHeaders is From headers as the two transports hand them over, with the
+// address Address reads out of each ("" for none). The Gmail API gives the
+// header as the sender wrote it; the IMAP listing writes it back as
+// "Name" <address> (formatAddress), its local part quoted when needed.
+var realHeaders = []struct {
+	name, from, want string
+}{
+	// Ordinary headers, both transports.
+	{"quoted name", `"Nom" <a@b.fr>`, "a@b.fr"},
+	{"bare address", "a@b.fr", "a@b.fr"},
+	{"angle address alone", "<a@b.fr>", "a@b.fr"},
+	{"a comment after", "Nom <a@b.fr> (commentaire)", "a@b.fr"},
+	{"RFC 2047 name in UTF-8", "=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>", "news@reseau.fr"},
+	{"RFC 2047 name in windows-1252", "=?windows-1252?q?Caf=E9?= <cafe@b.fr>", "cafe@b.fr"},
+	{"RFC 2047 name with a comma inside", "=?utf-8?q?Doe=2C_John?= <j@x.com>", "j@x.com"},
+	{"case kept", "Nom <A@B.FR>", "A@B.FR"},
+	{"surrounding spaces", "  bare@acme.com  ", "bare@acme.com"},
+	{"escaped quote in the name", `"a\" <b@c.fr" <real@journal.fr>`, "real@journal.fr"},
+	// Gmail headers whose name nobody quoted: read again with it in quotes.
+	{"the address as the name", "john@x.com <john@x.com>", "john@x.com"},
+	{"a comma in the name", "Doe, John <j@x.com>", "j@x.com"},
+	{"brackets in the name", "LinkedIn [Jobs] <jobs@linkedin.com>", "jobs@linkedin.com"},
+	{"a colon in the name", "News: daily <n@b.fr>", "n@b.fr"},
+	{"another address as the name", "boss@corp.com <spam@evil.io>", "spam@evil.io"},
+	// The traps: never the address of the display name.
+	{"an address in a quoted name", `"<patron@victime.fr>" <lettre@journal.fr>`, "lettre@journal.fr"},
+	{"a name and address in a quoted name", `"Boss <boss@corp.com>" <spam@evil.io>`, "spam@evil.io"},
+	{"an address in a comment", "<vrai@x.fr> (<boss@corp.com>)", "vrai@x.fr"},
+	{"a quoted local part", `"<boss@corp.com>"@evil.io`, `"<boss@corp.com>"@evil.io`},
+	{"a quoted local part in angles", `Spam <"<boss@corp.com>"@evil.io>`, `"<boss@corp.com>"@evil.io`},
+	{"a space in a quoted local part", `"a b"@x.com`, `"a b"@x.com`},
+	// What does not read as one address gives none.
+	{"two angle addresses", "<patron@victime.fr> <lettre@journal.fr>", ""},
+	{"an unquoted name holding an angle address", "Patron <patron@victime.fr> <lettre@journal.fr>", ""},
+	{"a quoted local part, then a comma", `"<boss@corp.com>"@evil.io,`, ""},
+	{"a quoted local part unquoted", "<boss@corp.com>@evil.io", ""},
+	{"trailing words", "Name <x@y.com> trail", ""},
+	{"unterminated", "Broken <unterminated", ""},
+	{"no address", "No Address Here", ""},
+	{"two addresses", "a@x.fr, b@x.fr", ""},
+	{"empty", "", ""},
+}
+
+func TestAddressOfRealHeaders(t *testing.T) {
+	for _, tc := range realHeaders {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Address(tc.from)
+			if got != tc.want {
+				t.Errorf("Address(%q) = %q, want %q", tc.from, got, tc.want)
+			}
+			if got != "" && Address(got) != got {
+				t.Errorf("Address(Address(%q)) = %q, want it to read back as %q", tc.from, Address(got), got)
+			}
+			if n := NormalizeAddress(tc.from); n != strings.ToLower(tc.want) {
+				t.Errorf("NormalizeAddress(%q) = %q, want %q", tc.from, n, strings.ToLower(tc.want))
+			}
+		})
 	}
 }
 
-// Address keeps the address as written (NormalizeAddress lowercases it),
-// never takes it from the display name, and reads back as itself.
-func TestAddress(t *testing.T) {
-	cases := map[string]string{
-		"Lettre <Lettre@Journal.fr>":                "Lettre@Journal.fr",
-		`"<patron@victime.fr>" <lettre@journal.fr>`: "lettre@journal.fr",
-		"  bare@acme.com  ":                         "bare@acme.com",
-		`"a\" <b@c.fr" <real@journal.fr>`:           "real@journal.fr",
-		`"<boss@corp.com>"@evil.io`:                 `"<boss@corp.com>"@evil.io`,
-		`"a b"@x.com`:                               `"a b"@x.com`,
-		`<patron@victime.fr> <lettre@journal.fr>`:   "",
-		"Name <x@y.com> trail":                      "",
-	}
-	for in, want := range cases {
-		if got := Address(in); got != want {
-			t.Errorf("Address(%q) = %q, want %q", in, got, want)
+// "Protéger" on a mail stores what NormalizeEntry reads of its From, and the
+// shield compares senders with Match: for every header that reads, the one
+// must find the other. Trimmed of its quotes, "jean dupont"@exemple.fr was
+// stored jean dupont"@exemple.fr and protected nobody.
+func TestProtectingAMailShieldsItsSender(t *testing.T) {
+	froms := []string{`"a b"@x.com`, `"Ami" <"a b"@x.com>`, `"<boss@corp.com>"@evil.io`, `"jean dupont"@exemple.fr`}
+	for _, tc := range realHeaders {
+		if tc.want != "" {
+			froms = append(froms, tc.from)
 		}
-		if got := Address(in); got != "" && Address(got) != got {
-			t.Errorf("Address(Address(%q)) = %q, want it to read back as %q", in, Address(got), got)
+	}
+	for _, from := range froms {
+		value, kind := NormalizeEntry(from)
+		if kind != KindAddress || !Match(from, []string{value}) {
+			t.Errorf("NormalizeEntry(%q) = (%q, %q), and Match(%q) on it = %v, want an address entry that matches", from, value, kind, from, Match(from, []string{value}))
 		}
 	}
 }

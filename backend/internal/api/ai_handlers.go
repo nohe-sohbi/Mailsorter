@@ -1149,14 +1149,14 @@ func (h *Handler) ensureLabel(ctx context.Context, gmailClient interface{}, user
 // unsubscribing from it, archiving its mail or making a rule of it must not
 // reach boss@corp.com.
 
-// extractDomain returns the domain of the sender's address, or the input,
-// trimmed, when it holds no "@".
+// extractDomain returns the domain of the sender's address (what follows its
+// last "@"), or "" when the header gives no address (protect.Address).
 func extractDomain(email string) string {
 	addr := protect.Address(email)
 	if idx := strings.LastIndex(addr, "@"); idx >= 0 {
 		return addr[idx+1:]
 	}
-	return addr
+	return ""
 }
 
 // extractSenderAddress returns the sender's bare address out of a From header

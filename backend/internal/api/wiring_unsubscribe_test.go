@@ -612,3 +612,49 @@ func TestAcceptance_UnsubscribeMailGoesToTheAddressAsWritten(t *testing.T) {
 		app.failf("le mail devrait partir vers Desabonnement+Lettre@journal.fr tel qu'écrit, il est parti : %s", describeSent(sent))
 	}
 }
+
+// A Gmail header whose display name nobody quoted, "Doe, John <j@x.com>",
+// names j@x.com: "Créer une règle", "Se désabonner et archiver" and
+// "Protéger" all reach that address, as for any readable sender.
+func TestAcceptance_GmailUnquotedNameWithACommaIsItsSendersAddress(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const doe = "Doe, John <j@x.com>"
+	const page = "<https://desabonnement.x.invalid/lettre>"
+	ids := app.receiveAndSync(
+		incoming{From: doe, Subject: "Le point de John"},
+		incoming{From: doe, Subject: "La lettre de John", Unsubscribe: page},
+		incoming{From: "Autre <autre@x.com>", Subject: "Un autre expéditeur"},
+	)
+
+	// "Créer une règle" on the card: From contains j@x.com.
+	code, out := app.call(http.MethodPost, "/api/senders/rule", map[string]string{"senderEmail": doe, "action": "archive"})
+	if code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("« Créer une règle » pour %q a répondu %d : %v", doe, code, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var rule models.SortingRule
+	if err := app.h.db.SortingRules().FindOne(ctx, bson.M{"userId": scenarioUser}).Decode(&rule); err != nil {
+		app.fatalf("lecture de la règle créée : %v", err)
+	}
+	if len(rule.Conditions) != 1 || rule.Conditions[0].Value != "j@x.com" {
+		app.failf("la règle créée pour %q devrait viser j@x.com, elle vise %+v", doe, rule.Conditions)
+	}
+
+	// "Se désabonner" with "et archiver ses mails": his two, not the other.
+	app.unsubscribeAndArchive(ids[1])
+	app.expectNotInInbox(ids[0], ids[1])
+	app.expectInInbox(ids[2])
+	if !unsubscribeRowExists(app, scenarioUser, "j@x.com") {
+		app.failf("j@x.com devrait être enregistré comme désabonné")
+	}
+
+	// "Protéger": his next mail is spared by an archive of the selection.
+	app.protect(doe)
+	next := app.receiveAndSync(incoming{From: doe, Subject: "Encore John"})
+	done := app.batchAction("archive", next...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage du mail de %q, protégé, devrait l'épargner, il en épargne %d : %v", doe, n, done)
+	}
+	app.expectInInbox(next...)
+}

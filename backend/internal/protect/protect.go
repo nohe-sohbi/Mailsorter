@@ -86,16 +86,50 @@ var fromParser = mail.AddressParser{WordDecoder: &mime.WordDecoder{
 // ("<boss@corp.com>" <spam@evil.io>). It is written the way net/mail reads it
 // back, its local part quoted when it is not a dot-atom ("<boss@corp.com>"@
 // evil.io is a real, if odd, address on evil.io), so that reading it again
-// gives itself. A header that does not read as exactly one address gives no
-// address at all, "": no address is guessed out of it, so nothing is swept,
-// unsubscribed or made a rule of in its name.
+// gives itself.
+//
+// Mail programs and the Gmail API hand over plenty of headers whose display
+// name RFC 5322 would have quoted and nobody did: "Doe, John <j@x.com>",
+// "LinkedIn [Jobs] <jobs@linkedin.com>", "News: daily <n@b.fr>",
+// "john@x.com <john@x.com>". One net/mail refuses is read again with its
+// name in quotes (withQuotedName), when nothing in it could be taken for an
+// address of its own. Any other header that does not read as exactly one
+// address gives no address at all, "": no address is guessed out of it, so
+// nothing is swept, unsubscribed or made a rule of in its name.
 func Address(raw string) string {
-	a, err := fromParser.Parse(strings.TrimSpace(raw))
+	s := strings.TrimSpace(raw)
+	a, err := fromParser.Parse(s)
 	if err != nil {
-		return ""
+		quoted, ok := withQuotedName(s)
+		if !ok {
+			return ""
+		}
+		if a, err = fromParser.Parse(quoted); err != nil {
+			return ""
+		}
 	}
 	spec := (&mail.Address{Address: a.Address}).String()
 	return strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
+}
+
+// withQuotedName is the header s with its display name in quotes, for a
+// header net/mail refused, and whether it is one this applies to: a name
+// before its last "<", holding no "<", ">" or quote of its own (so nothing in
+// it is an address or a quoted string the sender wrote), and after it one
+// "<...>" closing the header, with no other angle bracket inside. Anything
+// else ("<boss@corp.com> <spam@evil.io>", a quoted local part followed by
+// more) is not read at all.
+func withQuotedName(s string) (string, bool) {
+	open := strings.LastIndex(s, "<")
+	if open <= 0 || !strings.HasSuffix(s, ">") {
+		return "", false
+	}
+	name := strings.TrimSpace(s[:open])
+	inner := s[open+1 : len(s)-1]
+	if name == "" || strings.ContainsAny(name, `<>"`) || strings.ContainsAny(inner, "<>") {
+		return "", false
+	}
+	return `"` + strings.ReplaceAll(name, `\`, `\\`) + `" ` + s[open:], true
 }
 
 // NormalizeAddress extracts the bare, lower-cased email address from a raw From
@@ -120,10 +154,17 @@ func Domain(raw string) string {
 // empty value when nothing usable remains.
 func NormalizeEntry(raw string) (value, kind string) {
 	s := strings.TrimSpace(raw)
-	// Accept a raw From header ("Display Name <addr@host>") by stripping the
-	// display-name wrapper down to the bare address first.
+	// An entry that reads as an address (a raw From header "Display Name
+	// <addr@host>", a bare address) is kept exactly as NormalizeAddress reads
+	// it: that is what Match compares the senders with. Its quotes, when the
+	// local part has some ("jean dupont"@exemple.fr), are part of it; trimmed,
+	// the entry matched nobody while the API said "protégé".
+	if addr := NormalizeAddress(s); addr != "" {
+		return addr, KindAddress
+	}
+	// A header that does not read gives nothing: no address is guessed.
 	if strings.Contains(s, "<") {
-		s = NormalizeAddress(s)
+		return "", ""
 	}
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.TrimFunc(s, func(r rune) bool { return r == '"' || r == '\'' || r == ' ' })
