@@ -23,6 +23,7 @@ import (
 	"unicode"
 
 	"github.com/emersion/go-message/charset"
+	"golang.org/x/net/idna"
 )
 
 // Destructive actions remove an email from the user's attention (out of the
@@ -160,6 +161,60 @@ func NoSenderText(raw string) string {
 	return QuotedText(raw)
 }
 
+// FromText is how one From header is stored for the screen. One that names
+// no sender: NoSenderText. One that names a sender: without its control bytes
+// and as valid UTF-8 ("a@b.fr (x\x01y)" shown "a@b.fr (x y)"), as long as
+// that reads as the same sender; otherwise as written, since what is read is
+// what matters.
+func FromText(raw string) string {
+	address := Address(raw)
+	if address == "" {
+		return NoSenderText(raw)
+	}
+	cleaned := withoutControls(strings.ToValidUTF8(raw, "\uFFFD"))
+	if Address(cleaned) == address {
+		return cleaned
+	}
+	return raw
+}
+
+// Label is what a screen shows for the sender of a mail out of its stored
+// From. The display name, unless it holds an "@" and is not the address read
+// ("boss@corp.com" <evil@evil.io> shows evil@evil.io: a name is the sender's
+// to write, and cutting the header at its first "<" showed boss@corp.com).
+// The address when there is no name. When the From names no sender, its text,
+// without control bytes and without the quotes it was stored in.
+func Label(from string) string {
+	name, address := Sender(from)
+	name = strings.TrimSpace(withoutControls(name))
+	switch {
+	case address == "":
+		return unquoted(strings.TrimSpace(withoutControls(strings.ToValidUTF8(from, "\uFFFD"))))
+	case name == "":
+		return address
+	case strings.Contains(name, "@") && !strings.EqualFold(name, address):
+		return address
+	}
+	return name
+}
+
+// unquoted is s without the quotes of a quoted string around it, its escapes
+// undone; s itself otherwise.
+func unquoted(s string) string {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return s
+	}
+	var b strings.Builder
+	inner := s[1 : len(s)-1]
+	for i := 0; i < len(inner); i++ {
+		if inner[i] == '\\' && i+1 < len(inner) {
+			i++
+		}
+		b.WriteByte(inner[i])
+	}
+	return b.String()
+}
+
 // withoutControls is text with each control character but a tab turned into
 // a space.
 func withoutControls(text string) string {
@@ -287,17 +342,86 @@ func NormalizeEntry(raw string) (value, kind string) {
 	// local part has some ("jean dupont"@exemple.fr), are part of it; trimmed,
 	// the entry matched nobody while the API said "protégé".
 	if addr := NormalizeAddress(s); addr != "" {
-		return addr, KindAddress
+		at := strings.LastIndex(addr, "@")
+		domain, ok := readableDomain(addr[at+1:])
+		if !ok {
+			return "", ""
+		}
+		return addr[:at+1] + domain, KindAddress
 	}
 	// Otherwise only a well-formed domain is taken ("acme.com", "@acme.com").
 	// Anything else is refused rather than stored as an entry that protects
 	// nobody: a header that does not read, two addresses, a space, a stray
-	// ">", two "@", a name ("Jean Dupont"), a final dot.
-	d := strings.ToLower(strings.TrimPrefix(s, "@"))
-	if !wellFormedDomain(d) {
+	// ">", two "@", a name ("Jean Dupont"), a final dot, what IDNA refuses.
+	d, ok := readableDomain(strings.TrimPrefix(s, "@"))
+	if !ok {
 		return "", ""
 	}
 	return d, KindDomain
+}
+
+// asciiDomain is a domain in the one form senders are compared in: IDNA's
+// Lookup profile (punycode for an accented label, full-width letters folded,
+// lowercase). "café.fr" and "xn--caf-dma.fr" are one domain, and so are
+// "ｅｘａｍｐｌｅ.fr" and "example.fr". false when IDNA refuses it.
+func asciiDomain(d string) (string, bool) {
+	ascii, err := idna.Lookup.ToASCII(strings.TrimSpace(d))
+	if err != nil || ascii == "" {
+		return "", false
+	}
+	return ascii, true
+}
+
+// readableDomain is a domain an entry stores: well-formed once in ASCII, kept
+// in its Unicode form, readable in the settings ("café.fr" whether typed so
+// or as "xn--caf-dma.fr"). Match compares it in ASCII.
+func readableDomain(d string) (string, bool) {
+	ascii, ok := asciiDomain(d)
+	if !ok || !wellFormedDomain(ascii) {
+		return "", false
+	}
+	readable, err := idna.Lookup.ToUnicode(ascii)
+	if err != nil {
+		return "", false
+	}
+	return readable, true
+}
+
+// comparable is an address in the form it is compared in: lowercase, its
+// domain in ASCII (asciiDomain). A domain IDNA refuses is compared as it is,
+// lowercase: a mail is still matched by the entry that names it the same way.
+func comparable(addr string) string {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	at := strings.LastIndex(addr, "@")
+	if at < 0 {
+		return addr
+	}
+	if ascii, ok := asciiDomain(addr[at+1:]); ok {
+		return addr[:at+1] + ascii
+	}
+	return addr
+}
+
+// DomainForms is the forms a domain may be written in, in a header or in a
+// stored From: as given, in ASCII and in Unicode (IDNA), each once. A search
+// for a sender's mail by its domain looks for all of them.
+func DomainForms(d string) []string {
+	forms := []string{strings.ToLower(d)}
+	if ascii, ok := asciiDomain(d); ok {
+		forms = append(forms, ascii)
+		if readable, err := idna.Lookup.ToUnicode(ascii); err == nil {
+			forms = append(forms, readable)
+		}
+	}
+	out := forms[:0]
+	seen := map[string]bool{}
+	for _, f := range forms {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // wellFormedDomain says whether d is a domain name: labels of letters,
@@ -323,28 +447,33 @@ func wellFormedDomain(d string) bool {
 // Match reports whether the sender of an email is covered by any protected
 // entry. Address entries match the exact address; domain entries match the
 // address's domain or any subdomain of it (so "acme.com" also shields
-// "mail.acme.com"). Entries are assumed already normalized via NormalizeEntry.
+// "mail.acme.com"). Both sides are compared in one form, ASCII (comparable,
+// asciiDomain): "café.fr" shields contact@xn--caf-dma.fr, the form a header
+// carries it in, as well as contact@café.fr.
 func Match(from string, entries []string) bool {
 	if len(entries) == 0 {
 		return false
 	}
-	addr := NormalizeAddress(from)
+	addr := comparable(NormalizeAddress(from))
 	if addr == "" {
 		return false
 	}
-	domain := Domain(addr)
+	domain := addr[strings.LastIndex(addr, "@")+1:]
 	for _, e := range entries {
 		e = strings.ToLower(strings.TrimSpace(e))
 		if e == "" {
 			continue
 		}
 		if strings.Contains(e, "@") {
-			if e == addr {
+			if comparable(e) == addr {
 				return true
 			}
 			continue
 		}
-		// Domain entry: exact domain or subdomain match.
+		// Domain entry: exact domain or subdomain match, in ASCII.
+		if ascii, ok := asciiDomain(e); ok {
+			e = ascii
+		}
 		if domain == e || strings.HasSuffix(domain, "."+e) {
 			return true
 		}
@@ -363,12 +492,12 @@ func Match(from string, entries []string) bool {
 // their mail too. An addr with no usable address (empty, or no local part or
 // domain) matches nothing, because an empty pattern contains every sender.
 func SameAddress(from, addr string) bool {
-	want := NormalizeAddress(addr)
+	want := comparable(NormalizeAddress(addr))
 	at := strings.LastIndex(want, "@")
 	if at <= 0 || at == len(want)-1 {
 		return false
 	}
-	return NormalizeAddress(from) == want
+	return comparable(NormalizeAddress(from)) == want
 }
 
 // Allowed reports whether action may be applied to an email from `from`, given

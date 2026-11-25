@@ -180,6 +180,7 @@ func (h *Handler) listFromMirror(ctx context.Context, userEmail, query string, m
 	}
 	for i := range emails {
 		emails[i].SenderAddress = protect.Address(emails[i].From)
+		emails[i].SenderLabel = protect.Label(emails[i].From)
 	}
 
 	// A next token only when there is a next page. Handing one out at the end

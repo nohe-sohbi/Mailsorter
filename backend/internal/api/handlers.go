@@ -421,6 +421,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 			UnsubOneClick: oneClick,
 			CreatedAt:     time.Now(),
 			SenderAddress: protect.Address(from),
+			SenderLabel:   protect.Label(from),
 		}
 		emails = append(emails, email)
 	}
@@ -571,8 +572,11 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 		filter := bson.M{"messageId": msg.Id, "userId": userEmail}
 		update := bson.M{"$set": email}
 		opts := options.Update().SetUpsert(true)
-		if _, uErr := h.db.Emails().UpdateOne(ctx, filter, update, opts); uErr == nil {
+		if res, uErr := h.db.Emails().UpdateOne(ctx, filter, update, opts); uErr == nil {
 			synced++
+			if res.UpsertedCount > 0 {
+				logSenderlessMail(userEmail, email)
+			}
 		}
 
 		if len(autoRules) > 0 {

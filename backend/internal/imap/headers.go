@@ -2,7 +2,6 @@ package imap
 
 import (
 	"bytes"
-	"log"
 	"strings"
 
 	imapv2 "github.com/emersion/go-imap/v2"
@@ -97,16 +96,16 @@ func (h headerFields) first(name string) string {
 // its address ("Réseau" <news@reseau.fr>): readable on the screen, and read
 // back by protect.Address as the same address. One naming none is stored as
 // written, its control bytes turned into spaces (protect.NoSenderText), which
-// still reads as no sender. Two or more name no
-// single sender: stored as one quoted text, which reads as none. No header
-// block, or no From in it: no sender either, logged; the envelope's text, in
-// quotes, only for the screen.
-func senderFrom(msg *imapclient.FetchMessageBuffer, uid string) string {
+// still reads as no sender. Two or more name no single sender: stored as one
+// quoted text, which reads as none. No header block, or no From in it: no
+// sender either; the envelope's text, in quotes, only for the screen. A mail
+// with no sender is logged once, when its row is made (api's
+// logSenderlessMail), not at every listing.
+func senderFrom(msg *imapclient.FetchMessageBuffer) string {
 	headers, ok := fetchedHeaders(msg)
 	froms := headers["from"]
 	switch {
 	case !ok || len(froms) == 0:
-		log.Printf("imap: message uid %s has no From header to read its sender from (header block sent: %v); no sender stored", uid, ok)
 		var env []imapv2.Address
 		if msg.Envelope != nil {
 			env = msg.Envelope.From

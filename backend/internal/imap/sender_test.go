@@ -86,12 +86,12 @@ func TestTheSameFromNamesTheSameSenderOnBothTransports(t *testing.T) {
 				t.Errorf("From %q: the Gmail path reads %q (stores %q), IMAP reads %q (stores %q), want %q on both", fromsOf(h), gmailReads, viaGmail, imapReads, imapFrom, h.Want)
 			}
 			for transport, f := range map[string]string{"Gmail": viaGmail, "IMAP": imapFrom} {
+				// What a screen shows: no control byte (a tab aside), sender
+				// or not.
+				if i := strings.IndexFunc(f, func(r rune) bool { return r != '\t' && unicode.IsControl(r) }); i >= 0 {
+					t.Errorf("%s stores %q, a control byte included", transport, f)
+				}
 				if protect.Address(f) == "" {
-					// What a screen shows for a From with no sender: no
-					// control byte (a tab aside).
-					if i := strings.IndexFunc(f, func(r rune) bool { return r != '\t' && unicode.IsControl(r) }); i >= 0 {
-						t.Errorf("%s stores %q for a From that names no sender, a control byte included", transport, f)
-					}
 					continue
 				}
 				entry := protect.EntryFromMail(f)
@@ -109,4 +109,55 @@ func fromsOf(h protecttest.Header) []string {
 		return []string{h.From, h.Second}
 	}
 	return []string{h.From}
+}
+
+// The same mail offers the same way out on both transports: one
+// List-Unsubscribe header is read, two offer none (unsubscribe.ParseHeaders),
+// where the Gmail path kept the last one and the IMAP listing the first.
+func TestTheSameUnsubscribeLinksOnBothTransports(t *testing.T) {
+	type links struct {
+		url, mailto string
+		oneClick    bool
+	}
+	cases := []struct {
+		name    string
+		headers [][2]string
+		want    links
+	}{
+		{"one link to open", [][2]string{{"List-Unsubscribe", "<https://journal.fr/stop>"}}, links{url: "https://journal.fr/stop"}},
+		{"one in one click", [][2]string{{"List-Unsubscribe", "<https://journal.fr/stop>"}, {"List-Unsubscribe-Post", "List-Unsubscribe=One-Click"}}, links{url: "https://journal.fr/stop", oneClick: true}},
+		{"one address", [][2]string{{"List-Unsubscribe", "<mailto:stop@journal.fr>"}}, links{mailto: "mailto:stop@journal.fr"}},
+		{"two headers", [][2]string{{"List-Unsubscribe", "<mailto:stop@journal.fr>"}, {"List-Unsubscribe", "<https://evil.io/stop>"}, {"List-Unsubscribe-Post", "List-Unsubscribe=One-Click"}}, links{}},
+		{"none", nil, links{}},
+	}
+	c := newTestServer(t, standardMailboxes())
+	for i, tc := range cases {
+		before := ""
+		for _, h := range tc.headers {
+			before += h[0] + ": " + h[1] + "\r\n"
+		}
+		appendWithHeaders(t, c, "INBOX", before, []string{"Lettre <lettre@journal.fr>"}, fmt.Sprintf("u%02d", i))
+	}
+	listed, err := c.List(context.Background(), "INBOX", len(cases)+5)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	byCase := map[string]links{}
+	for _, e := range listed {
+		byCase[e.Subject] = links{e.UnsubURL, e.UnsubMailto, e.UnsubOneClick}
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := make([]*gmailv1.MessagePartHeader, 0, len(tc.headers))
+			for _, h := range tc.headers {
+				headers = append(headers, &gmailv1.MessagePartHeader{Name: h[0], Value: h[1]})
+			}
+			url, mailto, oneClick := gmail.ParseUnsubscribe(&gmailv1.Message{Payload: &gmailv1.MessagePart{Headers: headers}})
+			viaGmail := links{url, mailto, oneClick}
+			viaIMAP := byCase[fmt.Sprintf("u%02d", i)]
+			if viaGmail != tc.want || viaIMAP != tc.want {
+				t.Errorf("the Gmail path offers %+v, IMAP %+v, want %+v on both", viaGmail, viaIMAP, tc.want)
+			}
+		})
+	}
 }

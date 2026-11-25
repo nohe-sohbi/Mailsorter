@@ -282,6 +282,11 @@ func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for i := range rows {
+		if rows[i].From != "" {
+			rows[i].SenderLabel = protect.Label(rows[i].From)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"snoozes": rows})
 }
 

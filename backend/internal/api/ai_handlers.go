@@ -625,6 +625,8 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		// SenderAddress is From read by protect.Address: what the plan
 		// groups by and makes a sender rule of, "" when From does not read.
 		SenderAddress string `json:"senderAddress,omitempty"`
+		// SenderLabel is what the plan shows for the sender (protect.Label).
+		SenderLabel string `json:"senderLabel,omitempty"`
 	}
 	views := make([]suggestionView, 0, len(suggestions))
 	for _, s := range suggestions {
@@ -632,6 +634,7 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		if e, ok := identities[s.EmailID]; ok {
 			v.Subject, v.From, v.Snippet = e.Subject, e.From, e.Snippet
 			v.SenderAddress = protect.Address(e.From)
+			v.SenderLabel = protect.Label(e.From)
 		}
 		views = append(views, v)
 	}

@@ -818,3 +818,90 @@ func TestAcceptance_TwoFromHeadersNameNoSenderIMAP(t *testing.T) {
 	moi.expectOnServer(serverInbox, twoFroms.Subject)
 	moi.expectShows(uids[1], twoFroms.Subject)
 }
+
+// An accented domain is one domain in any of its forms. "café.fr" typed in
+// the settings protects contact@xn--caf-dma.fr, the form a header carries;
+// a letter from lettre@café.fr unsubscribes at stop@xn--caf-dma.fr (one
+// registrable domain), and "et archiver" reaches its mail in both forms.
+func TestAcceptance_AccentedDomainIsOneDomainIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Le Café <lettre@café.fr>", Subject: "La lettre du café", Unsubscribe: "<mailto:stop@xn--caf-dma.fr>"}
+	again := incoming{From: "lettre@xn--caf-dma.fr", Subject: "La lettre du café, encore"}
+	shop := incoming{From: "Contact <contact@xn--caf-dma.fr>", Subject: "Votre commande au café"}
+	other := incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"}
+	moi, uids := syncedIMAPInbox(app, letter, again, shop, other)
+	moi.withSendingServer()
+
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/protected", map[string]string{"value": "café.fr"})
+	if code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("protéger café.fr a répondu %d : %v", code, out)
+	}
+	done := moi.actOnSelection("archive", uids[2], uids[3])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("café.fr protégé devrait épargner le mail de contact@xn--caf-dma.fr, la réponse en épargne %d : %v", n, done)
+	}
+	moi.expectOnServer(serverInbox, shop.Subject)
+	moi.expectOnServer(serverArchive, other.Subject)
+
+	// Unprotected again, to see the sweep reach both forms.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.ProtectedSenders().DeleteMany(ctx, bson.M{"userId": moi.email}); err != nil {
+		app.fatalf("retrait de la protection : %v", err)
+	}
+	got := moi.unsubscribeFrom(uids[0], true)
+	sent := moi.sentThroughBox()
+	if len(sent) != 1 || !onlyAddress(sent[0].envelopeTo, "stop@xn--caf-dma.fr") {
+		app.failf("le mail de désabonnement de lettre@café.fr devrait partir vers stop@xn--caf-dma.fr (même domaine), il est parti : %s (réponse %v)", describeSent(sent), got)
+	}
+	for _, m := range []incoming{letter, again} {
+		moi.expectOnServer(serverArchive, m.Subject)
+	}
+	moi.expectOnServer(serverInbox, shop.Subject)
+}
+
+// What the screens show for a sender whose display name is another address:
+// the address read, in the list, the history and "Plus tard".
+func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const tricky = `"boss@corp.com" <evil@evil.io>`
+	ids := app.receiveAndSync(incoming{From: tricky, Subject: "Le faux patron"}, incoming{From: tricky, Subject: "Le faux patron, encore"})
+
+	code, out := app.call(http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	list, _ := out["emails"].([]interface{})
+	for _, raw := range list {
+		m, _ := raw.(map[string]interface{})
+		if label, _ := m["senderLabel"].(string); label != "evil@evil.io" {
+			app.failf("la liste devrait montrer evil@evil.io pour %s, elle montre %q", tricky, label)
+		}
+	}
+
+	app.act(ids[0], "archive")
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/activity/log a répondu %d : %v", code, out)
+	}
+	entries, _ := out["entries"].([]interface{})
+	if len(entries) == 0 {
+		app.fatalf("l'historique est vide après un archivage")
+	}
+	if e, _ := entries[0].(map[string]interface{}); e["senderLabel"] != "evil@evil.io" {
+		app.failf("l'historique devrait montrer evil@evil.io pour %s, il montre %v", tricky, e["senderLabel"])
+	}
+
+	app.snooze(ids[1])
+	code, out = app.call(http.MethodGet, "/api/snoozes", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/snoozes a répondu %d : %v", code, out)
+	}
+	snoozes, _ := out["snoozes"].([]interface{})
+	if len(snoozes) == 0 {
+		app.fatalf("« Plus tard » est vide après un report")
+	}
+	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" {
+		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, il montre %v", tricky, s["senderLabel"])
+	}
+}

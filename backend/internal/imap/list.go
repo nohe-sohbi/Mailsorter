@@ -190,10 +190,10 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	if !msg.InternalDate.IsZero() {
 		email.ReceivedDate = msg.InternalDate
 	}
-	email.From = senderFrom(msg, email.MessageID)
+	email.From = senderFrom(msg)
 
 	headers, _ := fetchedHeaders(msg)
-	links := unsubscribe.Parse(headers.first("List-Unsubscribe"), headers.first("List-Unsubscribe-Post"))
+	links := unsubscribe.ParseHeaders(headers["list-unsubscribe"], headers.first("List-Unsubscribe-Post"))
 	email.UnsubURL = links.URL
 	email.UnsubMailto = links.Mailto
 	email.UnsubOneClick = links.OneClick

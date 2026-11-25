@@ -75,6 +75,73 @@ func TestNoSenderText(t *testing.T) {
 	}
 }
 
+// An accented domain is one domain in any of its forms: typed accented or in
+// punycode, in full-width letters, as an entry or in a From. The settings
+// store it readable; Match compares in ASCII.
+func TestInternationalDomainsAreOneDomain(t *testing.T) {
+	cases := []struct {
+		typed, stored string
+		froms         []string
+	}{
+		{"café.fr", "café.fr", []string{"contact@xn--caf-dma.fr", "contact@café.fr", "Café <contact@CAFÉ.fr>", "news@mail.xn--caf-dma.fr"}},
+		{"xn--caf-dma.fr", "café.fr", []string{"contact@café.fr", "contact@xn--caf-dma.fr"}},
+		{"ｅｘａｍｐｌｅ.fr", "example.fr", []string{"a@example.fr", "a@EXAMPLE.fr"}},
+		{"Contact@Café.fr", "contact@café.fr", []string{"contact@xn--caf-dma.fr", "Café <contact@café.fr>"}},
+		{"contact@xn--caf-dma.fr", "contact@café.fr", []string{"contact@café.fr"}},
+	}
+	for _, tc := range cases {
+		value, _ := NormalizeEntry(tc.typed)
+		if value != tc.stored {
+			t.Errorf("NormalizeEntry(%q) = %q, want %q", tc.typed, value, tc.stored)
+		}
+		for _, from := range tc.froms {
+			if !Match(from, []string{value}) {
+				t.Errorf("the entry %q (typed %q) does not protect a mail from %q", value, tc.typed, from)
+			}
+		}
+	}
+	if Match("contact@cafe.fr", []string{"café.fr"}) {
+		t.Error("café.fr protects cafe.fr, another domain")
+	}
+	for _, refused := range []string{"xn--zz.fr", "x_y.fr", "a@xn--zz.fr"} {
+		if v, _ := NormalizeEntry(refused); v != "" {
+			t.Errorf("NormalizeEntry(%q) = %q, want it refused: IDNA does not take it", refused, v)
+		}
+	}
+	if !SameAddress("Café <contact@café.fr>", "contact@xn--caf-dma.fr") {
+		t.Error("SameAddress does not see contact@café.fr and contact@xn--caf-dma.fr as one address")
+	}
+	if got := DomainForms("Café.fr"); len(got) != 2 || got[0] != "café.fr" || got[1] != "xn--caf-dma.fr" {
+		t.Errorf("DomainForms(Café.fr) = %q, want café.fr and xn--caf-dma.fr, each once", got)
+	}
+	if got := DomainForms("xn--caf-dma.fr"); len(got) != 2 || got[0] != "xn--caf-dma.fr" || got[1] != "café.fr" {
+		t.Errorf("DomainForms(xn--caf-dma.fr) = %q, want xn--caf-dma.fr and café.fr, each once", got)
+	}
+}
+
+// What a screen shows for a sender: never an address of the display name
+// that is not the sender's, and no control byte.
+func TestLabel(t *testing.T) {
+	cases := map[string]string{
+		`"boss@corp.com" <evil@evil.io>`:                "evil@evil.io",
+		"boss@corp.com <evil@evil.io>":                  "evil@evil.io",
+		`"Evil@Evil.io" <evil@evil.io>`:                 "Evil@Evil.io",
+		`"<patron@victime.fr>" <lettre@journal.fr>`:     "lettre@journal.fr",
+		"Ma Banque <info@banque.fr>":                    "Ma Banque",
+		"info@banque.fr":                                "info@banque.fr",
+		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>":      "Réseau",
+		`"Lettre <lettre@journal.fr>, Patron <p@v.fr>"`: "Lettre <lettre@journal.fr>, Patron <p@v.fr>",
+		"Broken\x01 <unterminated":                      "Broken  <unterminated",
+		"patron@victime.fr, Lettre <lettre@journal.fr>": "patron@victime.fr, Lettre <lettre@journal.fr>",
+		"": "",
+	}
+	for from, want := range cases {
+		if got := Label(from); got != want {
+			t.Errorf("Label(%q) = %q, want %q", from, got, want)
+		}
+	}
+}
+
 // An address typed between apostrophes protects that address.
 func TestATypedEntryInApostrophesProtects(t *testing.T) {
 	value, _ := NormalizeEntry("'jean@x.fr'")

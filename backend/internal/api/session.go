@@ -14,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mirror"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -261,12 +262,26 @@ func (h *Handler) storeInboxMessage(ctx context.Context, userEmail string, email
 	if err != nil {
 		return err
 	}
-	_, err = h.db.Emails().UpdateOne(ctx,
+	res, err := h.db.Emails().UpdateOne(ctx,
 		bson.M{"messageId": email.MessageID, "userId": userEmail},
 		update,
 		options.Update().SetUpsert(true),
 	)
+	if err == nil && res.UpsertedCount > 0 {
+		logSenderlessMail(userEmail, email)
+	}
 	return err
+}
+
+// logSenderlessMail logs a mail whose From names no sender (no From header,
+// one that does not read, several authors, two From headers), once: when its
+// row is made, on either transport. Such a mail is never swept, unsubscribed
+// or protected in a sender's name, and the log says why, without repeating
+// itself at every sync.
+func logSenderlessMail(userEmail string, email models.Email) {
+	if protect.Address(email.From) == "" {
+		log.Printf("mail %s of %s names no sender (From %q): nothing is done in a sender's name for it", email.MessageID, userEmail, email.From)
+	}
 }
 
 // inboxUpsert is the write that stores a message read by a sync.

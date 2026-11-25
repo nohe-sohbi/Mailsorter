@@ -195,6 +195,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 	)
 
 	view.SenderAddress = protect.Address(view.From)
+	view.SenderLabel = protect.Label(view.From)
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -377,6 +378,7 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 		InlineImages: msg.InlineImages,
 	}
 	view.SenderAddress = protect.Address(view.From)
+	view.SenderLabel = protect.Label(view.From)
 	writeJSON(w, http.StatusOK, view)
 }
 

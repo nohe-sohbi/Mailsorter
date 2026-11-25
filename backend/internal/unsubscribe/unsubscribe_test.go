@@ -81,6 +81,21 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// Two List-Unsubscribe headers offer no way out; one is read; none is none.
+func TestParseHeaders(t *testing.T) {
+	one := ParseHeaders([]string{"<https://x.com/u>"}, "List-Unsubscribe=One-Click")
+	if one != (Links{URL: "https://x.com/u", OneClick: true}) {
+		t.Errorf("ParseHeaders(one) = %+v, want it read", one)
+	}
+	two := ParseHeaders([]string{"<mailto:stop@x.com>", "<https://evil.io/u>"}, "List-Unsubscribe=One-Click")
+	if two.Any() || two.OneClick {
+		t.Errorf("ParseHeaders(two) = %+v, want no way out", two)
+	}
+	if none := ParseHeaders(nil, ""); none.Any() {
+		t.Errorf("ParseHeaders(none) = %+v, want none", none)
+	}
+}
+
 func TestAny(t *testing.T) {
 	cases := map[bool]Links{
 		true:  {URL: "https://x.com/u"},

@@ -114,6 +114,9 @@ type Email struct {
 	// not read as one address). Set on the way out of a listing and the
 	// reader, for the screens to group, show and make rules by; never stored.
 	SenderAddress string `json:"senderAddress,omitempty" bson:"-"`
+	// SenderLabel is what the list shows for the sender (protect.Label).
+	// Set with SenderAddress; never stored.
+	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
 }
 
 // RegisterRequest is the body for POST /api/auth/register.
@@ -298,6 +301,10 @@ type Snooze struct {
 	Attempts  int       `json:"attempts,omitempty" bson:"attempts,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+
+	// SenderLabel is what "Plus tard" shows for the sender (protect.Label),
+	// set on the way out; never stored.
+	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
 }
 
 // MailAccount is the mailbox a user connected, and how to reach it again.
@@ -413,6 +420,10 @@ type ActionLog struct {
 	Undone    bool      `json:"undone,omitempty" bson:"undone,omitempty"`
 	UndoneAt  time.Time `json:"undoneAt,omitempty" bson:"undoneAt,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+
+	// SenderLabel is what the history shows for the sender (protect.Label),
+	// set on the way out; never stored.
+	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
 }
 
 // ============================================

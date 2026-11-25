@@ -380,10 +380,16 @@ func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, use
 	if at <= 0 || at == len(senderAddr)-1 {
 		return 0, 0
 	}
+	// Every form its domain may be written in: café.fr and xn--caf-dma.fr.
+	forms := protect.DomainForms(senderAddr[at+1:])
+	quoted := make([]string, 0, len(forms))
+	for _, f := range forms {
+		quoted = append(quoted, regexp.QuoteMeta(f))
+	}
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId":    userEmail,
 		"leftInbox": notLeftInbox,
-		"from":      bson.M{"$regex": regexp.QuoteMeta(senderAddr[at+1:]), "$options": "i"},
+		"from":      bson.M{"$regex": strings.Join(quoted, "|"), "$options": "i"},
 	})
 	if err != nil {
 		log.Printf("unsubscribe: listing the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)

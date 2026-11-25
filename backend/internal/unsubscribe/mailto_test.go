@@ -318,6 +318,9 @@ func TestSameRegistrableDomain(t *testing.T) {
 		want bool
 	}{
 		{"a@journal.fr", "b@journal.fr", true},
+		{"lettre@café.fr", "stop@xn--caf-dma.fr", true},
+		{"lettre@CAFÉ.fr", "stop@listes.café.fr", true},
+		{"lettre@café.fr", "stop@cafe.fr", false},
 		{"a@x.journal.fr", "b@y.journal.fr", true},
 		{"a@journal.fr.", "b@JOURNAL.fr", true},
 		{"a@journal.fr", "b@journal.com", false},

@@ -13,6 +13,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -127,6 +128,9 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 				// inbox: elsewhere its number names nothing.
 				reversible = imapState.inInbox[l.MessageID]
 			}
+		}
+		if l.From != "" {
+			l.SenderLabel = protect.Label(l.From)
 		}
 		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone})
 	}

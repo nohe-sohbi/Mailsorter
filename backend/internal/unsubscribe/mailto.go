@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
+	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -125,7 +126,14 @@ func registrableDomain(address string) (string, bool) {
 	if domain == "" || strings.ContainsAny(domain, "[]:") || net.ParseIP(domain) != nil {
 		return "", false
 	}
-	site, err := publicsuffix.EffectiveTLDPlusOne(domain)
+	// In ASCII, the one form two domains are compared in, and the one the
+	// Public Suffix List reads: lettre@café.fr and stop@xn--caf-dma.fr are on
+	// one domain.
+	ascii, err := idna.Lookup.ToASCII(domain)
+	if err != nil {
+		return "", false
+	}
+	site, err := publicsuffix.EffectiveTLDPlusOne(ascii)
 	if err != nil {
 		return "", false
 	}
