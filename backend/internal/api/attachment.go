@@ -2,16 +2,21 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	gmailapi "google.golang.org/api/gmail/v1"
 )
 
 // maxAttachmentBytes bounds what the download route will buffer and stream.
@@ -20,9 +25,9 @@ import (
 // the server hold an arbitrary allocation.
 const maxAttachmentBytes = 30 << 20 // 30 MiB
 
-// fallbackAttachmentName is used when a part's filename is empty or sanitizes
-// away to nothing. A download must always land with a usable name.
-const fallbackAttachmentName = "piece-jointe"
+// attachmentMissingMessage is the answer to a download of a file the mail does
+// not have, on both transports.
+const attachmentMissingMessage = "Cette pièce jointe est introuvable dans ce mail."
 
 // DownloadAttachment streams one attachment of one message back to the caller.
 //
@@ -32,6 +37,7 @@ const fallbackAttachmentName = "piece-jointe"
 // bytes behind a separate call keyed by an attachment id, so this resolves the
 // message first (to learn the part's real filename and MIME type, and to prove
 // the caller's message actually carries that id) and then fetches the data.
+// Over IMAP the bytes are inside the message: see downloadAttachmentIMAP.
 func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -49,25 +55,46 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
+	defer session.Close()
 
+	if session.Transport == provider.TransportIMAP {
+		h.downloadAttachmentIMAP(ctx, w, session, messageID, attachmentID)
+		return
+	}
+	h.downloadAttachmentGmail(w, session.gmail, userEmail, messageID, attachmentID)
+}
+
+// downloadAttachmentGmail is the Gmail half of DownloadAttachment.
+//
+// The id is the part number the reader listed, a file or a picture the HTML
+// draws (the screen downloads those to show them in the text). The message is read again,
+// fresh, and the bytes are asked for under the attachment id Gmail gives that
+// part in this copy: an id from an earlier copy is not trusted to still name
+// them. An id that is no part number, sent by a screen opened before the
+// reader handed out part numbers, is looked for among the attachment ids of
+// the fresh copy, and served only if it is still one of them.
+func (h *Handler) downloadAttachmentGmail(w http.ResponseWriter, gmailClient *gmailapi.Service, userEmail, messageID, attachmentID string) {
+	failed := fmt.Sprintf("attachment: %s of message %s for %s", attachmentID, messageID, userEmail)
 	msg, err := h.gmailService.GetMessage(gmailClient, messageID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Impossible de charger cet email : "+err.Error())
+		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
 		return
 	}
 
 	// Only a part of THIS message may be served. Without the lookup the route
 	// would forward any attachment id the caller invented straight to Gmail,
 	// turning it into a proxy for reading parts of messages the request never
-	// named.
-	att, ok := findAttachment(listAttachments(msg), attachmentID)
+	// named. The list is the reader's, HTML included, so a part the reader
+	// does not offer is not served either.
+	_, html := gmail.GetEmailBodies(msg)
+	att, ok := readGmailParts(msg, html).find(attachmentID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "Pièce jointe introuvable")
+		writeError(w, http.StatusNotFound, attachmentMissingMessage)
 		return
 	}
 	if att.Size > maxAttachmentBytes {
@@ -75,19 +102,58 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.gmailService.GetAttachment(gmailClient, messageID, attachmentID)
+	var data []byte
+	if att.gmailID != "" {
+		data, err = h.gmailService.GetAttachment(gmailClient, messageID, att.gmailID)
+	} else {
+		// Bytes Gmail sent with the message: already in hand.
+		data, err = gmail.DecodeAttachmentData(att.inlineData)
+	}
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Téléchargement impossible : "+err.Error())
+		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
 		return
 	}
 	if len(data) > maxAttachmentBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "Pièce jointe trop volumineuse")
 		return
 	}
+	writeAttachment(w, att.Filename, att.MimeType, data)
+}
 
-	w.Header().Set("Content-Type", attachmentContentType(att.MimeType))
+// downloadAttachmentIMAP is the IMAP half of DownloadAttachment.
+//
+// The id is the part number the reader listed (getEmailIMAP), and the client
+// serves it only when the reader's list of this same message has a file under
+// it, or an image of inlineImages. A part number is easy to guess ("1" is the
+// text of almost every mail), so without that check the route would hand out
+// the text of a mail, or any part of it, as a file.
+//
+// The cap is the client's to hold, because over IMAP the bytes are read to be
+// measured: it asks the server for the file's size first, and never keeps
+// more than the cap of it.
+func (h *Handler) downloadAttachmentIMAP(ctx context.Context, w http.ResponseWriter, session *mailSession, messageID, attachmentID string) {
+	ref := session.RefFor(ctx, messageID)
+	att, data, err := session.imapc.Attachment(ctx, ref.Folder, ref.ID, attachmentID, maxAttachmentBytes)
+	switch {
+	case errors.Is(err, imap.ErrNoSuchAttachment):
+		writeError(w, http.StatusNotFound, attachmentMissingMessage)
+		return
+	case errors.Is(err, imap.ErrAttachmentTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "Pièce jointe trop volumineuse")
+		return
+	case err != nil:
+		failed := fmt.Sprintf("attachment: %s of message %s in %q for %s", attachmentID, ref.ID, ref.Folder, session.userEmail)
+		writeMailboxFailure(w, err, failed, attachmentGoneMessage, attachmentFailedMessage)
+		return
+	}
+	writeAttachment(w, att.Filename, att.MimeType, data)
+}
+
+// writeAttachment sends a file as a download, on either transport.
+func writeAttachment(w http.ResponseWriter, filename, mimeType string, data []byte) {
+	w.Header().Set("Content-Type", attachmentContentType(mimeType))
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Content-Disposition", contentDisposition(att.Filename))
+	w.Header().Set("Content-Disposition", contentDisposition(filename))
 	// The bytes come from a third party, so the browser must never be allowed to
 	// sniff them into something executable in our origin.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -95,10 +161,21 @@ func (h *Handler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// findAttachment returns the described part carrying attachmentID.
-func findAttachment(list []attachmentView, attachmentID string) (attachmentView, bool) {
+// findAttachment returns the listed file the screen named id: by the id
+// the reader hands out (its part number), else by the Gmail attachment id a
+// screen opened before part numbers were handed out may still send, when the
+// copy the list was read from still gives a file that id.
+func findAttachment(list []attachmentView, id string) (attachmentView, bool) {
+	if id == "" {
+		return attachmentView{}, false
+	}
 	for _, a := range list {
-		if a.AttachmentID != "" && a.AttachmentID == attachmentID {
+		if a.AttachmentID == id {
+			return a, true
+		}
+	}
+	for _, a := range list {
+		if a.AttachmentID != "" && a.gmailID == id {
 			return a, true
 		}
 	}
@@ -119,35 +196,13 @@ func attachmentContentType(mimeType string) string {
 	return mimeType
 }
 
-// safeAttachmentName reduces a sender-supplied filename to something safe to put
-// in a header and on a disk: no directory components (a part named
-// "../../.bashrc" must land as ".bashrc"), no control characters, no quotes or
-// backslashes that would let it break out of the quoted-string form.
-func safeAttachmentName(filename string) string {
-	name := strings.TrimSpace(filename)
-	// Both separators, because the name is authored on the sender's machine and
-	// path.Base alone leaves a Windows path intact.
-	name = strings.ReplaceAll(name, "\\", "/")
-	name = path.Base(name)
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r == '"' {
-			return -1
-		}
-		return r
-	}, name)
-	name = strings.TrimSpace(name)
-	if name == "" || name == "." || name == ".." || name == "/" {
-		return fallbackAttachmentName
-	}
-	return name
-}
-
 // contentDisposition builds an attachment disposition that survives a non-ASCII
 // filename. The quoted form is ASCII-only by spec, so an accented name is also
 // published in the RFC 5987 `filename*` form, which every current browser
-// prefers; the plain parameter stays as the fallback.
+// prefers; the plain parameter stays as the fallback. The name is cleaned the
+// way the reader's list cleans it (attachment.SafeName), so the two agree.
 func contentDisposition(filename string) string {
-	name := safeAttachmentName(filename)
+	name := attachment.SafeName(filename, attachment.Unnamed)
 	ascii := asciiFallbackName(name)
 	return fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s", ascii, url.PathEscape(name))
 }
@@ -165,7 +220,7 @@ func asciiFallbackName(name string) string {
 	}
 	out := b.String()
 	if strings.TrimSpace(strings.Trim(out, "_")) == "" {
-		return fallbackAttachmentName
+		return attachment.Unnamed
 	}
 	return out
 }

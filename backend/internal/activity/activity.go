@@ -51,6 +51,20 @@ func Inverse(action string) (string, bool) {
 	}
 }
 
+// InverseOnFolders is Inverse for a mailbox made of folders (IMAP), where a
+// label is the folder of that name. There, labelling is not additive: it files
+// the mail in that folder, out of the inbox, the way an archive takes it out,
+// and it is undone the same way, by bringing the mail back ("unlabel"), which
+// needs no label name since Mailsorter recorded where it put the mail. Over
+// the Gmail API taking a label off needs the label, which a ledger line does
+// not hold, so Inverse keeps it irreversible there.
+func InverseOnFolders(action string) (string, bool) {
+	if action == "label" {
+		return "unlabel", true
+	}
+	return Inverse(action)
+}
+
 // canonicalAction folds the various action vocabularies onto the four buckets
 // the UI renders, so "trash" and "delete" (and "markRead"/"read") read as one.
 func canonicalAction(a string) string {

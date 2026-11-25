@@ -37,8 +37,8 @@ func NewOllamaClient(model, baseURL string) *OllamaClient {
 
 func (c *OllamaClient) ProviderName() string { return "ollama" }
 
-func (c *OllamaClient) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
-	prompt := buildAnalyzeEmailPrompt(email, existingLabels)
+func (c *OllamaClient) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
+	prompt := buildAnalyzeEmailPrompt(email)
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("ollama error: %w", err)
@@ -46,11 +46,11 @@ func (c *OllamaClient) AnalyzeEmail(email models.Email, existingLabels []string)
 	return parseEmailAnalysis(response)
 }
 
-func (c *OllamaClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (c *OllamaClient) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	if len(emails) == 0 {
 		return nil, nil
 	}
-	prompt := buildBatchPrompt(emails, existingLabels)
+	prompt := buildBatchPrompt(emails)
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("ollama error: %w", err)
@@ -58,8 +58,8 @@ func (c *OllamaClient) AnalyzeBatch(emails []models.Email, existingLabels []stri
 	return parseBatchAnalysis(response, len(emails))
 }
 
-func (c *OllamaClient) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
-	prompt := buildSenderPrompt(senderEmail, emails, existingLabels)
+func (c *OllamaClient) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
+	prompt := buildSenderPrompt(senderEmail, emails)
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("ollama error: %w", err)

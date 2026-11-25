@@ -133,3 +133,33 @@ func TestIsDestructiveAndAllowed(t *testing.T) {
 		t.Error("delete on unprotected sender should be allowed")
 	}
 }
+
+// On a mailbox made of folders (IMAP) labelling files the mail out of the
+// inbox, so the shield covers it there, and only there.
+func TestOnFoldersLabellingIsShielded(t *testing.T) {
+	for _, a := range []string{"archive", "trash", "delete", "label", " Label "} {
+		if !IsDestructiveOnFolders(a) {
+			t.Errorf("IsDestructiveOnFolders(%q) = false, want true", a)
+		}
+	}
+	for _, a := range []string{"star", "keep", "markRead", "read", "unlabel", ""} {
+		if IsDestructiveOnFolders(a) {
+			t.Errorf("IsDestructiveOnFolders(%q) = true, want false", a)
+		}
+	}
+
+	entries := []string{"vip@corp.com"}
+	if AllowedOnFolders("label", "VIP <vip@corp.com>", entries) {
+		t.Error("label on a protected sender should be blocked on folders")
+	}
+	if !AllowedOnFolders("label", "other@corp.com", entries) {
+		t.Error("label on an unprotected sender should be allowed on folders")
+	}
+	if !AllowedOnFolders("star", "vip@corp.com", entries) {
+		t.Error("star on a protected sender should be allowed on folders")
+	}
+	// The Gmail reading stays: a label leaves the mail in the inbox there.
+	if !Allowed("label", "vip@corp.com", entries) {
+		t.Error("label on a protected sender should stay allowed off folders")
+	}
+}

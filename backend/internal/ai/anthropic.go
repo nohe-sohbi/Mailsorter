@@ -49,8 +49,8 @@ func (c *AnthropicClient) SetMaxRetries(n int) {
 
 func (c *AnthropicClient) ProviderName() string { return "anthropic" }
 
-func (c *AnthropicClient) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
-	prompt := buildAnalyzeEmailPrompt(email, existingLabels)
+func (c *AnthropicClient) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
+	prompt := buildAnalyzeEmailPrompt(email)
 	response, err := c.chat(prompt, 500)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic API error: %w", err)
@@ -58,11 +58,11 @@ func (c *AnthropicClient) AnalyzeEmail(email models.Email, existingLabels []stri
 	return parseEmailAnalysis(response)
 }
 
-func (c *AnthropicClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (c *AnthropicClient) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	if len(emails) == 0 {
 		return nil, nil
 	}
-	prompt := buildBatchPrompt(emails, existingLabels)
+	prompt := buildBatchPrompt(emails)
 	maxTokens := 120*len(emails) + 200
 	if maxTokens > 4000 {
 		maxTokens = 4000
@@ -74,8 +74,8 @@ func (c *AnthropicClient) AnalyzeBatch(emails []models.Email, existingLabels []s
 	return parseBatchAnalysis(response, len(emails))
 }
 
-func (c *AnthropicClient) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
-	prompt := buildSenderPrompt(senderEmail, emails, existingLabels)
+func (c *AnthropicClient) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
+	prompt := buildSenderPrompt(senderEmail, emails)
 	response, err := c.chat(prompt, 500)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic API error: %w", err)

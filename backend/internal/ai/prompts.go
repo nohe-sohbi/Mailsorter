@@ -12,20 +12,21 @@ import (
 // These functions construct the same prompts that mistral.go used to inline.
 // Every provider reuses them so the AI sees identical instructions regardless
 // of the underlying model.
+//
+// A prompt carries the sender, the subject and an excerpt, and nothing of the
+// user's mailbox: not their labels, not their folders. That is what the public
+// pages promise (AI_READS in the frontend, the privacy policy), and the verdict
+// goes into a cache every account shares (analysis_cache), where one person's
+// folder name must never reach another. The label the model proposes is
+// matched with the user's own afterwards, per account (mailbox.MatchLabel).
 
-func buildAnalyzeEmailPrompt(email models.Email, existingLabels []string) string {
-	labelsContext := ""
-	if len(existingLabels) > 0 {
-		labelsContext = fmt.Sprintf("\nLabels existants de l'utilisateur: %s", strings.Join(existingLabels, ", "))
-	}
-
+func buildAnalyzeEmailPrompt(email models.Email) string {
 	return fmt.Sprintf(`Tu es un assistant de tri d'emails. Analyse cet email et suggère une action.
 
 Email:
 - De: %s
 - Sujet: %s
 - Extrait: %s
-%s
 
 Actions possibles:
 - "archive": Pour les emails informatifs déjà lus ou non importants (newsletters lues, confirmations, notifications)
@@ -34,7 +35,6 @@ Actions possibles:
 - "keep": Pour les emails importants qui nécessitent une action ou attention
 
 IMPORTANT pour les labels - sois PRECIS et SPECIFIQUE:
-- Utilise un label existant si pertinent
 - Propose des labels PRECIS selon le TYPE d'email:
   * Livraisons/Colis: "Livraison" ou "Suivi Colis"
   * Factures/Paiements: "Factures"
@@ -50,25 +50,20 @@ IMPORTANT pour les labels - sois PRECIS et SPECIFIQUE:
 
 Réponds UNIQUEMENT en JSON valide:
 {"action":"archive|delete|label|keep","label_name":"label si action=label sinon vide","confidence":0.0,"reasoning":"explication courte en français"}`,
-		email.From, email.Subject, truncate(emailSnippet(email), 200), labelsContext)
+		email.From, email.Subject, truncate(emailSnippet(email), 200))
 }
 
-func buildBatchPrompt(emails []models.Email, existingLabels []string) string {
+func buildBatchPrompt(emails []models.Email) string {
 	var list strings.Builder
 	for i, e := range emails {
 		fmt.Fprintf(&list, "%d. De: %s | Sujet: %s | Extrait: %s\n",
 			i+1, e.From, e.Subject, truncate(emailSnippet(e), 160))
 	}
 
-	labelsContext := ""
-	if len(existingLabels) > 0 {
-		labelsContext = "\nLabels existants de l'utilisateur: " + strings.Join(existingLabels, ", ")
-	}
-
 	return fmt.Sprintf(`Tu es un assistant de tri d'emails. Analyse les %d emails ci-dessous et propose une action pour CHACUN.
 
 Emails:
-%s%s
+%s
 
 Actions possibles:
 - "archive": informatif déjà lu / non important (newsletters lues, confirmations, notifications)
@@ -78,10 +73,10 @@ Actions possibles:
 
 Réponds UNIQUEMENT avec un TABLEAU JSON de %d objets, dans le MÊME ORDRE que les emails, format exact:
 [{"action":"archive|delete|label|keep","label_name":"label si action=label sinon vide","confidence":0.0,"reasoning":"explication courte en français"}]`,
-		len(emails), list.String(), labelsContext, len(emails))
+		len(emails), list.String(), len(emails))
 }
 
-func buildSenderPrompt(senderEmail string, emails []models.Email, existingLabels []string) string {
+func buildSenderPrompt(senderEmail string, emails []models.Email) string {
 	var emailSummaries []string
 	for i, email := range emails {
 		if i >= 5 {
@@ -90,18 +85,12 @@ func buildSenderPrompt(senderEmail string, emails []models.Email, existingLabels
 		emailSummaries = append(emailSummaries, fmt.Sprintf("- Sujet: %s", email.Subject))
 	}
 
-	labelsContext := ""
-	if len(existingLabels) > 0 {
-		labelsContext = fmt.Sprintf("\nLabels existants: %s", strings.Join(existingLabels, ", "))
-	}
-
 	return fmt.Sprintf(`Tu es un assistant de tri d'emails. Analyse cet expéditeur et ses emails pour suggérer une action par défaut.
 
 Expéditeur: %s
 Nombre d'emails: %d
 
 Exemples de sujets:
-%s
 %s
 
 Actions possibles:
@@ -118,7 +107,7 @@ Réponds UNIQUEMENT en JSON valide:
   "reasoning": "Explication courte en français",
   "sender_type": "commercial|personal|work|newsletter|transactional"
 }`,
-		senderEmail, len(emails), strings.Join(emailSummaries, "\n"), labelsContext)
+		senderEmail, len(emails), strings.Join(emailSummaries, "\n"))
 }
 
 // ─── Shared response parsers ────────────────────────────────────────────────

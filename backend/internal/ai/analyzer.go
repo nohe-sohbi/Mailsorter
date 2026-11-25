@@ -26,14 +26,14 @@ type SenderAnalysis struct {
 // fallback and per-user BYOK configuration.
 type Analyzer interface {
 	// AnalyzeEmail analyzes a single email and returns a suggested action.
-	AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error)
+	AnalyzeEmail(email models.Email) (*EmailAnalysis, error)
 
 	// AnalyzeBatch analyzes several emails in a single call (or multiple calls
 	// internally) and returns one analysis per email, in input order.
-	AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error)
+	AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error)
 
 	// AnalyzeSender analyzes a sender based on a sample of their emails.
-	AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error)
+	AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error)
 
 	// ProviderName returns a human/machine-readable identifier for the
 	// provider, e.g. "mistral", "openai", "anthropic", "ollama".

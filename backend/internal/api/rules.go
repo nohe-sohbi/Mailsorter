@@ -677,10 +677,10 @@ func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, 
 		switch {
 		case err == nil:
 			applied = append(applied, a.Type)
-		case errors.Is(err, errNoLabelsOnIMAP), errors.Is(err, errAlreadyOut), errors.Is(err, errLeftInbox):
-			// Nothing to do, and nothing went wrong: the mailbox has no
-			// labels, or the message already left the inbox (moved by hand,
-			// or by another mail program, since it was read).
+		case errors.Is(err, errRuleLabelOnIMAP), errors.Is(err, errAlreadyOut), errors.Is(err, errLeftInbox):
+			// Nothing to do, and nothing went wrong: a rule does not file into
+			// a folder over IMAP yet, or the message already left the inbox
+			// (moved by hand, or by another mail program, since it was read).
 		default:
 			failed = true
 			log.Printf("rules: %s on message %s of %s (rule %q): %v", a.Type, email.MessageID, userEmail, rule.Name, err)
@@ -689,15 +689,10 @@ func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, 
 	return applied, protectedSkip, failed
 }
 
-// containsString says whether list holds s.
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
+// errRuleLabelOnIMAP is a rule's "label" action on an IMAP mailbox: filing
+// the mail into a folder, which a rule does not do yet (the AI's proposals
+// do). The action is left aside, not journaled; the rule's other actions run.
+var errRuleLabelOnIMAP = errors.New("api: a rule does not file into a folder over IMAP yet")
 
 // applyOneAction performs a single rule action on one message.
 func (h *Handler) applyOneAction(ctx context.Context, session *mailSession, ref mailbox.Ref, userEmail string, a models.RuleAction, labelCache map[string]string) error {
@@ -707,9 +702,9 @@ func (h *Handler) applyOneAction(ctx context.Context, session *mailSession, ref 
 	var labelID string
 	if a.Type == rules.ActionLabel {
 		if session.Transport == provider.TransportIMAP {
-			// A message sits in one folder over IMAP: there is no label to
-			// add, and filing it into a folder is not a rule action yet.
-			return errNoLabelsOnIMAP
+			// A message sits in one folder over IMAP: a label is filing it
+			// into a folder, which a rule does not do there yet.
+			return errRuleLabelOnIMAP
 		}
 		id, ok := labelCache[a.LabelName]
 		if !ok {

@@ -55,7 +55,11 @@ elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   name="mailsorter-scenarios-$$"
   docker run -d --rm --name "$name" --ulimit "nofile=$OPEN_FILES:$OPEN_FILES" \
     -p "127.0.0.1:$port:27017" mongo:7 >/dev/null
-  cleanup+=("docker rm -f $name >/dev/null 2>&1")
+  # -v: the mongo image declares /data/db and /data/configdb as volumes, so
+  # each run gets two anonymous ones. --rm drops them only when the container
+  # stops on its own; removed from here they stay behind, a few hundred MB a
+  # run, until the disk is full.
+  cleanup+=("docker rm -fv $name >/dev/null 2>&1")
   wait_for "$port"
   uri="mongodb://127.0.0.1:$port"
 else

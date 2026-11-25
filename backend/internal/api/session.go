@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mirror"
@@ -921,7 +922,9 @@ const structurePerSync = 500
 // completeInboxStructure reads whether the stored inbox messages carry a file
 // (their MIME structure), for the filter "Pièces jointes", which is answered
 // from the copy. A row without hasAttachments has not been read yet; once
-// read it holds true or false. A message whose structure cannot be parsed
+// read it holds true or false, and hasAttachmentsRule the version of the rule
+// it was read with (attachment.WithoutHTMLVersion): a row read with an older
+// rule, or before the version was kept, is read again, once. A message whose structure cannot be parsed
 // even alone is stored without an attachment and marked structureUnreadable:
 // it is logged, never asked again, and no longer fails the messages next to
 // it. A refusal of the server or a time limit concludes nothing: the rest is
@@ -931,7 +934,7 @@ const structurePerSync = 500
 func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, session *mailSession, present map[string]bool, reopen func() error) error {
 	folder := string(mailbox.FolderInbox)
 	cur, err := h.db.Emails().Find(ctx,
-		bson.M{"userId": userEmail, "folder": folder, "leftInbox": notLeftInbox, "hasAttachments": bson.M{"$exists": false}},
+		bson.M{"userId": userEmail, "folder": folder, "leftInbox": notLeftInbox, "hasAttachmentsRule": bson.M{"$ne": attachment.WithoutHTMLVersion}},
 		options.Find().
 			SetProjection(bson.M{"messageId": 1}).
 			SetSort(bson.D{{Key: "receivedDate", Value: -1}}).
@@ -966,13 +969,13 @@ func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, 
 	for uid, has := range got.Read {
 		writes = append(writes, mongo.NewUpdateOneModel().
 			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
-			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": has}}))
+			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": has, "hasAttachmentsRule": attachment.WithoutHTMLVersion}}))
 	}
 	for uid, rErr := range got.Unreadable {
 		log.Printf("imap sync: the structure of message uid %s of %s cannot be read, kept without an attachment: %v", uid, userEmail, rErr)
 		writes = append(writes, mongo.NewUpdateOneModel().
 			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
-			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": false, "structureUnreadable": true}}))
+			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": false, "structureUnreadable": true, "hasAttachmentsRule": attachment.WithoutHTMLVersion}}))
 	}
 	if len(got.Left) > 0 {
 		log.Printf("imap sync: the structure of %d messages of %s left for the next sync: %v", len(got.Left), userEmail, got.Stopped)
@@ -1145,13 +1148,15 @@ const undoExpiredMessage = "Cette action est trop ancienne pour être annulée i
 // mirroredIMAP is the IMAP mailbox as handlers mutate it, keeping the local
 // copy of the inbox (what the list is served from) right.
 //
-//   - Moving a message out of the inbox (archive, trash) flags its row
+//   - Moving a message out of the inbox (archive, trash, or label, which files
+//     it in the folder of that name, made if missing) flags its row
 //     (leftInbox) with where it landed (movedTo) and when: the list and the
 //     counts skip it at once, the history entry written next still reads its
 //     sender and subject, and "Annuler" knows where to fetch it.
-//   - Moving it back (unarchive, untrash: what "Annuler" sends, with the
-//     number the message had in the inbox) fetches it from there, and the row
-//     takes the new number the inbox gave it, so it is listed again at once.
+//   - Moving it back (unarchive, untrash, unlabel: what "Annuler" sends, with
+//     the number the message had in the inbox) fetches it from there, and the
+//     row takes the new number the inbox gave it, so it is listed again at
+//     once.
 //   - Anything else (read, unread, star, unstar) is a flag: it goes to the
 //     server, then into the row, so the list and its filters show it at once.
 type mirroredIMAP struct {
@@ -1194,12 +1199,19 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 	if op.To == mailbox.FolderInbox {
 		return m.putBack(ctx, ref, row, findErr)
 	}
+	// Where it goes, by the server's name for it. Filing into a folder the
+	// mailbox does not have yet makes it here, before anything is claimed: a
+	// folder the server refuses to make leaves the message where it is.
+	dest, err := m.client.Destination(op)
+	if err != nil {
+		return err
+	}
 	if findErr == nil && row.LeftInbox {
-		return m.moveAgain(ctx, ref, row, op.To)
+		return m.moveAgain(ctx, ref, row, dest)
 	}
 	if ref.Folder != inbox || findErr != nil {
 		// Not a stored inbox message: nothing to keep right.
-		_, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
+		_, err := m.client.MoveTo(ctx, ref, dest, row.HeaderMessageID)
 		if errors.Is(err, imap.ErrMessageGone) {
 			return errAlreadyOut
 		}
@@ -1223,7 +1235,7 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 	if res.MatchedCount == 0 {
 		return errAlreadyOut
 	}
-	landed, err := m.client.MoveTo(ctx, ref, op.To, row.HeaderMessageID)
+	landed, err := m.client.MoveTo(ctx, ref, dest, row.HeaderMessageID)
 	if errors.Is(err, imap.ErrMessageGone) {
 		// Another mail client took it out of the inbox first: nothing was
 		// done here. The row stays out of the list; with no destination, the
@@ -1287,12 +1299,9 @@ func (m mirroredIMAP) mirrorFlags(ctx context.Context, ref mailbox.Ref, op mailb
 // client (no destination recorded), nothing happens (errAlreadyOut: neither
 // counted nor recorded). Toward elsewhere, a "Supprimer" on a mail already
 // archived for instance, it moves from where it is, and the row records the
-// new place, so "Annuler" still finds it.
-func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedRow, to mailbox.Folder) error {
-	dest, ok := m.client.FolderName(to)
-	if !ok {
-		return fmt.Errorf("%w: %s", imap.ErrNoSuchFolder, to)
-	}
+// new place, so "Annuler" still finds it. dest is the server's name for where
+// it goes.
+func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedRow, dest string) error {
 	if row.MovedTo.Folder == "" || row.MovedTo.Folder == dest {
 		return errAlreadyOut
 	}
@@ -1308,7 +1317,7 @@ func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedR
 		m.forgetDestination(ctx, ref, row)
 		return errNotWhereLeft
 	}
-	landed, err := m.moveFrom(ctx, row.MovedTo.Folder, uid, to, row.HeaderMessageID)
+	landed, err := m.moveFrom(ctx, row.MovedTo.Folder, uid, dest, row.HeaderMessageID)
 	if errors.Is(err, imap.ErrMessageGone) {
 		// A second click may have moved it there already.
 		if m.recordedIn(ctx, ref, dest) {
@@ -1345,10 +1354,11 @@ func (m mirroredIMAP) recordedIn(ctx context.Context, ref mailbox.Ref, folder st
 	return err == nil && now.MovedTo.Folder == folder
 }
 
-// moveFrom moves the message Mailsorter recorded as uid in folder, checked
-// against its Message-ID (imap.Client.MoveRecorded).
-func (m mirroredIMAP) moveFrom(ctx context.Context, folder, uid string, to mailbox.Folder, headerMessageID string) (mailbox.Ref, error) {
-	return m.client.MoveRecorded(ctx, folder, uid, to, headerMessageID)
+// moveFrom moves the message Mailsorter recorded as uid in folder into the
+// folder the server calls dest, checked against its Message-ID
+// (imap.Client.MoveRecorded).
+func (m mirroredIMAP) moveFrom(ctx context.Context, folder, uid, dest, headerMessageID string) (mailbox.Ref, error) {
+	return m.client.MoveRecorded(ctx, folder, uid, dest, headerMessageID)
 }
 
 // forgetDestination drops where Mailsorter had put a message, once it is
@@ -1507,7 +1517,7 @@ func (m mirroredIMAP) putBackOnce(ctx context.Context, ref mailbox.Ref, row move
 		}
 	}
 
-	landed, err := m.moveFrom(ctx, row.MovedTo.Folder, uid, mailbox.FolderInbox, row.HeaderMessageID)
+	landed, err := m.moveFrom(ctx, row.MovedTo.Folder, uid, inbox, row.HeaderMessageID)
 	if errors.Is(err, imap.ErrMessageGone) {
 		// Not where Mailsorter put it: another mail client moved it, back to
 		// the inbox or elsewhere. Mailsorter did not bring it back, so it

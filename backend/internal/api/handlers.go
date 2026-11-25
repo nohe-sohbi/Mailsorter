@@ -601,8 +601,14 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 }
 
 // reversedBy names, for each inverse a client sends right after an action, the
-// action as the ledger recorded it ("trash" is recorded as "delete").
-var reversedBy = map[string]string{"unarchive": "archive", "untrash": "delete"}
+// action as the ledger recorded it ("trash" is recorded as "delete"). "unlabel"
+// is what "Annuler" sends after a proposal filed a mail in a folder over IMAP.
+var reversedBy = map[string]string{"unarchive": "archive", "untrash": "delete", "unlabel": "label"}
+
+// labelRequiredMessage is what POST /api/emails/action answers for "label"
+// (and, over the Gmail API, "unlabel"), which need the name of a folder or a
+// label that route does not carry.
+const labelRequiredMessage = "Cette action demande le nom d'un dossier ou d'une étiquette, que cette route ne reçoit pas."
 
 // EmailAction performs a direct action on a single message, over whichever
 // transport the mailbox uses (archive, trash, mark read/unread), without going
@@ -647,10 +653,10 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return
 	}
-	if errors.Is(err, mailbox.ErrNoIMAPEquivalent) {
-		// A capability the connection does not have, not a failure. Saying so
-		// with 501 keeps it apart from "your request was wrong".
-		writeTransportError(w)
+	if errors.Is(err, mailbox.ErrLabelRequired) {
+		// This route takes no label nor folder name: classifying a mail goes
+		// through an AI proposal or the batch route, which carry one.
+		writeError(w, http.StatusBadRequest, labelRequiredMessage)
 		return
 	}
 	if errors.Is(err, errNotWhereLeft) {
@@ -712,7 +718,21 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})
 }
 
+// folderLabel is one of the user's own folders of an IMAP mailbox, in the
+// shape of a Gmail label, which is what every screen offering one reads: over
+// IMAP the folder stands for the label, so its full name is both its id and
+// its name, and it is the user's ("user"), never a system one.
+type folderLabel struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
 // Labels endpoints
+//
+// GetLabels lists the labels a mail can be filed under: the Gmail labels, or
+// over IMAP the user's own folders (not the inbox nor a special folder,
+// imap.Client.OwnFolders), a folder inside another by its full name.
 func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -722,6 +742,22 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+
+	if transport, _, err := h.transportFor(ctx, userEmail); err == nil && transport == provider.TransportIMAP {
+		session, err := h.openSession(ctx, userEmail)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		defer session.Close()
+		folders := session.imapc.OwnFolders()
+		labels := make([]folderLabel, 0, len(folders))
+		for _, name := range folders {
+			labels = append(labels, folderLabel{ID: name, Name: name, Type: "user"})
+		}
+		writeJSON(w, http.StatusOK, labels)
+		return
+	}
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {

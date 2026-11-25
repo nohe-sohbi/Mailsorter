@@ -163,7 +163,8 @@ function Privacy() {
           contient la décision (archiver, étiqueter, supprimer ou garder), l'étiquette proposée, le degré
           de confiance et l'explication écrite par l'IA, qui peut reprendre des mots de l'expéditeur ou du
           sujet. Il ne contient ni votre adresse, ni le contenu du message, ni rien qui permette de savoir
-          qui a reçu quoi.
+          qui a reçu quoi. Quand Mailsorter change ce qu'il demande à l'IA, les décisions déjà en cache
+          sont effacées au redémarrage suivant.
         </p>
       </LegalSection>
 

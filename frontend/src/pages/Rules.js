@@ -119,10 +119,11 @@ function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
   );
 }
 
-// `labelsOk` is false where a rule cannot label (IMAP, where a message sits in
-// one folder, or a mailbox not known yet): "Étiqueter" is then not offered for
-// a new action. An action that already labels (an imported rule) keeps its
-// choice, so the list can still show it.
+// `labelsOk` is false where a rule cannot label (IMAP, or a mailbox not known
+// yet): "Étiqueter" is then not offered for a new action. Over IMAP a label is
+// a folder, which only the AI's proposals file into so far. An action that
+// already labels (an imported rule) keeps its choice, so the list can still
+// show it.
 function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, labelsOk }) {
   const [rule, setRule] = useState(initial);
   const toast = useToast();
@@ -152,7 +153,8 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
   // Actions already chosen can't be picked again (except "label", which can
   // repeat with different names), which keeps the combo meaningful.
   const usedTypes = new Set(rule.actions.map((a) => a.type));
-  // The label has no IMAP equivalent (a message sits in one folder).
+  // A rule does not file into a folder over IMAP yet: the label joins the
+  // editor there when it does. The star is offered on both.
   const gmailOnly = (type) => type === 'label';
   const offered = (type, current) => {
     if (gmailOnly(type) && !labelsOk && current !== type) return false;
@@ -464,10 +466,10 @@ function Rules() {
   const [labelsKnown, setLabelsKnown] = useState(false);
   // Rules run on both transports: the preview, "Appliquer maintenant" and the
   // run at each sync (over IMAP it sorts the mails that arrive). A rule labels
-  // on the Gmail API only (`labelsOk`): over IMAP a message sits in one
-  // folder. The quota is mentioned only where there is one. While the mailbox
-  // is not known, the page describes what a rule says, never that it sorts by
-  // itself (`rulesRun`).
+  // on the Gmail API only for now (`labelsOk`): over IMAP a label is a folder,
+  // and a rule does not file into one yet. The quota is mentioned only where
+  // there is one. While the mailbox is not known, the page describes what a
+  // rule says, never that it sorts by itself (`rulesRun`).
   const { known, isImap, fullFeatures } = useMailbox();
   const rulesRun = known;
   const labelsOk = fullFeatures;
@@ -495,8 +497,9 @@ function Rules() {
   }, []);
 
   // Les libellés sont chargés une fois pour toute la page, et seulement là où
-  // la boîte en a (pas en IMAP). Un échec est silencieux : l'éditeur retombe
-  // alors sur la saisie libre.
+  // les règles tournent (pas en IMAP, où un libellé est un dossier qu'une
+  // règle ne sait pas encore remplir). Un échec est silencieux : l'éditeur
+  // retombe alors sur la saisie libre.
   useEffect(() => {
     if (!fullFeatures) return;
     labelService

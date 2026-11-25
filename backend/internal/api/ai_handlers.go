@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -143,14 +144,19 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get existing labels
-	existingLabels, _ := h.getSmartLabelNames(ctx, userEmail)
-
-	// Analyze sender
-	analysis, err := aiClient.AnalyzeSender(req.SenderEmail, emails, existingLabels)
+	// The model is told nothing of the user's labels (see runAnalysis): the
+	// label it proposes is matched with the user's afterwards.
+	analysis, err := aiClient.AnalyzeSender(req.SenderEmail, emails)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to analyze sender: "+err.Error())
 		return
+	}
+	if analysis.SuggestedLabel != "" {
+		knownLabels, lErr := h.getSmartLabelNames(ctx, userEmail)
+		if lErr != nil {
+			log.Printf("analyze-sender: the labels of %s: %v", userEmail, lErr)
+		}
+		analysis.SuggestedLabel = localMatchLabel(analysis.SuggestedLabel, knownLabels)
 	}
 
 	// Extract domain from sender email
@@ -234,8 +240,8 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 
 	labelID, err := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 	suggestion.LabelID = labelID
-	if errors.Is(err, errNoLabelsOnIMAP) {
-		writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
+	if why, ok := filingRefusal(err); ok {
+		writeError(w, http.StatusUnprocessableEntity, why)
 		return
 	}
 	if errors.Is(err, errAlreadyOut) {
@@ -253,16 +259,20 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	// Update suggestion status
 	h.db.AISuggestions().UpdateOne(ctx,
 		bson.M{"_id": objectID},
-		bson.M{"$set": bson.M{
-			"status":    "applied",
-			"appliedAt": time.Now(),
-			"labelId":   suggestion.LabelID,
-		}},
+		bson.M{"$set": appliedFields(suggestion, session.Transport)},
 	)
 	meta := h.identityIn(ctx, session, userEmail, suggestion.EmailID)
-	h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
+	filed := filedUnder(suggestion, session.Transport)
+	h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
+	answer := map[string]string{"status": "applied"}
+	if filed != "" {
+		// The name it was filed under, settled when applying: over IMAP the
+		// folder ("Factures"), which can differ from the name the proposal
+		// was stored with ("Facture"). The screen says this one.
+		answer["labelName"] = filed
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // ApplyBatch applies a list of AI suggestions in a single request.
@@ -301,8 +311,14 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	protectedList := h.protectedValues(ctx, userEmail)
 	applied := 0
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
+	// The name each applied filing went under, settled when applying (see
+	// ApplySuggestion), keyed by suggestion id.
+	labelNames := map[string]string{}
 	failed := 0
 	protectedSkipped := 0
+	// Why some failed, when the user can do something about it: each
+	// sentence once, in the order met.
+	var reasons []string
 
 	// Resolve every suggested email's identity once, up front, so each ledger
 	// entry can name the message it acted on without a lookup inside the loop.
@@ -330,9 +346,10 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Shield protected senders from a bulk "apply all" that would archive
-		// or trash their mail. The suggestion is left pending, untouched.
-		if len(protectedList) > 0 && !allows(suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
+		// Shield protected senders from a bulk "apply all" that would take
+		// their mail out of the inbox (archive, trash, and over IMAP filing
+		// into a folder). The suggestion is left pending, untouched.
+		if len(protectedList) > 0 && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
 			protectedSkipped++
 			continue
 		}
@@ -346,10 +363,8 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			h.dropMootProposal(ctx, objectID)
 			continue
 		}
-		if errors.Is(applyErr, errNoLabelsOnIMAP) {
-			// Left pending, neither applied nor failed: nothing went wrong,
-			// the mailbox simply has no labels.
-			continue
+		if why, ok := filingRefusal(applyErr); ok && !containsString(reasons, why) {
+			reasons = append(reasons, why)
 		}
 		if applyErr != nil {
 			failed++
@@ -358,28 +373,33 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 
 		h.db.AISuggestions().UpdateOne(ctx,
 			bson.M{"_id": objectID},
-			bson.M{"$set": bson.M{
-				"status":    "applied",
-				"appliedAt": time.Now(),
-				"labelId":   suggestion.LabelID,
-			}},
+			bson.M{"$set": appliedFields(suggestion, session.Transport)},
 		)
 		meta := identities[suggestion.EmailID]
-		h.logActionMeta(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From)
+		filed := filedUnder(suggestion, session.Transport)
+		h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
+		if filed != "" {
+			labelNames[id] = filed
+		}
 		applied++
 		appliedIDs = append(appliedIDs, id)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	answer := map[string]interface{}{
 		"applied":          applied,
 		"failed":           failed,
 		"total":            len(req.SuggestionIDs),
 		"appliedIds":       appliedIDs,
+		"labelNames":       labelNames,
 		"protectedSkipped": protectedSkipped,
 		// Lets the client offer "Annuler" only where it would work, the way
 		// batch-action already says so for a selection.
 		"reversible": batchUndoReaches(session.Transport),
-	})
+	}
+	if len(reasons) > 0 {
+		answer["message"] = strings.Join(reasons, " ")
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // ApplyBulk applies an action to all emails from a sender
@@ -868,12 +888,77 @@ func (h *Handler) leftInbox(ctx context.Context, userEmail, messageID string) bo
 	return n > 0
 }
 
-// errNoLabelsOnIMAP is what applying a "label" verdict to an IMAP mailbox
-// answers: the transport has no labels (internal/mailbox/imap.go).
-var errNoLabelsOnIMAP = errors.New("labels are not available on an IMAP mailbox")
+// notOwnFolderMessage is what the user reads when a proposal names, as the
+// folder to file into, one that is not theirs (imap.ErrNotOwnFolder): the
+// inbox, the archive, the trash, sent mail, drafts or junk.
+const notOwnFolderMessage = "Mailsorter ne classe pas de mail dans ce dossier : c'est un dossier spécial de votre boîte."
 
-// noLabelsOnIMAPMessage is the sentence the user reads for errNoLabelsOnIMAP.
-const noLabelsOnIMAPMessage = "Les étiquettes ne sont pas encore disponibles sur les boîtes IMAP."
+// badFolderNameMessage is what the user reads when a proposal names a folder
+// no folder is made under (imap.ErrBadFolderName).
+const badFolderNameMessage = "Mailsorter ne crée pas de dossier sous ce nom : il est trop long ou contient un caractère réservé."
+
+// tooManyNewFoldersMessage is why "Tout ranger" left mails in place once it
+// made imap.maxNewFolders new folders in one go.
+const tooManyNewFoldersMessage = "Mailsorter crée au plus 10 nouveaux dossiers à la fois : relancez le tri pour ranger les mails suivants."
+
+// labelRequiredOnIMAPMessage is what the user reads for a label proposal that
+// names no folder (mailbox.ErrLabelRequired, over IMAP).
+const labelRequiredOnIMAPMessage = "Cette proposition ne nomme aucun dossier où classer le mail."
+
+// filingRefusal is the sentence for a filing refused over IMAP, and whether
+// err is one: a folder that is not the user's, a name no folder is made
+// under, no name at all, or one new folder too many for this request.
+// "Appliquer" answers it with a 422, "Tout ranger" in its message.
+func filingRefusal(err error) (string, bool) {
+	switch {
+	case err == nil:
+		return "", false
+	case errors.Is(err, imap.ErrNotOwnFolder):
+		return notOwnFolderMessage, true
+	case errors.Is(err, imap.ErrBadFolderName):
+		return badFolderNameMessage, true
+	case errors.Is(err, imap.ErrTooManyNewFolders):
+		return tooManyNewFoldersMessage, true
+	case errors.Is(err, mailbox.ErrLabelRequired):
+		return labelRequiredOnIMAPMessage, true
+	}
+	return "", false
+}
+
+// containsString reports whether list holds s.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// filedUnder is the label a proposal filed its mail under, for the history:
+// over IMAP the folder the filing resolved to (applySessionVerdict hands it
+// back as the label id: "Amazon-fr" for a proposal saying "Amazon.fr"), over
+// the Gmail API the label's name; nothing for another verdict.
+func filedUnder(s models.AISuggestion, transport provider.Transport) string {
+	if s.Action != "label" {
+		return ""
+	}
+	if transport == provider.TransportIMAP && s.LabelID != "" {
+		return s.LabelID
+	}
+	return s.LabelName
+}
+
+// appliedFields is what an applied proposal stores: its status, when, and the
+// label id it was applied with; over IMAP that id is the folder it filed into,
+// which is also its name there.
+func appliedFields(s models.AISuggestion, transport provider.Transport) bson.M {
+	fields := bson.M{"status": "applied", "appliedAt": time.Now(), "labelId": s.LabelID}
+	if s.Action == "label" && transport == provider.TransportIMAP && s.LabelID != "" {
+		fields["labelName"] = s.LabelID
+	}
+	return fields
+}
 
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
 	if action == "keep" {
@@ -886,10 +971,18 @@ func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession,
 	}
 	if action == "label" {
 		if session.Transport == provider.TransportIMAP {
-			// A message sits in one folder over IMAP: there is no label to
-			// add. Saying so keeps the suggestion pending and out of the
-			// history, instead of reporting an action nothing performed.
-			return "", errNoLabelsOnIMAP
+			// A message sits in one folder over IMAP, and the folder named
+			// like the label stands for it: the name is what the mutation
+			// carries (mailbox.IMAPOpFor), and the folder is made if missing.
+			// Settled again here, as the analysis does (FilingName): a
+			// proposal stored while the mailbox could not be opened carries
+			// the model's own name, and "Facture" must go into "Factures",
+			// "Amazon.fr" into "Amazon-fr". The name returned is the folder's.
+			folder, err := session.imapc.FilingName(labelName)
+			if err != nil {
+				return "", err
+			}
+			return folder, h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), action, folder)
 		}
 		if labelID == "" && session.gmail != nil {
 			resolved, err := h.ensureLabel(ctx, session.gmail, userEmail, labelName)

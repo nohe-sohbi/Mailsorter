@@ -15,7 +15,7 @@ import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
 import { useScrollLock } from '../ui/scrollLock';
-import { actionMeta, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
+import { actionMeta, labelPlace, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
 import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
@@ -28,7 +28,12 @@ import {
   Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard, BellOff, Star, Filter,
 } from '../ui/icons';
 
-const isReversible = (a) => a === 'archive' || a === 'delete';
+// The verb "Annuler" sends right after an action, for each action it can
+// undo. A label is one only over IMAP, where it filed the mail in a folder:
+// "unlabel" brings it back to the inbox from there. Over the Gmail API the
+// single-message route has no label to take off.
+const UNDO_VERB = { archive: 'unarchive', delete: 'untrash', label: 'unlabel' };
+const isReversible = (a, folders = false) => a === 'archive' || a === 'delete' || (folders && a === 'label');
 
 // The four non-removing actions and how each one shows in the list before the
 // server has answered. Their inverses double as the rollback when it refuses.
@@ -235,9 +240,9 @@ function Inbox() {
   } = useEmails();
   const { selfHosted } = useInstance();
   // Over IMAP reading, archiving, deleting, read and the star on one mail, the
-  // quick filters, the AI's archive / delete / keep and undo work today. Every
-  // control the server would answer "not available" to is hidden, not
-  // disabled (the one rule, see IMAP_UNAVAILABLE in landing/features.js).
+  // quick filters, the AI's proposals (a label proposal files the mail in its
+  // folder there) and undo work today. Every control the server would answer
+  // "not available" to is hidden, not disabled: one rule everywhere.
   // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
   // and stays false when that answer failed: a guess offers nothing the server
   // may refuse. `known` is for what works on both transports once the mailbox
@@ -398,16 +403,15 @@ function Inbox() {
 
   // The hotel also puts each proposal on the row of the message it is about.
   // Not "keep": the plan has stopped treating it as a task (it moves nothing),
-  // and a row offering to validate it would bring that task back.
-  // Nor a verdict this mailbox cannot apply (a label over IMAP): the plan says
-  // why, a row would only offer a "Valider" that does nothing.
+  // and a row offering to validate it would bring that task back. Nor a label
+  // while the mailbox is not known: the plan says it waits.
   const suggestionByEmail = useMemo(() => {
     const map = new Map();
     suggestions.forEach((s) => {
-      if (s.action !== 'keep' && canApplyVerdict(s.action, !fullFeatures)) map.set(s.emailId, s);
+      if (s.action !== 'keep' && canApplyVerdict(s.action, known)) map.set(s.emailId, s);
     });
     return map;
-  }, [suggestions, fullFeatures]);
+  }, [suggestions, known]);
 
   // Avatars: the classic fills, or the hotel's inked discs with initials.
   const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
@@ -444,7 +448,7 @@ function Inbox() {
     }
     toast.action(message, 'Annuler', async () => {
       try {
-        await emailService.action(messageId, action === 'archive' ? 'unarchive' : 'untrash');
+        await emailService.action(messageId, UNDO_VERB[action]);
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
@@ -678,14 +682,23 @@ function Inbox() {
         removeEmails(suggestion.emailId);
         setSelectedEmail((prev) => (prev?.messageId === suggestion.emailId ? null : prev));
       }
-      const msg = `${actionMeta(act).past}`;
-      if (isReversible(act)) undoToast(suggestion.emailId, act, msg);
+      // Over IMAP a label is a folder: "Classé dans « Factures »".
+      const msg = `${actionMeta(act, { folders: isImap }).past}${
+        act === 'label' ? labelPlace(data?.labelName || suggestion.labelName, { folders: isImap }) : ''
+      }`;
+      if (isReversible(act, isImap)) undoToast(suggestion.emailId, act, msg);
       else toast.success(msg);
     } catch (err) {
       // Undo the optimism. Without this the suggestion vanished for good while
-      // the email stayed exactly where it was.
+      // the email stayed exactly where it was. A 422 says why in the user's
+      // words (a folder Mailsorter does not file into); anything else stays
+      // generic.
       restoreSuggestions([suggestion]);
-      toast.error("Action impossible. L'email reste en place.");
+      toast.error(
+        err?.response?.status === 422
+          ? apiError(err, "Action impossible. L'email reste en place.")
+          : "Action impossible. L'email reste en place."
+      );
     }
   };
 
@@ -1410,9 +1423,9 @@ function Inbox() {
   const openEmailSuggestion = openEmail
     ? suggestions.find((s) => s.emailId === openEmail.messageId)
     : null;
-  // A verdict this mailbox cannot apply (a label over IMAP) is shown with its
-  // reason and "Ignorer", without the button that would do nothing.
-  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, !fullFeatures);
+  // A label waits until the mailbox is known: shown with its reason and
+  // "Ignorer", without the button.
+  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, known);
 
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
@@ -1438,7 +1451,8 @@ function Inbox() {
       aiSuggestion={openEmailSuggestion}
       onAiAnalyze={handleAiAnalyzeSingle}
       aiAnalyzing={aiAnalyzingId === openEmail.messageId}
-      suggestionUnavailable={!openSuggestionApplicable}
+      folders={isImap}
+      suggestionHeld={!openSuggestionApplicable}
       onApplySuggestion={
         openSuggestionApplicable ? (triageMode ? handleTriageApplySuggestion : handleApplySuggestion) : undefined
       }
@@ -1453,7 +1467,10 @@ function Inbox() {
               onPrev: handleTriagePrev,
               onNext: handleTriageNext,
               onKeep: handleTriageKeep,
-              onLabel: can('label') ? () => setTriageLabeling(true) : undefined,
+              // Labelling by hand goes through the batch route, Gmail API
+              // only: closed over IMAP, where only the AI's proposal files a
+              // mail in a folder so far.
+              onLabel: fullFeatures ? () => setTriageLabeling(true) : undefined,
             }
           : null
       }

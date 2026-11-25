@@ -46,7 +46,7 @@ const FEATURES = [
   {
     Icon: Tag,
     title: 'Libellés intelligents',
-    text: "Des étiquettes précises et cohérentes, proposées par l'IA et appliquées dans votre Gmail quand vous validez.",
+    text: "Des étiquettes précises et cohérentes, proposées par l'IA et appliquées dans votre boîte quand vous validez. Sur une boîte IMAP, l'étiquette est un dossier.",
     feature: 'label',
   },
 ];

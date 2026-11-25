@@ -131,7 +131,7 @@ mailbox, through `session.Mailbox()` and `h.applyVerb` (translation in
 |---|---|---|---|---|
 | `ActionArchive` | `archive` | remove `INBOX` | MOVE to the Archive folder (`mirroredIMAP` flags the row `leftInbox` with `movedTo`, for "Annuler") | yes |
 | `ActionTrash` | `trash` | add `TRASH` | MOVE to the Trash folder (same) | yes |
-| `ActionLabel` | `label` | add the resolved label ID, `labelName` required | skipped (`errNoLabelsOnIMAP`, not journaled): a message sits in one folder | no |
+| `ActionLabel` | `label` | add the resolved label ID, `labelName` required | skipped (`errRuleLabelOnIMAP`, not journaled): a label is a folder there, and a rule does not file into one yet (the AI's proposals do) | no |
 | `ActionMarkRead` | `markRead` | remove `UNREAD` | STORE `+FLAGS \Seen`, mirrored into the row at once (`mirrorFlags`) | no |
 | `ActionStar` | `star` | add `STARRED` | STORE `+FLAGS \Flagged`, same | no |
 
@@ -147,7 +147,7 @@ IDs are resolved once per apply pass through a `labelCache map[labelName]labelID
 and created on demand by `h.ensureLabel` (Gmail only). A failing action is
 skipped and logged; the remaining actions of the same rule still run. Three
 outcomes are not failures and are neither logged nor journaled:
-`errNoLabelsOnIMAP`, `errAlreadyOut` (the mail already left the inbox) and
+`errRuleLabelOnIMAP`, `errAlreadyOut` (the mail already left the inbox) and
 `errLeftInbox` (a flag on a number the inbox no longer holds).
 
 ## Validation

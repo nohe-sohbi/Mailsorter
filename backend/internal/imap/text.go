@@ -1,11 +1,16 @@
 package imap
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strconv"
+	"strings"
 
 	imapv2 "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message/mail"
 )
 
 // Reading the text of many messages, for the sorting rules.
@@ -103,4 +108,71 @@ func (c *Client) Texts(ctx context.Context, folder string, uids []string) (map[s
 		out[uid] = Text{Body: body, Snippet: snippet(b.plain, b.html)}
 	}
 	return out, nil
+}
+
+// wholeMessage picks the section that holds the beginning of the message. The
+// read asks for one unqualified BODY.PEEK[]<0.N>, so there is exactly one, but
+// the reply is a slice and reading it as such costs nothing.
+func wholeMessage(msg *imapclient.FetchMessageBuffer) []byte {
+	for _, section := range msg.BodySection {
+		if len(section.Bytes) > 0 {
+			return section.Bytes
+		}
+	}
+	return nil
+}
+
+// bodiesRead is what readBodies found: both renderings, and for each whether
+// the read stopped inside it (cut), on a message read only up to a size.
+type bodiesRead struct {
+	plain, html       string
+	plainCut, htmlCut bool
+}
+
+// readBodies walks the MIME tree of a message, whole or, truncated, its first
+// bytes only (a message larger than what Texts reads), and returns its
+// plain-text and HTML renderings. Both are collected rather than the first one
+// found: which one a rule reads depends on the message (the HTML when there is
+// no plain part, as marketing mail often ships). A part the read stops inside
+// is kept as far as it was read and marked cut: a part of a multipart message
+// whose end was not read, or the body of a message that is not multipart,
+// which ends where the message does.
+func readBodies(raw []byte, truncated bool) bodiesRead {
+	reader, err := mail.CreateReader(bytes.NewReader(raw))
+	if err != nil {
+		// Not every sender produces something the parser accepts: the raw
+		// payload is then the text, cut if the message was.
+		return bodiesRead{plain: string(raw), plainCut: truncated}
+	}
+	topType, _, _ := reader.Header.ContentType()
+	single := !strings.HasPrefix(strings.ToLower(topType), "multipart/")
+
+	var out bodiesRead
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		header, ok := part.Header.(*mail.InlineHeader)
+		if !ok {
+			// An attachment: its bytes are not the text.
+			continue
+		}
+		content, err := io.ReadAll(io.LimitReader(part.Body, maxBodyBytes))
+		cut := truncated && (err != nil || single)
+		if err != nil && !(cut && len(content) > 0) {
+			continue
+		}
+		mediaType, _, _ := header.ContentType()
+		switch {
+		case strings.EqualFold(mediaType, "text/html") && out.html == "":
+			out.html, out.htmlCut = string(content), cut
+		case strings.EqualFold(mediaType, "text/plain") && out.plain == "":
+			out.plain, out.plainCut = string(content), cut
+		}
+	}
+	return out
 }

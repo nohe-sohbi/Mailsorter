@@ -103,8 +103,8 @@ Rules for the sentences in this project:
 backend/
   cmd/server/            main: config -> db -> indexes -> services -> router -> serve
   internal/api/          the ONLY I/O layer: handlers, routes, middleware, schedulers
-  internal/{account,activity,digest,egress,mailbox,mailer,metrics,mirror,
-            protect,provider,rules,schedule,search,snooze,unsubscribe}/
+  internal/{account,activity,attachment,digest,egress,mailbox,mailer,metrics,
+            mirror,protect,provider,rules,schedule,search,snooze,unsubscribe}/
                          pure logic, no I/O, heavily unit-tested
   internal/{ai,billing,gmail,imap,smtpsend}/  outbound clients (AI providers, Stripe,
                          Gmail, IMAP, and SMTP for the recap of an IMAP mailbox)
@@ -199,7 +199,7 @@ in its package doc:
 | Package | Owns | Key entry points |
 |---|---|---|
 | `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset. `ApplyOrder` runs what changes a mail where it is (read, star, label) before what moves it out of the inbox, since over IMAP a moved mail takes a new number; `ReadsText` says when a ruleset needs the text a stored IMAP inbox does not keep; `PreviewWithout` is the preview of a mailbox that cannot label | `Matches`, `Validate`, `Preview`, `PreviewWithout`, `ApplyOrder`, `ReadsText`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
-| `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted | `Allowed`, `ActionArchive/Trash/Delete` |
+| `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted, nor, on IMAP where a label is a folder, auto-filed | `Allowed`, `AllowedOnFolders`, `ActionArchive/Trash/Delete/Label` |
 | `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
@@ -210,9 +210,10 @@ in its package doc:
 | `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
 | `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses. `SendingServer` is where a connected IMAP mailbox sends from: the server recorded on its row, or that route's in the catalog for a row from before | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `SendingServer`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
-| `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `IMAPIsStarred`, `Folder*`, `Flag*` |
+| `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `IMAPIsStarred`, `Folder*`, `Flag*`, and `MatchLabel` / `LabelKey`: a label the model proposed matched with one the user has (case, accents and a plural aside, never a part of a name) |
 | `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 | `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
+| `attachment` | Which parts of a mail the reader lists as its files, and under which name, on both transports: a named part, an unnamed one declared an attachment (`piece-jointe`) or a forwarded mail (`message.eml`), except an image the mail's HTML shows through `cid:`. And the cleaning of a file name (no directory, control or bidirectional control character), which the list and the download's `Content-Disposition` share. `InlineImage` is a picture an `<img src="cid:...">` of the HTML draws (raster types only, never SVG), which the reader returns as `inlineImages` and the download serves so the screen can draw it, the `MaxDrawn` (30) first in the HTML (`Shown.FirstDrawn`): no other is served. `ListedWithoutHTML` is the rule read off a `BODYSTRUCTURE`, for the filter "Pièces jointes" (`imap/state.go`): an inline image with a `Content-ID` is taken for a picture the HTML draws; `WithoutHTMLVersion` is stored with each count, and a count made with another version is made again by the sync | `Listed`, `InlineImage`, `ListedWithoutHTML`, `WithoutHTMLVersion`, `Part`, `ShownBy`, `Shown`, `SafeName`, `DispositionType`, `Unnamed`, `UnnamedMail` |
 
 The outbound clients and primitives:
 
@@ -220,7 +221,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `text.go` the text a rule reads (`Texts`: the first 256 KiB of each message of a batch, peeked; `NotReached` when the text a rule would judge was not read in full), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
+| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, read one of its files, apply a mutation. A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). Folder names go through the namespace read at connect (`namespace.go`, NAMESPACE when announced): the user reads them without the personal prefix and with `/` between levels ("INBOX.Projets.Maison" on Courier reads "Projets/Maison"), a folder Mailsorter makes goes under the prefix with the server's delimiter, the special ones are known by name under the prefix too, and a folder under another user's or a shared prefix is never the user's. A folder is made only under a name `cleanName` and `newFolderName` accept (no control character, `*` or `%`, no empty, `.` or `..` level, 100 characters a level and 200 in all, the server's delimiter inside a level turned into `-`, a first level that is the user's), and at most `maxNewFolders` (10) per connection (`ErrTooManyNewFolders`). `FilingName` is what the analysis stores on a label proposal: the user's folder named alike (`mailbox.MatchLabel`), or the cleaned new name; the model is told no folder. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `text.go` the text a rule reads (`Texts`: the first 256 KiB of each message of a batch, peeked; `NotReached` when the text a rule would judge was not read in full), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`). `parts.go` is how both the reader (`fetch.go`) and the download (`attachments.go`) read a message without its files: `BODYSTRUCTURE` first, then in one command each part's MIME header, the text and the HTML (bounded) and each part's decoded size (`BINARY.SIZE` where the server has BINARY or IMAP4rev2, an estimate otherwise); which parts are files is `attachment.Listed` on those headers, under their IMAP part number (the `attachmentId`), names decoded from RFC 2047 or RFC 2231 in any charset. The download then fetches its one part, as it arrives, through the cap it is given. Both close the connection when their context ends (`within`): the two methods of the client a context can stop; `Texts` checks its context before each batch |
 | `smtpsend` | Hands one message to the sending server of an IMAP mailbox: the daily recap on that transport. Implicit TLS (465) or STARTTLS (587), never cleartext (a STARTTLS route whose server does not offer it is refused before the password is sent), certificate verified against the system roots, AUTH PLAIN, 30 s bound. `ErrAuth` (credentials refused: 535, or 534 5.7.9), `ErrBlocked` (sign-in blocked for where it came from, the password being right: 534 5.7.14) and `ErrUnreachable` are typed; any other 534 is none of them |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
@@ -238,7 +239,7 @@ The outbound clients and primitives:
 | `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501), `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
-| `message.go` | `GET /api/emails/{id}`: one message with its body, on both transports (no attachment list over IMAP) |
+| `message.go` | `GET /api/emails/{id}`: one message with its body and its attachment list, on both transports. `writeMailboxFailure`: what a read of the mailbox that failed answers, on both transports and for the download too: a French sentence, 404 when the mail is no longer there (`mailGone`), 502 otherwise, the error itself only in the log |
 | `batch.go` | `POST /api/emails/batch-action` (Gmail only) and `/batch-undo` (Gmail and IMAP), plus the identity lookups the ledger uses |
 | `analysis.go` | `runAnalysis`: the shared engine behind sync and async AI analysis. Cache, batching, auto-pilot, quota |
 | `ai_handlers.go` | Eight of the `/api/ai/*` endpoints (analyze, analyze-sender, apply, apply-batch, apply-bulk, suggestions, reject, reject-batch), `GET /api/senders`, the sender preferences and `/api/smart-labels`. `analyze-async` and `jobs/{id}` are in `jobs.go` |
@@ -247,7 +248,7 @@ The outbound clients and primitives:
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path), on both transports through a session: `ruleCandidates` (Gmail's inbox, or the stored copy of an IMAP one, with `withTexts` when a rule reads the text), `runRules` (first match, its actions in `rules.ApplyOrder`, the history, `appliedCount`) |
 | `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
-| `attachment.go` | Attachment download: the one route that streams bytes rather than JSON |
+| `attachment.go` | Attachment download, on both transports: the one route that streams bytes rather than JSON. Over IMAP the id is a part number, served only when the reader's list of that message has a file under it, or an image of `inlineImages` |
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
 | `protected.go` | VIP list CRUD and `protectedValues` lookup |
@@ -311,7 +312,7 @@ ran on a fresh Compose volume, never on CI, the scenarios or an existing databas
 
 Everything is scoped by `userId` (which is the user's email address) except `users`
 (keyed by `email`), `gmail_config` (one legacy instance-wide document),
-`analysis_cache`, keyed by `sha256(lower(from) + "|" + lower(subject))` and shared
+`analysis_cache`, keyed by `sha256(version + "|" + lower(from) + "|" + lower(subject))` and shared
 across all users on purpose, and `waitlist`, keyed by email, whose row carries the
 account's `userId` only when the signup was made while signed in.
 
@@ -340,7 +341,7 @@ telling them to create a Google Cloud project that edition can never use.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because IMAP has no labels to promise. Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
+| `/` | `pages/HotelLanding.js` or `pages/Login.js` | Chosen at runtime by `UI_THEME` (`lib/uiTheme.js`; `?ui=hotel\|classic` previews it for one tab): the Grand Hotel landing or the classic one. Both share the auth logic (`lib/useAuthForm.js`) and the doors below. Marketing landing + its doors: e-mail and password sign-up and sign-in, plus Google when `isConfigured`, and the Pro waitlist when billing is off (in the Tarifs section of the hotel landing, in the "Pas encore prêt ?" card of the classic one). Its claims follow too, because an IMAP mailbox does not get every feature (`GMAIL_ONLY`). Also the public trust surface: what leaves for the model, the FAQ, and the providers read from `GET /api/providers` |
 | `/inbox` | `pages/Inbox.js` | The cockpit: triage, the AI's triage plan (`components/inbox/`), bulk apply, keyboard shortcuts (2288 lines, the heaviest file) |
 | `/rules` | `pages/Rules.js` | Deterministic rule editor + dry-run preview |
 | `/snoozed` | `pages/Snoozed.js` | Scheduled returns |
@@ -550,7 +551,9 @@ as a side effect of another change.
 - A test that needs the same harness but proves wiring rather than a sentence
   (what a sync does with an answer a real server gives, what a handler reads in a
   real database) is a `TestAcceptance_*` under the same tag, in a file of its own
-  (`wiring_imap_test.go`): not in the report, run by
+  (`wiring_imap_test.go`, and `wiring_filing_test.go` for filing into folders over
+  IMAP: what the model is told, the shield at analysis, "unlabel" right after
+  "Appliquer", the direct "label" without a folder): not in the report, run by
   `scripts/scenarios.sh -run '^TestAcceptance'` and by its own CI step.
 
 ### React
@@ -563,7 +566,16 @@ as a side effect of another change.
 - `track(event, props)` from `lib/analytics.js` for product events. Properties must carry
   no personal data: no email address, no sender, no subject. Counts and enum labels only.
   Never add a manual pageview: the tracker hooks the History API already.
-- Untrusted HTML (email bodies) goes through dompurify before rendering.
+- Untrusted HTML (email bodies) goes through dompurify before rendering. The
+  reader then puts object URLs in place of the `src="cid:..."` the server names
+  in `inlineImages` (pictures downloaded through the authenticated route, at
+  most 3 at a time from the top of the mail: over IMAP each one is a
+  connection to the mailbox), and when it leaves the message drops the queue,
+  aborts what is under way and revokes the URLs: after the sanitizing, so
+  nothing the sender wrote picks an image's URL. The queue is tied to the
+  message loaded (`full.messageId`), never to the one asked for, which differs
+  while the next one loads. A `cid:` image the server does not serve is taken
+  out of the text and counted in a line under it.
 
 ### Naming
 
@@ -780,7 +792,18 @@ Do not duplicate these into this file. Point at them.
   `HasAttachments` are `omitempty` both ways: written back from a listing or the
   reader, which do not read them, a message keeps what the sync stored.
 - **`analysis_cache` is shared across all users.** It is keyed on sender plus subject only, so
-  never cache anything user-specific through it.
+  never cache anything user-specific through it. That is also why the model is told
+  none of the user's labels or folders (the `ai.Analyzer` methods take none, and
+  `internal/ai/prompts.go` asks for no list):
+  its verdict would carry one person's folder name into another's plan, and the
+  public pages say it sees the sender, the subject and 200 characters. What it
+  proposes is matched with the user's labels afterwards, per account
+  (`mailbox.MatchLabel`; over IMAP `imap.Client.FilingName`, against the folders
+  only, at the analysis and again when the filing is applied), and the cache keeps
+  the model's own verdict. Every entry carries `database.AnalysisCacheVersion`, which
+  also starts its key: change it whenever what a verdict is made from changes. The
+  collection never expires, so `EnsureIndexes` deletes at each boot, in one request,
+  every entry of another version (`dropStaleAnalysisCache`, a failure only logged).
 - **`docker-compose.yml` publishes no ports.** Dokploy routes through its own proxy, so
   the deployment file binds nothing to the host. Local runs need `compose.local.yml` on
   top, which is what `make up` does. It is deliberately NOT named
@@ -869,21 +892,33 @@ Do not duplicate these into this file. Point at them.
   Ported so far: `syncInbox`, `EmailAction`, `GetEmails`, `GetEmail`
   and `GetMailboxStats`, which is the set that makes a connected mailbox usable at
   all, then the AI analysis (`runAnalysis`, without sender auto-pilot),
-  `ApplySuggestion` and `ApplyBatch`, then the rules (`ApplyRules`, `PreviewRules`,
-  and at sync on the mails that arrive). A `label` verdict over IMAP is refused there by
-  `errNoLabelsOnIMAP` (501 on a single apply, left pending in a batch, skipped in a
-  rule whose other actions run), never reported as applied. Everything else (snooze
-  and its wake sweeper, unsubscribe, attachments, labels, smart labels, undo, batch
-  action and undo, bulk by sender) refuses: 12 call sites left. A 13th, in `deliverDigest`, is
-  the recap's Gmail API branch, which an IMAP mailbox never reaches: its recap
-  leaves through the mailbox's sending server (`sendThroughBox`, `internal/smtpsend`).
+  `ApplySuggestion` and `ApplyBatch`, the undo (`UndoAction`, `BatchUndo`),
+  `GetLabels`, `DownloadAttachment`, then the rules (`ApplyRules`, `PreviewRules`,
+  and at sync on the mails that arrive). Over IMAP a label is a folder: a `label` verdict files the mail in
+  the folder of that name (`mailbox.IMAPOpFor`, made if missing), out of the inbox
+  like an archive, undone like one (`activity.InverseOnFolders`, and "unlabel" on
+  the single-message action right after), shielded like one for a protected
+  sender at analysis and in a batch (`allowsOn`), and `GetLabels` lists the
+  user's own folders. A rule's `label` action does not file yet: it is skipped
+  over IMAP (`errRuleLabelOnIMAP`), not journaled, the rule's other actions run.
+  Everything else (snooze and its wake sweeper, unsubscribe, smart labels, batch
+  action, bulk by sender) refuses: 8 call sites of `gmailClientFor`. Three more
+  are the Gmail branch of a ported handler (`GetLabels`, `UndoAction`,
+  `BatchUndo`), and one, in `deliverDigest`, is the recap's Gmail API branch,
+  which an IMAP mailbox never reaches: its recap leaves through the mailbox's
+  sending server (`sendThroughBox`, `internal/smtpsend`).
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
   `GMAIL_ONLY` (`frontend/src/components/landing/features.js`) lists what the
-  landing would otherwise promise and an IMAP mailbox cannot get, labels
-  (`label`) included: the Grand Hotel landing reads it to decide what it may
-  promise, and keeps promising nothing it cannot deliver. So porting a promised
-  feature to IMAP also means deleting its line there.
+  landing would otherwise promise and an IMAP mailbox cannot get: the Grand
+  Hotel landing reads it to decide what it may promise, and keeps promising
+  nothing it cannot deliver. So porting a promised feature to IMAP also means
+  deleting its line there, as `label` was once the AI's proposal could file into
+  a folder. Classifying a selection by hand (`LabelPicker` in `Inbox.js`) and the
+  rules' "Étiqueter" still go through the Gmail API: those screens stay closed
+  on `fullFeatures`, not on that list. On IMAP the screens word a label verdict
+  as a folder ("Classer dans « Factures »"): `actionMeta(action, { folders })`
+  and `labelPlace` in `ui/actions.js`, with `folders` from `useMailbox().isImap`.
 - **The visitor's address is `X-Real-IP`, and the backend believes it only from a
   private or loopback peer.** Every request arrives through nginx, so the TCP peer is
   always nginx; keying the limiters on it put every visitor in one bucket, and one

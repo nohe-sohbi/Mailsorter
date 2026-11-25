@@ -33,12 +33,16 @@ import (
 	"io"
 	"math/big"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/mail"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -342,12 +346,47 @@ func (p *imapPerson) connectOtherMailbox(addr string) {
 }
 
 // The folders every person's server has, by the names a mail program shows.
-// Mailsorter finds the last two by their special use, not by these names.
+// The in-memory server drops the special use startServer asks for (go-imap
+// v2.0.0-beta.8 ignores CreateOptions.SpecialUse), so, as on a server without
+// the SPECIAL-USE extension, Mailsorter knows the last two by these names.
 const (
 	serverInbox   = "INBOX"
 	serverArchive = "Archive"
 	serverTrash   = "Trash"
 )
+
+// The other special folders a real mailbox comes with, by the names a mail
+// program shows. Only usualSpecialFolders makes them, and the server says
+// which is which by these names alone, as it does for the archive and the
+// trash.
+const (
+	serverSent   = "Sent"
+	serverDrafts = "Drafts"
+	serverJunk   = "Junk"
+)
+
+// usualSpecialFolders gives this person's server the special folders a real
+// mailbox has besides the inbox, the archive and the trash: sent mail, drafts
+// and junk, empty. Made on the server itself, as the provider makes them, not
+// by a mail program. For the sentences about which folders are the person's
+// own: a server with only an inbox, an archive and a trash cannot tell a list
+// that leaves out every special folder from one that leaves out those three.
+func (p *imapPerson) usualSpecialFolders() {
+	a := p.app
+	a.t.Helper()
+	for _, f := range []struct {
+		name string
+		use  imapv2.MailboxAttr
+	}{
+		{serverSent, imapv2.MailboxAttrSent},
+		{serverDrafts, imapv2.MailboxAttrDrafts},
+		{serverJunk, imapv2.MailboxAttrJunk},
+	} {
+		if err := p.mailbox.Create(f.name, &imapv2.CreateOptions{SpecialUse: []imapv2.MailboxAttr{f.use}}); err != nil {
+			a.fatalf("création du dossier %q sur le serveur IMAP de %s : %v", f.name, p.email, err)
+		}
+	}
+}
 
 // startServer runs this person's own IMAP server, over implicit TLS. Without
 // InsecureAuth, so the server itself refuses a login that did not come over TLS.
@@ -393,12 +432,12 @@ func (p *imapPerson) startServer() {
 // anything the scenario did (see arrive). It does not sync.
 func (p *imapPerson) receive(mails ...incoming) []string {
 	p.app.t.Helper()
+	uids := make([]string, 0, len(mails))
 	base := time.Now().Add(-time.Duration(len(mails)+1) * time.Minute)
-	dates := make([]time.Time, len(mails))
-	for i := range dates {
-		dates[i] = base.Add(time.Duration(i) * time.Minute)
+	for i, m := range mails {
+		uids = append(uids, p.deliver(m, i, base.Add(time.Duration(i)*time.Minute), nil, nil))
 	}
-	return p.deliver(mails, dates)
+	return uids
 }
 
 // arrive delivers mails to this person's IMAP inbox now, unread, and returns
@@ -415,54 +454,11 @@ func (p *imapPerson) arrive(mails ...incoming) []string {
 	p.app.t.Helper()
 	at := time.Now().Truncate(time.Second).Add(time.Second)
 	time.Sleep(time.Until(at))
-	dates := make([]time.Time, len(mails))
-	for i := range dates {
-		dates[i] = at
-	}
-	uids := p.deliver(mails, dates)
-	time.Sleep(time.Until(at.Add(time.Second)))
-	return uids
-}
-
-// deliver writes each mail into this person's IMAP inbox, unread, received by
-// their server at its date, and returns their numbers.
-func (p *imapPerson) deliver(mails []incoming, dates []time.Time) []string {
-	a := p.app
-	a.t.Helper()
 	uids := make([]string, 0, len(mails))
 	for i, m := range mails {
-		subject := m.Subject
-		if subject == "" {
-			subject = fmt.Sprintf("Message %d", i+1)
-		}
-		body := m.Body
-		if body == "" {
-			body = "Bonjour, ceci est le message " + subject + "."
-		}
-		date := dates[i]
-
-		from := m.From
-		if addr, err := mail.ParseAddress(m.From); err == nil {
-			from = addr.String() // RFC 2047 for an accented name
-		}
-		var raw strings.Builder
-		fmt.Fprintf(&raw, "From: %s\r\n", from)
-		fmt.Fprintf(&raw, "To: %s\r\n", p.mailboxAddress())
-		fmt.Fprintf(&raw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
-		fmt.Fprintf(&raw, "Date: %s\r\n", date.Format(time.RFC1123Z))
-		fmt.Fprintf(&raw, "Message-ID: <%d.%d@scenarios.test>\r\n", date.UnixNano(), i)
-		if m.Unsubscribe != "" {
-			fmt.Fprintf(&raw, "List-Unsubscribe: %s\r\n", m.Unsubscribe)
-		}
-		raw.WriteString("MIME-Version: 1.0\r\n")
-		writeMailContent(&raw, m, body)
-
-		data, err := p.mailbox.Append("INBOX", bytes.NewReader([]byte(raw.String())), &imapv2.AppendOptions{Time: date})
-		if err != nil {
-			a.fatalf("dépôt du mail %q dans la boîte IMAP de %s : %v", subject, p.email, err)
-		}
-		uids = append(uids, fmt.Sprint(uint32(data.UID)))
+		uids = append(uids, p.deliver(m, i, at, nil, nil))
 	}
+	time.Sleep(time.Until(at.Add(time.Second)))
 	return uids
 }
 
@@ -527,6 +523,276 @@ func fileContent(f attachedFile) []byte {
 	}
 	pattern := []byte("Contenu du fichier " + f.Name + ". ")
 	return bytes.Repeat(pattern, f.Size/len(pattern)+1)[:f.Size]
+}
+
+// nameEncoding is one way a mail program writes a file name into a message.
+type nameEncoding int
+
+const (
+	nameRFC2047 nameEncoding = iota
+	nameRFC2231
+)
+
+// The two Content-Transfer-Encodings a mail program writes a file in.
+const (
+	transferBase64          = "base64"
+	transferQuotedPrintable = "quoted-printable"
+)
+
+// receiveWithFiles delivers one mail with these files attached to this
+// person's IMAP inbox, unread, and returns the number their server gave it.
+// The mail is a multipart/mixed, its text first and then each file as a part
+// of its own, which is how a mail program sends attachments. It does not
+// sync.
+func (p *imapPerson) receiveWithFiles(m incoming, files ...attachedFile) string {
+	p.app.t.Helper()
+	if len(files) == 0 {
+		p.app.fatalf("receiveWithFiles sans fichier : utiliser receive (à corriger dans le scénario)")
+	}
+	// writeMixed writes the text and Data of each file, nothing else: an HTML
+	// version, a filler Attachment or a Size would be left out without a word,
+	// and the scenario would prove something about a mail it never sent.
+	if m.HTML != "" || m.Attachment != nil {
+		p.app.fatalf("receiveWithFiles ne sait pas déposer le mail %q avec sa version HTML ou sa pièce jointe de remplissage : passer ses fichiers en arguments (à corriger dans le scénario)", m.Subject)
+	}
+	for _, f := range files {
+		if f.Size != 0 {
+			p.app.fatalf("le fichier %q du mail %q donne une taille, qui ne sert qu'à la pièce jointe de remplissage de receive : donner ses octets dans Data (à corriger dans le scénario)", f.Name, m.Subject)
+		}
+	}
+	return p.deliver(m, 0, time.Now().Add(-time.Minute), files, nil)
+}
+
+// drawnPicture is a picture an HTML mail carries for its text to draw: a part
+// with a Content-ID that the HTML points at with a cid: URL (RFC 2392), no
+// name, marked inline, the way a newsletter carries its logo.
+type drawnPicture struct {
+	// ContentID is the id the HTML writes after "cid:", without the angle
+	// brackets the Content-ID header puts around it.
+	ContentID string
+	Type      string // e.g. "image/png"
+	Data      []byte
+}
+
+// receiveHTMLWithPictures delivers one HTML mail to this person's IMAP inbox,
+// unread, and returns the number their server gave it: its text and its HTML
+// (m.HTML, which points at the pictures by their cid:), the pictures next to
+// the HTML, then the files attached, the way Apple Mail or Thunderbird write
+// such a mail. A multipart/mixed whose first part is a multipart/alternative
+// (the text, then a multipart/related: the HTML and the pictures), so the
+// parts are numbered 1.1 (the text), 1.2.1 (the HTML), 1.2.2 and on (the
+// pictures, in order), then 2 and on (the files). It does not sync.
+func (p *imapPerson) receiveHTMLWithPictures(m incoming, pictures []drawnPicture, files ...attachedFile) string {
+	p.app.t.Helper()
+	if m.HTML == "" || len(pictures) == 0 {
+		p.app.fatalf("receiveHTMLWithPictures a besoin du HTML du mail %q et des images qu'il montre : sans eux, utiliser receive ou receiveWithFiles (à corriger dans le scénario)", m.Subject)
+	}
+	if m.Attachment != nil {
+		p.app.fatalf("receiveHTMLWithPictures ne sait pas déposer le mail %q avec sa pièce jointe de remplissage : passer ses fichiers en arguments (à corriger dans le scénario)", m.Subject)
+	}
+	for _, f := range files {
+		if f.Size != 0 {
+			p.app.fatalf("le fichier %q du mail %q donne une taille, qui ne sert qu'à la pièce jointe de remplissage de receive : donner ses octets dans Data (à corriger dans le scénario)", f.Name, m.Subject)
+		}
+	}
+	return p.deliver(m, 0, time.Now().Add(-time.Minute), files, pictures)
+}
+
+// deliver puts one mail into this person's IMAP inbox, unread, dated date,
+// and returns the number the server gave it. i is its rank among the mails
+// delivered together, which names a mail without a subject. Without files
+// or pictures the mail is written by writeMailContent: its text, its HTML
+// version and its filler Attachment when it has them.
+func (p *imapPerson) deliver(m incoming, i int, date time.Time, files []attachedFile, pictures []drawnPicture) string {
+	a := p.app
+	a.t.Helper()
+	subject := m.Subject
+	if subject == "" {
+		subject = fmt.Sprintf("Message %d", i+1)
+	}
+	body := m.Body
+	if body == "" {
+		body = "Bonjour, ceci est le message " + subject + "."
+	}
+
+	from := m.From
+	if addr, err := mail.ParseAddress(m.From); err == nil {
+		from = addr.String() // RFC 2047 for an accented name
+	}
+	var raw strings.Builder
+	fmt.Fprintf(&raw, "From: %s\r\n", from)
+	fmt.Fprintf(&raw, "To: %s\r\n", p.mailboxAddress())
+	fmt.Fprintf(&raw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
+	fmt.Fprintf(&raw, "Date: %s\r\n", date.Format(time.RFC1123Z))
+	fmt.Fprintf(&raw, "Message-ID: <%d.%d@scenarios.test>\r\n", date.UnixNano(), i)
+	if m.Unsubscribe != "" {
+		fmt.Fprintf(&raw, "List-Unsubscribe: %s\r\n", m.Unsubscribe)
+	}
+	if len(files) == 0 && len(pictures) == 0 {
+		// writeMailContent fills the Attachment with Size bytes of filler:
+		// bytes, an encoding or a way of writing the name given to it would
+		// be left out without a word.
+		if f := m.Attachment; f != nil && (f.Data != nil || f.Transfer != "" || f.NameAs != nameRFC2047) {
+			a.fatalf("la pièce jointe %q du mail %q est du remplissage de Size octets : un fichier avec ses octets, son encodage ou l'écriture de son nom se dépose avec receiveWithFiles (à corriger dans le scénario)", f.Name, subject)
+		}
+		raw.WriteString("MIME-Version: 1.0\r\n")
+		writeMailContent(&raw, m, body)
+	} else {
+		p.writeMixed(&raw, subject, body, m.HTML, pictures, files)
+	}
+
+	data, err := p.mailbox.Append("INBOX", bytes.NewReader([]byte(raw.String())), &imapv2.AppendOptions{Time: date})
+	if err != nil {
+		a.fatalf("dépôt du mail %q dans la boîte IMAP de %s : %v", subject, p.email, err)
+	}
+	return fmt.Sprint(uint32(data.UID))
+}
+
+// writeMixed writes the MIME headers and the body of a mail with files: the
+// text as its first part (with its HTML and the pictures the HTML draws, when
+// html is set: see writeHTMLWithPictures), then one part per file, each with
+// its name in both places a reader looks for it (the name parameter of
+// Content-Type and the filename parameter of Content-Disposition), the way
+// mail programs write them.
+func (p *imapPerson) writeMixed(raw *strings.Builder, subject, body, html string, pictures []drawnPicture, files []attachedFile) {
+	a := p.app
+	a.t.Helper()
+	var parts bytes.Buffer
+	w := multipart.NewWriter(&parts)
+	if html != "" {
+		p.writeHTMLWithPictures(w, subject, body, html, pictures)
+	} else {
+		text, err := w.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {"text/plain; charset=utf-8"},
+			"Content-Transfer-Encoding": {"8bit"},
+		})
+		if err != nil {
+			a.fatalf("écriture du texte du mail %q : %v", subject, err)
+		}
+		_, _ = io.WriteString(text, body+"\r\n")
+	}
+
+	for _, f := range files {
+		var typeParams, dispParams map[string]string
+		switch f.NameAs {
+		case nameRFC2047:
+			// mime.FormatMediaType would write the name as RFC 2231: the
+			// encoded word goes in already made, and is quoted as a value.
+			word := mime.BEncoding.Encode("utf-8", f.Name)
+			typeParams, dispParams = map[string]string{"name": word}, map[string]string{"filename": word}
+		case nameRFC2231:
+			// What mime.FormatMediaType does with a name that is not ASCII.
+			typeParams, dispParams = map[string]string{"name": f.Name}, map[string]string{"filename": f.Name}
+		default:
+			a.fatalf("le fichier %q n'a pas de façon connue d'écrire son nom (à corriger dans le scénario)", f.Name)
+		}
+		if strings.HasPrefix(f.Type, "text/") {
+			typeParams["charset"] = "utf-8"
+		}
+		part, err := w.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {mime.FormatMediaType(f.Type, typeParams)},
+			"Content-Disposition":       {mime.FormatMediaType("attachment", dispParams)},
+			"Content-Transfer-Encoding": {f.Transfer},
+		})
+		if err != nil {
+			a.fatalf("écriture du fichier %q du mail %q : %v", f.Name, subject, err)
+		}
+		switch f.Transfer {
+		case transferBase64:
+			writeBase64Lines(part, f.Data)
+		case transferQuotedPrintable:
+			// Text mode: a line break of the file is written as CRLF, so a
+			// file whose lines end in CRLF comes back unchanged.
+			qp := quotedprintable.NewWriter(part)
+			if _, err := qp.Write(f.Data); err != nil {
+				a.fatalf("encodage du fichier %q du mail %q : %v", f.Name, subject, err)
+			}
+			if err := qp.Close(); err != nil {
+				a.fatalf("encodage du fichier %q du mail %q : %v", f.Name, subject, err)
+			}
+		default:
+			a.fatalf("le fichier %q a un encodage inconnu %q (à corriger dans le scénario)", f.Name, f.Transfer)
+		}
+	}
+	if err := w.Close(); err != nil {
+		a.fatalf("écriture du mail %q : %v", subject, err)
+	}
+	fmt.Fprintf(raw, "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n", w.Boundary())
+	raw.Write(parts.Bytes())
+}
+
+// writeBase64Lines writes data in base64, 76 characters a line, as RFC 2045
+// asks.
+func writeBase64Lines(w io.Writer, data []byte) {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	for len(encoded) > 76 {
+		_, _ = io.WriteString(w, encoded[:76]+"\r\n")
+		encoded = encoded[76:]
+	}
+	_, _ = io.WriteString(w, encoded+"\r\n")
+}
+
+// writeHTMLWithPictures writes the first part of a mail whose HTML draws
+// pictures, into the multipart/mixed w: a multipart/alternative holding the
+// text, then a multipart/related holding the HTML and, after it, each
+// picture, in base64, with its Content-ID, marked inline and without a name.
+func (p *imapPerson) writeHTMLWithPictures(w *multipart.Writer, subject, body, html string, pictures []drawnPicture) {
+	a := p.app
+	a.t.Helper()
+	var relatedParts bytes.Buffer
+	related := multipart.NewWriter(&relatedParts)
+	page, err := related.CreatePart(textproto.MIMEHeader{
+		"Content-Type":              {"text/html; charset=utf-8"},
+		"Content-Transfer-Encoding": {"8bit"},
+	})
+	if err != nil {
+		a.fatalf("écriture du HTML du mail %q : %v", subject, err)
+	}
+	_, _ = io.WriteString(page, html+"\r\n")
+	for _, pic := range pictures {
+		part, err := related.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {pic.Type},
+			"Content-Transfer-Encoding": {transferBase64},
+			"Content-Id":                {"<" + pic.ContentID + ">"},
+			"Content-Disposition":       {"inline"},
+		})
+		if err != nil {
+			a.fatalf("écriture de l'image %q du mail %q : %v", pic.ContentID, subject, err)
+		}
+		writeBase64Lines(part, pic.Data)
+	}
+	if err := related.Close(); err != nil {
+		a.fatalf("écriture du HTML du mail %q : %v", subject, err)
+	}
+
+	var alternativeParts bytes.Buffer
+	alternative := multipart.NewWriter(&alternativeParts)
+	text, err := alternative.CreatePart(textproto.MIMEHeader{
+		"Content-Type":              {"text/plain; charset=utf-8"},
+		"Content-Transfer-Encoding": {"8bit"},
+	})
+	if err != nil {
+		a.fatalf("écriture du texte du mail %q : %v", subject, err)
+	}
+	_, _ = io.WriteString(text, body+"\r\n")
+	withPictures, err := alternative.CreatePart(textproto.MIMEHeader{
+		"Content-Type": {mime.FormatMediaType("multipart/related", map[string]string{"type": "text/html", "boundary": related.Boundary()})},
+	})
+	if err != nil {
+		a.fatalf("écriture du HTML du mail %q : %v", subject, err)
+	}
+	_, _ = withPictures.Write(relatedParts.Bytes())
+	if err := alternative.Close(); err != nil {
+		a.fatalf("écriture du texte du mail %q : %v", subject, err)
+	}
+
+	first, err := w.CreatePart(textproto.MIMEHeader{
+		"Content-Type": {mime.FormatMediaType("multipart/alternative", map[string]string{"boundary": alternative.Boundary()})},
+	})
+	if err != nil {
+		a.fatalf("écriture du texte du mail %q : %v", subject, err)
+	}
+	_, _ = first.Write(alternativeParts.Bytes())
 }
 
 // expectNumbered checks what the scenario takes for granted about the
@@ -746,12 +1012,118 @@ func quotedList(subjects []string) string {
 // it with markRead (getEmail in services/api.js), which is what makes a mail
 // read in Mailsorter. It expects the mail to open.
 func (p *imapPerson) openMail(uid string) {
+	p.app.t.Helper()
+	p.openInReader(uid)
+}
+
+// shownAttachment is one attachment the reader shows under a mail
+// (attachments in EmailReader.js): the name, type and size on its chip, and
+// the attachmentId its download sends. A chip without one is not a button.
+type shownAttachment struct {
+	Filename     string `json:"filename"`
+	MimeType     string `json:"mimeType"`
+	Size         int64  `json:"size"`
+	AttachmentID string `json:"attachmentId"`
+}
+
+// openInReader is openMail, returning the attachments the reader shows for
+// the mail, as the answer it loads hands them over.
+func (p *imapPerson) openInReader(uid string) []shownAttachment {
+	p.app.t.Helper()
+	return p.readerPage(uid).Attachments
+}
+
+// readerPage is what the reader loads for a mail (getEmail in
+// services/api.js), as far as these sentences look at it: the HTML it
+// renders, the attachments it shows under it, and inlineImages, which part
+// the screen downloads to draw in place of each cid: of the HTML
+// (EmailReader.js), keyed by the cid the way the screen keys it.
+type readerPage struct {
+	BodyHTML     string            `json:"bodyHtml"`
+	Attachments  []shownAttachment `json:"attachments"`
+	InlineImages map[string]string `json:"inlineImages"`
+}
+
+// readerPage is openMail, returning what the reader loads for the mail.
+func (p *imapPerson) readerPage(uid string) readerPage {
 	a := p.app
 	a.t.Helper()
 	code, out := a.callAs(p.token, http.MethodGet, "/api/emails/"+url.PathEscape(uid)+"?markRead=1", nil)
 	if code != http.StatusOK {
 		a.fatalf("le mail n°%s de %s ne s'ouvre pas dans la liseuse : GET /api/emails/%s a répondu %d : %v", uid, p.email, uid, code, out)
 	}
+	var page readerPage
+	if out["attachments"] != nil {
+		raw, err := json.Marshal(out["attachments"])
+		if err != nil {
+			a.fatalf("pièces jointes illisibles dans la réponse de GET /api/emails/%s pour %s : %v", uid, p.email, err)
+		}
+		if err := json.Unmarshal(raw, &page.Attachments); err != nil {
+			a.fatalf("pièces jointes illisibles dans la réponse de GET /api/emails/%s pour %s : %v (reçu : %s)", uid, p.email, err, raw)
+		}
+	}
+	if out["inlineImages"] != nil {
+		raw, err := json.Marshal(out["inlineImages"])
+		if err != nil {
+			a.fatalf("images du texte illisibles dans la réponse de GET /api/emails/%s pour %s : %v", uid, p.email, err)
+		}
+		if err := json.Unmarshal(raw, &page.InlineImages); err != nil {
+			a.fatalf("images du texte illisibles dans la réponse de GET /api/emails/%s pour %s : %v (reçu : %s)", uid, p.email, err, raw)
+		}
+	}
+	page.BodyHTML, _ = out["bodyHtml"].(string)
+	return page
+}
+
+// fileAnswer is what the server sent back for a download: the status, the
+// headers and the bytes as they came, which a JSON decoding would lose.
+type fileAnswer struct {
+	code   int
+	header http.Header
+	body   []byte
+}
+
+// said is the "error" field of a refusal, empty when the answer has none.
+func (f fileAnswer) said() string {
+	var out struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(f.body, &out) != nil {
+		return ""
+	}
+	return out.Error
+}
+
+func (f fileAnswer) String() string {
+	if s := f.said(); s != "" {
+		return fmt.Sprintf("%d %q", f.code, s)
+	}
+	return fmt.Sprintf("%d (%d octets, Content-Type %q)", f.code, len(f.body), f.header.Get("Content-Type"))
+}
+
+// download is a click on an attachment chip of the reader, as this person:
+// GET /api/emails/{id}/attachments/{attachmentId} (downloadAttachment in
+// services/api.js, whose bytes the reader saves as a file). It returns the
+// answer, whatever it is.
+func (p *imapPerson) download(uid, attachmentID string) fileAnswer {
+	a := p.app
+	a.t.Helper()
+	path := "/api/emails/" + url.PathEscape(uid) + "/attachments/" + url.PathEscape(attachmentID)
+	req, err := http.NewRequest(http.MethodGet, a.server.URL+path, nil)
+	if err != nil {
+		a.fatalf("requête GET %s : %v", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		a.fatalf("le téléchargement de la pièce jointe %q du mail n°%s de %s n'a pas abouti : %v", attachmentID, uid, p.email, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		a.fatalf("lecture de la pièce jointe %q du mail n°%s de %s : %v", attachmentID, uid, p.email, err)
+	}
+	return fileAnswer{code: resp.StatusCode, header: resp.Header, body: body}
 }
 
 // counters is what the counters above this person's inbox show: "Boîte de
@@ -1210,6 +1582,38 @@ func (p *imapPerson) newFolderElsewhere(name string) {
 	}
 }
 
+// folders is every folder of this person's server, by its full name
+// ("Projets/Maison" for a folder inside another), sorted, as another mail
+// program lists them (LIST "" "*").
+func (p *imapPerson) folders() []string {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	listed, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		a.fatalf("lecture des dossiers du serveur IMAP de %s : %v", p.email, err)
+	}
+	names := make([]string, 0, len(listed))
+	for _, l := range listed {
+		names = append(names, l.Mailbox)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// hasFolder reports whether this person's server has a folder by this full
+// name, as another mail program lists it.
+func (p *imapPerson) hasFolder(name string) bool {
+	p.app.t.Helper()
+	for _, f := range p.folders() {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
 // movedFromElsewhere is another mail program moving the mail with this
 // subject out of folder into to: the person filed it elsewhere on their
 // phone. It does not sync.
@@ -1542,6 +1946,51 @@ func (p *imapPerson) tidyAll(ids ...string) answer {
 	return answer{code: code, body: out}
 }
 
+// listedFolder is one entry of the list of folders, or labels, Mailsorter
+// offers to file a mail into (GET /api/labels): the shape of a Gmail label.
+// Every screen that offers one (LabelPicker in Inbox.js, the rules editor)
+// shows the name of the entries whose type is "user", and only those.
+type listedFolder struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// offeredByScreens reports whether the screens offer this entry to file into.
+func (f listedFolder) offeredByScreens() bool {
+	return f.Type == "user" && f.Name != ""
+}
+
+// foldersToFileInto is the list of folders Mailsorter offers this person to
+// file a mail into, every entry as GET /api/labels hands it over. It stops the
+// scenario when the list does not load: there is then nothing to look at.
+func (p *imapPerson) foldersToFileInto() []listedFolder {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/labels", nil)
+	if code != http.StatusOK {
+		a.fatalf("la liste des dossiers où classer de %s ne s'affiche pas : GET /api/labels a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var list []listedFolder
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		a.fatalf("réponse de GET /api/labels illisible pour %s : %v (%v)", p.email, err, out)
+	}
+	return list
+}
+
+// describeFolders is that list in a failure message.
+func describeFolders(list []listedFolder) string {
+	if len(list) == 0 {
+		return "aucun dossier"
+	}
+	parts := make([]string, 0, len(list))
+	for _, f := range list {
+		parts = append(parts, fmt.Sprintf("%q (type %q)", f.Name, f.Type))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // history returns this person's action log for one mail, oldest first: what
 // their Historique screen lists for it. Scoped to this person, since another
 // person's mail may carry the same number.
@@ -1659,6 +2108,48 @@ func (p *imapPerson) historyLinesOf(uid string) []historyLine {
 		}
 	}
 	return lines
+}
+
+// historyLineSent is the line of this person's Historique screen with this
+// id, every field as GET /api/activity/log hands it over, or nil when the
+// screen no longer shows it: for a sentence about what a line says beyond the
+// fields historyLine reads.
+func (p *imapPerson) historyLineSent(id string) map[string]interface{} {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/activity/log?limit=50", nil)
+	if code != http.StatusOK {
+		a.fatalf("l'historique de %s ne s'affiche pas : GET /api/activity/log a répondu %d : %v", p.email, code, out)
+	}
+	entries, _ := out["entries"].([]interface{})
+	for _, e := range entries {
+		if line, ok := e.(map[string]interface{}); ok && line["id"] == id {
+			return line
+		}
+	}
+	return nil
+}
+
+// holdsString reports whether v, a value decoded from JSON, holds the string
+// want at any depth, outside the keys in skip (at any depth too).
+func holdsString(v interface{}, want string, skip map[string]bool) bool {
+	switch t := v.(type) {
+	case string:
+		return t == want
+	case map[string]interface{}:
+		for k, inner := range t {
+			if !skip[k] && holdsString(inner, want, skip) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, inner := range t {
+			if holdsString(inner, want, skip) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // describeHistory is lines of the Historique screen in a failure message:

@@ -31,7 +31,7 @@ func TestOllamaTurnsThinkingOffAndReadsTheAnswer(t *testing.T) {
 	defer srv.Close()
 
 	c := NewOllamaClient("qwen3.5:9b", srv.URL)
-	res, err := c.AnalyzeEmail(models.Email{ID: "1", From: "news@example.org", Subject: "Weekly", Snippet: "..."}, nil)
+	res, err := c.AnalyzeEmail(models.Email{ID: "1", From: "news@example.org", Subject: "Weekly", Snippet: "..."})
 	if err != nil {
 		t.Fatalf("AnalyzeEmail: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestOllamaSlowServerIsATimeoutNotUnreachable(t *testing.T) {
 
 	c := NewOllamaClient("qwen3.8-27b", srv.URL)
 	c.httpClient.Timeout = 50 * time.Millisecond
-	_, err := c.AnalyzeEmail(models.Email{ID: "1", Subject: "x"}, nil)
+	_, err := c.AnalyzeEmail(models.Email{ID: "1", Subject: "x"})
 	if err == nil {
 		t.Fatal("want an error from a server that never answers")
 	}
@@ -84,7 +84,7 @@ func TestOllamaNothingListeningIsUnreachable(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
-	_, err := NewOllamaClient("m", url).AnalyzeEmail(models.Email{ID: "1"}, nil)
+	_, err := NewOllamaClient("m", url).AnalyzeEmail(models.Email{ID: "1"})
 	if err == nil || !strings.Contains(err.Error(), "unreachable at "+url) {
 		t.Errorf("error = %v, want unreachable at %s", err, url)
 	}

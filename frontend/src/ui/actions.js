@@ -152,6 +152,30 @@ export const ACTIONS = {
     ring: 'rgb(var(--positive-500))',
     destructive: false,
   },
+  unlabel: {
+    key: 'unlabel',
+    label: "Retirer l'étiquette",
+    past: 'Étiquette retirée',
+    pastPlural: 'Étiquettes retirées',
+    Icon: Undo,
+    chip: 'bg-positive-50 text-positive-700',
+    solid: 'bg-positive-fill',
+    ring: 'rgb(var(--positive-500))',
+    destructive: false,
+  },
+};
+
+// On a mailbox connected over IMAP a label is a folder: the same verdict files
+// the mail there, out of the inbox, so it reads as what it does ("Classer"),
+// and taking it back off brings the mail back to the inbox.
+const ON_FOLDERS = {
+  label: { ...ACTIONS.label, label: 'Classer', past: 'Classé', pastPlural: 'Classés' },
+  unlabel: {
+    ...ACTIONS.unlabel,
+    label: 'Remettre dans la boîte',
+    past: 'Remis dans la boîte',
+    pastPlural: 'Remis dans la boîte',
+  },
 };
 
 // Synonyms emitted by different parts of the API for the same act.
@@ -177,8 +201,19 @@ const unknownAction = (raw) => ({
 
 export const canonicalAction = (raw) => ALIASES[raw] || raw;
 
-export function actionMeta(raw) {
-  return ACTIONS[canonicalAction(raw)] || unknownAction(raw);
+// `folders` is true on a mailbox connected over IMAP (`isImap`), where a label
+// is a folder.
+export function actionMeta(raw, { folders = false } = {}) {
+  const key = canonicalAction(raw);
+  return (folders && ON_FOLDERS[key]) || ACTIONS[key] || unknownAction(raw);
+}
+
+// Where a label files the mail, as the words that follow its verb: a Gmail
+// label as « Factures », an IMAP folder as dans « Factures ». Empty without a
+// name.
+export function labelPlace(labelName, { folders = false } = {}) {
+  if (!labelName) return '';
+  return folders ? ` dans « ${labelName} »` : ` « ${labelName} »`;
 }
 
 // Actions the user can trigger over a selection, in the order they appear in the
@@ -193,7 +228,7 @@ export const isDestructive = (raw) => actionMeta(raw).destructive === true;
 // the singular.
 export const plural = (n) => (n > 1 ? 's' : '');
 
-export function pastParticiple(raw, count = 1) {
-  const meta = actionMeta(raw);
+export function pastParticiple(raw, count = 1, options) {
+  const meta = actionMeta(raw, options);
   return count > 1 ? meta.pastPlural || meta.past : meta.past;
 }

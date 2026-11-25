@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { accountService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
-import { actionMeta } from '../ui/actions';
+import { actionMeta, labelPlace } from '../ui/actions';
 import { EmptyState, ErrorState, LiveAnnouncer } from '../ui/primitives';
 import { History as HistoryIcon, Undo, Search } from '../ui/icons';
 import Spinner from '../ui/Spinner';
@@ -103,20 +103,31 @@ function byDay(entries) {
 // Actions that have an inverse. When the server still says one of these
 // cannot be undone, it is because it no longer can (on IMAP: past 30 days,
 // a move Mailsorter cannot trace, a read change on a mail that left the
-// inbox), not because the action has no inverse.
+// inbox), not because the action has no inverse. Over IMAP a label is a
+// folder, and filing there is undone like an archive.
 const HAS_INVERSE = new Set(['archive', 'delete', 'trash', 'read', 'markRead']);
 
-const finalLabel = (e, none = 'Définitif') => (HAS_INVERSE.has(e.action) ? 'Plus annulable' : none);
+const hasInverse = (e, folders) => HAS_INVERSE.has(e.action) || (folders && e.action === 'label');
 
-const finalHint = (e) =>
-  HAS_INVERSE.has(e.action)
+const finalLabel = (e, folders, none = 'Définitif') => (hasInverse(e, folders) ? 'Plus annulable' : none);
+
+const finalHint = (e, folders) =>
+  hasInverse(e, folders)
     ? "Mailsorter ne peut plus annuler cette action d'ici : le mail a changé de place depuis, ou elle est trop ancienne."
     : "Cette action n'a pas d'inverse automatique.";
+
+// What a line says was done: the verb in the past, and for a label where it
+// filed the mail ("Classé dans « Factures »" over IMAP, where it is a folder).
+const placeOf = (e, folders) => (e.action === 'label' ? labelPlace(e.labelName, { folders }) : '');
+const pastOf = (e, folders) => `${actionMeta(e.action, { folders }).past}${placeOf(e, folders)}`;
+// Inside a sentence: the verb in lower case, the folder or label as the user
+// named it (« classé dans « Livraisons » », not « livraisons »).
+const pastInSentence = (e, folders) => `${actionMeta(e.action, { folders }).past.toLowerCase()}${placeOf(e, folders)}`;
 
 // What the right-hand side of a row says. `undoOk` waits for the mailbox to be
 // known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
 // moved remembering where it went.
-function HotelRegister({ entries, undoing, onUndo, undoOk }) {
+function HotelRegister({ entries, undoing, onUndo, undoOk, folders }) {
   return (
     <div className="card px-5 pb-4 pt-1 sm:px-7">
       {byDay(entries).map((day) => (
@@ -124,7 +135,6 @@ function HotelRegister({ entries, undoing, onUndo, undoOk }) {
           <h2 className="hd-reg__day">{day.label}</h2>
           <ul className="hd-reg">
             {day.entries.map((e) => {
-              const meta = actionMeta(e.action);
               const identity = identityOf(e);
               const who = identity.sender || identity.title;
               return (
@@ -136,7 +146,7 @@ function HotelRegister({ entries, undoing, onUndo, undoOk }) {
                     <span className={identity.known ? undefined : 'italic text-muted'} title={identity.known ? identity.from : UNKNOWN_HINT}>
                       {who}
                     </span>{' '}
-                    <em>{meta.past.toLowerCase()}</em>
+                    <em>{pastInSentence(e, folders)}</em>
                     <small>
                       {identity.sender && identity.known ? `${identity.title}. ` : ''}
                       {SOURCE_LABELS[e.source] || e.source}
@@ -147,8 +157,8 @@ function HotelRegister({ entries, undoing, onUndo, undoOk }) {
                       {undoing === e.id ? <Spinner size={13} /> : 'Annuler'}
                     </button>
                   ) : e.undone || !e.undoable ? (
-                    <span className="text-xs text-muted" title={e.undone ? undefined : finalHint(e)}>
-                      {e.undone ? 'Annulé' : finalLabel(e)}
+                    <span className="text-xs text-muted" title={e.undone ? undefined : finalHint(e, folders)}>
+                      {e.undone ? 'Annulé' : finalLabel(e, folders)}
                     </span>
                   ) : (
                     <span />
@@ -188,7 +198,8 @@ function History() {
   const [query, setQuery] = useState('');
   const [undoing, setUndoing] = useState(null);
   // Undo works on both transports; it only waits for the mailbox to be known.
-  const { known: undoOk } = useMailbox();
+  // Over IMAP a label is a folder (`folders`).
+  const { known: undoOk, isImap: folders } = useMailbox();
 
   // Read inside async callbacks to tell whether the filter moved on since a
   // request was issued.
@@ -259,7 +270,6 @@ function History() {
   };
 
   const handleUndo = async (entry) => {
-    const meta = actionMeta(entry.action);
     const identity = identityOf(entry);
     // Le ledger n'a pas d'inverse pour un inverse : une fois la ligne annulée,
     // le bouton disparaît définitivement. `danger` reste faux parce que l'effet
@@ -267,7 +277,7 @@ function History() {
     if (
       !(await confirm({
         title: 'Annuler cette action ?',
-        message: `« ${identity.title} » : l'action « ${meta.past} » sera défaite dans votre boîte.`,
+        message: `« ${identity.title} » : l'action « ${pastOf(entry, folders)} » sera défaite dans votre boîte.`,
         detail: "Cette annulation est définitive : elle ne pourra pas être refaite depuis l'historique.",
         confirmLabel: "Annuler l'action",
         cancelLabel: 'Revenir',
@@ -443,11 +453,11 @@ function History() {
           </div>
 
           {hotel ? (
-            <HotelRegister entries={entries} undoing={undoing} onUndo={handleUndo} undoOk={undoOk} />
+            <HotelRegister entries={entries} undoing={undoing} onUndo={handleUndo} undoOk={undoOk} folders={folders} />
           ) : (
             <ul className="space-y-2.5">
               {entries.map((e) => {
-                const meta = actionMeta(e.action);
+                const meta = actionMeta(e.action, { folders });
                 const Icon = meta.Icon;
                 const identity = identityOf(e);
                 return (
@@ -473,7 +483,7 @@ function History() {
                         {e.undone && <span className="chip shrink-0 bg-positive-50 text-positive-700">Annulé</span>}
                       </div>
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
-                        <span className="font-semibold text-ink-700">{meta.past}</span>
+                        <span className="font-semibold text-ink-700">{pastOf(e, folders)}</span>
                         {identity.sender && (
                           <>
                             <span aria-hidden="true" className="text-subtle">·</span>
@@ -503,8 +513,8 @@ function History() {
                     ) : (
                       !e.undone &&
                       !e.undoable && (
-                        <span className="shrink-0 text-xs text-muted" title={finalHint(e)}>
-                          {finalLabel(e, 'Non réversible')}
+                        <span className="shrink-0 text-xs text-muted" title={finalHint(e, folders)}>
+                          {finalLabel(e, folders, 'Non réversible')}
                         </span>
                       )
                     )}

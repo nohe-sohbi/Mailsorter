@@ -17,7 +17,7 @@ type mockAnalyzer struct {
 	senderRes *SenderAnalysis
 }
 
-func (m *mockAnalyzer) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
+func (m *mockAnalyzer) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -25,7 +25,7 @@ func (m *mockAnalyzer) AnalyzeEmail(email models.Email, existingLabels []string)
 	return m.result, nil
 }
 
-func (m *mockAnalyzer) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (m *mockAnalyzer) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -33,7 +33,7 @@ func (m *mockAnalyzer) AnalyzeBatch(emails []models.Email, existingLabels []stri
 	return m.batchRes, nil
 }
 
-func (m *mockAnalyzer) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
+func (m *mockAnalyzer) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -66,7 +66,7 @@ func TestRegistryFallbackOn429(t *testing.T) {
 		},
 	}
 
-	res, err := reg.AnalyzeEmail(models.Email{Subject: "Promo"}, nil)
+	res, err := reg.AnalyzeEmail(models.Email{Subject: "Promo"})
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRegistryPermanentErrorFailsImmediately(t *testing.T) {
 		},
 	}
 
-	_, err := reg.AnalyzeEmail(models.Email{Subject: "Test"}, nil)
+	_, err := reg.AnalyzeEmail(models.Email{Subject: "Test"})
 	if err == nil {
 		t.Fatal("expected error on 401, got nil")
 	}

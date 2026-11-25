@@ -93,3 +93,18 @@ func TestInverse(t *testing.T) {
 		})
 	}
 }
+
+// On a mailbox made of folders a label is a move out of the inbox, undone by
+// bringing the mail back; everything else reverses as Inverse says, so the
+// Gmail path is untouched.
+func TestInverseOnFolders(t *testing.T) {
+	if got, ok := InverseOnFolders("label"); !ok || got != "unlabel" {
+		t.Errorf("InverseOnFolders(label) = (%q, %v), want (unlabel, true)", got, ok)
+	}
+	for _, action := range []string{"archive", "delete", "trash", "read", "markRead", "star", "keep", "", "unlabel"} {
+		wantInverse, wantOK := Inverse(action)
+		if got, ok := InverseOnFolders(action); got != wantInverse || ok != wantOK {
+			t.Errorf("InverseOnFolders(%q) = (%q, %v), want Inverse's (%q, %v)", action, got, ok, wantInverse, wantOK)
+		}
+	}
+}
