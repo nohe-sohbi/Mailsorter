@@ -272,11 +272,18 @@ func TestScenarios_IMAPAutopilot(t *testing.T) {
 			phrase: "Sur une boîte IMAP, le pilote automatique ne range jamais le mail d'un expéditeur protégé.",
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
-				const bank, shop = "info@banque.fr", "info@boutique.com"
-				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+				const bank, shop, energy = "info@banque.fr", "info@boutique.com", "factures@energie.fr"
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, invoice)
 				moi.protect(bankStatement.From)
+				moi.protect(invoice.From)
 				moi.autopilot(bank, "archive")
 				moi.autopilot(shop, "archive")
+				// A protected sender whose auto-pilot files into a folder:
+				// over IMAP that takes the mail out of the inbox too.
+				moi.autopilotFiling(energy, invoiceFolder)
+				if moi.hasFolder(invoiceFolder) {
+					app.fatalf("le serveur IMAP de %s ne devrait pas encore avoir de dossier %q : le scénario ne prouve rien (dossiers : %s)", moi.email, invoiceFolder, strings.Join(moi.folders(), ", "))
+				}
 
 				moi.analyze(uids...)
 
@@ -288,6 +295,21 @@ func TestScenarios_IMAPAutopilot(t *testing.T) {
 				moi.expectOnServer(serverInbox, bankStatement.Subject)
 				moi.expectNotOnServer(serverArchive, bankStatement.Subject, "son expéditeur est protégé")
 				moi.expectShows(uids[0], bankStatement.Subject)
+
+				// The protected sender set to file into "Factures": its mail
+				// stays in the inbox, on the server and on the screen, no
+				// folder is made for it, and nothing is written in the
+				// history.
+				why := "son expéditeur " + energy + " est protégé, son pilote automatique ne doit pas le classer dans " + invoiceFolder
+				moi.expectOnServer(serverInbox, invoice.Subject)
+				moi.expectShows(uids[2], invoice.Subject)
+				if moi.hasFolder(invoiceFolder) {
+					app.failf("le serveur IMAP de %s ne devrait pas avoir de dossier %q, que seul le pilote automatique de %s, expéditeur protégé, aurait pu créer : il en a un (dossiers : %s)", moi.email, invoiceFolder, energy, strings.Join(moi.folders(), ", "))
+					moi.expectNotOnServer(invoiceFolder, invoice.Subject, why)
+				}
+				if lines := moi.historyLinesOf(uids[2]); len(lines) > 0 {
+					app.failf("l'historique de %s ne devrait rien montrer pour le mail n°%s %q (%s) : il montre %d ligne(s) (%s)", moi.email, uids[2], invoice.Subject, why, len(lines), describeHistory(lines))
+				}
 			},
 		},
 		{
