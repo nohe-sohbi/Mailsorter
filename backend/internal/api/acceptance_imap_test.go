@@ -230,6 +230,18 @@ type imapPerson struct {
 	// sending is the sending server next to the IMAP one, nil until
 	// withSendingServer (acceptance_smtp_test.go) gives the person one.
 	sending *fakeSMTP
+	// address is the address of the mailbox connected for this person,
+	// empty while it is their own (email): connectOtherMailbox sets it.
+	address string
+}
+
+// mailboxAddress is the address of the mailbox connected for this person:
+// the one their server knows them by, and the one they log in to it with.
+func (p *imapPerson) mailboxAddress() string {
+	if p.address != "" {
+		return p.address
+	}
+	return p.email
 }
 
 // imapPerson signs a person up the way POST /api/auth/mailbox leaves them: a
@@ -285,9 +297,9 @@ func (p *imapPerson) connectMailbox() {
 	now := time.Now()
 	if _, err := a.h.db.MailAccounts().InsertOne(ctx, models.MailAccount{
 		UserID:    p.email,
-		Provider:  provider.Detect(p.email).Key,
+		Provider:  provider.Detect(p.mailboxAddress()).Key,
 		Transport: string(provider.TransportIMAP),
-		Username:  p.email,
+		Username:  p.mailboxAddress(),
 		Secret:    sealed,
 		Host:      "127.0.0.1",
 		Port:      p.port,
@@ -297,6 +309,36 @@ func (p *imapPerson) connectMailbox() {
 	}); err != nil {
 		a.fatalf("enregistrement de la boîte IMAP de %s : %v", p.email, err)
 	}
+}
+
+// disconnectMailbox is "Déconnecter" on the /connect screen, once its
+// confirmation is accepted (handleDisconnect in Connect.js): DELETE
+// /api/mailbox. It stops the scenario when the server does not take it: what
+// follows a disconnection proves nothing if the mailbox is still connected.
+func (p *imapPerson) disconnectMailbox() {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodDelete, "/api/mailbox", nil)
+	if code != http.StatusOK {
+		a.fatalf("« Déconnecter » la boîte %s du compte %s a répondu %d (attendu 200) : %v : le scénario ne prouve rien", p.mailboxAddress(), p.email, code, out)
+	}
+}
+
+// connectOtherMailbox connects another mailbox to this person's account, in
+// place of the one they disconnected: addr, on a server of its own, empty,
+// connected at this instant, as connectMailbox writes it. From then on
+// receive, arrive and another mail program act on that one; the first
+// server keeps running, untouched, as a mailbox nobody reads from Mailsorter
+// any more.
+func (p *imapPerson) connectOtherMailbox(addr string) {
+	a := p.app
+	a.t.Helper()
+	if strings.EqualFold(addr, p.mailboxAddress()) {
+		a.fatalf("la boîte %s est déjà celle de %s : en brancher une autre demande une autre adresse (à corriger dans le scénario)", addr, p.email)
+	}
+	p.address = addr
+	p.startServer()
+	p.connectMailbox()
 }
 
 // The folders every person's server has, by the names a mail program shows.
@@ -312,7 +354,7 @@ const (
 func (p *imapPerson) startServer() {
 	a := p.app
 	a.t.Helper()
-	p.mailbox = imapmemserver.NewUser(p.email, imapTestPassword)
+	p.mailbox = imapmemserver.NewUser(p.mailboxAddress(), imapTestPassword)
 	for name, use := range map[string][]imapv2.MailboxAttr{
 		serverInbox:   nil,
 		serverArchive: {imapv2.MailboxAttrArchive},
@@ -405,7 +447,7 @@ func (p *imapPerson) deliver(mails []incoming, dates []time.Time) []string {
 		}
 		var raw strings.Builder
 		fmt.Fprintf(&raw, "From: %s\r\n", from)
-		fmt.Fprintf(&raw, "To: %s\r\n", p.email)
+		fmt.Fprintf(&raw, "To: %s\r\n", p.mailboxAddress())
 		fmt.Fprintf(&raw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 		fmt.Fprintf(&raw, "Date: %s\r\n", date.Format(time.RFC1123Z))
 		fmt.Fprintf(&raw, "Message-ID: <%d.%d@scenarios.test>\r\n", date.UnixNano(), i)
@@ -989,7 +1031,7 @@ func (p *imapPerson) otherProgram() *imapclient.Client {
 	if err != nil {
 		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s : %v", p.email, err)
 	}
-	if err := c.Login(p.email, imapTestPassword).Wait(); err != nil {
+	if err := c.Login(p.mailboxAddress(), imapTestPassword).Wait(); err != nil {
 		_ = c.Close()
 		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP de %s : %v", p.email, err)
 	}

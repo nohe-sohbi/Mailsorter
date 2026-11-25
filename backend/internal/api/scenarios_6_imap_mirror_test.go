@@ -24,6 +24,11 @@ package api
 // mail marked "non lu", and the counters above the inbox once a mail is
 // archived.
 //
+// The copy is of ONE mailbox. A person who disconnects theirs and connects
+// another starts again from nothing: numbers are given by each server, so the
+// new mailbox's mail n°1 is not the old one's, and neither the old mails nor
+// the AI's proposals made for them may be taken for the new ones.
+//
 // The second theme of this file, "Favoris et filtres", is what the copy must
 // hold besides the subject and the sender for the filters above the inbox to
 // answer from it: the star, the size, the attachments, and a read or a star
@@ -68,6 +73,17 @@ func syncedIMAPInbox(app *testApp, mails ...incoming) (*imapPerson, []string) {
 		}
 	}
 	return moi, uids
+}
+
+// otherMailbox is the second mailbox of the sentence about connecting
+// another one, and otherBoxMails what it holds: three mails its server
+// numbers 1, 2 and 3, as the first one's, under other subjects.
+const otherMailbox = "autre-boite@exemple.org"
+
+var otherBoxMails = []incoming{
+	{From: "Mutuelle <contact@mutuelle.fr>", Subject: "Votre remboursement de soins"},
+	{From: "Collège <vie-scolaire@college.fr>", Subject: "Réunion parents-professeurs"},
+	{From: "Club de sport <accueil@club-sport.fr>", Subject: "Votre abonnement est renouvelé"},
 }
 
 func TestScenarios_IMAPMirror(t *testing.T) {
@@ -402,6 +418,92 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 				}
 				if unread != 1 {
 					app.failf("juste après l'archivage du mail n°%s %q, non lu, le compteur « Non lus » de %s devrait montrer 1 mail, il en montre %d", uids[1], shopOrder.Subject, moi.email, unread)
+				}
+			},
+		},
+		{
+			phrase: "Après avoir débranché une boîte IMAP et branché une autre, ta boîte de réception ne montre que les mails de la nouvelle, et aucune proposition faite pour l'ancienne.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				old := []incoming{bankStatement, shopOrder, travelOffer}
+				moi, oldUIDs := syncedIMAPInbox(app, old...)
+				oldBox := moi.mailboxAddress()
+				oldSubject := map[string]string{}
+				for i, uid := range oldUIDs {
+					oldSubject[uid] = old[i].Subject
+				}
+
+				// "Trier avec l'IA" on the old mailbox: a proposal for each
+				// of its mails, waiting in the plan.
+				app.ai.willSay("archive", 0.95)
+				moi.analyze(oldUIDs...)
+				for i, uid := range oldUIDs {
+					if s := moi.proposalFor(uid); s.Action != "archive" {
+						app.fatalf("le plan de l'IA de %s devrait proposer d'archiver le mail n°%s %q de %s, il propose %q : le scénario ne prouve rien", moi.email, uid, old[i].Subject, oldBox, s.Action)
+					}
+				}
+
+				// "Déconnecter" on the /connect screen, then the other
+				// mailbox connected, holding three mails its server numbers
+				// as the first one's, then the sync the inbox runs as it
+				// opens (EmailContext.js).
+				moi.disconnectMailbox()
+				moi.connectOtherMailbox(otherMailbox)
+				newUIDs := moi.receive(otherBoxMails...)
+				for i, uid := range newUIDs {
+					moi.expectNumbered(uid, oldUIDs[i])
+				}
+
+				// Right after connecting it, before any sync: nothing of the
+				// old mailbox, whose mails are not in this one.
+				for _, m := range old {
+					moi.expectDoesNotShow(m.Subject, "c'est un mail de "+oldBox+", que tu as débranchée ; tu viens de brancher "+otherMailbox+", pas encore synchronisée")
+				}
+				moi.sync()
+
+				// The inbox: the new mailbox's mails, each once under its
+				// number, and nothing else.
+				shown := moi.wholeInbox()
+				for i, m := range otherBoxMails {
+					var numbers []string
+					for _, row := range shown {
+						if row.Subject == m.Subject {
+							numbers = append(numbers, row.MessageID)
+						}
+					}
+					if len(numbers) != 1 || numbers[0] != newUIDs[i] {
+						app.failf("après avoir branché %s, la boîte de réception de %s devrait montrer une fois son mail n°%s %q, elle le montre %d fois (n°%s ; elle montre : %s)", otherMailbox, moi.email, newUIDs[i], m.Subject, len(numbers), strings.Join(numbers, ", n°"), describeInbox(shown))
+					}
+				}
+				for _, row := range shown {
+					isNew := false
+					for _, m := range otherBoxMails {
+						isNew = isNew || row.Subject == m.Subject
+					}
+					if !isNew {
+						app.failf("après avoir débranché %s et branché %s, la boîte de réception de %s ne devrait montrer que les mails de %s, elle montre aussi le mail n°%s %q", oldBox, otherMailbox, moi.email, otherMailbox, row.MessageID, row.Subject)
+					}
+				}
+
+				// The plan: no proposal made for the old mailbox. One asked
+				// for now, on the new mailbox's mail n°2, is the control: a
+				// plan that shows nothing at all would pass the first check.
+				app.ai.willSay("delete", 0.95)
+				moi.analyze(newUIDs[1])
+				plan := moi.plan()
+				var proposed []string
+				controlShown := false
+				for _, s := range plan {
+					proposed = append(proposed, fmt.Sprintf("%q pour le n°%s", s.Action, s.EmailID))
+					if s.EmailID == newUIDs[1] && s.Action == "delete" {
+						controlShown = true
+					}
+					if s.Action == "archive" {
+						app.failf("après avoir débranché %s et branché %s, le plan de l'IA de %s ne devrait montrer aucune proposition faite pour l'ancienne boîte, il propose encore d'archiver le mail n°%s, proposition faite pour %q de %s", oldBox, otherMailbox, moi.email, s.EmailID, oldSubject[s.EmailID], oldBox)
+					}
+				}
+				if !controlShown {
+					app.failf("le plan de l'IA de %s devrait proposer de supprimer le mail n°%s %q de %s, qu'il vient d'analyser, il ne le propose pas (il propose : %s)", moi.email, newUIDs[1], otherBoxMails[1].Subject, otherMailbox, strings.Join(proposed, ", "))
 				}
 			},
 		},

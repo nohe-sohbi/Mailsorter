@@ -30,7 +30,10 @@ package api
 // its mails minutes back, before both; a sentence about mails the option
 // ranges has them arrive (arrive), and one about mails it leaves alone has
 // them arrive between the two moments where it can, so that only the moment
-// the sentence names keeps them in the inbox.
+// the sentence names keeps them in the inbox. And the very first sync of a
+// mailbox judges none: it starts as the mailbox is connected, and what it
+// finds was already there, whatever its date. So a sentence about what a sync
+// does with mails that arrive syncs once before they do.
 //
 // Filing a mail into a folder by a rule ("Étiqueter Factures" over IMAP) is
 // not here: it comes with the filing of a mail into a folder.
@@ -294,8 +297,10 @@ func TestScenarios_IMAPRules(t *testing.T) {
 					app.fatalf("l'option « appliquer mes règles automatiquement » de %s devrait être coupée tant que personne ne l'a activée, l'écran Règles la montre activée : le scénario ne prouve rien", moi.email)
 				}
 
-				// They arrive after the mailbox was connected: only the
-				// option being off keeps the rules from ranging them.
+				// They arrive after the mailbox was connected and after its
+				// first sync, which judges no arrival: only the option being
+				// off keeps the rules from ranging them.
+				moi.sync()
 				mails := []incoming{bankStatement, shopOrder, travelOffer}
 				uids := moi.arrive(mails...)
 				moi.sync()
@@ -363,8 +368,10 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				moi.setAutoApplyRules(true)
 
 				// Both ways a rule runs: at the sync that receives the mails,
-				// which arrive after the option is on, then "Appliquer mes
-				// règles".
+				// which arrive after the option is on and after the first
+				// sync of the mailbox, which judges no arrival, then
+				// "Appliquer mes règles".
+				moi.sync()
 				uids := moi.arrive(bankStatement, bankOffer, shopPoints, travelOffer)
 				moi.sync()
 				if got := moi.applyRules(); got.code != http.StatusOK {
@@ -526,8 +533,10 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				moi.rule("Jeter les offres de voyage", 2, rules.FieldFrom, rules.OpContains, "voyages.fr", toTrash)
 				moi.setAutoApplyRules(true)
 
-				// Two mails arrive, after the option is on, and the rules
-				// range them at the sync that receives them.
+				// Two mails arrive, after the option is on and after the
+				// first sync of the mailbox, which judges no arrival, and the
+				// rules range them at the sync that receives them.
+				moi.sync()
 				arrived := moi.arrive(shopOrder, travelOffer)
 				moi.sync()
 				moi.requireOnServer(serverArchive, shopOrder.Subject, "une règle vient de l'archiver à la synchronisation qui l'a reçu")
