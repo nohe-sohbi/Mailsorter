@@ -200,7 +200,14 @@ func TestHasAttachment(t *testing.T) {
 		{"a picture the HTML draws, named", multi("related", html, single("image", "png", named("image001.png"), contentID("<logo@x>"))), false},
 		{"a picture the HTML draws, inline", multi("related", html, single("image", "png", disposition("inline", "logo.png"), contentID("<logo@x>"))), false},
 		{"an inline part without a name", multi("mixed", text, single("image", "png", disposition("inline", ""))), false},
-		{"a text part with a name", multi("mixed", text, single("text", "plain", named("notes.txt"))), false},
+		// The reader lists it as a file, so the filter counts it.
+		{"a text part with a name", multi("mixed", text, single("text", "plain", named("notes.txt"))), true},
+		{"a forwarded mail without a name", multi("mixed", text, single("message", "rfc822")), true},
+		{"a name written the RFC 2231 way", multi("mixed", text, single("application", "pdf", func(p *imapv2.BodyStructureSinglePart) { p.Params["name*"] = "utf-8''Re%C3%A7u.pdf" })), true},
+		{"a photo attached from Gmail's web interface", multi("mixed", text, single("image", "jpeg", disposition("attachment", "photo.jpg"), contentID("<f_abc>"))), true},
+		{"a PDF inline with a Content-ID is not a picture", multi("mixed", text, single("application", "pdf", disposition("inline", "devis.pdf"), contentID("<f_abc>"))), true},
+		// Only the HTML would say it draws none: taken for one it draws.
+		{"a picture with a Content-ID the HTML may not draw", multi("mixed", text, single("image", "jpeg", disposition("inline", "photo.jpg"), contentID("<photo@iphone>"))), false},
 		{"a picture drawn, and a file", multi("mixed", multi("related", html, single("image", "png", contentID("<logo@x>"), named("logo.png"))), single("application", "pdf", disposition("ATTACHMENT", "contrat.pdf"))), true},
 		{"a single part that is a file", single("application", "pdf", disposition("attachment", "facture.pdf")), true},
 	}

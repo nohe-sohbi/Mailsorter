@@ -1,15 +1,13 @@
 package imap
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
+	"log"
 	"strings"
 
 	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/emersion/go-message/mail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 )
 
@@ -17,21 +15,27 @@ import (
 //
 // This is the other half of the payload discipline in list.go. The listing
 // deliberately downloads no body; this is what runs when a reader actually
-// opens a message, and it is the only place in the IMAP transport that pays
-// for the full MIME payload.
+// opens a message. It reads the text and the HTML, bounded, and the list of
+// the files (parts.go), never the files themselves: those are the download's
+// (attachments.go), one at a time.
 
-// maxBodyBytes caps what a single message may cost. Mail has no size limit that
-// anyone respects, and the whole payload is read into memory to be parsed, so a
-// message with a 40 MB inline image would otherwise be a memory spike per
-// reader that opens it.
+// maxBodyBytes caps the text, and the HTML, a single message may cost. Mail
+// has no size limit that anyone respects, and a newsletter with a 40 MB
+// inline image in its HTML would otherwise be a memory spike per reader that
+// opens it.
 const maxBodyBytes = 5 << 20 // 5 MiB
 
 // Message is one message with both renderings of its body. It mirrors what the
 // reader screen needs: the plain text is what the app stores and searches, the
-// HTML is what the user sees when the sender provided one.
+// HTML is what the user sees when the sender provided one, and the files are
+// what it offers to save.
 type Message struct {
 	models.Email
-	HTML string
+	HTML        string
+	Attachments []Attachment
+	// InlineImages maps the cid of each picture the HTML draws to the part
+	// number the screen downloads it under, to show it in the text.
+	InlineImages map[string]string
 }
 
 // Fetch returns one message, bodies included.
@@ -41,102 +45,84 @@ type Message struct {
 // passes markRead), and a fetch that set \Seen on its own would take that
 // decision away: previewing, or opening by mistake, would be indistinguishable
 // from reading.
+//
+// It reads the server's description of the message first, then the parts the
+// reader shows (readParts): a mail with a large file opens for the cost of
+// its text. When ctx ends, the connection is closed (within).
 func (c *Client) Fetch(ctx context.Context, folder, uid string) (Message, error) {
-	_ = ctx // see List on why the IMAP client takes no context
-
-	num, err := parseUID(uid)
+	var out Message
+	err := c.within(ctx, fmt.Sprintf("message uid %s in %q", uid, folder), func() error {
+		var err error
+		out, err = c.fetch(folder, uid)
+		return err
+	})
 	if err != nil {
 		return Message{}, err
 	}
-	if err := c.selectFolder(folder); err != nil {
-		return Message{}, err
-	}
-
-	msgs, err := c.c.Fetch(imapv2.UIDSetNum(num), &imapv2.FetchOptions{
-		UID:          true,
-		Flags:        true,
-		Envelope:     true,
-		InternalDate: true,
-		BodySection:  []*imapv2.FetchItemBodySection{{Peek: true}},
-	}).Collect()
-	if err != nil {
-		return Message{}, fmt.Errorf("imap: fetch message %s in %q: %w", uid, folder, err)
-	}
-	if len(msgs) == 0 {
-		return Message{}, fmt.Errorf("imap: no message with uid %s in %q", uid, folder)
-	}
-
-	out := Message{Email: emailFrom(msgs[0])}
-	out.Folder = folder
-
-	raw := wholeMessage(msgs[0])
-	if len(raw) == 0 {
-		return out, nil
-	}
-	plain, html := bodies(raw)
-	out.Body = plain
-	out.HTML = html
-	// The snippet is what the list shows when it has no body of its own. Gmail
-	// hands one over; IMAP does not, so it is taken from the text here rather
-	// than left empty.
-	out.Snippet = snippet(plain, html)
 	return out, nil
 }
 
-// wholeMessage picks the section that holds the entire message. The fetch asks
-// for one unqualified BODY.PEEK[], so there is exactly one and it is the whole
-// payload, but the reply is a slice and reading it as such costs nothing.
-func wholeMessage(msg *imapclient.FetchMessageBuffer) []byte {
-	for _, section := range msg.BodySection {
-		if len(section.Bytes) > 0 {
-			return section.Bytes
-		}
+func (c *Client) fetch(folder, uid string) (Message, error) {
+	msg, err := c.fetchOne(folder, uid, &imapv2.FetchOptions{
+		UID:           true,
+		Flags:         true,
+		Envelope:      true,
+		InternalDate:  true,
+		BodyStructure: &imapv2.FetchItemBodyStructure{Extended: true},
+		BodySection: []*imapv2.FetchItemBodySection{{
+			Specifier:    imapv2.PartSpecifierHeader,
+			HeaderFields: unsubscribeHeaders,
+			Peek:         true,
+		}},
+	})
+	if err != nil {
+		return Message{}, err
 	}
-	return nil
+
+	out := Message{Email: emailFrom(msg)}
+	out.Folder = folder
+
+	inside, err := c.readParts(folder, uid, msg.BodyStructure, true)
+	if err != nil {
+		return Message{}, err
+	}
+	out.Body = inside.plain
+	out.HTML = inside.html
+	// The snippet is what the list shows when it has no body of its own. Gmail
+	// hands one over; IMAP does not, so it is taken from the text here rather
+	// than left empty.
+	out.Snippet = snippet(inside.plain, inside.html)
+
+	// A file whose encoding nobody knows must not keep the person from
+	// reading the mail, or from saving the others: it is left out, and said
+	// here.
+	if inside.skipped != nil {
+		log.Printf("imap: message uid %s in %q: %v", uid, folder, inside.skipped)
+	}
+	out.Attachments = inside.files
+	out.InlineImages = inside.inlineImages()
+	return out, nil
 }
 
-// bodies walks the MIME tree and returns the plain-text and HTML renderings.
-//
-// Both are collected rather than the first one found: a well-formed message
-// carries the same content twice, and which one is usable depends on the
-// reader. Falling back to the HTML when there is no plain part is what stops a
-// marketing email, which routinely ships HTML only, from rendering blank.
-func bodies(raw []byte) (plain, html string) {
-	reader, err := mail.CreateReader(bytes.NewReader(raw))
+// fetchOne fetches the message uid in folder with these options. A folder
+// that holds no message under that number is ErrMessageGone: the list showed
+// it, so another mail client (the person's phone) moved or deleted it since.
+func (c *Client) fetchOne(folder, uid string, options *imapv2.FetchOptions) (*imapclient.FetchMessageBuffer, error) {
+	num, err := parseUID(uid)
 	if err != nil {
-		// Not every sender produces something the parser accepts. A message that
-		// cannot be walked is still worth showing as text rather than as an
-		// error, so the raw payload is the last resort.
-		return string(raw), ""
+		return nil, err
 	}
-
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			break
-		}
-		header, ok := part.Header.(*mail.InlineHeader)
-		if !ok {
-			// An attachment. Its bytes are not the body, and downloading them is
-			// the attachment route's job.
-			continue
-		}
-		content, err := io.ReadAll(io.LimitReader(part.Body, maxBodyBytes))
-		if err != nil {
-			continue
-		}
-		mediaType, _, _ := header.ContentType()
-		switch {
-		case strings.EqualFold(mediaType, "text/html") && html == "":
-			html = string(content)
-		case strings.EqualFold(mediaType, "text/plain") && plain == "":
-			plain = string(content)
-		}
+	if err := c.selectFolder(folder); err != nil {
+		return nil, err
 	}
-	return plain, html
+	msgs, err := c.c.Fetch(imapv2.UIDSetNum(num), options).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetch message %s in %q: %w", uid, folder, err)
+	}
+	if len(msgs) == 0 {
+		return nil, fmt.Errorf("%w: uid %s in %q", ErrMessageGone, uid, folder)
+	}
+	return msgs[0], nil
 }
 
 // snippet is the one-line preview the list shows. Gmail hands one over; IMAP
