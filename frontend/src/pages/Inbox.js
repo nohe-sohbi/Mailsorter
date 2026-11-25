@@ -444,9 +444,12 @@ function Inbox() {
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
-        // The one failure worth its own words: another mail client moved the
-        // mail meanwhile (404 with the reason). Anything else stays generic.
-        toast.error(err?.response?.status === 404 ? apiError(err, "Impossible d'annuler.") : "Impossible d'annuler");
+        // The failures worth their own words: another mail client moved the
+        // mail meanwhile (404 with the reason), or several copies of it are
+        // where Mailsorter put it (409 severalCopies). Anything else stays
+        // generic.
+        const own = err?.response?.status === 404 || err?.response?.data?.severalCopies;
+        toast.error(own ? apiError(err, "Impossible d'annuler.") : "Impossible d'annuler");
       }
     });
   };

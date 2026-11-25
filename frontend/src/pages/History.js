@@ -297,12 +297,15 @@ function History() {
       // 409 = déjà annulée ailleurs (autre onglet, autre session) : la ligne
       // affichée est périmée, on la remet d'aplomb au lieu de laisser un bouton
       // qui échouera à chaque clic.
-      if (err.response?.status === 409) {
+      // Sauf le 409 « plusieurs copies » (severalCopies) : rien n'a été annulé,
+      // la ligne cesse seulement de proposer « Annuler », comme pour un 404.
+      const severalCopies = Boolean(err.response?.data?.severalCopies);
+      if (err.response?.status === 409 && !severalCopies) {
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true, undoable: false } : e)));
       }
       // 404 = le mail n'est plus là où Mailsorter l'avait mis, ou l'action est
       // trop ancienne : le serveur ne la propose plus, la ligne non plus.
-      if (err.response?.status === 404) {
+      if (err.response?.status === 404 || severalCopies) {
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undoable: false } : e)));
       }
       toast.error(apiError(err, 'Annulation impossible.'));

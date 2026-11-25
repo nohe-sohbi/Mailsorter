@@ -346,6 +346,13 @@ function errorMessage(err, { sync = false } = {}) {
   if (status === 501) {
     return serverSaid || "Cette action n'est pas encore disponible sur cette boîte.";
   }
+  // "Synchroniser" answers every failure with a French sentence for the user
+  // (SyncEmails): its own envelope ({ error, status }) is shown as is, "votre
+  // boîte n'a pas répondu" included. A 5xx without it (the proxy, a backend
+  // that is down) stays generic below.
+  if (sync && status >= 500 && raw && typeof raw === 'object' && typeof raw.error === 'string' && raw.error.trim()) {
+    return raw.error.trim();
+  }
   if (status === 502 || status === 503 || status === 504) {
     return "Le serveur ne répond pas pour le moment. Réessayez dans un instant.";
   }
