@@ -938,6 +938,7 @@ function Inbox() {
         const snoozed = [];
         let failed = 0;
         let protectedSkipped = 0;
+        let hardError = null;
         for (let i = 0; i < ids.length; i += BATCH_LIMIT) {
           const chunk = ids.slice(i, i + BATCH_LIMIT);
           try {
@@ -947,6 +948,7 @@ function Inbox() {
             protectedSkipped += data.protectedSkipped || 0;
           } catch (err) {
             failed += chunk.length;
+            hardError = err;
           }
         }
 
@@ -957,8 +959,12 @@ function Inbox() {
         setSelectedEmails([]);
 
         if (snoozed.length === 0) {
+          // The server says why when it refused the whole selection (the
+          // protected senders could not be read).
           toast.error(
-            protectedSkipped
+            hardError
+              ? apiError(hardError, "Aucun email n'a pu être reporté.")
+              : protectedSkipped
               ? 'Aucun email reporté : tous sont protégés.'
               : "Aucun email n'a pu être reporté."
           );
@@ -1249,7 +1255,7 @@ function Inbox() {
       if (alsoArchive || data.archived) fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
       if (err.response?.status === 422) toast.error("Cet expéditeur ne propose pas de désabonnement automatique");
-      else toast.error('Désabonnement impossible. Réessayez.');
+      else toast.error(apiError(err, 'Désabonnement impossible. Réessayez.'));
     } finally {
       setUnsubscribing(null);
     }
@@ -1310,7 +1316,7 @@ function Inbox() {
       toast.success(`${response.data.applied} email${response.data.applied > 1 ? 's' : ''} traité${response.data.applied > 1 ? 's' : ''}`);
       fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
-      toast.error('Traitement en masse impossible');
+      toast.error(apiError(err, 'Traitement en masse impossible'));
     }
   };
 

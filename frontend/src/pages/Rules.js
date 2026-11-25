@@ -641,8 +641,8 @@ function Rules() {
       else toast.info(`Aucun email à traiter (${data.scanned} analysés).`);
       setPreview(null);
       load();
-    } catch {
-      toast.error("Impossible d'appliquer les règles.");
+    } catch (err) {
+      toast.error(apiError(err, "Impossible d'appliquer les règles."));
     } finally {
       setApplying(false);
     }

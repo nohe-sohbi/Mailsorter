@@ -52,13 +52,13 @@ export function apiError(err, fallback = 'Une erreur est survenue.') {
   return fallback;
 }
 
-// The analysis routes answer 503 when the instance runs no AI at all. Said in
-// one French sentence everywhere, rather than the server's raw text or a
-// "réessayez" that cannot help.
+// The analysis routes answer 503 when the instance runs no AI at all, or
+// when the protected senders could not be read: the server says which in
+// French, and the screen shows it rather than a "réessayez" that cannot help.
 export const NO_AI_MESSAGE = "Aucune IA n'est configurée sur cette instance.";
 
 export function aiError(err, fallback) {
-  return err?.response?.status === 503 ? NO_AI_MESSAGE : fallback;
+  return err?.response?.status === 503 ? apiError(err, NO_AI_MESSAGE) : fallback;
 }
 
 export const authService = {
