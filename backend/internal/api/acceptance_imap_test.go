@@ -1541,19 +1541,80 @@ func (p *imapPerson) twiceAtOnce(path string, body interface{}, what string) [2]
 // changes, Mailsorter can only learn from the server, which is what the
 // sentences about a mailbox used elsewhere are about. The caller closes it.
 func (p *imapPerson) otherProgram() *imapclient.Client {
+	p.app.t.Helper()
+	return p.programOn(p.port, p.mailboxAddress())
+}
+
+// programOn is otherProgram on the mailbox at this address, on the server
+// listening on port: the one connected now, or one connected before.
+func (p *imapPerson) programOn(port int, address string) *imapclient.Client {
 	a := p.app
 	a.t.Helper()
-	c, err := imapclient.DialTLS(net.JoinHostPort("127.0.0.1", fmt.Sprint(p.port)), &imapclient.Options{
+	c, err := imapclient.DialTLS(net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), &imapclient.Options{
 		TLSConfig: &tls.Config{ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12},
 	})
 	if err != nil {
-		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s : %v", p.email, err)
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s (%s) : %v", p.email, address, err)
 	}
-	if err := c.Login(p.mailboxAddress(), p.appPasswordOnServer()).Wait(); err != nil {
+	if err := c.Login(address, p.appPasswordOnServer()).Wait(); err != nil {
 		_ = c.Close()
-		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP de %s : %v", p.email, err)
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP %s de %s : %v", address, p.email, err)
 	}
 	return c
+}
+
+// connectedBox is a mailbox of this person, as their mail program reaches
+// it: its server and its address. Kept while it is the one connected
+// (connectedNow), it is still there to look at once another one replaces it
+// (connectOtherMailbox leaves its server running, untouched), when
+// Mailsorter no longer reaches it.
+type connectedBox struct {
+	p       *imapPerson
+	address string
+	port    int
+	user    *imapmemserver.User
+}
+
+// connectedNow is the mailbox connected for this person now.
+func (p *imapPerson) connectedNow() connectedBox {
+	return connectedBox{p: p, address: p.mailboxAddress(), port: p.port, user: p.mailbox}
+}
+
+// connectAgain connects again a mailbox this person connected before and
+// disconnected since: the same server, holding what it holds, connected at
+// this instant, as connectMailbox writes it, with the app password it seals.
+// From then on receive, arrive and another mail program act on that one.
+func (p *imapPerson) connectAgain(b connectedBox) {
+	p.app.t.Helper()
+	if b.p != p {
+		p.app.fatalf("la boîte %s n'est pas une boîte de %s (à corriger dans le scénario)", b.address, p.email)
+	}
+	p.address, p.port, p.mailbox = b.address, b.port, b.user
+	if b.address == p.email {
+		p.address = ""
+	}
+	p.passwordMu.Lock()
+	p.newPassword = ""
+	p.passwordMu.Unlock()
+	p.connectMailbox()
+}
+
+// subjectsIn returns the subjects of the mails in this folder of the mailbox,
+// as the person's mail program lists them (opened read-only, read from the
+// envelopes, so looking marks nothing read), and whether the folder exists.
+func (b connectedBox) subjectsIn(folder string) ([]string, bool) {
+	p := b.p
+	p.app.t.Helper()
+	c := p.programOn(b.port, b.address)
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		return nil, false
+	}
+	var subjects []string
+	for _, m := range p.mailsIn(c, folder) {
+		subjects = append(subjects, m.subject)
+	}
+	return subjects, true
 }
 
 // serverUID reads back a number receive returned.
