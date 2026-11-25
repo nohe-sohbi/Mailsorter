@@ -410,6 +410,14 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 			status: validated,
 			run: func(t *testing.T, app *testApp) {
 				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+				// The mailbox as the /connect screen shows it, with a
+				// sending server on file: "telle quelle" is this, compared
+				// after each attempt.
+				moi.withSendingServer()
+				box := moi.connectScreenMailbox()
+				if box.ID == "" || box.CreatedAt == "" || box.SMTPHost == "" || box.SMTPPort == 0 {
+					app.fatalf("l'écran de connexion de %s devrait montrer la boîte branchée avec son identifiant, sa date et son serveur d'envoi, il montre %+v : le scénario ne prouve rien", moi.email, box)
+				}
 
 				// Something ranged before: the third mail archived, with its
 				// line in the history.
@@ -432,6 +440,7 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 					if now := moi.storedAppPassword(); now != stored {
 						app.failf("%s, un mot de passe d'application que le fournisseur refuse ne devrait pas être enregistré pour %s, il l'a été", when, moi.email)
 					}
+					moi.expectSameMailbox(box, when+", après un mot de passe d'application refusé")
 				}
 				// While the stored one still works: the mailbox goes on
 				// syncing with it, which it could not with the wrong one.
@@ -454,6 +463,7 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 				if got := moi.saveAppPassword(fresh); got.code != http.StatusOK {
 					app.fatalf("enregistrer le nouveau mot de passe d'application de %s, que le fournisseur accepte, devrait répondre 200, le serveur a répondu %s", moi.email, got)
 				}
+				moi.expectSameMailbox(box, "après l'enregistrement du bon mot de passe d'application")
 				if code, out := moi.syncAnswer(); code != http.StatusOK {
 					app.failf("avec le nouveau mot de passe d'application, « Synchroniser » devrait repartir pour %s, il a répondu %d : %v", moi.email, code, out)
 				}

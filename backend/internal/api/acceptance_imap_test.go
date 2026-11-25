@@ -779,6 +779,68 @@ func (p *imapPerson) saveAppPassword(password string) answer {
 	return answer{code: code, body: out}
 }
 
+// connectedMailbox is the mailbox the /connect screen shows as connected for
+// this person (GET /api/mailbox, loadMailbox in Connect.js), as far as the
+// sentences about keeping it look: which row it is, since when, and the two
+// servers it is reached on. Kept as the answer wrote them, so that a value
+// written again, even the same instant, compares as what it is.
+type connectedMailbox struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"createdAt"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	TLS       string `json:"tls"`
+	SMTPHost  string `json:"smtpHost"`
+	SMTPPort  int    `json:"smtpPort"`
+	SMTPTLS   string `json:"smtpTls"`
+}
+
+// connectScreenMailbox is connectedMailbox as the screen loads it now. A
+// screen that shows no mailbox stops the scenario.
+func (p *imapPerson) connectScreenMailbox() connectedMailbox {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/mailbox", nil)
+	if code != http.StatusOK || out["mailbox"] == nil {
+		a.fatalf("l'écran de connexion de %s ne montre pas de boîte branchée : GET /api/mailbox a répondu %d : %v", p.email, code, out)
+	}
+	raw, err := json.Marshal(out["mailbox"])
+	if err != nil {
+		a.fatalf("réponse de GET /api/mailbox illisible pour %s : %v", p.email, err)
+	}
+	var box connectedMailbox
+	if err := json.Unmarshal(raw, &box); err != nil {
+		a.fatalf("réponse de GET /api/mailbox illisible pour %s : %v (reçu : %s)", p.email, err, raw)
+	}
+	return box
+}
+
+// expectSameMailbox checks that the /connect screen shows the very mailbox it
+// showed before: the same row, connected at the same instant, on the same
+// IMAP server and the same sending server. when says at which moment.
+func (p *imapPerson) expectSameMailbox(before connectedMailbox, when string) {
+	a := p.app
+	a.t.Helper()
+	now := p.connectScreenMailbox()
+	for _, f := range []struct {
+		what    string
+		was, is interface{}
+	}{
+		{"son identifiant", before.ID, now.ID},
+		{"sa date de branchement", before.CreatedAt, now.CreatedAt},
+		{"son serveur IMAP", before.Host, now.Host},
+		{"le port de son serveur IMAP", before.Port, now.Port},
+		{"le chiffrement de son serveur IMAP", before.TLS, now.TLS},
+		{"son serveur d'envoi", before.SMTPHost, now.SMTPHost},
+		{"le port de son serveur d'envoi", before.SMTPPort, now.SMTPPort},
+		{"le chiffrement de son serveur d'envoi", before.SMTPTLS, now.SMTPTLS},
+	} {
+		if f.was != f.is {
+			a.failf("%s, l'écran de connexion de %s devrait montrer la même boîte qu'avant, %s a changé : %v avant, %v maintenant", when, p.email, f.what, f.was, f.is)
+		}
+	}
+}
+
 // storedAppPassword is the app password stored for this person's mailbox, as
 // the database holds it, sealed: what the app will log in with next. Two
 // readings compare equal only if nothing was stored between them, since
