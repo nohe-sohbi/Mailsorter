@@ -87,6 +87,10 @@ const (
 	maxProtectedNoteLength  = 500 // Upper bound for user note
 )
 
+// unreadableSenderProtectMessage is "Protéger" on a mail whose From names no
+// sender (protect.Address): nothing can be protected from it.
+const unreadableSenderProtectMessage = "L'adresse de cet expéditeur est illisible : il ne peut pas être protégé depuis ce mail."
+
 // CreateProtected adds a sender (full address or whole domain) to the protected
 // list. The value is normalized and classified server-side; duplicates are a
 // no-op thanks to the unique {userId, value} index.
@@ -102,7 +106,21 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	value, kind := protect.NormalizeEntry(in.Value)
+	// Two ways in. From a mail, the sender's address exactly as the shield
+	// will read the next mails (protect.EntryFromMail): retouched (an
+	// apostrophe trimmed, a quote dropped), it protected nobody while the
+	// screen said "protégé". Typed in the settings, a value normalized and
+	// classified (protect.NormalizeEntry).
+	var value, kind string
+	if in.FromMail {
+		value, kind = protect.EntryFromMail(in.Value), protect.KindAddress
+		if value == "" {
+			writeError(w, http.StatusBadRequest, unreadableSenderProtectMessage)
+			return
+		}
+	} else {
+		value, kind = protect.NormalizeEntry(in.Value)
+	}
 	if value == "" || len(value) > maxProtectedValueLength {
 		writeError(w, http.StatusBadRequest, "Adresse ou domaine invalide")
 		return

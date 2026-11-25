@@ -97,10 +97,18 @@ var fromParser = mail.AddressParser{WordDecoder: &mime.WordDecoder{
 // address gives no address at all, "": no address is guessed out of it, so
 // nothing is swept, unsubscribed or made a rule of in its name. That includes
 // a From naming several authors ("patron@victime.fr, Lettre
-// <lettre@journal.fr>", a group): taking one of them for the sender would
-// let the others sweep, or unprotect, the mail.
+// <lettre@journal.fr>") and a From in group syntax, whatever its members
+// ("Undisclosed: a@x.fr;", "G:;, Lettre <lettre@journal.fr>": groupSyntax):
+// taking one of them for the sender would let the others sweep, or
+// unprotect, the mail.
 func Address(raw string) string {
-	s := strings.TrimSpace(raw)
+	// A header passed on in latin-1 is no valid UTF-8, which net/mail refuses
+	// whole: its bad bytes (in a name, as a rule) are replaced first, so the
+	// address is still read.
+	s := strings.ToValidUTF8(strings.TrimSpace(raw), "\uFFFD")
+	if groupSyntax(s) {
+		return ""
+	}
 	a, err := fromParser.Parse(s)
 	if err != nil {
 		if list, lErr := fromParser.ParseList(s); lErr == nil && len(list) > 1 {
@@ -118,12 +126,49 @@ func Address(raw string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
 }
 
+// groupSyntax reports whether a header uses RFC 5322's group syntax
+// ("phrase: members;"): a ":" and, after it, a ";", outside quoted strings
+// and comments. net/mail reads a group of one as its member, so it is caught
+// before. "News: daily <n@b.fr>" has no ";" and is no group.
+func groupSyntax(s string) bool {
+	colon, inQuote, depth := false, false, 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inQuote:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inQuote = false
+			}
+		case depth > 0:
+			if c == '\\' {
+				i++
+			} else if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+			}
+		case c == '"':
+			inQuote = true
+		case c == '(':
+			depth++
+		case c == ':':
+			colon = true
+		case c == ';' && colon:
+			return true
+		}
+	}
+	return false
+}
+
 // withQuotedName is the header s with its display name in quotes, for a
 // header net/mail refused, and whether it is one this applies to: a name
 // before its last "<", holding no "<", ">" or quote of its own (so nothing in
 // it is an address or a quoted string the sender wrote), nor an "@" next to a
-// "," or a ";" (an address, then another author: "patron@victime.fr, Doe,
-// John <j@x.com>"), and after it one "<...>" closing the header, with no
+// ",", a ";" or a ":" (an address, then another author: "patron@victime.fr,
+// Doe, John <j@x.com>", or a group: "Liste: a@x.fr <b@x.fr>"), and after it
+// one "<...>" closing the header, with no
 // other angle bracket inside. Anything else ("<boss@corp.com>
 // <spam@evil.io>", a quoted local part followed by more) is not read at all.
 func withQuotedName(s string) (string, bool) {
@@ -136,7 +181,7 @@ func withQuotedName(s string) (string, bool) {
 	if name == "" || strings.ContainsAny(name, `<>"`) || strings.ContainsAny(inner, "<>") {
 		return "", false
 	}
-	if strings.Contains(name, "@") && strings.ContainsAny(name, ",;") {
+	if strings.Contains(name, "@") && strings.ContainsAny(name, ",;:") {
 		return "", false
 	}
 	return `"` + strings.ReplaceAll(name, `\`, `\\`) + `" ` + s[open:], true
@@ -158,10 +203,20 @@ func Domain(raw string) string {
 	return strings.Trim(addr, "@")
 }
 
+// EntryFromMail is what "Protéger" on a mail (the card, the reader, the plan)
+// stores: the sender's address exactly as NormalizeAddress reads it out of
+// the mail's From, which is what Match reads the next mails with. Nothing else
+// is touched ('patron@victime.fr' is an address, apostrophes included). ""
+// when From names no sender: it cannot be protected from that mail.
+func EntryFromMail(from string) string {
+	return NormalizeAddress(from)
+}
+
 // NormalizeEntry canonicalizes a value the user typed into the protection list
-// and classifies it. An input with a local part ("a@b.com") becomes an address
-// entry; a bare domain ("b.com" or "@b.com") becomes a domain entry. Returns an
-// empty value when nothing usable remains.
+// (the settings screen) and classifies it. An input with a local part
+// ("a@b.com") becomes an address entry; a bare domain ("b.com" or "@b.com")
+// becomes a domain entry. Returns an empty value when nothing usable remains.
+// "Protéger" on a mail does not come here: EntryFromMail.
 func NormalizeEntry(raw string) (value, kind string) {
 	s := strings.TrimSpace(raw)
 	// Apostrophes around what was typed ('jean@x.fr') are the typist's, not
@@ -177,8 +232,10 @@ func NormalizeEntry(raw string) (value, kind string) {
 	if addr := NormalizeAddress(s); addr != "" {
 		return addr, KindAddress
 	}
-	// A header that does not read gives nothing: no address is guessed.
-	if strings.Contains(s, "<") {
+	// A header that does not read gives nothing: no address is guessed. Nor
+	// does a typed value that does not read and holds what only a header or a
+	// list would (",", ";", ":", a quote).
+	if strings.ContainsAny(s, `<,;:"`) {
 		return "", ""
 	}
 	s = strings.ToLower(strings.TrimSpace(s))

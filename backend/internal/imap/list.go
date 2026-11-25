@@ -10,11 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
 )
 
@@ -34,10 +36,12 @@ import (
 // as long as that takes.
 const maxListLimit = 200
 
-// unsubscribeHeaders are the two the listing reads. Named here so the FETCH
-// asks for them specifically: BODY[HEADER] pulls every header a sender wrote,
-// which on marketing mail is routinely larger than the text of the message.
-var unsubscribeHeaders = []string{"List-Unsubscribe", "List-Unsubscribe-Post"}
+// listedHeaders are the headers the listing and the reader read besides the
+// envelope: the two unsubscribe ones, and From as its sender wrote it
+// (senderFrom). Named here so the FETCH asks for them specifically:
+// BODY[HEADER] pulls every header a sender wrote, which on marketing mail is
+// routinely larger than the text of the message.
+var listedHeaders = []string{"From", "List-Unsubscribe", "List-Unsubscribe-Post"}
 
 // List returns the newest messages in a folder, newest first.
 //
@@ -97,7 +101,7 @@ func listOptions() *imapv2.FetchOptions {
 		InternalDate: true,
 		BodySection: []*imapv2.FetchItemBodySection{{
 			Specifier:    imapv2.PartSpecifierHeader,
-			HeaderFields: unsubscribeHeaders,
+			HeaderFields: listedHeaders,
 			// Peek is load-bearing and easy to miss. A plain BODY[...] fetch
 			// sets \Seen on every message it touches, so a listing without it
 			// marks the entire inbox read just by rendering it, and the user
@@ -180,7 +184,7 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	if env := msg.Envelope; env != nil {
 		email.Subject = env.Subject
 		email.HeaderMessageID = env.MessageID
-		email.From = formatAddress(env.From)
+		email.From = senderFrom(env.From, headerValue(msg, "From"))
 		email.To = addressList(env.To)
 		email.ReceivedDate = env.Date
 	}
@@ -207,6 +211,23 @@ func flagNames(flags []imapv2.Flag) []string {
 		as = append(as, string(f))
 	}
 	return as
+}
+
+// senderFrom is the From the copy stores for a message: the envelope's, as
+// formatAddress writes it (readable, names decoded), unless the header as its
+// sender wrote it (raw) names another sender, or none, when read the way the
+// Gmail API's header is (protect.Address): then the header itself, made valid
+// UTF-8. So the same mail names the same sender on both transports, whatever
+// the server made of it in the envelope: one server reads a group of one as
+// its member, another an unquoted "Doe, John <j@x.com>" as no address at all.
+// Without the header (a server that did not send it), the envelope's.
+func senderFrom(env []imapv2.Address, raw string) string {
+	formatted := formatAddress(env)
+	raw = strings.ToValidUTF8(raw, "\uFFFD")
+	if raw == "" || protect.Address(formatted) == protect.Address(raw) {
+		return formatted
+	}
+	return raw
 }
 
 // formatAddress renders a sender the way the rest of the app expects to read
@@ -263,8 +284,20 @@ func formatOne(a imapv2.Address) string {
 	return quoteName(name) + ` <` + addr + `>`
 }
 
-// quoteName is a display name as a quoted string.
+// quoteName is a display name as a quoted string. A name that is not valid
+// UTF-8 (a latin-1 header the server passed on as it is) has its bad bytes
+// replaced, and a control character (an encoded line break) becomes a space:
+// in quotes, either would make the whole header unreadable to net/mail, and
+// the sender would have no address on IMAP while the same mail has one over
+// the Gmail API.
 func quoteName(name string) string {
+	name = strings.ToValidUTF8(name, "\uFFFD")
+	name = strings.Map(func(r rune) rune {
+		if r != '\t' && unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, name)
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(name, `\`, `\\`), `"`, `\"`) + `"`
 }
 

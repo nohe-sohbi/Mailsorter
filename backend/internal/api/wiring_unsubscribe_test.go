@@ -735,3 +735,60 @@ func TestAcceptance_ProtectingAQuotedLocalPartSparesItIMAP(t *testing.T) {
 	moi.expectOnServer(serverInbox, jean.Subject)
 	moi.expectOnServer(serverArchive, other.Subject)
 }
+
+// protectFromMail is "Protéger" in the reader, on a mail whose From is from:
+// POST /api/protected with the header and fromMail, as handleProtect sends
+// it. It returns the answer, whatever it is.
+func protectFromMail(a *testApp, token, from string) answer {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodPost, "/api/protected",
+		map[string]interface{}{"value": from, "fromMail": true})
+	return answer{code: code, body: out}
+}
+
+// 'patron@victime.fr' is an address, apostrophes included: "Protéger" on its
+// mail protects exactly it, and an archived selection spares the mail. The
+// typed-entry path trims the apostrophes, and protected nobody from there.
+func TestAcceptance_ProtectingFromTheMailKeepsTheAddressAsReadGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const patron = "'patron@victime.fr'"
+	ids := app.receiveAndSync(incoming{From: patron, Subject: "Du patron"}, incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"})
+	if got := protectFromMail(app, app.token, patron); got.code != http.StatusCreated && got.code != http.StatusOK {
+		app.fatalf("« Protéger » sur le mail de %s a répondu %s", patron, got)
+	}
+
+	done := app.batchAction("archive", ids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé depuis ce mail, il en épargne %d : %v", patron, n, done)
+	}
+	app.expectInInbox(ids[0])
+	app.expectNotInInbox(ids[1])
+}
+
+func TestAcceptance_ProtectingFromTheMailKeepsTheAddressAsReadIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	patron := incoming{From: "'patron@victime.fr'", Subject: "Du patron"}
+	other := incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"}
+	moi, uids := syncedIMAPInbox(app, patron, other)
+	row, _ := moi.shownRow(uids[0])
+	if got := protectFromMail(app, moi.token, row.From); got.code != http.StatusCreated && got.code != http.StatusOK {
+		app.fatalf("« Protéger » sur le mail de %s a répondu %s", row.From, got)
+	}
+
+	done := moi.actOnSelection("archive", uids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé depuis ce mail, il en épargne %d : %v", row.From, n, done)
+	}
+	moi.expectOnServer(serverInbox, patron.Subject)
+	moi.expectOnServer(serverArchive, other.Subject)
+}
+
+// A From that names no sender cannot be protected from its mail: the answer
+// says so, and nothing is stored.
+func TestAcceptance_ProtectingFromAMailWithNoSenderIsRefused(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	got := protectFromMail(app, app.token, twoAuthors)
+	if got.code != http.StatusBadRequest || got.said() != unreadableSenderProtectMessage {
+		app.failf("« Protéger » sur un mail à deux auteurs devrait être refusé (400, %q), il a répondu %s", unreadableSenderProtectMessage, got)
+	}
+}

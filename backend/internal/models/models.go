@@ -273,6 +273,10 @@ type ProtectedSender struct {
 type ProtectedSenderInput struct {
 	Value string `json:"value"`
 	Note  string `json:"note"`
+	// FromMail says Value is the From header of a mail ("Protéger" in the
+	// reader): the sender's address is read out of it exactly
+	// (protect.EntryFromMail), rather than normalized as a typed entry.
+	FromMail bool `json:"fromMail,omitempty"`
 }
 
 // ============================================

@@ -3,91 +3,48 @@ package protect
 import (
 	"strings"
 	"testing"
+
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect/protecttest"
 )
 
-// realHeaders is From headers as the two transports hand them over, with the
-// address Address reads out of each ("" for none). The Gmail API gives the
-// header as the sender wrote it; the IMAP listing writes it back as
-// "Name" <address> (formatAddress), its local part quoted when needed.
-var realHeaders = []struct {
-	name, from, want string
-}{
-	// Ordinary headers, both transports.
-	{"quoted name", `"Nom" <a@b.fr>`, "a@b.fr"},
-	{"bare address", "a@b.fr", "a@b.fr"},
-	{"angle address alone", "<a@b.fr>", "a@b.fr"},
-	{"a comment after", "Nom <a@b.fr> (commentaire)", "a@b.fr"},
-	{"RFC 2047 name in UTF-8", "=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>", "news@reseau.fr"},
-	{"RFC 2047 name in windows-1252", "=?windows-1252?q?Caf=E9?= <cafe@b.fr>", "cafe@b.fr"},
-	{"RFC 2047 name with a comma inside", "=?utf-8?q?Doe=2C_John?= <j@x.com>", "j@x.com"},
-	{"case kept", "Nom <A@B.FR>", "A@B.FR"},
-	{"surrounding spaces", "  bare@acme.com  ", "bare@acme.com"},
-	{"escaped quote in the name", `"a\" <b@c.fr" <real@journal.fr>`, "real@journal.fr"},
-	// Gmail headers whose name nobody quoted: read again with it in quotes.
-	{"the address as the name", "john@x.com <john@x.com>", "john@x.com"},
-	{"a comma in the name", "Doe, John <j@x.com>", "j@x.com"},
-	{"brackets in the name", "LinkedIn [Jobs] <jobs@linkedin.com>", "jobs@linkedin.com"},
-	{"a colon in the name", "News: daily <n@b.fr>", "n@b.fr"},
-	{"another address as the name", "boss@corp.com <spam@evil.io>", "spam@evil.io"},
-	// The traps: never the address of the display name.
-	{"an address in a quoted name", `"<patron@victime.fr>" <lettre@journal.fr>`, "lettre@journal.fr"},
-	{"a name and address in a quoted name", `"Boss <boss@corp.com>" <spam@evil.io>`, "spam@evil.io"},
-	{"an address in a comment", "<vrai@x.fr> (<boss@corp.com>)", "vrai@x.fr"},
-	{"a quoted local part", `"<boss@corp.com>"@evil.io`, `"<boss@corp.com>"@evil.io`},
-	{"a quoted local part in angles", `Spam <"<boss@corp.com>"@evil.io>`, `"<boss@corp.com>"@evil.io`},
-	{"a space in a quoted local part", `"a b"@x.com`, `"a b"@x.com`},
-	// What does not read as one address gives none.
-	{"two angle addresses", "<patron@victime.fr> <lettre@journal.fr>", ""},
-	{"an unquoted name holding an angle address", "Patron <patron@victime.fr> <lettre@journal.fr>", ""},
-	{"a quoted local part, then a comma", `"<boss@corp.com>"@evil.io,`, ""},
-	{"a quoted local part unquoted", "<boss@corp.com>@evil.io", ""},
-	{"trailing words", "Name <x@y.com> trail", ""},
-	{"unterminated", "Broken <unterminated", ""},
-	{"no address", "No Address Here", ""},
-	{"two addresses", "a@x.fr, b@x.fr", ""},
-	// Several authors name no sender: none of them is taken for it.
-	{"two authors, the second with a name", "patron@victime.fr, Lettre <lettre@journal.fr>", ""},
-	{"two authors with names", "Patron <patron@victime.fr>, Lettre <lettre@journal.fr>", ""},
-	{"a group, then an author", "Undisclosed: a@x.fr; <b@x.fr>", ""},
-	{"an author, then a name nobody quoted", "patron@victime.fr, Doe, John <j@x.com>", ""},
-	{"a group in a name nobody quoted", "Liste; a@x.fr <b@x.fr>", ""},
-	{"the IMAP listing's list of two", `patron@victime.fr, "Lettre" <lettre@journal.fr>`, ""},
-	{"the IMAP listing's name without an address", `"patron@victime.fr"`, ""},
-	{"empty", "", ""},
-}
-
 func TestAddressOfRealHeaders(t *testing.T) {
-	for _, tc := range realHeaders {
-		t.Run(tc.name, func(t *testing.T) {
-			got := Address(tc.from)
-			if got != tc.want {
-				t.Errorf("Address(%q) = %q, want %q", tc.from, got, tc.want)
+	for _, tc := range protecttest.Headers {
+		t.Run(tc.Name, func(t *testing.T) {
+			got := Address(tc.From)
+			if got != tc.Want {
+				t.Errorf("Address(%q) = %q, want %q", tc.From, got, tc.Want)
 			}
 			if got != "" && Address(got) != got {
-				t.Errorf("Address(Address(%q)) = %q, want it to read back as %q", tc.from, Address(got), got)
+				t.Errorf("Address(Address(%q)) = %q, want it to read back as %q", tc.From, Address(got), got)
 			}
-			if n := NormalizeAddress(tc.from); n != strings.ToLower(tc.want) {
-				t.Errorf("NormalizeAddress(%q) = %q, want %q", tc.from, n, strings.ToLower(tc.want))
+			if n := NormalizeAddress(tc.From); n != strings.ToLower(tc.Want) {
+				t.Errorf("NormalizeAddress(%q) = %q, want %q", tc.From, n, strings.ToLower(tc.Want))
 			}
 		})
 	}
 }
 
-// "Protéger" on a mail stores what NormalizeEntry reads of its From, and the
-// shield compares senders with Match: for every header that reads, the one
-// must find the other. Trimmed of its quotes, "jean dupont"@exemple.fr was
-// stored jean dupont"@exemple.fr and protected nobody.
+// "Protéger" on a mail stores EntryFromMail of its From, and the shield
+// compares senders with Match: for every header that names a sender, the one
+// must find the other. 'patron@victime.fr' is such an address, apostrophes
+// included: trimmed (the typed-entry path), it protected nobody.
 func TestProtectingAMailShieldsItsSender(t *testing.T) {
-	froms := []string{`"a b"@x.com`, `"Ami" <"a b"@x.com>`, `"<boss@corp.com>"@evil.io`, `"jean dupont"@exemple.fr`}
-	for _, tc := range realHeaders {
-		if tc.want != "" {
-			froms = append(froms, tc.from)
+	froms := []string{`"a b"@x.com`, `"Ami" <"a b"@x.com>`, `"<boss@corp.com>"@evil.io`, `"jean dupont"@exemple.fr`, "'patron@victime.fr'"}
+	for _, tc := range protecttest.Headers {
+		if tc.Want != "" {
+			froms = append(froms, tc.From)
 		}
 	}
 	for _, from := range froms {
-		value, kind := NormalizeEntry(from)
-		if kind != KindAddress || !Match(from, []string{value}) {
-			t.Errorf("NormalizeEntry(%q) = (%q, %q), and Match(%q) on it = %v, want an address entry that matches", from, value, kind, from, Match(from, []string{value}))
+		value := EntryFromMail(from)
+		if value == "" || !Match(from, []string{value}) {
+			t.Errorf("EntryFromMail(%q) = %q, and Match(%q) on it = %v, want an entry that matches", from, value, from, Match(from, []string{value}))
+		}
+	}
+	// A From that names no sender cannot be protected from its mail.
+	for _, tc := range protecttest.Headers {
+		if tc.Want == "" && EntryFromMail(tc.From) != "" {
+			t.Errorf("EntryFromMail(%q) = %q, want none: it names no sender", tc.From, EntryFromMail(tc.From))
 		}
 	}
 }
@@ -111,7 +68,12 @@ func TestNormalizeEntry(t *testing.T) {
 		{"acme.com", "acme.com", KindDomain},
 		{"  newsletter.io ", "newsletter.io", KindDomain},
 		{"Acme News <news@acme.com>", "news@acme.com", KindAddress},
-		{`"boss@corp.com"`, "boss@corp.com", KindAddress},
+		// A typed value that does not read and holds what only a header or
+		// a list would is refused, quotes included.
+		{`"boss@corp.com"`, "", ""},
+		{"a@x.fr, b@x.fr", "", ""},
+		{"Liste: a@x.fr", "", ""},
+		{"a@x.fr; b@x.fr", "", ""},
 		{"", "", ""},
 		{"@", "", ""},
 		{"@bad", "bad", KindDomain},
