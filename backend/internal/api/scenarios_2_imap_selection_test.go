@@ -14,6 +14,10 @@ package api
 // it (acceptance_imap_test.go). The inbox screen is read too: it is served
 // from the copy Mailsorter keeps (mirror.go), and must say the same as the
 // server, without waiting for a sync.
+//
+// "Classer" on a selection files it as the AI's proposal does
+// (scenarios_8_imap_ai_test.go): into the folder of that name, made if it is
+// missing, out of the inbox, and "Annuler" puts it back.
 
 import (
 	"net/http"
@@ -162,6 +166,102 @@ func TestScenarios_IMAPSelection(t *testing.T) {
 				if n := app.number(deleted, "protectedSkipped"); n != 1 {
 					app.failf("la suppression de la sélection devrait annoncer 1 mail protégé épargné, elle en annonce %d", n)
 				}
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, classer une sélection de mails dans « Factures » les range tous dans le dossier « Factures » de ta boîte, créé s'il n'existait pas, et « Annuler » juste après les remet tous dans ta boîte de réception.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, invoice, shopInvoice)
+				selected := []incoming{invoice, shopInvoice}
+				// Where the sentence starts: no folder "Factures" yet, so
+				// filing the selection has to make it.
+				if moi.hasFolder(invoiceFolder) {
+					app.fatalf("le serveur IMAP de %s ne devrait pas encore avoir de dossier %q : le scénario ne prouve rien (dossiers : %s)", moi.email, invoiceFolder, strings.Join(moi.folders(), ", "))
+				}
+
+				// The last two rows selected, then "Classer" in the action
+				// bar and "Factures" in the list. The first mail is not
+				// selected: it is the control.
+				done := moi.fileSelectionInto(invoiceFolder, uids[1], uids[2])
+				if done.code != http.StatusOK {
+					app.failf("« Classer » dans %q la sélection des mails n°%s de %s devrait répondre 200, le serveur a répondu %s", invoiceFolder, strings.Join(uids[1:], ", n°"), moi.email, done)
+				} else {
+					moi.expectDoneInSelection(done.body, "le classement de la sélection dans « "+invoiceFolder+" »", uids[1], uids[2])
+				}
+				filed := moi.hasFolder(invoiceFolder)
+				if !filed {
+					app.failf("après le classement de la sélection, le serveur IMAP de %s devrait avoir un dossier %q où ses mails sont rangés, il n'en a pas (dossiers : %s)", moi.email, invoiceFolder, strings.Join(moi.folders(), ", "))
+				}
+				for _, m := range selected {
+					if filed {
+						moi.expectOnServer(invoiceFolder, m.Subject)
+					}
+					moi.expectNotOnServer(serverInbox, m.Subject, "tu viens de classer la sélection dans "+invoiceFolder)
+					moi.expectNotOnServer(serverArchive, m.Subject, "il est classé dans "+invoiceFolder+", pas archivé")
+					moi.expectDoesNotShow(m.Subject, "tu viens de classer la sélection dans "+invoiceFolder)
+				}
+				moi.expectShows(uids[0], bankStatement.Subject)
+				if done.code != http.StatusOK {
+					// Nothing was filed: "Annuler" has nothing to give back.
+					return
+				}
+
+				// The screen offers "Annuler" only when the answer says the
+				// action can be undone (runBulk in Inbox.js).
+				if done.body["reversible"] != true {
+					app.failf("après le classement de la sélection, l'écran de %s devrait proposer « Annuler » : la réponse dit reversible=%v, le bouton n'est donc pas proposé", moi.email, done.body["reversible"])
+				}
+				if got := moi.undoFilingInto(invoiceFolder, doneInSelection(done.body)...); got.code != http.StatusOK {
+					app.failf("« Annuler » juste après le classement dans %q de la sélection des mails n°%s devrait répondre 200, le serveur a répondu %s", invoiceFolder, strings.Join(uids[1:], ", n°"), got)
+				}
+
+				// What the screen shows right after: runBulk reloads the
+				// listing once the undo answers, without a sync.
+				for _, m := range selected {
+					moi.expectBackInInbox(m.Subject, "juste après « Annuler » sur le classement de la sélection")
+					moi.expectOnServer(serverInbox, m.Subject)
+					if moi.hasFolder(invoiceFolder) {
+						moi.expectNotOnServer(invoiceFolder, m.Subject, "« Annuler » l'a remis dans la boîte de réception")
+					}
+				}
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
+		{
+			phrase: "Sur une boîte IMAP, quand tu classes une sélection dans un dossier, les mails des expéditeurs protégés ne bougent pas ; les autres, si.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, invoice)
+				moi.protect(bankStatement.From)
+
+				// One protected mail and one other in the selection.
+				done := moi.fileSelectionInto(invoiceFolder, uids...)
+				if done.code != http.StatusOK {
+					app.failf("« Classer » dans %q la sélection des mails n°%s de %s devrait répondre 200, le serveur a répondu %s", invoiceFolder, strings.Join(uids, ", n°"), moi.email, done)
+				} else if n := app.number(done.body, "protectedSkipped"); n != 1 {
+					// What the screen announces: "1 protégé ignoré" (runBulk
+					// in Inbox.js).
+					app.failf("le classement de la sélection devrait annoncer 1 mail protégé épargné, il en annonce %d", n)
+				}
+				filed := moi.hasFolder(invoiceFolder)
+
+				// The protected sender's mail does not move.
+				moi.expectOnServer(serverInbox, bankStatement.Subject)
+				if filed {
+					moi.expectNotOnServer(invoiceFolder, bankStatement.Subject, "son expéditeur est protégé")
+				}
+				moi.expectShows(uids[0], bankStatement.Subject)
+
+				// The other one does: an action that moves nothing at all
+				// would pass the lines above.
+				if !filed {
+					app.failf("après le classement de la sélection, le serveur IMAP de %s devrait avoir un dossier %q où le mail n°%s %q est rangé, il n'en a pas (dossiers : %s)", moi.email, invoiceFolder, uids[1], invoice.Subject, strings.Join(moi.folders(), ", "))
+				} else {
+					moi.expectOnServer(invoiceFolder, invoice.Subject)
+				}
+				moi.expectNotOnServer(serverInbox, invoice.Subject, "tu viens de le classer avec la sélection dans "+invoiceFolder)
+				moi.expectDoesNotShow(invoice.Subject, "tu viens de le classer avec la sélection dans "+invoiceFolder)
 			},
 		},
 	})

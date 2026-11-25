@@ -867,6 +867,28 @@ func (p *imapPerson) actOnSelection(action string, uids ...string) map[string]in
 	return got.body
 }
 
+// fileSelectionInto is "Classer" on a selection, as this person, once a
+// folder is picked (setLabelPickerOpen then runBulk in Inbox.js):
+// POST /api/emails/batch-action with the "label" verb and the folder's name.
+// It returns the answer, whatever it is.
+func (p *imapPerson) fileSelectionInto(folder string, uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-action",
+		map[string]interface{}{"messageIds": uids, "action": "label", "labelName": folder})
+	return answer{code: code, body: out}
+}
+
+// undoFilingInto is "Annuler" in the message that follows "Classer" on a
+// selection: POST /api/emails/batch-undo with the numbers the action gave as
+// done, the "label" verb and the folder's name, which runBulk sends back too
+// (batchUndo in services/api.js). It returns the answer, whatever it is.
+func (p *imapPerson) undoFilingInto(folder string, uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-undo",
+		map[string]interface{}{"messageIds": uids, "action": "label", "labelName": folder})
+	return answer{code: code, body: out}
+}
+
 // doneInSelection is the numbers an answer of the action bar gives as done
 // ("applied"): the rows the screen counts as treated and takes off the list,
 // and the numbers its "Annuler" sends back.
@@ -962,6 +984,23 @@ func (p *imapPerson) unsubscribeFrom(uid string, alsoArchive bool) map[string]in
 // synced first: the IMAP listing writes the sender in its own way (with the
 // name in quotes), and a preference keyed otherwise would match no mail.
 func (p *imapPerson) autopilot(addr, action string) {
+	p.app.t.Helper()
+	p.storeAutopilot(addr, action, "")
+}
+
+// autopilotFiling is autopilot for a sender whose saved action is to file
+// its mails in folder: what "Analyser" on the card saves when the model
+// proposes to classify them ("label", with the name), once "Auto-pilote" is
+// turned on.
+func (p *imapPerson) autopilotFiling(addr, folder string) {
+	p.app.t.Helper()
+	p.storeAutopilot(addr, "label", folder)
+}
+
+// storeAutopilot writes the preference autopilot and autopilotFiling
+// describe: label is the name of the folder of a "label" action, empty for
+// any other.
+func (p *imapPerson) storeAutopilot(addr, action, label string) {
 	a := p.app
 	a.t.Helper()
 	card := p.requireSenderCard(addr)
@@ -975,6 +1014,7 @@ func (p *imapPerson) autopilot(addr, action string) {
 		SenderName:    extractSenderName(card.SenderEmail),
 		AutoApply:     true,
 		DefaultAction: action,
+		DefaultLabel:  label,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}); err != nil {

@@ -290,5 +290,53 @@ func TestScenarios_IMAPAutopilot(t *testing.T) {
 				moi.expectShows(uids[0], bankStatement.Subject)
 			},
 		},
+		{
+			phrase: "Sur une boîte IMAP, le pilote automatique d'un expéditeur réglé pour classer ses mails dans « Factures » les range dans ce dossier dès l'analyse, sans consulter l'IA.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				const energy = "factures@energie.fr"
+				moi, uids := syncedIMAPInbox(app, bankStatement, invoice)
+				// Were the model asked, it would say to keep it: a mail that
+				// lands in "Factures" was filed by the auto-pilot.
+				app.ai.willSay("keep", 0.95)
+				moi.autopilotFiling(energy, invoiceFolder)
+
+				// "Trier avec l'IA" on the invoice. The first mail is not
+				// analyzed: it is the control.
+				moi.analyze(uids[1])
+
+				if !moi.hasFolder(invoiceFolder) {
+					app.failf("le pilote automatique de %s devrait avoir rangé le mail n°%s %q dans le dossier %q du serveur IMAP de %s, ce dossier n'existe pas (dossiers : %s)", energy, uids[1], invoice.Subject, invoiceFolder, moi.email, strings.Join(moi.folders(), ", "))
+				} else {
+					moi.expectOnServer(invoiceFolder, invoice.Subject)
+				}
+				moi.expectNotOnServer(serverInbox, invoice.Subject, "le pilote automatique de "+energy+" l'a classé dans "+invoiceFolder+" à l'analyse")
+				moi.expectNotOnServer(serverArchive, invoice.Subject, "il est classé dans "+invoiceFolder+", pas archivé")
+				moi.expectDoesNotShow(invoice.Subject, "le pilote automatique de "+energy+" l'a classé dans "+invoiceFolder+" à l'analyse")
+
+				// Nothing waits for an answer in the plan, and the Historique
+				// screen says who filed it.
+				for _, s := range moi.plan() {
+					if s.EmailID == uids[1] {
+						app.failf("le plan de l'IA de %s ne devrait rien demander pour le mail n°%s %q, que le pilote automatique classe, il propose %q, en attente", moi.email, uids[1], invoice.Subject, s.Action)
+					}
+				}
+				lines := moi.historyLinesOf(uids[1])
+				found := false
+				for _, l := range lines {
+					if l.Action == "label" && l.Source == SourceAIAuto {
+						found = true
+					}
+				}
+				if !found {
+					app.failf("l'historique de %s devrait montrer le classement du mail n°%s %q par le pilote automatique (%q, %s), il montre : %s", moi.email, uids[1], invoice.Subject, "label", SourceAIAuto, describeHistory(lines))
+				}
+				if n := app.ai.callCount(); n != 0 {
+					app.failf("l'IA ne devrait pas être consultée pour un expéditeur en pilote automatique, elle l'a été %d fois", n)
+				}
+				// The control: the mail nobody analyzed is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
 	})
 }
