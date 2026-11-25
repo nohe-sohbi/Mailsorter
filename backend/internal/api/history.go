@@ -403,7 +403,7 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		if returnsToInbox(inverse, provider.TransportIMAP) {
 			// Undoing a report ends it (endReportOnReturn), the report of
 			// this mailbox's mail.
-			err = h.endReportOnReturn(ctx, userEmail, session.generation(), entry.MessageID, back)
+			err = h.endReportOnReturn(ctx, userEmail, session.generation(), session.account.CreatedAt, entry.MessageID, back)
 		} else {
 			err = back()
 		}
@@ -444,7 +444,7 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		back := func() error { return h.applyInverseAction(gmailClient, entry.MessageID, inverse) }
 		if returnsToInbox(inverse, provider.TransportGmailAPI) {
 			// Undoing a report ends it (endReportOnReturn).
-			err = h.endReportOnReturn(ctx, userEmail, "", entry.MessageID, back)
+			err = h.endReportOnReturn(ctx, userEmail, "", time.Time{}, entry.MessageID, back)
 		} else {
 			err = back()
 		}

@@ -87,6 +87,11 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		return models.MailAccount{}, fmt.Errorf("read the mail account: %w", prevErr)
 	}
 	if prevErr == nil && !sameMailbox(prev, address, route) {
+		// Its reports made before reports carried a generation are its own:
+		// stamped so, they end with it, never taken for the next mailbox's.
+		if err := h.stampReportsOf(ctx, prev); err != nil {
+			return models.MailAccount{}, err
+		}
 		if _, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": userEmail}); err != nil {
 			return models.MailAccount{}, fmt.Errorf("replace the mail account: %w", err)
 		}

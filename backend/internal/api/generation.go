@@ -178,10 +178,11 @@ func (h *Handler) clearMailboxCopy(ctx context.Context, userEmail string) error 
 	if err != nil {
 		return err
 	}
-	current, err := h.currentGeneration(withoutScreen(ctx), userEmail)
-	if err != nil {
+	transport, account, err := h.connectedMailbox(ctx, userEmail)
+	if err != nil && !errors.Is(err, errNoMailboxConnected) {
 		return err
 	}
+	current := generationOf(transport, account)
 	// A row of the copy without a generation is of a mailbox connected
 	// before rows carried one, and not connected at boot (the database's
 	// stampGenerations gave the connected ones theirs).
@@ -206,19 +207,21 @@ func (h *Handler) clearMailboxCopy(ctx context.Context, userEmail string) error 
 	}
 	// A report of another mailbox ends (cancelled): its hour would bring
 	// back, in the mailbox connected now, the mail of that number. Its mail
-	// stays where it waits, in that other mailbox. A report without a
-	// generation is, over IMAP (it carries the folder its mail waits in), of
-	// the IMAP mailbox connected now when there is one (adoptReports: a boot
-	// whose stamping failed strands no mail), and of none otherwise; without
-	// a folder it is of the Gmail API, as a proposal is.
-	if err := h.adoptReports(ctx, userEmail, current); err != nil {
+	// stays where it waits, in that other mailbox. A report of IMAP without a
+	// generation (it carries the folder its mail waits in) made since the
+	// IMAP mailbox connected now was connected is that mailbox's
+	// (adoptReports: a boot whose stamping failed strands no mail); an older
+	// one, or one with no IMAP mailbox connected, is of none, and ends. One
+	// without a folder is of the Gmail API, as a proposal is.
+	if err := h.adoptReports(ctx, userEmail, current, account.CreatedAt); err != nil {
 		return err
 	}
-	staleReports := []bson.M{{"generation": bson.M{"$in": otherGenerations(reportGens, current)}}}
+	staleReports := []bson.M{
+		{"generation": bson.M{"$in": otherGenerations(reportGens, current)}},
+		{"generation": bson.M{"$exists": false}, "folder": bson.M{"$exists": true}},
+	}
 	if current != "" {
 		staleReports = append(staleReports, bson.M{"generation": bson.M{"$exists": false}, "folder": bson.M{"$exists": false}})
-	} else {
-		staleReports = append(staleReports, bson.M{"generation": bson.M{"$exists": false}, "folder": bson.M{"$exists": true}})
 	}
 	if _, err := h.db.Snoozes().UpdateMany(ctx,
 		bson.M{"userId": userEmail, "status": bson.M{"$in": openReports}, "$or": staleReports},
@@ -229,19 +232,48 @@ func (h *Handler) clearMailboxCopy(ctx context.Context, userEmail string) error 
 	return nil
 }
 
-// adoptReports gives the IMAP mailbox connected now (gen, "" for none or the
-// Gmail API: nothing to do) the reports of IMAP without a generation (those
-// that carry the folder their mail waits in): made before reports carried
-// one, and missed by the boot's stamping. Only that mailbox can be theirs.
-func (h *Handler) adoptReports(ctx context.Context, userEmail, gen string) error {
+// adoptReports gives the IMAP mailbox connected now (gen, connected at
+// connected; "" for none or the Gmail API: nothing to do) the reports of IMAP
+// without a generation (those that carry the folder their mail waits in),
+// made before reports carried one and missed by the boot's stamping, that
+// were made since it was connected: only that mailbox can be theirs. An older
+// one may be of a mailbox connected before it, whose mails have the same
+// numbers: it is left without, and ends where it is met (cancelled), its mail
+// left in "Plus tard" (reportAdopted).
+func (h *Handler) adoptReports(ctx context.Context, userEmail, gen string, connected time.Time) error {
 	if gen == "" {
 		return nil
 	}
 	if _, err := h.db.Snoozes().UpdateMany(ctx,
-		bson.M{"userId": userEmail, "generation": bson.M{"$exists": false}, "folder": bson.M{"$exists": true}},
+		bson.M{"userId": userEmail, "generation": bson.M{"$exists": false}, "folder": bson.M{"$exists": true},
+			"createdAt": bson.M{"$gte": connected}},
 		bson.M{"$set": bson.M{"generation": gen}},
 	); err != nil {
 		return fmt.Errorf("give the reports without a generation the one of the mailbox connected: %w", err)
+	}
+	return nil
+}
+
+// reportAdopted says whether report s, read before adoptReports ran for the
+// IMAP mailbox gen connected at connected, is one it gave gen: of IMAP,
+// without a generation, made since that connection.
+func reportAdopted(s models.Snooze, gen string, connected time.Time) bool {
+	return gen != "" && s.Generation == "" && s.Folder != "" && !s.CreatedAt.Before(connected)
+}
+
+// stampReportsOf gives the reports of IMAP without a generation of the
+// mailbox prev (its row about to be replaced by another mailbox's) prev's
+// generation, so that, like every report of a mailbox no longer connected,
+// they end (clearMailboxCopy) rather than be taken for the next mailbox's.
+func (h *Handler) stampReportsOf(ctx context.Context, prev models.MailAccount) error {
+	if prev.Transport != string(provider.TransportIMAP) || prev.ID == "" {
+		return nil
+	}
+	if _, err := h.db.Snoozes().UpdateMany(ctx,
+		bson.M{"userId": prev.UserID, "generation": bson.M{"$exists": false}, "folder": bson.M{"$exists": true}},
+		bson.M{"$set": bson.M{"generation": prev.ID}},
+	); err != nil {
+		return fmt.Errorf("give the reports of the mailbox replaced its generation: %w", err)
 	}
 	return nil
 }

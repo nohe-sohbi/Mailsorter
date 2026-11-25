@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
@@ -888,5 +889,177 @@ func TestAcceptance_AReportTheBootMissedIsTheConnectedMailboxs(t *testing.T) {
 			app.failf("« Réactiver » le report de %s a répondu %s", moi.email, got)
 		}
 		moi.expectOnServer(serverInbox, shopOrder.Subject)
+	})
+}
+
+// unstampReports takes the generation off this person's reports only, as
+// the reports made before reports carried one (since #175), the copy and the
+// history keeping theirs.
+func unstampReports(moi *imapPerson) {
+	a := moi.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := a.h.db.Snoozes().UpdateMany(ctx, bson.M{"userId": moi.email}, bson.M{"$unset": bson.M{"generation": ""}}); err != nil {
+		a.fatalf("retrait de la génération des reports de %s : %v", moi.email, err)
+	}
+}
+
+// moveElsewhere is another mail program of this person moving the mail with
+// this subject from the inbox into folder, made if missing: the mailbox
+// connected now.
+func moveElsewhere(moi *imapPerson, subject, folder string) {
+	a := moi.app
+	a.t.Helper()
+	c := moi.otherProgram()
+	defer c.Close()
+	_ = c.Create(folder, nil).Wait()
+	if _, err := c.Select(serverInbox, nil).Wait(); err != nil {
+		a.fatalf("ouverture de la boîte de réception de %s : %v", moi.email, err)
+	}
+	for _, m := range moi.mailsIn(c, serverInbox) {
+		if m.subject != subject {
+			continue
+		}
+		if _, err := c.Move(imapv2.UIDSetNum(m.uid), folder).Wait(); err != nil {
+			a.fatalf("déplacement du mail %q de %s vers %s : %v", subject, moi.email, folder, err)
+		}
+		return
+	}
+	a.fatalf("le mail %q n'est pas dans la boîte de réception de %s : le test ne prouve rien", subject, moi.email)
+}
+
+// A report without a generation of a mailbox replaced since (its row
+// replaced before the connection could stamp its reports) is not taken for
+// the new mailbox's: made before the new one was connected, it is not listed,
+// and the sweep ends it without moving the mail the new mailbox numbers
+// alike in its own "Plus tard"; its mail stays in the first mailbox's.
+func TestAcceptance_AReportWithoutGenerationOfAReplacedMailboxEnds(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » sur la première boîte de %s a répondu %s", moi.email, got)
+	}
+	first := moi.connectedNow()
+	unstampReports(moi)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// As on a server that says where a move lands: no Message-ID to check
+	// the number by.
+	if _, err := app.h.db.Snoozes().UpdateOne(ctx, bson.M{"userId": moi.email, "subject": shopOrder.Subject},
+		bson.M{"$unset": bson.M{"headerMessageId": ""}}); err != nil {
+		app.fatalf("%v", err)
+	}
+	if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err != nil {
+		app.fatalf("remplacement de la ligne de la première boîte : %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	moi.connectOtherMailbox(otherMailbox)
+	moi.receive(otherBoxMails...)
+	// The second mailbox's own "Plus tard", its mail no. 1 there one of its
+	// own, put there by another mail program.
+	moveElsewhere(moi, otherBoxMails[2].Subject, snoozeFolderName)
+
+	if _, ok := moi.reportedRow(shopOrder.Subject); ok {
+		app.failf("le report de la première boîte de %s ne devrait pas s'afficher avec la deuxième", moi.email)
+	}
+	moi.reportDue()
+	app.h.wakeDueSnoozes()
+	if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" {
+		app.failf("le passage devrait finir le report de la première boîte de %s sans rien déplacer (cancelled), il est %q, génération %q", moi.email, got.Status, got.Generation)
+	}
+	moi.expectOnServer(snoozeFolderName, otherBoxMails[2].Subject)
+	moi.expectNotOnServer(serverInbox, otherBoxMails[2].Subject, "le report de la première boîte ne touche pas la deuxième")
+	if held, ok := first.subjectsIn(snoozeFolderName); !ok || !containsSubject(held, shopOrder.Subject) {
+		app.failf("le mail reporté de la première boîte de %s devrait attendre encore dans son « %s », il y a %s", moi.email, snoozeFolderName, quotedList(held))
+	}
+}
+
+// Connecting another mailbox gives the reports without a generation of the
+// one it replaces that one's generation (stampReportsOf, called by
+// connectAndStore before the row goes, which no scenario can reach: the
+// connect route only knows the hosts of the catalog), so the next erasing
+// ends them like any report of a mailbox no longer connected.
+func TestAcceptance_TheReportsOfAReplacedMailboxTakeItsGeneration(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+	}
+	unstampReports(moi)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var prev models.MailAccount
+	if err := app.h.db.MailAccounts().FindOne(ctx, bson.M{"userId": moi.email}).Decode(&prev); err != nil {
+		app.fatalf("lecture de la boîte de %s : %v", moi.email, err)
+	}
+	if err := app.h.stampReportsOf(ctx, prev); err != nil {
+		app.fatalf("stampReportsOf : %v", err)
+	}
+	if got := reportOf(moi, shopOrder.Subject); got.Generation != prev.ID {
+		app.failf("le report de la boîte remplacée de %s devrait prendre sa génération (%s), il a %q", moi.email, prev.ID, got.Generation)
+	}
+	if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err != nil {
+		app.fatalf("%v", err)
+	}
+	moi.connectOtherMailbox(otherMailbox)
+	moi.sync()
+	if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" {
+		app.failf("le report de la boîte remplacée de %s devrait finir (cancelled), il est %q", moi.email, got.Status)
+	}
+}
+
+// "Déconnecter" ends a report the boot did not stamp: it leaves the reported
+// mails, and its mail stays in "Plus tard".
+func TestAcceptance_DisconnectEndsAReportWithoutGeneration(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+	}
+	unstampReports(moi)
+	moi.disconnectMailbox()
+	if rows := moi.reported(); len(rows) != 0 {
+		app.failf("après « Déconnecter », les mails reportés de %s ne devraient rien montrer, ils montrent %s", moi.email, describeReported(rows))
+	}
+	if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" {
+		app.failf("le report sans génération de %s devrait finir au débranchement (cancelled), il est %q", moi.email, got.Status)
+	}
+	moi.expectOnServer(snoozeFolderName, shopOrder.Subject)
+}
+
+// "Réactiver" and "Annuler" on a report the boot did not stamp, without the
+// list loaded first: both work on the mailbox connected, and stamp it.
+func TestAcceptance_AReportWithoutGenerationIsBroughtBackByHand(t *testing.T) {
+	t.Run("Réactiver", func(t *testing.T) {
+		app := newTestApp(t, &scenarioResult{})
+		moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+		if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+			app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+		}
+		unstampReports(moi)
+		s := reportOf(moi, shopOrder.Subject)
+		if got := moi.wakeNowAnswer(reportedMail{ID: s.ID}); got.code != http.StatusOK {
+			app.failf("« Réactiver » le report sans génération de %s a répondu %s", moi.email, got)
+		}
+		moi.expectOnServer(serverInbox, shopOrder.Subject)
+		if got := reportOf(moi, shopOrder.Subject); got.Status != "done" || got.Generation == "" {
+			app.failf("le report de %s devrait être revenu (done) et porter la génération de sa boîte, il est %q, génération %q", moi.email, got.Status, got.Generation)
+		}
+	})
+	t.Run("Annuler", func(t *testing.T) {
+		app := newTestApp(t, &scenarioResult{})
+		moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+		if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+			app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+		}
+		unstampReports(moi)
+		if got := moi.undoFromHistory(moi.historyLineFor(uids[1], "archive")); got.code != http.StatusOK {
+			app.failf("« Annuler » le report sans génération de %s a répondu %s", moi.email, got)
+		}
+		moi.expectOnServer(serverInbox, shopOrder.Subject)
+		if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" || got.Generation == "" {
+			app.failf("le report de %s devrait finir avec « Annuler » (cancelled) et porter la génération de sa boîte, il est %q, génération %q", moi.email, got.Status, got.Generation)
+		}
 	})
 }

@@ -449,12 +449,13 @@ func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 
 	// The reports of the mailbox connected now (see generation.go), those of
 	// IMAP made before reports carried a generation included (adoptReports).
-	gen, err := h.currentGeneration(ctx, userEmail)
-	if err != nil {
+	transport, account, err := h.transportFor(ctx, userEmail)
+	if err != nil && !errors.Is(err, errNoMailboxConnected) {
 		writeAuthError(w, err)
 		return
 	}
-	if err := h.adoptReports(ctx, userEmail, gen); err != nil {
+	gen := generationOf(transport, account)
+	if err := h.adoptReports(ctx, userEmail, gen, account.CreatedAt); err != nil {
 		log.Printf("snooze: %s: %v", userEmail, err)
 		writeError(w, http.StatusInternalServerError, "Failed to load snoozes")
 		return
@@ -507,10 +508,10 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer session.Close()
-	if s.Generation == "" && s.Folder != "" && session.Transport == provider.TransportIMAP {
-		// A report of IMAP made before reports carried a generation: the
-		// mailbox connected over IMAP is the one it can be of.
-		if err := h.adoptReports(ctx, userEmail, session.generation()); err != nil {
+	if reportAdopted(s, session.generation(), session.account.CreatedAt) {
+		// A report of IMAP made before reports carried a generation, since
+		// the mailbox connected over IMAP was connected: that mailbox's.
+		if err := h.adoptReports(ctx, userEmail, session.generation(), session.account.CreatedAt); err != nil {
 			log.Printf("snooze: %s: %v", userEmail, err)
 			writeError(w, http.StatusBadGateway, "Ce mail n'a pas pu être ramené, réessayez dans un instant.")
 			return
@@ -715,8 +716,9 @@ func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.S
 // so; a move that fails leaves it scheduled. No return is journaled for the
 // report: the undo writes its own line. Only a report of the mailbox the undo
 // acts on (gen): another's names another mail by that number.
-func (h *Handler) endReportOnReturn(ctx context.Context, userEmail, gen, messageID string, back func() error) error {
-	if err := h.adoptReports(ctx, userEmail, gen); err != nil {
+// connected is when that mailbox was connected (adoptReports).
+func (h *Handler) endReportOnReturn(ctx context.Context, userEmail, gen string, connected time.Time, messageID string, back func() error) error {
+	if err := h.adoptReports(ctx, userEmail, gen, connected); err != nil {
 		return err
 	}
 	var s models.Snooze
@@ -791,21 +793,22 @@ func (h *Handler) settleWake(ctx context.Context, s models.Snooze, filter bson.M
 // that are not of the session's mailbox (cancelled, logged), and answers the
 // others. One another request holds (claimReport) is left to it.
 //
-// A report of IMAP without a generation (made before reports carried one) is
-// the IMAP mailbox's connected now (adoptReports); while that cannot be
-// written, it is left for the next pass, neither brought back nor ended.
+// A report of IMAP without a generation (made before reports carried one)
+// made since the IMAP mailbox connected now was connected is that mailbox's
+// (adoptReports); while that cannot be written, it is left for the next
+// pass, neither brought back nor ended. An older one ends like another
+// mailbox's.
 func (h *Handler) endOtherGenerations(ctx context.Context, session *mailSession, due []models.Snooze) []models.Snooze {
 	gen := session.generation()
+	connected := session.account.CreatedAt
 	adopted := true
-	if session.Transport == provider.TransportIMAP {
-		if err := h.adoptReports(ctx, due[0].UserID, gen); err != nil {
-			log.Printf("snooze: %v", err)
-			adopted = false
-		}
+	if err := h.adoptReports(ctx, due[0].UserID, gen, connected); err != nil {
+		log.Printf("snooze: %v", err)
+		adopted = false
 	}
 	ours := due[:0:0]
 	for _, s := range due {
-		if s.Generation == "" && s.Folder != "" && session.Transport == provider.TransportIMAP {
+		if reportAdopted(s, gen, connected) {
 			if !adopted {
 				continue
 			}

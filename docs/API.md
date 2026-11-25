@@ -1269,9 +1269,13 @@ connected, and their open snoozes end (`cancelled`). A mailbox whose stamping
 failed keeps its rows unread until its next sync erases them and rebuilds its
 copy from the inbox (the rows kept for "Annuler" go then, and the "Annuler" of
 those moves). A snooze over IMAP without a generation (one the boot missed)
-is the connected IMAP mailbox's: the list, the sweep, "Réactiver", "Annuler"
-and the erasing give it that generation, so no mail stays in `Plus tard` for
-want of it. This runs under its own time, after the indexes, and the boot log
+made since the connected IMAP mailbox was connected is that mailbox's: the
+list, the sweep, "Réactiver", "Annuler" and the erasing give it that
+generation, so no mail stays in `Plus tard` for want of it. An older one may
+be of a mailbox connected before, whose mails have the same numbers: it ends
+(`cancelled`) where it is met, its mail left in `Plus tard`. Connecting
+another mailbox first gives the snooze without a generation of the one it
+replaces that one's generation, so they end with it. This runs under its own time, after the indexes, and the boot log
 says how many rows it stamped, erased and ended. The index on (userId,
 messageId, generation) is built unique before the one it replaces, on
 (userId, messageId), is dropped; should it fail (duplicates, the boot's time),

@@ -737,7 +737,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	if returnsToInbox(req.Action, session.Transport) {
 		// "Annuler" right after a move out: on a reported mail, it ends the
 		// report (endReportOnReturn).
-		err = h.endReportOnReturn(ctx, userEmail, session.generation(), req.MessageID, back)
+		err = h.endReportOnReturn(ctx, userEmail, session.generation(), session.account.CreatedAt, req.MessageID, back)
 	} else {
 		err = back()
 	}

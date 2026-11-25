@@ -335,8 +335,9 @@ const stampTimeout = 5 * time.Minute
 //     tard", while waking one of a mailbox the row held before moves nothing
 //     there (its return checks the Message-ID, imap.Client.MoveRecorded). One
 //     this misses is not lost either: while its account's IMAP mailbox is
-//     connected, the list, the sweep, "Réactiver" and clearMailboxCopy give it
-//     that mailbox's generation (api adoptReports). The open reports of an
+//     connected, the list, the sweep, "Réactiver", "Annuler" and
+//     clearMailboxCopy give it that mailbox's generation (api adoptReports),
+//     if it was made since that mailbox was connected; an older one ends. The open reports of an
 //     account with no IMAP mailbox connected end here (cancelled): the sweep
 //     would otherwise try them over the Gmail API.
 func (d *Database) stampGenerations(ctx context.Context) {
