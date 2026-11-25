@@ -135,7 +135,9 @@ frontend/
                          settles) and planGroups.js (pure: one group per sender
                          and verdict, the "sure" threshold, the held order)
   src/services/api.js    every HTTP call in the app, grouped by service object
-  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak, avatar)
+  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak, avatar),
+                         and mailboxError (useMailboxErrorToast: the server's sentence for
+                         a failed action on the mailbox, "Mettre à jour" to /connect on a 428)
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy

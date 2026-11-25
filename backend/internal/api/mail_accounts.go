@@ -152,7 +152,7 @@ func writeMailboxConnectError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errMailboxRejected):
 		writeError(w, http.StatusUnauthorized, mailboxRejectedMessage)
 	case errors.Is(err, errMailboxUnreachable):
-		writeError(w, http.StatusBadGateway, "Connexion au serveur de mail impossible.")
+		writeError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
 	default:
 		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer la connexion.")
 	}

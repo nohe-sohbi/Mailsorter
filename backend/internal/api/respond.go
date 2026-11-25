@@ -32,12 +32,21 @@ const noMailboxMessage = "Aucune boîte mail n'est connectée à ce compte. Rend
 // (imap.ErrAmbiguous): which one to put back cannot be told.
 const severalCopiesMessage = "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie."
 
+// severalCopiesWakeMessage is severalCopiesMessage for "Réactiver", which
+// brings a mail back rather than putting it back.
+const severalCopiesWakeMessage = "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie."
+
 // writeSeveralCopies answers an "Annuler" refused for severalCopiesMessage:
 // 409, and severalCopies so that a screen can tell it from the 409 of an
 // action already undone, which it treats as such.
 func writeSeveralCopies(w http.ResponseWriter) {
+	writeSeveralCopiesAs(w, severalCopiesMessage)
+}
+
+// writeSeveralCopiesAs is writeSeveralCopies with the sentence of its action.
+func writeSeveralCopiesAs(w http.ResponseWriter, sentence string) {
 	writeJSON(w, http.StatusConflict, map[string]interface{}{
-		"error": severalCopiesMessage, "status": http.StatusConflict, "severalCopies": true,
+		"error": sentence, "status": http.StatusConflict, "severalCopies": true,
 	})
 }
 

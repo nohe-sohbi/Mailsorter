@@ -37,8 +37,10 @@ import (
 
 // ErrAuth means the server rejected the credentials. It is typed because it
 // maps to a different answer than anything else that can go wrong here: the
-// user has to supply a new app password, which is a 401 and a reconnect prompt,
-// not a 500 and a retry. It is the IMAP counterpart of errReauthRequired.
+// user has to supply a new app password, which is a reconnect prompt (a 401 on
+// the connect screen, where the password was just typed; a 428 everywhere
+// else, where a 401 would sign the person out of Mailsorter), not a 500 and a
+// retry. It is the IMAP counterpart of errReauthRequired.
 var ErrAuth = errors.New("imap: authentication rejected")
 
 // ErrUnreachable means the mailbox could not be opened for a reason other than

@@ -506,6 +506,10 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, notWhereLeftMessage)
 	case errors.Is(wakeErr, errWakeBusy):
 		writeError(w, http.StatusLocked, wakeBusyMessage)
+	case errors.Is(wakeErr, imap.ErrAmbiguous):
+		// Several copies of it in "Plus tard": which one to bring back
+		// cannot be told. Nothing moved; the report stays scheduled.
+		writeSeveralCopiesAs(w, severalCopiesWakeMessage)
 	default:
 		writeError(w, http.StatusBadGateway, "Réactivation impossible : "+wakeErr.Error())
 	}
@@ -634,6 +638,13 @@ func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.S
 	case errors.Is(wakeErr, errNotWhereLeft):
 		outcome = snooze.Gone
 		log.Printf("snooze: report %s of %s cancelled: message %s is no longer in %q, another mail program took it out", s.ID, s.UserID, s.MessageID, s.Folder)
+	case errors.Is(wakeErr, imap.ErrAmbiguous):
+		// Several copies of it where it waited: which one to bring back
+		// cannot be told, now or at the next pass. Not counted, so the
+		// report stays scheduled, on the Reporté screen, where "Réactiver"
+		// says why, rather than being given up or cancelled out of sight
+		// while the mail waits in "Plus tard".
+		outcome = snooze.Untried
 	case byHand || ctx.Err() != nil || session.imapc.Closed():
 		// Cut short by the time bound or by a connection that went away
 		// (nothing to say about the mail itself), or the user's to try

@@ -494,12 +494,12 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 			// refuses, in the words of the connect screen.
 			writeAuthError(w, err)
 		case errors.Is(err, errMailboxNoAnswer):
-			writeError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
+			writeSyncError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
 		case errors.Is(err, errNoMailboxConnected):
 			// A 500 here, as this route always answered it.
-			writeError(w, http.StatusInternalServerError, noMailboxMessage)
+			writeSyncError(w, http.StatusInternalServerError, noMailboxMessage)
 		default:
-			writeError(w, http.StatusInternalServerError, syncFailureMessage(userEmail, err))
+			writeSyncError(w, http.StatusInternalServerError, syncFailureMessage(userEmail, err))
 		}
 		return
 	}
@@ -511,18 +511,14 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// syncInbox pulls the user's inbox into MongoDB and, when the user opted into
-// rule autopilot, applies their deterministic rules to each freshly synced email
-// (instant, AI-free, quota-free). It is shared by the manual SyncEmails handler
-// and the background auto-sync scheduler so both behave identically. It returns
-// how many emails were persisted, how many were seen, and how many had a rule
-// applied.
-// syncInbox mirrors the caller's inbox into Mongo, through whichever transport
-// their mailbox is reached by.
-//
-// This is the fork the whole edition split was for. Everything above it (the
-// handler, the auto-sync loop) asks for a sync and gets one; only this function
-// knows there are two ways to perform it.
+// writeSyncError answers a failed "Synchroniser" with a sentence written for
+// the user, marked syncMessage: the inbox shows a 5xx sentence only when it
+// carries the mark, so the "Internal server error" of a panic (or anything
+// else a 5xx may say) never reaches the screen.
+func writeSyncError(w http.ResponseWriter, status int, sentence string) {
+	writeJSON(w, status, map[string]interface{}{"error": sentence, "status": status, "syncMessage": true})
+}
+
 // syncFailureMessage is what "Synchroniser" says of a failure: the sentence of
 // one the user is meant to read (errMailboxUnavailable, errMailboxLost,
 // errMirrorNotReconciled, errMessagesNotStored), or else a general one, the
@@ -557,6 +553,18 @@ func asSentence(s string) string {
 // shorten it.
 var syncRequestTimeout = 30 * time.Second
 
+// syncInbox pulls the user's inbox into MongoDB and, when the user opted into
+// rule autopilot, applies their deterministic rules to each freshly synced email
+// (instant, AI-free, quota-free). It is shared by the manual SyncEmails handler
+// and the background auto-sync scheduler so both behave identically. It returns
+// how many emails were persisted, how many were seen, and how many had a rule
+// applied.
+// syncInbox mirrors the caller's inbox into Mongo, through whichever transport
+// their mailbox is reached by.
+//
+// This is the fork the whole edition split was for. Everything above it (the
+// handler, the auto-sync loop) asks for a sync and gets one; only this function
+// knows there are two ways to perform it.
 func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
 	session, err := h.openSession(ctx, userEmail)
 	if errors.Is(err, imap.ErrUnreachable) {

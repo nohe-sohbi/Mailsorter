@@ -660,8 +660,8 @@ func TestAcceptance_IMAPUnavailableAtLoginIsNotARefusedPassword(t *testing.T) {
 
 	code, out := moi.syncAnswer()
 	msg, _ := out["error"].(string)
-	if code != http.StatusBadGateway || msg != mailboxNoAnswerMessage {
-		app.failf("« Synchroniser » sur une boîte indisponible au LOGIN devrait répondre 502 %q, il a répondu %d : %q", mailboxNoAnswerMessage, code, msg)
+	if code != http.StatusBadGateway || msg != mailboxNoAnswerMessage || out["syncMessage"] != true {
+		app.failf("« Synchroniser » sur une boîte indisponible au LOGIN devrait répondre 502 %q (syncMessage, que la boîte de réception affiche), il a répondu %d : %v", mailboxNoAnswerMessage, code, out)
 	}
 
 	if got := moi.snoozeAnswer(uids[0]); got.code != http.StatusBadGateway || got.body["error"] != mailboxNoAnswerMessage {
@@ -988,8 +988,8 @@ func TestAcceptance_IMAPRequestSyncAnswersInItsTimeWhenTheServerGoesSilent(t *te
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	code := resp.StatusCode
 	msg, _ := out["error"].(string)
-	if code != http.StatusBadGateway || msg != mailboxNoAnswerMessage {
-		app.failf("« Synchroniser » sur une boîte qui se tait après LOGIN devrait répondre 502 %q, il a répondu %d : %q", mailboxNoAnswerMessage, code, msg)
+	if code != http.StatusBadGateway || msg != mailboxNoAnswerMessage || out["syncMessage"] != true {
+		app.failf("« Synchroniser » sur une boîte qui se tait après LOGIN devrait répondre 502 %q (syncMessage, que la boîte de réception affiche), il a répondu %d : %v", mailboxNoAnswerMessage, code, out)
 	}
 }
 
@@ -1139,5 +1139,170 @@ func TestAcceptance_IMAPUndoRefusesToChooseBetweenCopies(t *testing.T) {
 		if l.ID == line.ID && l.Undone {
 			app.failf("la ligne « archive » du mail %q ne devrait pas être marquée annulée : rien n'a été remis", shopOrder.Subject)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Several copies in "Plus tard", and a request that ends right after the move
+// ---------------------------------------------------------------------------
+
+// copiesInLater replaces, in the person's "Plus tard", the reported mail with
+// this subject by two copies carrying its Message-ID: another mail program
+// deleted it and the server kept two copies.
+func copiesInLater(p *imapPerson, later string, m incoming) {
+	a := p.app
+	a.t.Helper()
+	id := p.storedReport(m.Subject).HeaderMessageID
+	if id == "" {
+		a.fatalf("le report du mail %q n'a pas de Message-ID : le test ne prouve rien", m.Subject)
+	}
+	p.erasedFromElsewhere(later, m.Subject)
+	for _, subject := range []string{m.Subject + " (copie 1)", m.Subject + " (copie 2)"} {
+		raw := "From: " + m.From + "\r\nSubject: " + subject + "\r\nMessage-ID: <" + id +
+			">\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nCopie.\r\n"
+		if _, err := p.mailbox.Append(later, bytes.NewReader([]byte(raw)), &imapv2.AppendOptions{Time: time.Now()}); err != nil {
+			a.fatalf("dépôt d'une copie du mail dans « %s » : %v", later, err)
+		}
+	}
+}
+
+// A reported mail whose Message-ID two messages of "Plus tard" carry, its
+// number there no longer naming it: which one to bring back cannot be told.
+// "Réactiver" says so in French (409, severalCopies) and moves nothing; the
+// sweep does not count the attempt, and the report stays scheduled, where
+// "Réactiver" can say why.
+func TestAcceptance_IMAPSnoozeTakesNoneOfTwoCopiesInLater(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	later := reportedOnIMAP(moi, uids[1], shopOrder)
+	copiesInLater(moi, later, shopOrder)
+	row, ok := moi.reportedRow(shopOrder.Subject)
+	if !ok {
+		app.fatalf("le report du mail %q n'apparaît pas dans les mails reportés", shopOrder.Subject)
+	}
+
+	got := moi.wakeNowAnswer(row)
+	if got.code != http.StatusConflict || got.body["error"] != severalCopiesWakeMessage || got.body["severalCopies"] != true {
+		app.failf("« Réactiver » sur un mail en deux copies dans « Plus tard » devrait répondre 409 %q (severalCopies), il a répondu %s", severalCopiesWakeMessage, got)
+	}
+
+	moi.timeComesForSnoozes()
+	moi.timeComesForSnoozes()
+	if s := moi.storedReport(shopOrder.Subject); s.Attempts != 0 || s.Status != "scheduled" {
+		app.failf("le réveil d'un mail en deux copies ne devrait pas compter d'essai et laisser le report prévu, il est %q après %d essai(s)", s.Status, s.Attempts)
+	}
+	for _, subject := range []string{shopOrder.Subject + " (copie 1)", shopOrder.Subject + " (copie 2)"} {
+		moi.expectOnServer(later, subject)
+		moi.expectNotOnServer(serverInbox, subject, "Mailsorter ne sait pas laquelle ramener")
+	}
+}
+
+// answerHookTLSProxy sits between Mailsorter and a person's IMAP server, both
+// sides over TLS, and calls hook once, before passing on the first answer of
+// the server that follows a command of Mailsorter holding word. It returns
+// its port.
+func answerHookTLSProxy(a *testApp, serverPort int, word string, hook func()) int {
+	a.t.Helper()
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", imapServerTLS)
+	if err != nil {
+		a.fatalf("démarrage du relais vers le serveur IMAP : %v", err)
+	}
+	a.t.Cleanup(func() { _ = ln.Close() })
+	upstream := fmt.Sprintf("127.0.0.1:%d", serverPort)
+	var sent, fired atomic.Bool
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer client.Close()
+				server, err := tls.Dial("tcp", upstream, &tls.Config{ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
+				if err != nil {
+					return
+				}
+				defer server.Close()
+				go func() {
+					buf := make([]byte, 4096)
+					for {
+						n, err := server.Read(buf)
+						if n > 0 {
+							if sent.Load() && fired.CompareAndSwap(false, true) {
+								hook()
+							}
+							if _, werr := client.Write(buf[:n]); werr != nil {
+								return
+							}
+						}
+						if err != nil {
+							return
+						}
+					}
+				}()
+				buf := make([]byte, 4096)
+				for {
+					n, err := client.Read(buf)
+					if n > 0 {
+						if bytes.Contains(bytes.ToUpper(buf[:n]), []byte(word)) {
+							sent.Store(true)
+						}
+						if _, werr := server.Write(buf[:n]); werr != nil {
+							return
+						}
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// The request that reports a mail ends right after the server moved it into
+// "Plus tard" (its context cancelled before the answer to the MOVE comes
+// back): the report and its history line are written all the same, with the
+// folder it waits in, so its hour brings it back. Written under the request's
+// context, the mail would stay in "Plus tard" with no report, for good.
+func TestAcceptance_IMAPSnoozeRecordedWhenTheRequestEndsAfterTheMove(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	moi.reachThrough(answerHookTLSProxy(app, moi.port, "MOVE", cancelReq))
+	// The session outlives the request here, as one opened by another
+	// request would: only the request's own writes are at stake.
+	session, err := app.h.openSession(context.Background(), moi.email)
+	if err != nil {
+		app.fatalf("ouverture de la boîte de %s : %v", moi.email, err)
+	}
+	defer session.Close()
+
+	now := time.Now()
+	if err := app.h.snoozeIMAP(reqCtx, session, moi.email, uids[1], now.Add(24*time.Hour), now); err != nil {
+		app.fatalf("le report du mail %q, la requête finie juste après le déplacement, a échoué : %v", shopOrder.Subject, err)
+	}
+	if reqCtx.Err() == nil {
+		app.fatalf("la requête n'a pas été terminée après le déplacement : le test ne prouve rien")
+	}
+
+	later, ok := moi.folderOnServer(laterFolder)
+	if !ok {
+		app.fatalf("le dossier « %s » n'existe pas : le mail n'a pas été déplacé, le test ne prouve rien", laterFolder)
+	}
+	moi.expectOnServer(later, shopOrder.Subject)
+	s := moi.storedReport(shopOrder.Subject)
+	if s.Status != "scheduled" || s.Folder != later || s.FolderUID == "" {
+		app.failf("le report du mail %q devrait être prévu avec son dossier %q et son numéro, il est %q, dossier %q, numéro %q", shopOrder.Subject, later, s.Status, s.Folder, s.FolderUID)
+	}
+	found := false
+	for _, l := range moi.history(uids[1]) {
+		found = found || (l.Action == "archive" && l.Source == SourceSnooze)
+	}
+	if !found {
+		app.failf("la ligne d'historique du report du mail %q devrait être écrite, elle ne l'est pas", shopOrder.Subject)
 	}
 }

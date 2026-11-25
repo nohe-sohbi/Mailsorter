@@ -381,8 +381,11 @@ with PEEK, so syncing never marks them read.
 }
 ```
 
-Every error is a French sentence the inbox shows as is; what failed is
-logged.
+Every error is a French sentence the inbox shows as is, alone; what failed
+is logged. The 5xx ones carry `"syncMessage": true`, which is what the inbox
+checks before showing a 5xx sentence: any other 5xx body (a crash, which the
+recover middleware answers "Une erreur inattendue est survenue, réessayez
+dans un instant.", or the proxy) is worded by the inbox itself.
 
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
@@ -872,6 +875,7 @@ moving or recording anything.
 
 **Error Responses:**
 - `404 Not Found`: No such snooze; or a snooze `cancelled` ("Ce mail n'est plus là où Mailsorter l'avait rangé."): brought back by "Annuler", or, over IMAP, taken out of `Plus tard` by another mail program
+- `409 Conflict`: Over IMAP, several messages of `Plus tard` carry the mail's `Message-ID` and its number there no longer names it: "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie." (`severalCopies: true`); nothing moved, the snooze stays `scheduled` (the sweep does not count those attempts either)
 - `423 Locked`: The sweep or an "Annuler" is bringing it back at that moment ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
 - `502 Bad Gateway`: The mailbox refused the return; nothing is counted, try again
 
@@ -1213,10 +1217,14 @@ returns under `mailbox`.
 **Error Responses:**
 - `400 Bad Request`: missing address or password, or a password over 1024 bytes
 - `401 Unauthorized`: no session, or the provider rejected the credentials
+  ("Identifiants refusés par le fournisseur. Vérifiez le mot de passe
+  d'application.", the sentence every screen shows for it; the SPA calls this
+  route `optional`, so this 401 does not sign it out)
 - `422 Unprocessable Entity`: this address has no IMAP route with a known
   server in the running edition (see above)
 - `500 Internal Server Error`: the connection worked but could not be stored
-- `502 Bad Gateway`: the mail server could not be reached
+- `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
+  répondu, réessayez dans un instant.")
 
 ### Disconnect
 
