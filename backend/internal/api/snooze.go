@@ -153,7 +153,7 @@ func (h *Handler) snoozeMessage(ctx context.Context, gmailClient *gmailapi.Servi
 		return fmt.Errorf("le report n'a pas pu être enregistré: %w", err)
 	}
 
-	h.logActionMeta(ctx, userEmail, messageID, "archive", SourceSnooze, identity.Subject, identity.From)
+	h.logActionMeta(ctx, userEmail, "", messageID, "archive", SourceSnooze, identity.Subject, identity.From)
 	return nil
 }
 
@@ -208,7 +208,7 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 
 	// One lookup for the whole batch, exactly as BatchAction does: the shield
 	// needs each sender, and the snoozed list needs the subject to be readable.
-	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
+	identities := h.emailIdentities(ctx, userEmail, "", req.MessageIDs)
 	protectedList := h.protectedValues(ctx, userEmail)
 	if len(protectedList) > 0 || len(identities) < len(req.MessageIDs) {
 		h.fillMissingIdentities(ctx, gmailClient, req.MessageIDs, identities)
@@ -322,7 +322,7 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 
 	h.db.Snoozes().UpdateOne(ctx, bson.M{"_id": oid},
 		bson.M{"$set": bson.M{"status": "done", "updatedAt": time.Now()}})
-	h.logActionMeta(ctx, userEmail, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
+	h.logActionMeta(ctx, userEmail, "", s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "woken"})
 }
@@ -411,6 +411,6 @@ func (h *Handler) wakeDueSnoozes() {
 		oid, _ := primitive.ObjectIDFromHex(s.ID)
 		h.db.Snoozes().UpdateOne(ctx, bson.M{"_id": oid},
 			bson.M{"$set": bson.M{"status": "done", "updatedAt": time.Now()}})
-		h.logActionMeta(ctx, s.UserID, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
+		h.logActionMeta(ctx, s.UserID, "", s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
 	}
 }

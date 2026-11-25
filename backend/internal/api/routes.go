@@ -162,7 +162,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/providers", h.GetProviders).Methods("GET")
 
 	// Middleware chain (applied to every matched route, innermost last):
-	// securityHeaders → recover → request-id → metrics → logging → rate-limit → auth → handler.
+	// securityHeaders → recover → request-id → metrics → logging → rate-limit → auth → screen mailbox → handler.
 	rl := newRateLimiter(20, 40) // ~20 req/s sustained, burst 40, per client
 	r.Use(securityHeadersMiddleware)
 	r.Use(recoverMiddleware)
@@ -171,12 +171,13 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.Use(loggingMiddleware)
 	r.Use(rl.middlewareBy(h.rateKey))
 	r.Use(h.authMiddleware)
+	r.Use(screenMailboxMiddleware)
 
 	// Setup CORS (allow-list configurable via ALLOWED_ORIGINS at startup)
 	c := cors.New(cors.Options{
 		AllowedOrigins:   AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-User-Email"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-User-Email", mailboxGenerationHeader},
 		AllowCredentials: true,
 	})
 

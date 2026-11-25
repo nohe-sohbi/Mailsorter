@@ -238,7 +238,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		// Judged here, a mail marked for the rules at a sync is not judged
 		// again there (a second star, a second line in the history); one
 		// whose rule failed half-way keeps what was done for the next try.
-		h.settleMarks(ctx, userEmail, emails, done)
+		h.settleMarks(ctx, userEmail, session.generation(), emails, done)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -278,14 +278,14 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
 	var emails []models.Email
 	if transport == provider.TransportIMAP && !rules.ReadsText(enabled) {
-		emails, _, err = h.storedInboxCandidates(ctx, userEmail, false)
+		emails, _, err = h.storedInboxCandidates(ctx, userEmail, generationOf(transport, account), false)
 	} else {
 		session, sErr := h.openSession(ctx, userEmail)
 		if sErr != nil {
@@ -374,12 +374,13 @@ func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, user
 		return emails, nil, "", nil
 	}
 
-	emails, already, err = h.storedInboxCandidates(ctx, userEmail, hold)
+	gen := session.generation()
+	emails, already, err = h.storedInboxCandidates(ctx, userEmail, gen, hold)
 	if err != nil {
 		return nil, nil, "", err
 	}
 	if hold {
-		if emails, claim, err = h.holdRows(ctx, userEmail, emails); err != nil {
+		if emails, claim, err = h.holdRows(ctx, userEmail, gen, emails); err != nil {
 			return nil, nil, "", err
 		}
 	}
@@ -397,25 +398,27 @@ func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, user
 // answers the ones it could hold: not those another run or a sync holds now.
 // A store that cannot hold them fails the run (errInboxCopyUnread): the rules
 // do not act on mails a sync may be acting on.
-func (h *Handler) holdRows(ctx context.Context, userEmail string, emails []models.Email) ([]models.Email, string, error) {
+func (h *Handler) holdRows(ctx context.Context, userEmail, gen string, emails []models.Email) ([]models.Email, string, error) {
 	if len(emails) == 0 {
 		return emails, "", nil
 	}
-	folder := string(mailbox.FolderInbox)
 	claim := primitive.NewObjectID().Hex()
 	now := time.Now()
 	ids := make([]string, 0, len(emails))
 	for _, e := range emails {
 		ids = append(ids, e.MessageID)
 	}
-	if _, err := h.db.Emails().UpdateMany(ctx,
-		bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": ids}, "rulesClaimAt": notClaimedSince(now)},
+	free := inboxOf(userEmail, gen)
+	free["messageId"], free["rulesClaimAt"] = bson.M{"$in": ids}, notClaimedSince(now)
+	if _, err := h.db.Emails().UpdateMany(ctx, free,
 		bson.M{"$set": bson.M{"rulesClaim": claim, "rulesClaimAt": now}},
 	); err != nil {
 		log.Printf("rules: hold the inbox copy of %s: %v", userEmail, err)
 		return nil, "", errInboxCopyUnread
 	}
-	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim},
+	held := inboxOf(userEmail, gen)
+	held["rulesClaim"] = claim
+	cur, err := h.db.Emails().Find(ctx, held,
 		options.Find().SetProjection(bson.M{"messageId": 1}))
 	if err != nil {
 		log.Printf("rules: read what was held of the inbox copy of %s: %v", userEmail, err)
@@ -430,13 +433,13 @@ func (h *Handler) holdRows(ctx context.Context, userEmail string, emails []model
 		h.releaseHold(ctx, userEmail, claim)
 		return nil, "", errInboxCopyUnread
 	}
-	held := make(map[string]bool, len(rows))
+	ours := make(map[string]bool, len(rows))
 	for _, r := range rows {
-		held[r.MessageID] = true
+		ours[r.MessageID] = true
 	}
-	out := make([]models.Email, 0, len(held))
+	out := make([]models.Email, 0, len(ours))
 	for _, e := range emails {
-		if held[e.MessageID] {
+		if ours[e.MessageID] {
 			out = append(out, e)
 		}
 	}
@@ -484,8 +487,9 @@ func notClaimedSince(now time.Time) bson.M {
 // rules on demand judges it, without the text: the rulesScanLimit most recent
 // messages still in the inbox, and, by message, the actions a rule already
 // did on it (ruleRow.RulesDone). skipClaimed leaves out a mail a sync holds.
-func (h *Handler) storedInboxCandidates(ctx context.Context, userEmail string, skipClaimed bool) ([]models.Email, map[string][]string, error) {
-	filter := bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "leftInbox": notLeftInbox}
+func (h *Handler) storedInboxCandidates(ctx context.Context, userEmail, gen string, skipClaimed bool) ([]models.Email, map[string][]string, error) {
+	filter := inboxOf(userEmail, gen)
+	filter["leftInbox"] = notLeftInbox
 	if skipClaimed {
 		filter["rulesClaimAt"] = notClaimedSince(time.Now())
 	}
@@ -523,8 +527,12 @@ func splitRuleRows(rows []ruleRow) ([]models.Email, map[string][]string) {
 // a failure is unmarked, so a sync does not judge it again; one whose rule
 // failed half-way keeps, for the sync's next try, what was done (rulesDone).
 // A failure is logged: the next sync judges the mail once more.
-func (h *Handler) settleMarks(ctx context.Context, userEmail string, judged []models.Email, done rulesDone) {
-	folder := string(mailbox.FolderInbox)
+func (h *Handler) settleMarks(ctx context.Context, userEmail, gen string, judged []models.Email, done rulesDone) {
+	marked := func(id interface{}) bson.M {
+		filter := inboxOf(userEmail, gen)
+		filter["rulesDue"], filter["messageId"] = true, id
+		return filter
+	}
 	ids := make([]string, 0, len(judged))
 	for _, e := range judged {
 		if _, failed := done.progress[e.MessageID]; !failed {
@@ -532,16 +540,14 @@ func (h *Handler) settleMarks(ctx context.Context, userEmail string, judged []mo
 		}
 	}
 	if len(ids) > 0 {
-		if _, err := h.db.Emails().UpdateMany(ctx,
-			bson.M{"userId": userEmail, "folder": folder, "rulesDue": true, "messageId": bson.M{"$in": ids}},
+		if _, err := h.db.Emails().UpdateMany(ctx, marked(bson.M{"$in": ids}),
 			bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesDone": ""}},
 		); err != nil {
 			log.Printf("rules: %d mails of %s judged, not unmarked for the sync: %v", len(ids), userEmail, err)
 		}
 	}
 	for id, progress := range done.progress {
-		if _, err := h.db.Emails().UpdateOne(ctx,
-			bson.M{"userId": userEmail, "folder": folder, "rulesDue": true, "messageId": id},
+		if _, err := h.db.Emails().UpdateOne(ctx, marked(id),
 			bson.M{"$set": bson.M{"rulesDone": progress}},
 		); err != nil {
 			log.Printf("rules: what the rule did on message %s of %s is not kept for the next try: %v", id, userEmail, err)
@@ -645,7 +651,7 @@ func (h *Handler) runRules(ctx context.Context, session *mailSession, userEmail 
 		for _, act := range appliedActs {
 			// A label is written with where it filed the mail: the label,
 			// or over IMAP its folder, which the history shows.
-			h.logActionFiled(ctx, userEmail, email.MessageID, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
+			h.logActionFiled(ctx, userEmail, session.generation(), email.MessageID, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
 			all = append(all, act.Type)
 		}
 		if len(before) == 0 && len(appliedActs) > 0 {

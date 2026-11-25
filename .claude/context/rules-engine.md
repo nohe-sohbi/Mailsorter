@@ -267,8 +267,9 @@ mail. Each sentence of "Tes règles sur une boîte IMAP" pins part of this.
   turning the option on, or connecting a mailbox with it on, sorts nothing
   already there; "Appliquer maintenant" does. And the very first sync of a
   mailbox marks nothing, whatever the dates (`firstSync`: no
-  `mail_accounts.firstSyncedAt` and an empty copy; `markFirstSync` stamps it
-  after the store loop, so an empty inbox once synced has had it).
+  `mail_accounts.firstSyncedAt` and an empty copy of its generation;
+  `markFirstSync` stamps its row, by `_id`, after the store loop, so an empty
+  inbox once synced has had it).
 - **What comes back is not an arrival.** `comingBack`, read after the listing
   and before `dropStaleInbox` (which may drop the old row), finds the listed
   mails whose Message-ID the copy holds under ANOTHER number, whatever that
@@ -296,7 +297,8 @@ mail. Each sentence of "Tes règles sur une boîte IMAP" pins part of this.
   in `rulesApplied` (everything done, something at least) or in
   `rulesPending`, never both. Not tried again (unmarked, logged): a mail whose
   text cannot be parsed, or `NotReached`. At `maxRuleTries` (3) a mail is
-  given up (unmarked, logged), and `users.rulesGivenUp` is incremented: a sync
+  given up (unmarked, logged), and `mail_accounts.rulesGivenUp` (the row of
+  that mailbox's generation) is incremented: a sync
   from the screen (`SyncEmails`, the button and the page load) takes it
   (`takeGivenUp`) and tells it once in `rulesMessage`, whichever sync gave the
   mail up, the background one included. The sync answers 200 all the same.
@@ -609,14 +611,17 @@ response `protectedSkipped` and that the message is still in the inbox.
   given up (logged, told once by the next sync from the screen, the page
   load's included) and left where it is; "Appliquer maintenant" still judges
   it. The background sync (`auto_sync.go`) only logs; the count waits on the
-  user row (`rulesGivenUp`).
+  mailbox's row (`rulesGivenUp`).
 - **A mail is an arrival by its server's clock.** INTERNALDATE is set by the
   mail server, the option's stamp by Mailsorter's: a skew between the two moves
   the boundary by as much; hence the first sync of a mailbox marks nothing. A
-  mailbox connected with another address or server gets a new `createdAt`
-  (`sameMailbox`), and what was kept of the previous one is cleared
-  (`clearMailboxCopy`: the IMAP copy, pending AI proposals, `firstSyncedAt`,
-  `users.rulesGivenUp`), as a disconnect does.
+  mailbox connected with another address or server gets a row of its own
+  (`sameMailbox`): a new generation (`api/generation.go`), connected now
+  (`createdAt`), never synced (`firstSyncedAt`), told of nothing given up
+  (`rulesGivenUp`). Every read and write of the rules (the marks, the claims,
+  the holds, the history lines) is of one generation: a sync or a run still
+  going on the previous mailbox writes nothing the next one reads, and what is
+  not of the generation connected now is erased (`clearMailboxCopy`).
 - **A rule on the text costs a read over IMAP.** `withTexts` reads up to 200
   messages, 256 KiB each at most, only when `rules.ReadsText` is true; a text
   not read in full within 256 KiB is not judged by a rule on the text.

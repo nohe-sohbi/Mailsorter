@@ -283,14 +283,19 @@ func TestAcceptance_IMAPFilingDirectLabelWithoutAFolderIsRefused(t *testing.T) {
 
 // storedProposal is a pending label proposal written straight into the
 // database, as an analysis that could not open the mailbox stored it: with
-// the model's own name, neither matched nor cleaned. It returns its id.
+// the model's own name, neither matched nor cleaned, about the mailbox
+// connected (its generation, analysisMailbox). It returns its id.
 func storedProposal(app *testApp, owner, uid, labelName string) string {
 	app.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	gen, err := app.h.currentGeneration(ctx, owner)
+	if err != nil {
+		app.t.Fatalf("which mailbox %s is on: %v", owner, err)
+	}
 	res, err := app.h.db.AISuggestions().InsertOne(ctx, models.AISuggestion{
 		UserID: owner, EmailID: uid, Action: "label", LabelName: labelName,
-		Confidence: 0.95, Status: "pending", CreatedAt: time.Now(),
+		Confidence: 0.95, Status: "pending", Generation: gen, CreatedAt: time.Now(),
 	})
 	if err != nil {
 		app.t.Fatalf("storing a proposal: %v", err)

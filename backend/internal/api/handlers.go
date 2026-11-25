@@ -300,7 +300,12 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also record in mail_accounts that this user's active mailbox is Google Gmail
+	// Also record in mail_accounts that this user's active mailbox is Google Gmail.
+	// A mailbox connected over IMAP before is another mailbox: its row goes,
+	// and with it what Mailsorter kept of it (see generation.go).
+	if _, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": accountOwner, "transport": bson.M{"$ne": "gmail"}}); err != nil {
+		log.Printf("auth callback: replace the mailbox of %s: %v", accountOwner, err)
+	}
 	now := time.Now()
 	_, _ = h.db.MailAccounts().UpdateOne(ctx,
 		bson.M{"userId": accountOwner},
@@ -318,6 +323,9 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		},
 		options.Update().SetUpsert(true),
 	)
+	if err := h.clearMailboxCopy(ctx, accountOwner); err != nil {
+		log.Printf("auth callback: erase what was kept of the mailbox of %s before, done at the next connection: %v", accountOwner, err)
+	}
 
 	// Hand the browser our own signed session token, never the raw Gmail
 	// access token, which must stay server-side.
@@ -359,7 +367,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	// Get page token for pagination
 	pageToken := r.URL.Query().Get("pageToken")
 
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
@@ -367,7 +375,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	if transport == provider.TransportIMAP {
 		// Served from the stored mailbox rather than from the provider: see the
 		// file comment in mirror.go for why a listing does not open a socket.
-		page, err := h.listFromMirror(ctx, userEmail, query, maxResults, pageToken)
+		page, err := h.listFromMirror(ctx, userEmail, generationOf(transport, account), query, maxResults, pageToken)
 		if err != nil {
 			var unsupported errUnsupportedQuery
 			if errors.As(err, &unsupported) {
@@ -441,13 +449,13 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
 	if transport == provider.TransportIMAP {
-		stats, err := h.statsFromMirror(ctx, userEmail)
+		stats, err := h.statsFromMirror(ctx, userEmail, generationOf(transport, account))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to get mailbox stats: "+err.Error())
 			return
@@ -483,7 +491,7 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 
 	synced, total, ruled, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
-		if errors.Is(err, errReauthRequired) {
+		if errors.Is(err, errReauthRequired) || errors.Is(err, errMailboxChanged) {
 			writeAuthError(w, err)
 			return
 		}
@@ -594,7 +602,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 					ruled.applied++
 					byRule[match.Name]++
 					for _, act := range appliedActs {
-						h.logActionFiled(ctx, userEmail, msg.Id, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
+						h.logActionFiled(ctx, userEmail, "", msg.Id, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
 					}
 				}
 			}
@@ -698,7 +706,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 		// action it reverses undone, as the history and batch-undo do, or the
 		// history keeps offering "Annuler" on work already reversed.
 		if forward, ok := reversedBy[req.Action]; ok {
-			h.recordUndo(ctx, userEmail, req.MessageID, forward, req.Action)
+			h.recordUndo(ctx, userEmail, session.generation(), req.MessageID, forward, req.Action)
 		}
 	}
 
@@ -718,7 +726,7 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 			action = "delete"
 		}
 		meta := h.identityIn(ctx, session, userEmail, req.MessageID)
-		h.logActionMeta(ctx, userEmail, req.MessageID, action, SourceDirect, meta.Subject, meta.From)
+		h.logActionMeta(ctx, userEmail, session.generation(), req.MessageID, action, SourceDirect, meta.Subject, meta.From)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})

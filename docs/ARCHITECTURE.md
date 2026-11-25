@@ -32,7 +32,7 @@ Trois conteneurs, décrits par `docker-compose.yml` : `mongodb`, `backend` (port
 
 1. **Compte.** `POST /api/auth/register` crée un compte par adresse et mot de passe (bcrypt), `POST /api/auth/login` s'y connecte. Les deux rendent un jeton de session.
 2. **Google.** `GET /api/auth/url` renvoie l'adresse du consentement Google, avec un `state` signé. Au retour, `GET /api/auth/callback` vérifie le `state`, échange le code, scelle les jetons et rend un jeton de session. Si l'appelant était déjà connecté, le `state` porte son adresse et la boîte Google est rattachée à ce compte ; sinon, le compte est celui de l'adresse Google.
-3. **Brancher une boîte.** Depuis l'écran Connecter : par Google (étape 2) quand l'instance a ses identifiants Google, ou par IMAP avec `POST /api/mailbox/connect`, qui essaie la connexion avant d'enregistrer quoi que ce soit.
+3. **Brancher une boîte.** Depuis l'écran Connecter : par Google (étape 2) quand l'instance a ses identifiants Google, ou par IMAP avec `POST /api/mailbox/connect`, qui essaie la connexion avant d'enregistrer quoi que ce soit. Une autre boîte branchée à la place de la précédente a sa propre ligne `mail_accounts`, donc sa propre génération : la copie, les propositions de l'IA et l'historique portent la génération de leur boîte, toute lecture ne voit que celle de la boîte branchée, et l'écran envoie la génération qu'il a chargée (`X-Mailbox-Generation`) pour qu'une page ouverte sur l'ancienne boîte n'agisse sur rien (409).
 
 L'API offre aussi `POST /api/auth/mailbox`, que l'interface n'utilise pas : une adresse et l'identifiant de la boîte, acceptés par le fournisseur, ouvrent ou créent le compte.
 
@@ -44,7 +44,7 @@ Déclenchée par `POST /api/emails/sync`, ou par la boucle de synchronisation de
 syncInbox(compte)
   -> openSession : transportFor, puis un client Gmail ou une connexion IMAP
   -> API Gmail : les 100 messages les plus récents de la boîte de réception, corps compris
-       -> upsert dans emails, clé (userId, messageId)
+       -> upsert dans emails, clé (userId, messageId), sans génération
        -> si autoApplyRules : première règle qui correspond, expéditeurs protégés épargnés,
           action par internal/mailbox, entrée au journal (source "rule")
   -> IMAP : les 100 messages les plus récents de INBOX, lus en PEEK (aucun \Seen posé)
@@ -54,12 +54,16 @@ syncInbox(compte)
           son âge ; un mail que Mailsorter a rangé reste caché 30 jours pour "Annuler" ;
           un déplacement en cours ou postérieur à la lecture attend la synchro suivante
        -> les propositions de l'IA sur ce qui est parti passent "moot" (hors du tri proposé)
-       -> upsert dans emails avec le dossier, qui fait partie de l'identité d'un UID
+       -> upsert dans emails avec le dossier et la génération de la boîte (l'_id de sa
+          ligne mail_accounts), qui font partie de l'identité d'un UID : clé
+          (userId, messageId, generation) ; une synchro encore en cours sur une boîte
+          remplacée depuis n'écrit que des lignes que personne ne lit, et chaque
+          synchro commence par effacer ce qui n'est pas de la boîte branchée
        -> si autoApplyRules : un mail qui arrive est marqué (rulesDue) à son upsert ;
           il arrive si la copie ne le connaissait pas et si le serveur l'a reçu
           (INTERNALDATE, à la seconde) après l'activation de l'option et après le
-          branchement de la boîte (remis à la date du jour quand une autre adresse
-          ou un autre serveur est branché ; l'horloge du serveur et celle de
+          branchement de la boîte (une autre adresse ou un autre serveur branché a
+          une ligne à lui, datée du jour ; l'horloge du serveur et celle de
           Mailsorter peuvent différer d'autant, et la toute première synchro d'une
           boîte ne marque aucun mail) ; pas un mail dont la copie tient le Message-ID sous
           un autre numéro au début de la synchro (remis par "Annuler" sans son nouveau

@@ -17,7 +17,8 @@ var errReauthRequired = errors.New("gmail authorization expired; re-authenticati
 // writeAuthError maps a getUserToken / gmailClientFor / openSession failure to
 // the right status: 401 when the grant is dead (SPA re-runs OAuth), 404 when the
 // account row is gone, 501 when the path has not been ported to the caller's
-// transport, 500 for anything else.
+// transport, 409 when the request comes from a screen loaded on another mailbox
+// (errMailboxChanged), 500 for anything else.
 //
 // The 501 branch is the visible half of the guard in gmailClientFor. Every
 // handler already routes its credential failures through here, so adding the
@@ -31,6 +32,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "Gmail authorization expired. Please reconnect your account.")
 	case errors.Is(err, errWrongTransport):
 		writeTransportError(w)
+	case errors.Is(err, errMailboxChanged):
+		writeMailboxChanged(w)
 	case errors.Is(err, mongo.ErrNoDocuments):
 		writeError(w, http.StatusNotFound, "User not found")
 	default:

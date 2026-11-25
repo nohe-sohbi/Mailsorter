@@ -23,6 +23,16 @@ The server derives the user identity from this token; clients must **not** send 
 raw `X-User-Email` header (any client-supplied value is stripped server-side).
 Requests without a valid token receive `401 Unauthorized`.
 
+A signed-in screen also names the mailbox it loaded, in
+`X-Mailbox-Generation: <generation>`, the value `GET /api/mailbox` answers
+(`generation`). A request naming another mailbox than the one connected now
+(another was connected since the screen loaded, from another tab or device)
+is refused with `409` "Votre boîte a changé depuis l'ouverture de cette page :
+rechargez-la.", before anything is read or done: over IMAP a message number
+names a mail of one mailbox only, and the next one gives the same numbers to
+its own. A request without the header is not checked (see "Mailbox
+generations").
+
 Public endpoints (no token needed): `/health`, `/metrics`, `/api/auth/*`,
 `/api/config/status`, `/api/providers`, `/api/waitlist`, and
 `/api/billing/webhook` (which authenticates via its Stripe signature). On a
@@ -357,13 +367,15 @@ that have left the inbox since the last sync, however old: it asks the server
 for the UID of every message in the inbox (one `UID SEARCH`), not only the
 ones it listed. The background sync (`autoSyncEnabled`) runs the same code.
 Over IMAP, `500` when the mirror could not be brought in line with the inbox
-(the listing itself is stored), and `500` "la boîte a été débranchée pendant la
-synchronisation" for a sync of a mailbox disconnected, or replaced by another,
-while it ran: it writes nothing, the copy being the next mailbox's.
+(the listing itself is stored). A sync reads and writes the copy of the
+mailbox it opened (its generation, see "Mailbox generations"): one still
+running once another mailbox is connected in its place writes rows that are
+never read, and each sync starts by erasing what is not of the mailbox
+connected now.
 
 **Query parameters:** `notice=1` (optional) asks for the count of messages the
-rules gave up on, kept on the account until a sync asks for it, then cleared
-(see `rulesMessage` below). The screen sends it only where it shows the answer:
+rules gave up on, kept on the mailbox's row until a sync asks for it, then
+cleared (see `rulesMessage` below). The screen sends it only where it shows the answer:
 the "Synchroniser" button and the page load.
 
 When `autoApplyRules` is on, the deterministic rules run at the sync
@@ -374,8 +386,8 @@ listed message arrives when this sync stores it for the first time and its
 server received it (INTERNALDATE, to the second) no earlier than the later of
 two moments: the option turned on (stamped when it goes from off to on) and
 the mailbox connected (`mail_accounts.createdAt`, set when a mailbox is
-connected, and set again when another address or another server is connected
-in its place; connecting the same mailbox again, with a new app password,
+connected; another address or another server connected in its place gets a
+row of its own; connecting the same mailbox again, with a new app password,
 keeps it). So turning the option on, or connecting a mailbox with the option
 on, sorts nothing already in the inbox (`POST /api/rules/apply` does).
 INTERNALDATE is written by the mail server's clock and the two moments by
@@ -420,8 +432,9 @@ messages left for the next sync: a message is in one or the other.
 synchronisation réessaiera." for this sync's pending messages, and "1 mail n'a
 pas pu être rangé par vos règles : laissé dans la boîte." for the messages
 given up since it was last told, whichever sync gave them up, the background
-one included: the account keeps the count until a call of this route with
-`notice=1` answers it, once. `rulesMessage` is absent when there is nothing to
+one included: the mailbox's row keeps the count until a call of this route
+with `notice=1` answers it, once (a mailbox connected in its place has a row
+of its own, which is not told about this one's). `rulesMessage` is absent when there is nothing to
 tell. A rule on
 `body` or `snippet` reads the text of those messages from the server first.
 The listing, and that text, are read with PEEK, so syncing never marks a
@@ -751,9 +764,9 @@ folder it was filed in. Marking as read stays one-way on purpose.
 
 The matching ledger entries are marked undone so the history does not offer a
 second "Annuler" on the same work. Over IMAP a message whose latest entry for
-this action is of a mailbox since disconnected (`mailboxGone`) is not touched,
-and not counted as restored: its number names a mail of the mailbox connected
-now. Note that on the Gmail API the per-entry
+this action is of another mailbox than the one connected now (its generation,
+see "Mailbox generations") is not touched, and not counted as restored: its
+number names a mail of the mailbox connected now. Note that on the Gmail API the per-entry
 history undo (`POST /api/activity/undo`) still cannot reverse a labelling: most
 action log lines name no label, so it would have nothing to remove. Over IMAP
 it can (see there).
@@ -1090,6 +1103,39 @@ encryption key's threat model never covered.
 
 One connection per account: connecting again replaces the stored one.
 
+### Mailbox generations
+
+An IMAP message number only names a mail in one mailbox: the next mailbox
+connected gives the same numbers to its own mails. So what Mailsorter keeps of
+an IMAP mailbox carries the mailbox it belongs to, its generation: the `id`
+of its `mail_accounts` row. The stored copy of the inbox, the AI's proposals
+and the history entries carry it.
+
+- Another mailbox connected (another address or another server, a Google
+  consent included) gets a row of its own, so a generation of its own. The
+  same mailbox connected again by the same route keeps its row, its
+  generation and what was kept of it; once disconnected (its row deleted), it
+  comes back as a new generation.
+- Every read (the list, its filters, the counters, the reader, the senders,
+  the subscriptions, the AI's plan, the rules and their preview, the history's
+  "Annuler") is of the generation connected now. Every write carries the
+  generation of the operation that makes it: a sync, a run of the rules, an
+  analysis or an "Annuler" still running on a mailbox since replaced writes
+  only rows that are never read.
+- What is not of the generation connected now is erased (the copy, and the
+  pending proposals): when a mailbox is connected, when it is disconnected,
+  and at the start of each sync. The history stays; its entries of another
+  mailbox are final (`mailboxGone`, see `GET /api/activity/log`).
+- A screen sends the generation it loaded (`X-Mailbox-Generation`, see
+  "Authentication"): one loaded on another mailbox gets `409` and acts on
+  nothing. An analysis started from it (`POST /api/ai/analyze-async`) runs on
+  the mailbox it was started on, or ends with the same sentence.
+
+The Gmail API names a message on the account: its rows carry no generation.
+What was kept before generations existed is given, at boot, the generation of
+the IMAP mailbox connected then: its whole copy, and the proposals and history
+entries made since it was connected.
+
 ### Read the connected mailbox
 
 #### GET /api/mailbox
@@ -1098,9 +1144,13 @@ One connection per account: connecting again replaces the stored one.
 - `Authorization: Bearer <session-token>` (required)
 
 **Response:** `200 OK`. `mailbox` is `null` when nothing is connected, which is
-a normal state rather than an error.
+a normal state rather than an error. `generation` names the mailbox for the
+screen, which sends it back with its requests (`X-Mailbox-Generation`, see
+"Mailbox generations"): the row's `id` over IMAP, `"gmail"` through Google,
+`""` when nothing is connected.
 ```json
 {
+  "generation": "665...",
   "mailbox": {
     "id": "665...",
     "provider": "orange",
@@ -1174,10 +1224,11 @@ account switches to IMAP.
 Connecting the mailbox already connected again (the same address on the same
 server, a new app password) keeps everything. Connecting another one (another
 address, or another server) in its place starts from nothing, as a disconnect
-then a connect would: the stored copy of the previous inbox and the AI's
-pending proposals about it are cleared first, the moment of the connection
-(`createdAt`) is now, and the next sync is a first one (see
-`POST /api/emails/sync`). The history stays.
+then a connect would: it gets a row of its own (a new `id`, a new generation,
+see "Mailbox generations"), connected now (`createdAt`), whose next sync is a
+first one (see `POST /api/emails/sync`); the stored copy of the previous inbox
+and the AI's pending proposals about it are erased. The history stays, final
+on the previous mailbox.
 
 **Response:** `200 OK`, the stored mailbox, in the shape `GET /api/mailbox`
 returns under `mailbox`.
@@ -1187,22 +1238,23 @@ returns under `mailbox`.
 - `401 Unauthorized`: no session, or the provider rejected the credentials
 - `422 Unprocessable Entity`: this address has no IMAP route with a known
   server in the running edition (see above)
-- `500 Internal Server Error`: the connection worked but could not be stored,
-  or the copy of the previous mailbox could not be cleared
+- `500 Internal Server Error`: the connection worked but could not be stored
+  (what was kept of the previous mailbox is no longer read either way, and an
+  erasing that fails is done again at the first sync)
 - `502 Bad Gateway`: the mail server could not be reached
 
 ### Disconnect
 
 #### DELETE /api/mailbox
 
-Forgets the connection. For a mailbox connected over IMAP it first clears what
-Mailsorter kept of it: the stored copy of its inbox, the AI's pending
-proposals, the count of mails the rules gave up on not yet told; and the
-history stays, but its lines no longer offer "Annuler" (`mailboxGone`): they
-name messages by numbers the next mailbox gives to its own, and an "Annuler"
-would act on one of those. A mailbox reached through the Gmail API keeps its
-listing. Then it deletes the stored mailbox row (app password included) and
-removes the Google tokens from the account. This is also how a user revokes Mailsorter's access
+Forgets the connection: it deletes the stored mailbox row (app password
+included) and removes the Google tokens from the account. For a mailbox
+connected over IMAP it then erases what Mailsorter kept of it: the stored copy
+of its inbox and the AI's pending proposals (no generation is connected any
+more, see "Mailbox generations"). The history stays, but its lines no longer
+offer "Annuler" (`mailboxGone`): they name messages by numbers the next
+mailbox gives to its own, and an "Annuler" would act on one of those. A
+mailbox reached through the Gmail API keeps its listing and its proposals. This is also how a user revokes Mailsorter's access
 without going through their provider. The mailbox itself is never touched, and
 the account remains: its mailbox routes answer `428` until a mailbox is
 connected again, whose inbox then shows its own mails only.
@@ -1211,9 +1263,10 @@ connected again, whose inbox then shows its own mails only.
 connected.
 
 **Error Responses:**
-- `500 Internal Server Error`: what Mailsorter kept of the mailbox could not be
-  cleared (nothing is disconnected: disconnecting again clears it), or the
-  stored row could not be deleted
+- `500 Internal Server Error`: the stored row could not be deleted (nothing
+  is disconnected). An erasing that fails once the row is deleted is logged
+  and done again at the next connection: nothing of that mailbox is read
+  meanwhile.
 
 ---
 
@@ -1302,10 +1355,11 @@ flagged `undoable` (it has a clean inverse and has not been undone yet). On
 IMAP an archive, a delete or a label (a filing into a folder) is `undoable`
 only while Mailsorter knows where it put the message (30 days, and never for a
 move made before it recorded that), and a read change only while the message
-is still in the inbox. An entry of an IMAP mailbox since disconnected, or
-replaced by another, carries `mailboxGone: true` and is never `undoable`: the
-screen shows it "Définitif", "Cette action concerne une boîte débranchée
-depuis."
+is still in the inbox. An entry of another mailbox than the one connected now
+(an IMAP mailbox since disconnected or replaced by another, or, once an IMAP
+mailbox is connected, one reached through Google before; see "Mailbox
+generations") carries `mailboxGone: true` and is never `undoable`: the screen
+shows it "Définitif", "Cette action concerne une boîte débranchée depuis."
 
 **Query parameters:**
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
@@ -1377,9 +1431,10 @@ où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
 entry stays not undone); `409` already undone, except that a request within
 2 minutes of another one that undid it, with nothing done to the mail since,
 answers `200` like it (two clicks, two tabs): once the mail was archived again,
-a screen left open on the old line gets `409`; `410` "Cette action concerne une
-boîte débranchée depuis." for an entry of a mailbox since disconnected
-(`mailboxGone`), nothing moving; `500` "Annulation impossible à
+a screen left open on the old line gets `409`, and so does a screen loaded on
+another mailbox than the one connected now (`X-Mailbox-Generation`); `410`
+"Cette action concerne une boîte débranchée depuis." for an entry of another
+mailbox than the one connected now (`mailboxGone`), nothing moving; `500` "Annulation impossible à
 vérifier, réessayez." when the actions since cannot be read; `502` the provider
 refused the reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette
@@ -2680,7 +2735,7 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `402` | The hosted service's free monthly AI quota is spent (`analyze` and `analyze-async` only) | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
 | `404` | No such resource for this caller, or no such route | `{ "error": "Rule not found", "status": 404 }` |
 | `405` | The route exists, not with this method | `{ "error": "Method not allowed on this route", "status": 405 }` |
-| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro | `{ "error": "Action déjà annulée", "status": 409 }` |
+| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro; or a screen loaded on another mailbox than the one connected now (`X-Mailbox-Generation`) | `{ "error": "Action déjà annulée", "status": 409 }` |
 | `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Request body too large", "status": 413 }` |
 | `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
 | `428` | No mailbox is connected to this account yet | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }` |

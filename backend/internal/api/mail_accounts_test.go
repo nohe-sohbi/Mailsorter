@@ -326,7 +326,7 @@ func TestMailboxRowWritesTheSendingServerOfTheRoute(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			account, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", tc.route, "sealed", now, false)
+			account, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", tc.route, "sealed", now)
 
 			answered := provider.Endpoint{Host: account.SMTPHost, Port: account.SMTPPort, TLS: provider.TLSMode(account.SMTPTLS)}
 			if answered != tc.want {
@@ -352,11 +352,12 @@ func TestMailboxRowWritesTheSendingServerOfTheRoute(t *testing.T) {
 }
 
 // The moment a mailbox was connected (createdAt) is when the rules a sync
-// applies on its own start judging its mails: connecting the same mailbox
-// again (a new app password) keeps it, connecting another one (another
-// address, another server) sets it to now, and makes its next sync a first
-// one (firstSyncedAt unset).
-func TestMailboxRowKeepsTheMomentOnlyForTheSameMailbox(t *testing.T) {
+// applies on its own start judging its mails, and the mark of its first sync
+// (firstSyncedAt) is what makes the next ones judge them: connecting the same
+// mailbox again (a new app password) writes over its row and keeps both;
+// another mailbox gets a row of its own (connectAndStore deletes the previous
+// one), so both start anew.
+func TestMailboxRowKeepsTheMomentOfTheRowItWritesOver(t *testing.T) {
 	now := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
 	before := now.Add(-48 * time.Hour)
 	server := &provider.Endpoint{Host: "imap.exemple.fr", Port: 993, TLS: provider.TLSImplicit}
@@ -367,16 +368,14 @@ func TestMailboxRowKeepsTheMomentOnlyForTheSameMailbox(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		prev       bson.M
-		same       bool
 		want       time.Time
 		wantSynced time.Time // zero: the next sync is a first one
 	}{
-		{"the same mailbox again", prev, true, before, synced},
-		{"another mailbox", prev, false, now, time.Time{}},
-		{"a first connection", nil, false, now, time.Time{}},
+		{"the same mailbox again", prev, before, synced},
+		{"a new row", nil, now, time.Time{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", route, "sealed", now, tc.same)
+			_, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", route, "sealed", now)
 			row := readRow(t, applyUpsert(t, tc.prev, update))
 			if !row.CreatedAt.Equal(tc.want) {
 				t.Errorf("createdAt = %v, want %v", row.CreatedAt, tc.want)

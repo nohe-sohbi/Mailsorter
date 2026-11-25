@@ -56,6 +56,10 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	progress, suggestions, err := h.runAnalysis(ctx, userEmail, req.EmailIDs, nil)
+	if errors.Is(err, errMailboxChanged) {
+		writeMailboxChanged(w)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Analysis failed: "+err.Error())
 		return
@@ -91,7 +95,8 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 	suggestion.LabelID = labelID
 
 	h.db.AISuggestions().InsertOne(ctx, suggestion)
-	h.logActionMeta(ctx, userEmail, email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From)
+	// Over the Gmail API only (a Gmail client): no generation.
+	h.logActionMeta(ctx, userEmail, "", email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From)
 	return true
 }
 
@@ -121,11 +126,17 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// Fetch emails from this sender
+	// Fetch emails from this sender, of the mailbox connected now.
+	gen, err := h.currentGeneration(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId":    userEmail,
-		"leftInbox": notLeftInbox,
-		"from":      bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
+		"userId":     userEmail,
+		"generation": inGeneration(gen),
+		"leftInbox":  notLeftInbox,
+		"from":       bson.M{"$regex": regexp.QuoteMeta(req.SenderEmail), "$options": "i"},
 	}, options.Find().SetLimit(20))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
@@ -237,6 +248,12 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer session.Close()
+	if suggestion.Generation != session.generation() {
+		// About a mailbox no longer connected: its message number names,
+		// now, a mail of the one connected since.
+		writeError(w, http.StatusNotFound, "Suggestion not found")
+		return
+	}
 
 	labelID, err := h.applySessionVerdict(ctx, session, userEmail, suggestion.EmailID, suggestion.Action, suggestion.LabelName, "")
 	suggestion.LabelID = labelID
@@ -263,7 +280,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	)
 	meta := h.identityIn(ctx, session, userEmail, suggestion.EmailID)
 	filed := filedUnder(suggestion, session.Transport)
-	h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
+	h.logActionFiled(ctx, userEmail, session.generation(), suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
 
 	answer := map[string]string{"status": "applied"}
 	if filed != "" {
@@ -322,8 +339,9 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve every suggested email's identity once, up front, so each ledger
 	// entry can name the message it acted on without a lookup inside the loop.
+	gen := session.generation()
 	emailIDs := h.suggestionEmailIDs(ctx, userEmail, req.SuggestionIDs)
-	identities := h.emailIdentities(ctx, userEmail, emailIDs)
+	identities := h.emailIdentities(ctx, userEmail, gen, emailIDs)
 
 	for _, id := range req.SuggestionIDs {
 		objectID, err := primitive.ObjectIDFromHex(id)
@@ -340,16 +358,17 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			failed++
 			continue
 		}
-		if suggestion.Status == proposalMoot {
-			// Its mail left the inbox some other way (a screen loaded before
-			// still sends its id): neither applied nor failed.
+		if suggestion.Status == proposalMoot || suggestion.Generation != gen {
+			// Its mail left the inbox some other way, or it is about a
+			// mailbox no longer connected (a screen loaded before still
+			// sends its id): neither applied nor failed.
 			continue
 		}
 
 		// Shield protected senders from a bulk "apply all" that would take
 		// their mail out of the inbox (archive, trash, and over IMAP filing
 		// into a folder). The suggestion is left pending, untouched.
-		if len(protectedList) > 0 && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
+		if len(protectedList) > 0 && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, gen, suggestion.EmailID), protectedList) {
 			protectedSkipped++
 			continue
 		}
@@ -377,7 +396,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		)
 		meta := identities[suggestion.EmailID]
 		filed := filedUnder(suggestion, session.Transport)
-		h.logActionFiled(ctx, userEmail, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
+		h.logActionFiled(ctx, userEmail, gen, suggestion.EmailID, suggestion.Action, SourceAI, meta.Subject, meta.From, filed)
 		if filed != "" {
 			labelNames[id] = filed
 		}
@@ -430,10 +449,12 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	// to be a substring match, which also swept every From that merely
 	// contained the key: a longer address on the same domain, or the same
 	// address on a longer domain.
+	// Over the Gmail API (gmailClientFor): its rows carry no generation.
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId":    userEmail,
-		"leftInbox": notLeftInbox,
-		"from":      req.SenderEmail,
+		"userId":     userEmail,
+		"generation": inGeneration(""),
+		"leftInbox":  notLeftInbox,
+		"from":       req.SenderEmail,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch emails")
@@ -472,7 +493,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		_, applyErr := h.applyVerdict(ctx, gmailClient, userEmail, email.MessageID, req.Action, "", labelID)
 		if applyErr == nil {
 			appliedCount++
-			h.logActionMeta(ctx, userEmail, email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
+			h.logActionMeta(ctx, userEmail, "", email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
 		}
 	}
 
@@ -499,9 +520,16 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		status = "pending"
 	}
 
+	// The proposals about the mailbox connected now (see generation.go).
+	gen, err := h.currentGeneration(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
 	cursor, err := h.db.AISuggestions().Find(ctx, bson.M{
-		"userId": userEmail,
-		"status": status,
+		"userId":     userEmail,
+		"generation": inGeneration(gen),
+		"status":     status,
 	}, options.Find().SetSort(bson.M{"createdAt": -1}).SetLimit(100))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch suggestions")
@@ -526,7 +554,7 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 			ids = append(ids, s.EmailID)
 		}
 	}
-	identities := h.emailIdentities(ctx, userEmail, ids)
+	identities := h.emailIdentities(ctx, userEmail, gen, ids)
 
 	type suggestionView struct {
 		models.AISuggestion
@@ -661,9 +689,14 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// Aggregate emails by sender
+	// Aggregate emails by sender, of the mailbox connected now.
+	gen, err := h.currentGeneration(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
 	pipeline := []bson.M{
-		{"$match": bson.M{"userId": userEmail, "leftInbox": notLeftInbox}},
+		{"$match": bson.M{"userId": userEmail, "generation": inGeneration(gen), "leftInbox": notLeftInbox}},
 		{"$group": bson.M{
 			"_id":        "$from",
 			"emailCount": bson.M{"$sum": 1},
@@ -877,10 +910,10 @@ func (h *Handler) dropMootProposal(ctx context.Context, id primitive.ObjectID) {
 // the inbox (mirroredIMAP flagged its stored copy).
 // A store that cannot answer reads as "still in the inbox": the action then
 // goes to the server, which knows.
-func (h *Handler) leftInbox(ctx context.Context, userEmail, messageID string) bool {
-	n, err := h.db.Emails().CountDocuments(ctx, bson.M{
-		"userId": userEmail, "folder": string(mailbox.FolderInbox), "messageId": messageID, "leftInbox": true,
-	})
+func (h *Handler) leftInbox(ctx context.Context, userEmail, gen, messageID string) bool {
+	filter := inboxOf(userEmail, gen)
+	filter["messageId"], filter["leftInbox"] = messageID, true
+	n, err := h.db.Emails().CountDocuments(ctx, filter)
 	if err != nil {
 		log.Printf("ai: did message %s of %s leave the inbox: %v", messageID, userEmail, err)
 		return false
@@ -964,7 +997,7 @@ func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession,
 	if action == "keep" {
 		return "", nil
 	}
-	if session.Transport == provider.TransportIMAP && h.leftInbox(ctx, userEmail, messageID) {
+	if session.Transport == provider.TransportIMAP && h.leftInbox(ctx, userEmail, session.generation(), messageID) {
 		// The user already tidied this mail by hand: the proposal is moot,
 		// whatever it proposed. Nothing moves, nothing is counted or recorded.
 		return "", errAlreadyOut
@@ -1023,9 +1056,9 @@ func (h *Handler) applyVerdict(ctx context.Context, gmailClient *gmailapi.Servic
 // senderOf returns the stored From of a message, or "" if unknown. Used to
 // consult the protected list when applying AI suggestions, which don't carry the
 // sender themselves.
-func (h *Handler) senderOf(ctx context.Context, userEmail, messageID string) string {
+func (h *Handler) senderOf(ctx context.Context, userEmail, gen, messageID string) string {
 	var e models.Email
-	if err := h.db.Emails().FindOne(ctx, bson.M{"userId": userEmail, "messageId": messageID}).Decode(&e); err == nil {
+	if err := h.db.Emails().FindOne(ctx, bson.M{"userId": userEmail, "generation": inGeneration(gen), "messageId": messageID}).Decode(&e); err == nil {
 		return e.From
 	}
 	return ""

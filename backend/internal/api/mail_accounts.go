@@ -86,31 +86,24 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		return models.MailAccount{}, fmt.Errorf("seal mailbox secret: %w", err)
 	}
 
-	// The same mailbox connected again (a new app password) keeps the moment
-	// it was first connected; another one (another address, another server)
-	// is connected now. Over IMAP the rules a sync applies on its own judge
-	// the mails received after it (arrivalsSince).
+	// The same mailbox connected again (a new app password) keeps its row: its
+	// generation, the moment it was connected and what Mailsorter kept of it.
+	// Another one (another address, another server) gets a row of its own,
+	// so a generation of its own (see generation.go), connected now: over
+	// IMAP the rules a sync applies on its own judge the mails received after
+	// it (arrivalsSince), and its first sync judges none.
 	var prev models.MailAccount
 	prevErr := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&prev)
 	if prevErr != nil && !errors.Is(prevErr, mongo.ErrNoDocuments) {
 		return models.MailAccount{}, fmt.Errorf("read the mail account: %w", prevErr)
 	}
-	same := prevErr == nil && sameMailbox(prev, address, route)
-	if !same {
-		// Another mailbox starts from nothing: the copy of the previous one,
-		// and the AI's proposals about it, name mails this one does not hold.
-		// Cleared before the new row is written: if that write fails, the
-		// previous mailbox is still connected, and its next sync, its first
-		// again, judges nothing as arrived.
-		if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
-			return models.MailAccount{}, err
+	if prevErr == nil && !sameMailbox(prev, address, route) {
+		if _, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": userEmail}); err != nil {
+			return models.MailAccount{}, fmt.Errorf("replace the mail account: %w", err)
 		}
 	}
 
-	account, update := mailboxRow(userEmail, p.Key, address, route, sealed, time.Now(), same)
-	if same {
-		account.CreatedAt = prev.CreatedAt
-	}
+	account, update := mailboxRow(userEmail, p.Key, address, route, sealed, time.Now())
 	if _, err := h.db.MailAccounts().UpdateOne(ctx,
 		bson.M{"userId": userEmail},
 		update,
@@ -118,38 +111,18 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 	); err != nil {
 		return models.MailAccount{}, fmt.Errorf("store mail account: %w", err)
 	}
+	var stored models.MailAccount
+	if err := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&stored); err != nil {
+		return models.MailAccount{}, fmt.Errorf("read the mail account stored: %w", err)
+	}
+	account.ID, account.CreatedAt = stored.ID, stored.CreatedAt
+	// What was kept of a mailbox connected before is not read any more (it
+	// is of another generation): erased now, or, should that fail, at the
+	// first sync.
+	if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
+		log.Printf("mailbox: connect %s, erase what was kept of the mailbox before, done at the first sync: %v", userEmail, err)
+	}
 	return account, nil
-}
-
-// clearMailboxCopy clears what Mailsorter kept of the mailbox connected over
-// IMAP, when it is disconnected or another one is connected in its place:
-// the stored copy of its inbox (the rows that carry a folder), the AI's
-// pending proposals about its mails, the count of mails its rules gave up on
-// not yet told, and the mark of its first sync, so the next sync is a first
-// one. The history stays, but its lines no longer offer "Annuler"
-// (mailboxGone): they name mails by numbers the next mailbox gives to its own
-// mails, and an "Annuler" would act on one of those.
-func (h *Handler) clearMailboxCopy(ctx context.Context, userEmail string) error {
-	if _, err := h.db.ActionLog().UpdateMany(ctx,
-		bson.M{"userId": userEmail, "createdAt": bson.M{"$lte": time.Now()}},
-		bson.M{"$set": bson.M{"mailboxGone": true}}); err != nil {
-		return fmt.Errorf("close the history of the mailbox: %w", err)
-	}
-	if _, err := h.db.MailAccounts().UpdateOne(ctx, bson.M{"userId": userEmail},
-		bson.M{"$unset": bson.M{"firstSyncedAt": ""}}); err != nil {
-		return fmt.Errorf("unmark the first sync of the mailbox: %w", err)
-	}
-	if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": bson.M{"$exists": true}}); err != nil {
-		return fmt.Errorf("clear the copy of the mailbox: %w", err)
-	}
-	if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending"}); err != nil {
-		return fmt.Errorf("clear the proposals about the mailbox: %w", err)
-	}
-	if _, err := h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail},
-		bson.M{"$unset": bson.M{"rulesGivenUp": ""}}); err != nil {
-		return fmt.Errorf("clear what the rules of the mailbox gave up on: %w", err)
-	}
-	return nil
 }
 
 // sameMailbox says whether a connection to address over route is the mailbox
@@ -170,10 +143,9 @@ func sameMailbox(prev models.MailAccount, address string, route provider.Route) 
 // same route, so the recap leaves from the provider whose IMAP server was
 // just proved. A route without one clears what a mailbox connected before may
 // have left on the row, rather than keep another provider's server. The
-// moment of the connection (createdAt) is kept when it is the same mailbox
-// connected again (same), and is now otherwise, the next sync being then the
-// first of this mailbox (firstSyncedAt unset).
-func mailboxRow(userEmail, providerKey, address string, route provider.Route, sealed string, now time.Time, same bool) (models.MailAccount, bson.M) {
+// moment of the connection (createdAt) is the row's: connectAndStore keeps the
+// row of the same mailbox connected again, and deletes another's.
+func mailboxRow(userEmail, providerKey, address string, route provider.Route, sealed string, now time.Time) (models.MailAccount, bson.M) {
 	account := models.MailAccount{
 		UserID:    userEmail,
 		Provider:  providerKey,
@@ -198,19 +170,11 @@ func mailboxRow(userEmail, providerKey, address string, route provider.Route, se
 		"tls":       account.TLS,
 		"updatedAt": now,
 	}
-	onInsert := bson.M{"userId": userEmail, "createdAt": now}
-	if !same {
-		set["createdAt"] = now
-		delete(onInsert, "createdAt")
-	}
 	update := bson.M{
 		"$set":         set,
-		"$setOnInsert": onInsert,
+		"$setOnInsert": bson.M{"userId": userEmail, "createdAt": now},
 	}
 	unset := bson.M{}
-	if !same {
-		unset["firstSyncedAt"] = ""
-	}
 	if route.SMTP != nil {
 		account.SMTPHost = route.SMTP.Host
 		account.SMTPPort = route.SMTP.Port
@@ -278,7 +242,9 @@ func (h *Handler) ConnectMailbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, account)
 }
 
-// GetMailbox returns the connected mailbox, or a null one when there is none.
+// GetMailbox returns the connected mailbox, or a null one when there is none,
+// and the generation the screen sends back with its requests (generation,
+// mailboxStamp; empty with no mailbox): see generation.go.
 //
 // The sealed password is never in the response: models.MailAccount tags it
 // `json:"-"`, and a test pins that tag because it is one keystroke away from
@@ -296,7 +262,11 @@ func (h *Handler) GetMailbox(w http.ResponseWriter, r *http.Request) {
 	var account models.MailAccount
 	err := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&account)
 	if err == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": account})
+		transport := provider.TransportGmailAPI
+		if account.Transport == string(provider.TransportIMAP) {
+			transport = provider.TransportIMAP
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": account, "generation": mailboxStamp(transport, account)})
 		return
 	}
 
@@ -314,12 +284,13 @@ func (h *Handler) GetMailbox(w http.ResponseWriter, r *http.Request) {
 					Port:      993,
 					TLS:       "tls",
 				},
+				"generation": mailboxStamp(provider.TransportGmailAPI, models.MailAccount{}),
 			})
 			return
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": nil})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"mailbox": nil, "generation": ""})
 }
 
 // DisconnectMailbox forgets the connection, app password or OAuth tokens included.
@@ -337,22 +308,6 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// What Mailsorter kept of an IMAP mailbox goes with it, first: a failure
-	// leaves it connected, and disconnecting again clears it. A mailbox
-	// reached through the Gmail API keeps its listing, as before.
-	transport, _, err := h.transportFor(ctx, userEmail)
-	if err != nil && !errors.Is(err, errNoMailboxConnected) {
-		log.Printf("mailbox: disconnect %s, which transport: %v", userEmail, err)
-		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
-		return
-	}
-	if transport == provider.TransportIMAP {
-		if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
-			log.Printf("mailbox: disconnect %s: %v", userEmail, err)
-			writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
-			return
-		}
-	}
 	res, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": userEmail})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
@@ -368,21 +323,27 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
+	// What Mailsorter kept of an IMAP mailbox goes with it: no generation is
+	// connected now (see generation.go). A mailbox reached through the Gmail
+	// API keeps its listing and its proposals, as before. Should the erasing
+	// fail, nothing of it is read any more, and the next connection erases it.
+	if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
+		log.Printf("mailbox: disconnect %s, erase what was kept of it, done at the next connection: %v", userEmail, err)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{"disconnected": res.DeletedCount > 0 || true})
 }
 
-// openMailbox opens the caller's stored mailbox for work.
+// openMailbox opens a stored mailbox for work: the row the caller read
+// (openSession), so the connection is to the mailbox of that generation, not
+// to one connected in its place since.
 //
 // It is the IMAP counterpart of getUserToken, and the only way the rest of the
 // app reaches a connection: nothing else reads the secret column, but
 // sendThroughBox below, which logs in to the same mailbox's sending server.
 // The caller closes the client, one connection per unit of work, because an
 // IMAP session is stateful and cannot be shared between goroutines.
-func (h *Handler) openMailbox(ctx context.Context, userEmail string) (*imap.Client, error) {
-	var account models.MailAccount
-	if err := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&account); err != nil {
-		return nil, err
-	}
+func (h *Handler) openMailbox(ctx context.Context, account models.MailAccount) (*imap.Client, error) {
 	password, err := h.openSecret(account.Secret)
 	if err != nil {
 		return nil, err
