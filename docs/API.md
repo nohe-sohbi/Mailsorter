@@ -1265,12 +1265,25 @@ tard`, while the return of one the row held for another mailbox checks the
 mail's Message-ID and moves nothing there). What comes before stays without a
 generation: final in the history (on an IMAP mailbox), and erased from the
 copy. So are the rows of the copies of the accounts with no IMAP mailbox
-connected, and their open snoozes end (`cancelled`). This runs under its own time, after
-the indexes, and the boot log says how many rows it stamped and erased. The
-index on (userId, messageId, generation) is built unique before the one it
-replaces, on (userId, messageId), is dropped; should it fail (duplicates, the
-boot's time), a plain one is built, the old one kept, and the boot log says
-so.
+connected, and their open snoozes end (`cancelled`). A mailbox whose stamping
+failed keeps its rows unread until its next sync erases them and rebuilds its
+copy from the inbox (the rows kept for "Annuler" go then, and the "Annuler" of
+those moves). A snooze over IMAP without a generation (one the boot missed)
+is the connected IMAP mailbox's: the list, the sweep, "Réactiver", "Annuler"
+and the erasing give it that generation, so no mail stays in `Plus tard` for
+want of it. This runs under its own time, after the indexes, and the boot log
+says how many rows it stamped, erased and ended. The index on (userId,
+messageId, generation) is built unique before the one it replaces, on
+(userId, messageId), is dropped; should it fail (duplicates, the boot's time),
+a plain one is built, the old one kept, and the boot log says so.
+
+A one-time limit of the update that brings generations: the line is the
+row's last connection (`updatedAt`), which a new app password (`PUT
+/api/mailbox/password`) or the same mailbox connected again also moved. When
+that happened before the update, the history entries older than it become
+final ("Annuler" no longer offered), and the rows kept for "Annuler" from
+before it are erased. Nothing moves by mistake: what is in doubt is only made
+final.
 
 A limit remains for the history entries of an IMAP mailbox disconnected before
 generations existed: they carry none, like the Gmail API's, so once a Gmail

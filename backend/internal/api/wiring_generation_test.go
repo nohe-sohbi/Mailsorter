@@ -481,7 +481,7 @@ func unstampAll(moi *imapPerson) {
 	a.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for _, c := range []*mongo.Collection{a.h.db.Emails(), a.h.db.ActionLog(), a.h.db.AISuggestions()} {
+	for _, c := range []*mongo.Collection{a.h.db.Emails(), a.h.db.ActionLog(), a.h.db.AISuggestions(), a.h.db.Snoozes()} {
 		if _, err := c.UpdateMany(ctx, bson.M{"userId": moi.email}, bson.M{"$unset": bson.M{"generation": ""}}); err != nil {
 			a.fatalf("retrait de la génération de %s : %v", c.Name(), err)
 		}
@@ -787,4 +787,106 @@ func TestAcceptance_AReportOfAReplacedMailboxMovesNothingInTheNewOne(t *testing.
 	if n := moi.returnsJournaled(newUIDs[1]); n != 0 {
 		app.failf("aucun retour ne devrait être noté pour le mail n°%s de la deuxième boîte, il y en a %d", newUIDs[1], n)
 	}
+}
+
+// reportOf is the stored report of the mail with this subject, read again.
+func reportOf(moi *imapPerson, subject string) models.Snooze {
+	moi.app.t.Helper()
+	return moi.storedReport(subject)
+}
+
+// A mail reported over IMAP before reports carried a generation (since
+// #175, in production) stays reported across the update: the boot gives the
+// report the generation of the mailbox connected, it is listed, and its mail
+// comes back at its hour.
+func TestAcceptance_BootKeepsTheReportsOfTheConnectedMailbox(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+	}
+	unstampAll(moi)
+
+	if err := boot(app); err != nil {
+		app.fatalf("EnsureIndexes : %v", err)
+	}
+	// Read before any route: the list and the sweep would give it the
+	// generation themselves (adoptReports).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	current, err := app.h.currentGeneration(ctx, moi.email)
+	if err != nil {
+		app.fatalf("quelle boîte de %s est branchée : %v", moi.email, err)
+	}
+	if got := reportOf(moi, shopOrder.Subject); got.Generation != current || got.Status != "scheduled" {
+		app.failf("le démarrage devrait donner au report de %s la génération de sa boîte (%s), il a %q, statut %q", moi.email, current, got.Generation, got.Status)
+	}
+	if _, ok := moi.reportedRow(shopOrder.Subject); !ok {
+		app.failf("le report de %s devrait rester dans ses mails reportés, ils montrent %s", moi.email, describeReported(moi.reported()))
+	}
+	moi.timeComesForSnoozes()
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	if got := reportOf(moi, shopOrder.Subject); got.Status != "done" {
+		app.failf("le report de %s devrait être revenu à son heure (done), il est %q", moi.email, got.Status)
+	}
+}
+
+// The same report, its account's IMAP mailbox no longer connected at the
+// boot (disconnected before the update, which erased nothing then): it ends
+// (cancelled), its mail left where it waits.
+func TestAcceptance_BootEndsTheReportsOfNoMailboxConnected(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+	}
+	unstampAll(moi)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err != nil {
+		app.fatalf("débranchement d'avant la mise à jour : %v", err)
+	}
+
+	if err := boot(app); err != nil {
+		app.fatalf("EnsureIndexes : %v", err)
+	}
+	if got := reportOf(moi, shopOrder.Subject); got.Status != "cancelled" {
+		app.failf("le report de %s, sans boîte IMAP branchée, devrait finir au démarrage (cancelled), il est %q", moi.email, got.Status)
+	}
+	moi.expectOnServer(snoozeFolderName, shopOrder.Subject)
+}
+
+// A report of IMAP the boot did not stamp (its stamping failed) is the
+// connected IMAP mailbox's all the same: the sweep brings it back at its
+// hour, and the list shows it, each giving it the generation.
+func TestAcceptance_AReportTheBootMissedIsTheConnectedMailboxs(t *testing.T) {
+	t.Run("le passage", func(t *testing.T) {
+		app := newTestApp(t, &scenarioResult{})
+		moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+		if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+			app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+		}
+		unstampAll(moi)
+		moi.timeComesForSnoozes()
+		moi.expectOnServer(serverInbox, shopOrder.Subject)
+		if got := reportOf(moi, shopOrder.Subject); got.Status != "done" || got.Generation == "" {
+			app.failf("le report sans génération de %s devrait revenir à son heure et prendre celle de sa boîte, il est %q, génération %q", moi.email, got.Status, got.Generation)
+		}
+	})
+	t.Run("la liste", func(t *testing.T) {
+		app := newTestApp(t, &scenarioResult{})
+		moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+		if got := moi.snoozeAnswer(uids[1]); got.code != http.StatusOK {
+			app.fatalf("« Reporter » de %s a répondu %s", moi.email, got)
+		}
+		unstampAll(moi)
+		row, ok := moi.reportedRow(shopOrder.Subject)
+		if !ok {
+			app.fatalf("le report sans génération de %s devrait s'afficher, la liste montre %s", moi.email, describeReported(moi.reported()))
+		}
+		if got := moi.wakeNowAnswer(row); got.code != http.StatusOK {
+			app.failf("« Réactiver » le report de %s a répondu %s", moi.email, got)
+		}
+		moi.expectOnServer(serverInbox, shopOrder.Subject)
+	})
 }

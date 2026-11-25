@@ -306,31 +306,39 @@ const stampTimeout = 5 * time.Minute
 // stampGenerations gives what was kept of an IMAP mailbox before it carried a
 // generation the generation of the mailbox connected now: the _id of its
 // mail_accounts row (see api/generation.go). At each boot, and it finds
-// nothing once done. It logs how many rows it stamped and erased, and its
-// failures: the boot goes on, and the next one does what is left.
+// nothing once done. It logs how many rows it stamped, erased and ended, and
+// its failures: the boot goes on, and the next one does what is left.
 //
 // Before generations, connecting another address wrote over the same row and
 // erased nothing: the row's last connection (updatedAt) is the one moment
 // from which what was kept is known to be the connected mailbox's, the
-// moment of its first one (createdAt) is not.
+// moment of its first one (createdAt) is not. A new app password, or the same
+// mailbox connected again, moved it too: what was done before it is treated
+// as another mailbox's, which only makes "Annuler" final on it.
 //
 //   - The copy of the inbox (the rows that carry a folder): a row still in
-//     the inbox is of the connected mailbox (each sync rewrites or drops it
-//     against the inbox listed); a row kept for "Annuler" only if the mail
-//     left the inbox since that connection (leftAt).
-//   - The AI's proposals and the history entries made since that connection.
+//     the inbox is stamped (each sync rewrites or drops it against the inbox
+//     it lists); a row kept for "Annuler" only if the mail left the inbox
+//     since that connection (leftAt). The ones not stamped are erased here,
+//     and so are the rows of the copies of the accounts with no IMAP mailbox
+//     connected, which the senders, the subscriptions and the sweeps of the
+//     Gmail API would read. A mailbox whose stamping failed keeps its rows as
+//     they are, read by nothing (every read asks for a generation), until
+//     the next boot stamps them or its next sync erases them
+//     (clearMailboxCopy) and rebuilds the copy from the inbox: the rows kept
+//     for "Annuler" go then, and the "Annuler" of those moves with them.
+//   - The AI's proposals and the history entries made since that connection;
+//     the others stay without a generation: final in the history, erased
+//     from the proposals at the next sync.
 //   - Its reports (snoozes, the ones that carry the folder their mail waits
-//     in), whatever their date: ending one strands its mail in "Plus tard",
-//     while waking one of a mailbox the row held before moves nothing there
-//     (its return checks the Message-ID, imap.Client.MoveRecorded).
-//
-// What comes before stays without a generation: final in the history, and
-// erased from the copy here. So are the rows of the copy of the accounts with
-// no IMAP mailbox connected (disconnected, or gone to Gmail, before
-// generations), which the senders, the subscriptions and the sweeps of the
-// Gmail API would read, and their open reports end (cancelled), which the
-// sweep would otherwise try over the Gmail API. Not those of a mailbox whose
-// stamping failed: the next boot stamps them.
+//     in), whatever their date: ending one would leave its mail in "Plus
+//     tard", while waking one of a mailbox the row held before moves nothing
+//     there (its return checks the Message-ID, imap.Client.MoveRecorded). One
+//     this misses is not lost either: while its account's IMAP mailbox is
+//     connected, the list, the sweep, "Réactiver" and clearMailboxCopy give it
+//     that mailbox's generation (api adoptReports). The open reports of an
+//     account with no IMAP mailbox connected end here (cancelled): the sweep
+//     would otherwise try them over the Gmail API.
 func (d *Database) stampGenerations(ctx context.Context) {
 	cur, err := d.MailAccounts().Find(ctx, bson.M{"transport": "imap"},
 		options.Find().SetProjection(bson.M{"_id": 1, "userId": 1, "updatedAt": 1}))
@@ -351,8 +359,12 @@ func (d *Database) stampGenerations(ctx context.Context) {
 	failed := 0
 	// Their copies are not erased: the next boot stamps them.
 	unstamped := make([]string, 0)
+	// The accounts with an IMAP mailbox connected: a report of IMAP without
+	// a generation is theirs, never ended here (adoptReports).
+	imapAccounts := make([]string, 0, len(accounts))
 	none := bson.M{"$exists": false}
 	for _, a := range accounts {
+		imapAccounts = append(imapAccounts, a.UserID)
 		stamp := bson.M{"$set": bson.M{"generation": a.ID.Hex()}}
 		// A row that never says when it was last connected: nothing kept
 		// before now is known to be its mailbox's.
@@ -396,7 +408,7 @@ func (d *Database) stampGenerations(ctx context.Context) {
 	}
 	// snooze.StatusScheduled, StatusFailed and StatusCancelled.
 	cancelledRes, err := d.Snoozes().UpdateMany(ctx,
-		bson.M{"folder": bson.M{"$exists": true}, "generation": none, "userId": bson.M{"$nin": unstamped},
+		bson.M{"folder": bson.M{"$exists": true}, "generation": none, "userId": bson.M{"$nin": imapAccounts},
 			"status": bson.M{"$in": []string{"scheduled", "failed"}}},
 		bson.M{"$set": bson.M{"status": "cancelled", "updatedAt": time.Now()}})
 	if err != nil {
