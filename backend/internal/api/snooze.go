@@ -180,6 +180,11 @@ func (h *Handler) snoozeMessage(ctx context.Context, gmailClient *gmailapi.Servi
 	); err != nil {
 		return err
 	}
+	// The message is out of the inbox: its report and its history line are
+	// written under their own time, so a request ending right now cannot
+	// leave it archived with nothing to bring it back.
+	ctx, cancel := settleCtx(ctx)
+	defer cancel()
 
 	if _, err := h.db.Snoozes().UpdateOne(ctx,
 		bson.M{"userId": userEmail, "messageId": messageID, "status": snooze.StatusScheduled},
@@ -254,6 +259,11 @@ func (h *Handler) snoozeIMAP(ctx context.Context, session *mailSession, userEmai
 	if err := h.applyMutations(ctx, session.Mailbox(), session.RefFor(ctx, messageID), into); err != nil {
 		return err
 	}
+	// The mail is in "Plus tard": its report and its history line are written
+	// under their own time, so a request ending right now cannot leave it
+	// there with nothing to bring it back.
+	ctx, cancel := settleCtx(ctx)
+	defer cancel()
 
 	// Where it landed, as the move recorded it. A record that did not reach
 	// the store (logged by the move) leaves the folder, known by its name on

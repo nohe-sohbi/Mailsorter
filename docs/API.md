@@ -383,8 +383,13 @@ with PEEK, so syncing never marks them read.
 
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `428 Precondition Required`: the mail provider refuses the IMAP password on
+  file: "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
+  d'application.", as on the connect screen
 - `500 Internal Server Error`: Failed to sync emails. This includes an account
-  with no mailbox connected, which this route does not map to `428`
+  with no mailbox connected, which this route does not map to `428`, and a
+  mailbox that did not answer ("votre boîte n'a pas répondu, réessayez dans un
+  instant", see below)
 
 ### Direct action on a message
 
@@ -748,9 +753,12 @@ A mailbox that cannot be reached, or whose connection drops during the pass,
 is tried again without counting (the rest of its due mails wait for the next
 pass, untouched), except a password the server refuses, which counts. Over
 IMAP a mail no longer in `Plus tard` when its hour comes is looked for in the
-inbox by its `Message-ID`: put back there by another mail program (or by a
-return whose answer the connection lost), it is back, marked unread, and its
-return is written. Found nowhere (another mail program took it elsewhere), it
+inbox by its whole `Message-ID` (searched with its angle brackets, each
+candidate's header compared exactly): put back there by another mail program
+(or by a return whose answer the connection lost), it is back, marked unread,
+and its return is written. Several messages of the inbox with that
+`Message-ID` (a copy) are not concluded on: none is marked unread nor written
+as returned, and the snooze ends `cancelled`, the inbox left as it is. Found nowhere (another mail program took it elsewhere), it
 is left where it is, and its snooze becomes `cancelled`, logged, out of every
 list. "Annuler" on a snooze (its line in the history, or the verb that
 undoes the move, see `POST /api/activity/undo` and `POST /api/emails/action`)
@@ -2628,11 +2636,11 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro | `{ "error": "Action déjà annulée", "status": 409 }` |
 | `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Request body too large", "status": 413 }` |
 | `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
-| `428` | No mailbox is connected to this account yet | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }` |
+| `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }`, `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428 }` |
 | `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter is far lower | `{ "error": "Too many requests", "status": 429 }` |
 | `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
 | `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a label on IMAP, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
-| `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe | `{ "error": "Report impossible : ...", "status": 502 }` |
+| `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe; or the IMAP mailbox could not be opened (out of reach, too slow, unavailable) | `{ "error": "Report impossible : ...", "status": 502 }`, `{ "error": "Votre boîte n'a pas répondu, réessayez dans un instant.", "status": 502 }` |
 | `503` | A dependency is not configured (AI, billing), or the datastore is unreachable (`/health`) | `{ "error": "Aucune IA n'est configurée sur cette instance.", "status": 503 }` |
 
 A `401` on a route the SPA considers non-optional clears the session and returns

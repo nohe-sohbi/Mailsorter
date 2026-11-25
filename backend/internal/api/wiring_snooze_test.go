@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -663,9 +664,33 @@ func TestAcceptance_IMAPUnavailableAtLoginIsNotARefusedPassword(t *testing.T) {
 		app.failf("« Synchroniser » sur une boîte indisponible au LOGIN devrait dire que la boîte n'a pas répondu, il a répondu %d : %q", code, msg)
 	}
 
+	if got := moi.snoozeAnswer(uids[0]); got.code != http.StatusBadGateway || got.body["error"] != mailboxNoAnswerMessage {
+		app.failf("« Reporter » sur une boîte indisponible au LOGIN devrait répondre 502 %q, il a répondu %s", mailboxNoAnswerMessage, got)
+	}
+
 	sweepWithin(app, 20*time.Second)
 	if s := moi.storedReport(shopOrder.Subject); s.Attempts != 0 || s.Status != "scheduled" {
 		app.failf("un report d'une boîte indisponible devrait rester prévu sans compter d'essai, il est %q après %d essai(s)", s.Status, s.Attempts)
+	}
+}
+
+// A password the provider really refuses is said in the words of the connect
+// screen, by "Synchroniser" and by "Reporter" alike, with 428 (to be
+// connected again), never a 401, which would sign the person out of
+// Mailsorter.
+func TestAcceptance_IMAPRefusedPasswordIsWordedAsOnTheConnectScreen(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement)
+	moi.reachThrough(loginServer(app, func(tag string, c net.Conn) {
+		fmt.Fprintf(c, "%s NO [AUTHENTICATIONFAILED] Invalid credentials\r\n", tag)
+	}))
+
+	code, out := moi.syncAnswer()
+	if code != http.StatusPreconditionRequired || out["error"] != mailboxRejectedMessage {
+		app.failf("« Synchroniser » avec un mot de passe refusé devrait répondre 428 %q, il a répondu %d : %v", mailboxRejectedMessage, code, out)
+	}
+	if got := moi.snoozeAnswer(uids[0]); got.code != http.StatusPreconditionRequired || got.body["error"] != mailboxRejectedMessage {
+		app.failf("« Reporter » avec un mot de passe refusé devrait répondre 428 %q, il a répondu %s", mailboxRejectedMessage, got)
 	}
 }
 
@@ -919,13 +944,15 @@ func stallingTLSProxy(a *testApp, serverPort int, word string) int {
 }
 
 // finishesWithin runs work and stops the test when it has not returned after
-// limit. what names the work in the failure.
+// limit, naming what in the failure, rather than letting it hang until the
+// test binary's own timeout. work must not touch the test (no failf): it may
+// still run after the test has ended.
 func finishesWithin(a *testApp, limit time.Duration, what string, work func()) {
 	a.t.Helper()
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		work()
-		close(done)
 	}()
 	select {
 	case <-done:
@@ -945,11 +972,21 @@ func TestAcceptance_IMAPRequestSyncAnswersInItsTimeWhenTheServerGoesSilent(t *te
 	moi, _ := syncedIMAPInbox(app, bankStatement)
 	moi.reachThrough(stallingTLSProxy(app, moi.port, "FETCH"))
 
-	var code int
+	// Its own client, with its own time limit: a request that never answers
+	// fails the test in words, not at the test binary's timeout.
+	req, err := http.NewRequest(http.MethodPost, app.server.URL+"/api/emails/sync", nil)
+	if err != nil {
+		app.fatalf("requête de synchronisation : %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+moi.token)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		app.fatalf("« Synchroniser » sur une boîte qui se tait après LOGIN n'a pas répondu en 20 s (il devrait répondre en 1 s) : %v", err)
+	}
+	defer resp.Body.Close()
 	var out map[string]interface{}
-	finishesWithin(app, 20*time.Second, "« Synchroniser » sur une boîte qui se tait après LOGIN", func() {
-		code, out = moi.syncAnswer()
-	})
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	code := resp.StatusCode
 	msg, _ := out["error"].(string)
 	if code == http.StatusOK || !strings.Contains(msg, "votre boîte n'a pas répondu") {
 		app.failf("« Synchroniser » sur une boîte qui se tait après LOGIN devrait dire que la boîte n'a pas répondu, il a répondu %d : %q", code, msg)
@@ -980,5 +1017,69 @@ func TestAcceptance_IMAPBackgroundSyncGoesPastAMailboxSilentAfterLogin(t *testin
 
 	if !autre.shows(shopOrder.Subject) {
 		app.failf("la synchronisation de fond devrait passer au compte suivant et montrer le mail %q de %s, elle ne le montre pas", shopOrder.Subject, autre.email)
+	}
+}
+
+// The sweep, a server that goes silent after LOGIN at the MOVE that brings a
+// mail back (the move done on the server, its answer never sent): the pass
+// ends within its time for that mailbox, the report waits uncounted, and the
+// next pass finds the mail in the inbox already and settles it as back,
+// unread, its return written once.
+func TestAcceptance_IMAPSnoozeSweepGetsPastAServerSilentAtTheMove(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	shortSweepBound(app)
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	moi.openMail(uids[1])
+	reportedOnIMAP(moi, uids[1], shopOrder)
+	moi.reportDue()
+
+	moi.reachThrough(stallingTLSProxy(app, moi.port, "MOVE"))
+	sweepWithin(app, 20*time.Second)
+
+	expectReported(moi, shopOrder)
+	if s := moi.storedReport(shopOrder.Subject); s.Attempts != 0 || s.Status != "scheduled" {
+		app.failf("un réveil coupé par un serveur muet au MOVE devrait laisser le report prévu sans compter d'essai, il est %q après %d essai(s)", s.Status, s.Attempts)
+	}
+
+	moi.reachThrough(moi.port)
+	app.h.wakeDueSnoozes()
+	expectUnreadInServerInbox(moi, shopOrder)
+	expectNotInLater(moi, shopOrder, "il est revenu dans la boîte de réception")
+	expectNotReported(moi, shopOrder, "il est revenu")
+	if n := moi.returnsJournaled(uids[1]); n != 1 {
+		app.failf("le retour du mail %q devrait être écrit 1 fois dans l'historique, il l'est %d fois", shopOrder.Subject, n)
+	}
+}
+
+// A reported mail no longer in "Plus tard", whose Message-ID the inbox holds
+// twice (put back there, and a copy): which one is the mail cannot be told.
+// Its hour takes neither: nothing is marked unread nor written as returned,
+// and the report ends (cancelled), the inbox left as it is.
+func TestAcceptance_IMAPSnoozeTakesNoneOfTwoCopiesInTheInbox(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	later := reportedOnIMAP(moi, uids[1], shopOrder)
+	id := moi.storedReport(shopOrder.Subject).HeaderMessageID
+	if id == "" {
+		app.fatalf("le report du mail %q n'a pas de Message-ID : le test ne prouve rien", shopOrder.Subject)
+	}
+	moi.movedFromElsewhere(later, shopOrder.Subject, serverInbox)
+	raw := "From: " + shopOrder.From + "\r\nSubject: " + shopOrder.Subject + " (copie)\r\nMessage-ID: <" + id +
+		">\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nCopie.\r\n"
+	if _, err := moi.mailbox.Append("INBOX", bytes.NewReader([]byte(raw)), &imapv2.AppendOptions{Time: time.Now()}); err != nil {
+		app.fatalf("dépôt d'une copie du mail : %v", err)
+	}
+
+	moi.timeComesForSnoozes()
+
+	expectNotReported(moi, shopOrder, "il n'est plus dans « Plus tard »")
+	if status := reportStatus(app, moi.email, shopOrder.Subject); status != "cancelled" {
+		app.failf("le report d'un mail que la boîte de réception tient en deux exemplaires devrait être « cancelled », il est %q", status)
+	}
+	if n := moi.returnsJournaled(uids[1]); n != 0 {
+		app.failf("aucun retour ne devrait être écrit pour un mail qu'on ne sait pas désigner, il y en a %d", n)
+	}
+	for _, subject := range []string{shopOrder.Subject, shopOrder.Subject + " (copie)"} {
+		moi.expectOnServer(serverInbox, subject)
 	}
 }
