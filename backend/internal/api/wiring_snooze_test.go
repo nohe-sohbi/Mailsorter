@@ -1417,3 +1417,135 @@ func TestAcceptance_SyncWithoutMailboxSaysSo(t *testing.T) {
 		app.failf("« Synchroniser » sans boîte branchée devrait répondre 428 %q (syncMessage), il a répondu %d : %v", noMailboxMessage, code, out)
 	}
 }
+
+// putPasswordRaw is "Enregistrer" of the new password form as a raw request,
+// for what the harness does not show: the Retry-After of a 429.
+func putPasswordRaw(p *imapPerson, password string) (*http.Response, map[string]interface{}) {
+	a := p.app
+	a.t.Helper()
+	body, _ := json.Marshal(map[string]string{"password": password})
+	req, err := http.NewRequest(http.MethodPut, a.server.URL+"/api/mailbox/password", bytes.NewReader(body))
+	if err != nil {
+		a.fatalf("requête du nouveau mot de passe : %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		a.fatalf("le nouveau mot de passe n'a pas répondu : %v", err)
+	}
+	defer resp.Body.Close()
+	var out map[string]interface{}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp, out
+}
+
+// Wrong new passwords one after another: each is a LOGIN at the provider,
+// until the sixth in a row, which answers 429 in French, with Retry-After,
+// without reaching the server.
+func TestAcceptance_IMAPNewPasswordAttemptsAreThrottled(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, bankStatement)
+	port, conns := countingTLSProxy(app, moi.port)
+	moi.reachThrough(port)
+
+	for i := 1; i <= 5; i++ {
+		if got := moi.changePassword("pas-le-bon"); got.code != http.StatusUnauthorized {
+			app.fatalf("le mauvais mot de passe n°%d devrait être refusé par le fournisseur (401), il a répondu %s", i, got)
+		}
+	}
+	tried := conns()
+	resp, out := putPasswordRaw(moi, "pas-le-bon")
+	if resp.StatusCode != http.StatusTooManyRequests || out["error"] != "Trop de tentatives. Patientez quelques instants." || resp.Header.Get("Retry-After") == "" {
+		app.failf("le 6e mauvais mot de passe de suite devrait répondre 429 « Trop de tentatives. Patientez quelques instants. » avec Retry-After, il a répondu %d %v (Retry-After %q)", resp.StatusCode, out, resp.Header.Get("Retry-After"))
+	}
+	if n := conns(); n != tried {
+		app.failf("le 6e mauvais mot de passe ne devrait pas atteindre le serveur, il a ouvert %d connexion(s) de plus", n-tried)
+	}
+}
+
+// Connecting a mailbox again and again is throttled the same way, before any
+// LOGIN: the sixth attempt in a row answers 429. (These attempts name an
+// address with no IMAP route, so none of them reaches a server; the limit is
+// checked before the route is.)
+func TestAcceptance_ConnectAttemptsAreThrottled(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson("essais@exemple.fr")
+	connect := func() answer {
+		code, out := app.callAs(moi.token, http.MethodPost, "/api/mailbox/connect",
+			map[string]string{"address": "quelquun@exemple.fr", "password": "pas-le-bon"})
+		return answer{code: code, body: out}
+	}
+	for i := 1; i <= 5; i++ {
+		if got := connect(); got.code == http.StatusTooManyRequests {
+			app.fatalf("la tentative de branchement n°%d ne devrait pas encore être freinée, elle a répondu %s", i, got)
+		}
+	}
+	if got := connect(); got.code != http.StatusTooManyRequests || got.body["error"] != "Trop de tentatives. Patientez quelques instants." {
+		app.failf("la 6e tentative de branchement de suite devrait répondre 429 « Trop de tentatives. Patientez quelques instants. », elle a répondu %s", got)
+	}
+}
+
+// The mailbox disconnected while its new password was being tried: the
+// password is not stored anywhere, and the answer is 428 "no mailbox", never
+// "Mot de passe mis à jour.".
+func TestAcceptance_IMAPNewPasswordForAMailboxDisconnectedMeanwhile(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, bankStatement)
+	var deleted atomic.Bool
+	moi.reachThrough(answerHookTLSProxy(app, moi.port, "LOGIN", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err == nil {
+			deleted.Store(true)
+		}
+	}))
+
+	got := moi.changePassword(imapTestPassword)
+	if !deleted.Load() {
+		app.fatalf("la boîte n'a pas été débranchée pendant l'essai du mot de passe : le test ne prouve rien")
+	}
+	if got.code != http.StatusPreconditionRequired || got.body["error"] != noMailboxMessage {
+		app.failf("un nouveau mot de passe pour une boîte débranchée pendant l'essai devrait répondre 428 %q, il a répondu %s", noMailboxMessage, got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if n, err := app.h.db.MailAccounts().CountDocuments(ctx, bson.M{"userId": moi.email}); err != nil || n != 0 {
+		app.failf("aucune boîte ne devrait être recréée par le nouveau mot de passe, il y en a %d (%v)", n, err)
+	}
+}
+
+// A mailbox reached through the Gmail API has no app password here: the
+// route says so in French.
+func TestAcceptance_GmailMailboxHasNoAppPasswordToChange(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	code, out := app.call(http.MethodPut, "/api/mailbox/password", map[string]string{"password": "quelque-chose"})
+	if code != http.StatusUnprocessableEntity || out["error"] != googleMailboxPasswordMessage {
+		app.failf("un nouveau mot de passe sur une boîte branchée par Google devrait répondre 422 %q, il a répondu %d : %v", googleMailboxPasswordMessage, code, out)
+	}
+}
+
+// "Réactiver" refused by the mailbox (here its folder "Plus tard" cannot be
+// opened): a French sentence, nothing counted, the report still scheduled.
+func TestAcceptance_IMAPReactivateRefusedSaysSoInFrench(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	later := reportedOnIMAP(moi, uids[1], shopOrder)
+	row, ok := moi.reportedRow(shopOrder.Subject)
+	if !ok {
+		app.fatalf("le report du mail %q n'apparaît pas dans les mails reportés", shopOrder.Subject)
+	}
+	c := moi.otherProgram()
+	if err := c.Rename(later, "Plus tard (mis de côté)", nil).Wait(); err != nil {
+		app.fatalf("un autre logiciel n'a pas pu renommer « %s » : %v", later, err)
+	}
+	c.Close()
+
+	got := moi.wakeNowAnswer(row)
+	if got.code != http.StatusBadGateway || got.body["error"] != "Ce mail n'a pas pu être ramené, réessayez dans un instant." {
+		app.failf("« Réactiver » refusé par la boîte devrait répondre 502 « Ce mail n'a pas pu être ramené, réessayez dans un instant. », il a répondu %s", got)
+	}
+	if s := moi.storedReport(shopOrder.Subject); s.Attempts != 0 || s.Status != "scheduled" {
+		app.failf("« Réactiver » refusé ne devrait rien compter, le report est %q après %d essai(s)", s.Status, s.Attempts)
+	}
+}

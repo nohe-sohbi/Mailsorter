@@ -14,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/smtpsend"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -145,11 +146,20 @@ func (h *Handler) replacePassword(ctx context.Context, stored models.MailAccount
 		return models.MailAccount{}, fmt.Errorf("seal mailbox secret: %w", err)
 	}
 	now := time.Now()
-	if _, err := h.db.MailAccounts().UpdateOne(ctx,
-		bson.M{"userId": stored.UserID, "username": stored.Username},
+	// Only the mailbox the password was proved on: one disconnected, or
+	// replaced by another, while it was being tried matches nothing.
+	filter := bson.M{"userId": stored.UserID, "username": stored.Username, "host": stored.Host}
+	if oid, err := primitive.ObjectIDFromHex(stored.ID); err == nil {
+		filter["_id"] = oid
+	}
+	res, err := h.db.MailAccounts().UpdateOne(ctx, filter,
 		bson.M{"$set": bson.M{"secret": sealed, "updatedAt": now}},
-	); err != nil {
+	)
+	if err != nil {
 		return models.MailAccount{}, fmt.Errorf("store the new password: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return models.MailAccount{}, errNoMailboxConnected
 	}
 	stored.UpdatedAt = now
 	return stored, nil
@@ -247,6 +257,12 @@ func (h *Handler) ConnectMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Every attempt here is a LOGIN at the provider: throttled before it,
+	// as the mailbox sign-in is.
+	if !h.allowMailboxLogin(w, userEmail, address) {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), connectTimeout)
 	defer cancel()
 
@@ -289,6 +305,21 @@ func (h *Handler) ChangeMailboxPassword(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), connectTimeout)
 	defer cancel()
 
+	transport, _, err := h.transportFor(ctx, userEmail)
+	switch {
+	case errors.Is(err, errNoMailboxConnected):
+		writeError(w, http.StatusPreconditionRequired, noMailboxMessage)
+		return
+	case err != nil:
+		log.Printf("mailbox password of %s: %v", userEmail, err)
+		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer la connexion.")
+		return
+	case transport == provider.TransportGmailAPI:
+		// Google holds no app password for Mailsorter: there is nothing
+		// to change here.
+		writeError(w, http.StatusUnprocessableEntity, googleMailboxPasswordMessage)
+		return
+	}
 	stored, err := h.connectedIMAPMailbox(ctx, userEmail)
 	if err != nil {
 		log.Printf("mailbox password of %s: %v", userEmail, err)
@@ -299,15 +330,44 @@ func (h *Handler) ChangeMailboxPassword(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusPreconditionRequired, noMailboxMessage)
 		return
 	}
+	// Every attempt here is a LOGIN at the provider: throttled before it.
+	if !h.allowMailboxLogin(w, userEmail, stored.Username) {
+		return
+	}
 	account, err := h.replacePassword(ctx, *stored, req.Password)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNoMailboxConnected):
+		// Disconnected, or replaced by another mailbox, while the password
+		// was being tried: nothing was stored, and nothing is announced.
+		writeError(w, http.StatusPreconditionRequired, noMailboxMessage)
+	case err != nil:
 		if !errors.Is(err, errMailboxRejected) {
 			log.Printf("mailbox password of %s: %v", userEmail, err)
 		}
 		writeMailboxConnectError(w, err)
-		return
+	default:
+		writeJSON(w, http.StatusOK, account)
 	}
-	writeJSON(w, http.StatusOK, account)
+}
+
+// googleMailboxPasswordMessage is what PUT /api/mailbox/password answers a
+// mailbox reached through the Gmail API.
+const googleMailboxPasswordMessage = "Cette boîte est branchée par Google : son mot de passe ne se change pas ici."
+
+// allowMailboxLogin throttles the routes of a signed-in person that try a
+// password at their mail provider (connect, new password), before any LOGIN,
+// with the mailbox sign-in's limiter and its rate (signInRatePerSec,
+// signInBurst): keyed on the account and on the address tried, so neither
+// changing the address nor using another account on the same address gets a
+// fresh bucket. Over it, 429 with Retry-After, and the provider is not asked.
+func (h *Handler) allowMailboxLogin(w http.ResponseWriter, userEmail, address string) bool {
+	limiter := h.signInLimiter()
+	if !limiter.allow("user:"+strings.ToLower(userEmail)) || !limiter.allow("addr:"+strings.ToLower(strings.TrimSpace(address))) {
+		w.Header().Set("Retry-After", "3")
+		writeError(w, http.StatusTooManyRequests, "Trop de tentatives. Patientez quelques instants.")
+		return false
+	}
+	return true
 }
 
 // GetMailbox returns the connected mailbox, or a null one when there is none.

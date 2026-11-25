@@ -1207,10 +1207,13 @@ and AOL, Zoho, OVH, and any domain the catalog does not know, Google Workspace
 included), Outlook.com (Microsoft Graph only, not implemented), and Proton in
 `hosted`.
 
-Unlike `POST /api/auth/mailbox`, this route has no throttle of its own (only the
-global limiter) and no Google check: the caller is already signed in, so
-connecting an IMAP mailbox to an account that holds Google tokens is how that
-account switches to IMAP.
+Unlike `POST /api/auth/mailbox`, this route has no Google check: the caller is
+already signed in, so connecting an IMAP mailbox to an account that holds Google
+tokens is how that account switches to IMAP. It does share that route's
+throttle, checked before any LOGIN at the provider: roughly one attempt every 3
+seconds, burst 5, keyed on the account and on the address tried; over it, `429`
+"Trop de tentatives. Patientez quelques instants." with `Retry-After: 3`, and
+the provider is not asked.
 
 **Response:** `200 OK`, the stored mailbox, in the shape `GET /api/mailbox`
 returns under `mailbox`.
@@ -1224,6 +1227,7 @@ returns under `mailbox`.
   session; any other 401 (a session expired) signs out as everywhere
 - `422 Unprocessable Entity`: this address has no IMAP route with a known
   server in the running edition (see above)
+- `429 Too Many Requests`: throttled before any LOGIN, see above
 - `500 Internal Server Error`: the connection worked but could not be stored
 - `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
   répondu, réessayez dans un instant.")
@@ -1254,7 +1258,14 @@ under `mailbox`.
   "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
   d'application.", marked `"mailboxRejected": true`, which the SPA does not
   take for a dead session
-- `428 Precondition Required`: no mailbox connected over IMAP
+- `422 Unprocessable Entity`: a mailbox reached through the Gmail API: "Cette
+  boîte est branchée par Google : son mot de passe ne se change pas ici."
+- `428 Precondition Required`: no mailbox connected over IMAP, or the mailbox
+  was disconnected (or replaced) while the password was being tried: nothing
+  is stored, never "Mot de passe mis à jour."
+- `429 Too Many Requests`: the same throttle as `POST /api/mailbox/connect`,
+  before any LOGIN at the provider: "Trop de tentatives. Patientez quelques
+  instants.", `Retry-After: 3`
 - `500 Internal Server Error`: the password worked but could not be stored
 - `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
   répondu, réessayez dans un instant.")
@@ -2698,7 +2709,7 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Requête trop volumineuse.", "status": 413 }` |
 | `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
 | `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est branchée à ce compte.", "status": 428 }` (the screens then offer "Brancher une boîte", to `/connect`), `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428, "passwordRefused": true }` (the screens then lead to the new password form, `/connect?motdepasse=1`) |
-| `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter is far lower | `{ "error": "Too many requests", "status": 429 }` |
+| `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter, which also throttles connecting a mailbox and a new app password, is far lower | `{ "error": "Too many requests", "status": 429 }` |
 | `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
 | `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a label on IMAP, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
 | `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe; or the IMAP mailbox could not be opened (out of reach, too slow, unavailable) | `{ "error": "Report impossible : ...", "status": 502 }`, `{ "error": "Votre boîte n'a pas répondu, réessayez dans un instant.", "status": 502 }` |

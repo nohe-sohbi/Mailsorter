@@ -861,8 +861,12 @@ Do not duplicate these into this file. Point at them.
   credentials, because a stored `mail_accounts` row wins over a Google token in
   `transportFor`, so accepting would hand the account to whoever holds the app
   password. That check fails CLOSED: a datastore error is a 500, never "no Google".
-  `POST /api/mailbox/connect` has neither guard: its caller is signed in, and it is
-  how an account deliberately switches from Google to IMAP.
+  `POST /api/mailbox/connect` has no Google check: its caller is signed in, and it is
+  how an account deliberately switches from Google to IMAP. It and `PUT
+  /api/mailbox/password` do share the sign-in limiter, before any LOGIN
+  (`allowMailboxLogin`, keyed on the account and on the address tried): each
+  attempt is a LOGIN at the provider, and without it a script holding a session
+  could try passwords there at the global rate.
 - **The boot gate is `isConfigured || mailboxSignIn`, never `isConfigured` alone.**
   `GET /api/config/status` reports both doors, and `mailboxSignIn` is computed
   from `provider.ForEdition(Edition)` rather than from the edition name, so the
