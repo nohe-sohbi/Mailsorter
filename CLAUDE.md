@@ -248,7 +248,7 @@ The outbound clients and primitives:
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
 | `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
-| `attachment.go` | Attachment download, on both transports: the one route that streams bytes rather than JSON. Over IMAP the id is a part number, served only when the reader's list of that message has a file under it |
+| `attachment.go` | Attachment download, on both transports: the one route that streams bytes rather than JSON. Over IMAP the id is a part number, served only when the reader's list of that message has a file under it, or an image of `inlineImages` |
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
 | `protected.go` | VIP list CRUD and `protectedValues` lookup |
@@ -569,10 +569,13 @@ as a side effect of another change.
 - Untrusted HTML (email bodies) goes through dompurify before rendering. The
   reader then puts object URLs in place of the `src="cid:..."` the server names
   in `inlineImages` (pictures downloaded through the authenticated route, at
-  most 3 at a time: over IMAP each one is a connection to the mailbox), and
-  when it leaves the message drops the queue, aborts what is under way and
-  revokes the URLs: after the sanitizing, so nothing the sender wrote picks an
-  image's URL.
+  most 3 at a time from the top of the mail: over IMAP each one is a
+  connection to the mailbox), and when it leaves the message drops the queue,
+  aborts what is under way and revokes the URLs: after the sanitizing, so
+  nothing the sender wrote picks an image's URL. The queue is tied to the
+  message loaded (`full.messageId`), never to the one asked for, which differs
+  while the next one loads. A `cid:` image the server does not serve is taken
+  out of the text and counted in a line under it.
 
 ### Naming
 

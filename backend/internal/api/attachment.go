@@ -124,10 +124,9 @@ func (h *Handler) downloadAttachmentGmail(w http.ResponseWriter, gmailClient *gm
 //
 // The id is the part number the reader listed (getEmailIMAP), and the client
 // serves it only when the reader's list of this same message has a file under
-// it. A
-// part number is easy to guess ("1" is the text of almost every mail), so
-// without that check the route would hand out the text of a mail, or any part
-// of it, as a file.
+// it, or an image of inlineImages. A part number is easy to guess ("1" is the
+// text of almost every mail), so without that check the route would hand out
+// the text of a mail, or any part of it, as a file.
 //
 // The cap is the client's to hold, because over IMAP the bytes are read to be
 // measured: it asks the server for the file's size first, and never keeps

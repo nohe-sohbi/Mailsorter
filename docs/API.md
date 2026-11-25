@@ -510,10 +510,14 @@ download, and over IMAP a connection to the mailbox, and a thread quoting its
 signatures carries dozens of logos; the others stay as the mail wrote them.
 The key is the `Content-ID` as the URL names it: %-unescaped, without its
 angle brackets, in lower case. No browser resolves `cid:`, so the SPA
-downloads the pictures through the route below, at most 3 at a time, puts an
-object URL in place of each `src="cid:..."` after the HTML is sanitized, and
-when the reader leaves the message drops the rest of the queue, aborts the
-downloads under way and frees the object URLs.
+downloads the pictures of the message it has loaded through the route below,
+at most 3 at a time and in the order of the HTML, puts an object URL in place
+of each `src="cid:..."` after the HTML is sanitized, and when the reader
+leaves the message drops the rest of the queue, aborts the downloads under way
+and frees the object URLs. An `<img>` whose `cid:` is not in `inlineImages`
+(past the 30th, an SVG, a part the mail does not have) is taken out of the
+text, and a line under it says how many: "N images de ce mail ne sont pas
+affichées."
 
 `attachmentId` is what the download route below takes back: the file's part
 number in the message, on both transports (`"1"`, `"0.2"` over the Gmail API,
