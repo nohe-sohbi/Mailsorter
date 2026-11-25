@@ -6,7 +6,8 @@ package api
 // scenarios_1_imap_snooze_test.go: what the background sweep costs (one
 // connection per mailbox, whatever the number of mails due) and what it does
 // when the mailbox fails it (the report waits for the next pass, counted once
-// or not at all, and comes back once). Wiring, like wiring_imap_test.go: on
+// or not at all, and comes back once), and "Annuler" on a report, which ends
+// it, on both transports. Wiring, like wiring_imap_test.go: on
 // the acceptance harness (a real MongoDB, a real IMAP server over TLS), not in
 // the report. `scripts/scenarios.sh -run '^TestAcceptance'` runs them, and so
 // does CI, in the scenarios job.
@@ -317,4 +318,158 @@ func TestAcceptance_IMAPSnoozeFindsTheMailByItsMessageID(t *testing.T) {
 	expectNotReported(moi, shopOrder, "son heure est venue")
 	moi.sync()
 	moi.expectBackInInbox(shopOrder.Subject, "après son retour et une synchronisation")
+}
+
+// ---------------------------------------------------------------------------
+// "Annuler" on a report ends it
+// ---------------------------------------------------------------------------
+
+// holdReport is the sweep's claim on the scheduled report of the mail with
+// this subject, of this account, as it sets it before moving the mail
+// (claimReport), and release takes it off again.
+func holdReport(a *testApp, userEmail, subject string) (release func()) {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	filter := bson.M{"userId": userEmail, "subject": subject, "status": "scheduled"}
+	res, err := a.h.db.Snoozes().UpdateOne(ctx, filter, bson.M{"$set": bson.M{"wakingAt": time.Now()}})
+	if err != nil {
+		a.fatalf("pose de la réservation du report du mail %q de %s : %v", subject, userEmail, err)
+	}
+	if res.MatchedCount != 1 {
+		a.fatalf("pose de la réservation du report du mail %q de %s : %d report(s) prévu(s) trouvé(s), attendu 1", subject, userEmail, res.MatchedCount)
+	}
+	return func() {
+		a.t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := a.h.db.Snoozes().UpdateOne(ctx, filter, bson.M{"$unset": bson.M{"wakingAt": ""}}); err != nil {
+			a.fatalf("levée de la réservation du report du mail %q de %s : %v", subject, userEmail, err)
+		}
+	}
+}
+
+// reportStatus is the status of the report of the mail with this subject, of
+// this account, as stored.
+func reportStatus(a *testApp, userEmail, subject string) string {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var s models.Snooze
+	if err := a.h.db.Snoozes().FindOne(ctx, bson.M{"userId": userEmail, "subject": subject}).Decode(&s); err != nil {
+		a.fatalf("le report du mail %q de %s n'est pas en base : %v", subject, userEmail, err)
+	}
+	return s.Status
+}
+
+// scheduledSubjects is the "Prévus" tab of the Gmail person, by subject.
+func scheduledSubjects(a *testApp) []string {
+	a.t.Helper()
+	code, out := a.call(http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	if code != http.StatusOK {
+		a.fatalf("les mails reportés ne s'affichent pas : GET /api/snoozes a répondu %d : %v", code, out)
+	}
+	rows, _ := out["snoozes"].([]interface{})
+	subjects := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if row, ok := r.(map[string]interface{}); ok {
+			subject, _ := row["subject"].(string)
+			subjects = append(subjects, subject)
+		}
+	}
+	return subjects
+}
+
+// "Annuler" on the line of a report, in the history of an IMAP mailbox: the
+// mail is back in the inbox, and the report leaves the scheduled ones at once
+// (cancelled), with no return of its own in the history. While the sweep
+// holds the report, nothing moves and the user is told to try again.
+func TestAcceptance_IMAPSnoozeUndoneFromTheHistoryEndsTheReport(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	later := reportedOnIMAP(moi, uids[1], shopOrder)
+	line := moi.historyLineFor(uids[1], "archive")
+	if line.Source != SourceSnooze {
+		app.fatalf("la ligne « archive » du mail %q devrait venir du report, elle vient de %q", shopOrder.Subject, line.Source)
+	}
+
+	release := holdReport(app, moi.email, shopOrder.Subject)
+	if got := moi.undoFromHistory(line); got.code != http.StatusLocked {
+		app.failf("« Annuler » sur un report que le réveil tient déjà devrait répondre 423, il a répondu %s", got)
+	}
+	moi.expectOnServer(later, shopOrder.Subject)
+	moi.expectNotOnServer(serverInbox, shopOrder.Subject, "le réveil le tient, « Annuler » ne doit rien déplacer")
+	expectReported(moi, shopOrder)
+	release()
+
+	if got := moi.undoFromHistory(line); got.code != http.StatusOK {
+		app.fatalf("« Annuler » sur la ligne du report devrait répondre 200, il a répondu %s", got)
+	}
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	expectNotInLater(moi, shopOrder, "« Annuler » l'a remis dans la boîte de réception")
+	expectNotReported(moi, shopOrder, "« Annuler » a annulé son report")
+	if status := reportStatus(app, moi.email, shopOrder.Subject); status != "cancelled" {
+		app.failf("le report annulé du mail %q devrait être « cancelled », il est %q", shopOrder.Subject, status)
+	}
+	if n := moi.returnsJournaled(uids[1]); n != 0 {
+		app.failf("un report annulé ne devrait écrire aucun retour à lui dans l'historique, il en écrit %d", n)
+	}
+	moi.expectBackInInbox(shopOrder.Subject, "juste après « Annuler »")
+	moi.sync()
+	moi.expectBackInInbox(shopOrder.Subject, "après « Annuler » et une synchronisation")
+}
+
+// "Annuler" right after, the single-message route with the verb that undoes
+// the move, on a reported mail of an IMAP mailbox: the same end.
+func TestAcceptance_IMAPSnoozeUndoneRightAfterEndsTheReport(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	reportedOnIMAP(moi, uids[1], shopOrder)
+
+	if got := moi.undoRightAfter(uids[1], "archive"); got.code != http.StatusOK {
+		app.fatalf("« Annuler » juste après le report devrait répondre 200, il a répondu %s", got)
+	}
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	expectNotReported(moi, shopOrder, "« Annuler » a annulé son report")
+	if status := reportStatus(app, moi.email, shopOrder.Subject); status != "cancelled" {
+		app.failf("le report annulé du mail %q devrait être « cancelled », il est %q", shopOrder.Subject, status)
+	}
+	moi.expectBackInInbox(shopOrder.Subject, "juste après « Annuler »")
+}
+
+// The same over the Gmail API: "Annuler" on the line of a report brings the
+// mail back and ends the report, so its hour neither moves it nor marks it
+// unread again; while the sweep holds it, nothing is done.
+func TestAcceptance_GmailSnoozeUndoneFromTheHistoryEndsTheReport(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(incoming{From: "Garage <rdv@garage.fr>", Subject: "Votre rendez-vous"})
+	app.act(ids[0], "read")
+	app.snooze(ids[0])
+	line := app.historyLineFor(ids[0], "archive")
+
+	release := holdReport(app, scenarioUser, "Votre rendez-vous")
+	if code, out := app.call(http.MethodPost, "/api/activity/undo", map[string]string{"id": line.ID}); code != http.StatusLocked {
+		app.failf("« Annuler » sur un report que le réveil tient déjà devrait répondre 423, il a répondu %d : %v", code, out)
+	}
+	app.expectNotInInbox(ids[0])
+	release()
+
+	app.mustCall(http.MethodPost, "/api/activity/undo", map[string]string{"id": line.ID}, http.StatusOK)
+	app.expectInInbox(ids[0])
+	for _, subject := range scheduledSubjects(app) {
+		if subject == "Votre rendez-vous" {
+			app.failf("« Annuler » sur la ligne du report devrait le sortir des mails reportés, ils le montrent encore")
+		}
+	}
+	if status := reportStatus(app, scenarioUser, "Votre rendez-vous"); status != "cancelled" {
+		app.failf("le report annulé devrait être « cancelled », il est %q", status)
+	}
+
+	// Its hour comes: nothing is due any more, so nothing marks it unread.
+	app.timeComesForSnoozes()
+	for _, l := range app.history(ids[0]) {
+		if l.Action == "unarchive" && l.Source == SourceSnooze {
+			app.failf("un report annulé ne devrait pas revenir à son heure, l'historique montre son retour")
+		}
+	}
 }

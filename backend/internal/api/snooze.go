@@ -506,36 +506,29 @@ func (h *Handler) restoreSnoozed(ctx context.Context, gmailClient *gmailapi.Serv
 	return h.applyMutations(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(messageID), muts...)
 }
 
-// errWakeBusy is "Réactiver" on a report the background sweep is bringing
-// back at that very moment. Nothing more happened; the user may try again.
+// errWakeBusy is a report someone else is bringing back at that very moment:
+// "Réactiver" or "Annuler" while the sweep holds it, or the other way round.
+// Nothing more happened; the user may try again.
 var errWakeBusy = errors.New("api: this report is being brought back already")
 
 // wakeBusyMessage is what the user reads for errWakeBusy.
 const wakeBusyMessage = "Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant."
 
-// wakeIMAP brings one reported mail of an IMAP mailbox back to the inbox,
-// unread (mirroredIMAP.bringBack), and writes what came of it on the report.
-// byHand is "Réactiver": a report given up (failed) may be retried that way,
-// and a failure there is the user's to retry, so it is not counted.
+// claimReport claims report s, in one of statuses, before its mail is moved
+// back (wakingAt), and returns the filter that writes on it while the claim
+// holds. The sweep, "Réactiver" and "Annuler" all claim first, so that of two
+// of them reaching the same report at once only one moves the mail: over
+// IMAP the other would find it gone from "Plus tard" and cancel a report that
+// did come back, and either would write a second return. A claim left by a
+// crash expires after moveInFlight.
 //
-// The report is claimed first (wakingAt), so that of "Réactiver" and the sweep
-// reaching the same report at once only one moves the mail: the other would
-// find it gone from "Plus tard" and cancel a report that did come back. A
-// claim left by a crash expires after moveInFlight. Whatever the outcome, the
-// claim is released; nothing is counted twice: one ledger entry for a return,
-// one attempt for a failure.
-//
-// It answers nil when the mail is back, errNotWhereLeft when it was no longer
-// in "Plus tard" (the report is cancelled), errAlreadyBack when another wake
-// brought it back, errWakeBusy while another holds it, or the failure.
-func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.Snooze, byHand bool) error {
+// When the claim does not land: errAlreadyBack for a report already back
+// (done), errNotWhereLeft for one cancelled, errWakeBusy while another holds
+// it.
+func (h *Handler) claimReport(ctx context.Context, s models.Snooze, statuses []string) (bson.M, error) {
 	oid, err := primitive.ObjectIDFromHex(s.ID)
 	if err != nil {
-		return fmt.Errorf("snooze id %q: %w", s.ID, err)
-	}
-	statuses := []string{snooze.StatusScheduled}
-	if byHand {
-		statuses = append(statuses, snooze.StatusFailed)
+		return nil, fmt.Errorf("snooze id %q: %w", s.ID, err)
 	}
 	claimedAt := time.Now()
 	res, err := h.db.Snoozes().UpdateOne(ctx, bson.M{
@@ -543,20 +536,51 @@ func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.S
 		"wakingAt": bson.M{"$not": bson.M{"$gte": claimedAt.Add(-moveInFlight)}},
 	}, bson.M{"$set": bson.M{"wakingAt": claimedAt}})
 	if err != nil {
-		return fmt.Errorf("claim report %s for its return: %w", s.ID, err)
+		return nil, fmt.Errorf("claim report %s for its return: %w", s.ID, err)
 	}
 	if res.MatchedCount == 0 {
 		var now models.Snooze
 		if err := h.db.Snoozes().FindOne(ctx, bson.M{"_id": oid}).Decode(&now); err != nil {
-			return fmt.Errorf("read report %s again: %w", s.ID, err)
+			return nil, fmt.Errorf("read report %s again: %w", s.ID, err)
 		}
 		switch now.Status {
 		case snooze.StatusDone:
-			return errAlreadyBack
+			return nil, errAlreadyBack
 		case snooze.StatusCancelled:
-			return errNotWhereLeft
+			return nil, errNotWhereLeft
 		}
-		return errWakeBusy
+		return nil, errWakeBusy
+	}
+	return bson.M{"_id": oid, "wakingAt": claimedAt}, nil
+}
+
+// settleCtx is the time a claimed report is settled under: its own, so a
+// move that happened is written even when the caller ran out of time just
+// after.
+func settleCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+}
+
+// wakeIMAP brings one reported mail of an IMAP mailbox back to the inbox,
+// unread (mirroredIMAP.bringBack), and writes what came of it on the report.
+// byHand is "Réactiver": a report given up (failed) may be retried that way,
+// and a failure there is the user's to retry, so it is not counted.
+//
+// The report is claimed first (claimReport). Whatever the outcome, the claim
+// is released; nothing is counted twice: one ledger entry for a return, one
+// attempt for a failure.
+//
+// It answers nil when the mail is back, errNotWhereLeft when it was no longer
+// in "Plus tard" (the report is cancelled), errAlreadyBack when another wake
+// brought it back, errWakeBusy while another holds it, or the failure.
+func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.Snooze, byHand bool) error {
+	statuses := []string{snooze.StatusScheduled}
+	if byHand {
+		statuses = append(statuses, snooze.StatusFailed)
+	}
+	claim, err := h.claimReport(ctx, s, statuses)
+	if err != nil {
+		return err
 	}
 
 	mb := mirroredIMAP{client: session.imapc, h: h, userEmail: s.UserID}
@@ -576,17 +600,72 @@ func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.S
 	if wakeErr != nil && outcome != snooze.Gone {
 		log.Printf("snooze: failed to restore %s for %s (attempt %d): %v", s.MessageID, s.UserID, s.Attempts+1, wakeErr)
 	}
-	// The ledger and the row under their own time: the mail moved, and that
-	// must be written even when the pass ran out of time just after.
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	sctx, cancel := settleCtx(ctx)
 	defer cancel()
-	h.settleWake(settleCtx, s, bson.M{"_id": oid, "wakingAt": claimedAt}, outcome)
+	h.settleWake(sctx, s, claim, outcome)
 	return wakeErr
 }
 
+// endReportOnReturn runs back, an "Annuler" that brings messageID back to the
+// inbox, and ends the report of that mail when it has one scheduled: the user
+// undid it, so it leaves the scheduled list at once (cancelled) instead of
+// waiting there for an hour that would move nothing, or, over the Gmail API,
+// mark unread a mail already back. The report is claimed before the move
+// (claimReport): while the sweep holds it, nothing moves and errWakeBusy says
+// so; a move that fails leaves it scheduled. No return is journaled for the
+// report: the undo writes its own line.
+func (h *Handler) endReportOnReturn(ctx context.Context, userEmail, messageID string, back func() error) error {
+	var s models.Snooze
+	err := h.db.Snoozes().FindOne(ctx, bson.M{"userId": userEmail, "messageId": messageID, "status": snooze.StatusScheduled}).Decode(&s)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return back()
+	}
+	if err != nil {
+		return fmt.Errorf("look for the report of message %s: %w", messageID, err)
+	}
+	claim, err := h.claimReport(ctx, s, []string{snooze.StatusScheduled})
+	if errors.Is(err, errAlreadyBack) || errors.Is(err, errNotWhereLeft) {
+		// Ended a moment ago: nothing left to end, the undo goes on alone.
+		return back()
+	}
+	if err != nil {
+		return err
+	}
+	backErr := back()
+	outcome := snooze.Undone
+	if backErr != nil {
+		outcome = snooze.Untried
+	}
+	sctx, cancel := settleCtx(ctx)
+	defer cancel()
+	h.settleWake(sctx, s, claim, outcome)
+	if backErr == nil {
+		log.Printf("snooze: report %s of %s cancelled: \"Annuler\" brought message %s back", s.ID, userEmail, messageID)
+	}
+	return backErr
+}
+
+// returnsToInbox says whether verb, on this transport, brings a mail back to
+// the inbox: what "Annuler" sends after a move out. Over the Gmail API a label
+// taken off leaves the mail where it is; over IMAP it brings it back from the
+// folder that stood for the label.
+func returnsToInbox(verb string, transport provider.Transport) bool {
+	action, err := mailbox.Parse(verb)
+	if err != nil {
+		return false
+	}
+	switch action {
+	case mailbox.ActionUnarchive, mailbox.ActionUntrash:
+		return true
+	case mailbox.ActionUnlabel:
+		return transport == provider.TransportIMAP
+	}
+	return false
+}
+
 // settleWake writes on report s what an attempt at bringing it back came to
-// (snooze.Settle), over filter, and journals a return. The claim of an IMAP
-// wake (wakingAt) is released whatever happened.
+// (snooze.Settle), over filter, and journals a return. The claim
+// (claimReport) is released whatever happened.
 func (h *Handler) settleWake(ctx context.Context, s models.Snooze, filter bson.M, outcome snooze.Outcome) {
 	status, counted := snooze.Settle(outcome, s.Attempts, maxSnoozeWakeAttempts)
 	update := bson.M{"$unset": bson.M{"wakingAt": ""}}
@@ -670,7 +749,9 @@ func (h *Handler) wakeAccount(ctx context.Context, due []models.Snooze) {
 			// next pass, uncounted.
 			for _, s := range due {
 				oid, _ := primitive.ObjectIDFromHex(s.ID)
-				h.settleWake(ctx, s, bson.M{"_id": oid, "status": snooze.StatusScheduled}, snooze.Failed)
+				// Not one another request holds (claimReport).
+				h.settleWake(ctx, s, bson.M{"_id": oid, "status": snooze.StatusScheduled,
+					"wakingAt": bson.M{"$not": bson.M{"$gte": time.Now().Add(-moveInFlight)}}}, snooze.Failed)
 			}
 		}
 		return
@@ -693,16 +774,20 @@ func (h *Handler) wakeAccount(ctx context.Context, due []models.Snooze) {
 	}
 
 	for _, s := range due {
-		oid, _ := primitive.ObjectIDFromHex(s.ID)
+		// Claimed as over IMAP: an "Annuler" holding it moves it itself.
+		claim, err := h.claimReport(ctx, s, []string{snooze.StatusScheduled})
+		if err != nil {
+			continue
+		}
 		if err := h.restoreSnoozed(ctx, session.gmail, s.UserID, s.MessageID); err != nil {
 			log.Printf("snooze: failed to restore %s for %s (attempt %d): %v", s.MessageID, s.UserID, s.Attempts+1, err)
 			// Cap retries: a permanently-failing wake (e.g. the message was hard
 			// deleted) would otherwise be re-attempted on every 60s sweep forever.
 			// After maxSnoozeWakeAttempts, park it as "failed" so it drops out of
 			// the scheduled query.
-			h.settleWake(ctx, s, bson.M{"_id": oid}, snooze.Failed)
+			h.settleWake(ctx, s, claim, snooze.Failed)
 			continue
 		}
-		h.settleWake(ctx, s, bson.M{"_id": oid}, snooze.Woken)
+		h.settleWake(ctx, s, claim, snooze.Woken)
 	}
 }

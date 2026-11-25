@@ -646,7 +646,20 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	// The reference is built by the session rather than here, because what a
 	// message id MEANS depends on the transport and this handler has no opinion
 	// about that: it holds a string the client sent.
-	err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
+	back := func() error {
+		return h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
+	}
+	if returnsToInbox(req.Action, session.Transport) {
+		// "Annuler" right after a move out: on a reported mail, it ends the
+		// report (endReportOnReturn).
+		err = h.endReportOnReturn(ctx, userEmail, req.MessageID, back)
+	} else {
+		err = back()
+	}
+	if errors.Is(err, errWakeBusy) {
+		writeError(w, http.StatusLocked, wakeBusyMessage)
+		return
+	}
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return

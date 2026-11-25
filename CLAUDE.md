@@ -200,7 +200,7 @@ in its package doc:
 |---|---|---|
 | `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset | `Matches`, `Validate`, `Preview`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
 | `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted, nor, on IMAP where a label is a folder, auto-filed | `Allowed`, `AllowedOnFolders`, `ActionArchive/Trash/Delete/Label` |
-| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one; what an attempt at bringing a report back leaves on it (done, cancelled when the mail is gone from where it waited, retried and counted, given up at the limit, or left uncounted), and the due reports grouped by account, one session each | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants, `Settle`, `Outcome` (`Woken`, `Gone`, `Failed`, `Untried`), `ByAccount`, `Status*` |
+| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one; what an attempt at bringing a report back leaves on it (done, cancelled when the mail is gone from where it waited or the user undid the report, retried and counted, given up at the limit, or left uncounted), and the due reports grouped by account, one session each | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants, `Settle`, `Outcome` (`Woken`, `Gone`, `Failed`, `Untried`, `Undone`), `ByAccount`, `Status*` |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
 | `mirror` | What the local copy of an IMAP inbox should hold, given every UID the inbox holds now: what goes, what Mailsorter keeps hidden for "Annuler", what is back, and what a sync must leave alone (a move in flight, a row flagged after the listing started) | `Judge`, `Row`, `Rules`, `Verdict` |
@@ -246,7 +246,7 @@ The outbound clients and primitives:
 | `tokens.go` | Stored credentials: `sealToken` / `openToken` for Google's (with the legacy-plaintext migration), `sealSecret` / `openSecret` for IMAP passwords, all AES-256-GCM behind the `enc:v1:` prefix, and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
-| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, "Réactiver", plus the 1 min wake sweeper, on both transports. Over IMAP (`snoozeIMAP`) a reported mail is moved into the folder "Plus tard" (`snoozeFolderName`, made like a filing folder, by `Destination`) through `mirroredIMAP`, like an archive, and the snooze records where it landed (`folder`, `folderUid`, `headerMessageId`); its pending AI proposal is set moot. The sweep goes account by account (`snooze.ByAccount`), one session each, an IMAP one bounded by `snoozeAccountBound` (30 s, then `Abort`); an IMAP wake claims the snooze (`wakingAt`) so the sweep and "Réactiver" move the mail once, and `settleWake` writes the outcome (`snooze.Settle`) and the ledger entry |
+| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, "Réactiver", plus the 1 min wake sweeper, on both transports. Over IMAP (`snoozeIMAP`) a reported mail is moved into the folder "Plus tard" (`snoozeFolderName`, made like a filing folder, by `Destination`) through `mirroredIMAP`, like an archive, and the snooze records where it landed (`folder`, `folderUid`, `headerMessageId`); its pending AI proposal is set moot. The sweep goes account by account (`snooze.ByAccount`), one session each, an IMAP one bounded by `snoozeAccountBound` (30 s, then `Abort`); the sweep, "Réactiver" over IMAP and "Annuler" claim the snooze first (`claimReport`, `wakingAt`) so two of them move the mail once, and `settleWake` writes the outcome (`snooze.Settle`) and the ledger entry. "Annuler" that brings back a mail with a scheduled snooze (`UndoAction`, `EmailAction`) ends it (`endReportOnReturn`: `cancelled`, out of the scheduled list at once; `423` while the sweep holds it) |
 | `attachment.go` | Attachment download: the one route that streams bytes rather than JSON |
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
@@ -554,8 +554,8 @@ as a side effect of another change.
   IMAP: what the model is told, the shield at analysis, "unlabel" right after
   "Appliquer", the direct "label" without a folder, and `wiring_snooze_test.go`
   for the report's wake over IMAP: one connection per mailbox, a mailbox out of
-  reach, a failed return tried again, "Réactiver" while the sweep holds it): not
-  in the report, run by
+  reach, a failed return tried again, "Réactiver" while the sweep holds it, and
+  "Annuler" ending a report on both transports): not in the report, run by
   `scripts/scenarios.sh -run '^TestAcceptance'` and by its own CI step.
 
 ### React

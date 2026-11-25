@@ -14,9 +14,10 @@ const (
 	// StatusFailed is a report given up after too many failed tries: the
 	// mail is still out of the inbox, and the Reporté screen says so.
 	StatusFailed = "failed"
-	// StatusCancelled is a report that ended without Mailsorter bringing the
-	// mail back: on IMAP, another mail program took it out of the folder it
-	// waited in. Nothing was moved; the mail is where that program put it.
+	// StatusCancelled is a report that ended before its hour without the wake
+	// bringing the mail back: the user undid it ("Annuler"), which brought
+	// the mail back itself, or, on IMAP, another mail program took it out of
+	// the folder it waited in, and the mail is where that program put it.
 	StatusCancelled = "cancelled"
 )
 
@@ -35,6 +36,9 @@ const (
 	// not be reached, the pass ran out of time, the user is there to try
 	// again). Tried again at the next pass, not counted.
 	Untried
+	// Undone: the user undid the report ("Annuler"), which brought the mail
+	// back to the inbox: the report ends there, before its hour.
+	Undone
 )
 
 // Settle says what an attempt leaves on a report that had made attempts
@@ -46,7 +50,7 @@ func Settle(o Outcome, attempts, maxAttempts int) (status string, counted bool) 
 	switch o {
 	case Woken:
 		return StatusDone, false
-	case Gone:
+	case Gone, Undone:
 		return StatusCancelled, false
 	case Failed:
 		if attempts+1 >= maxAttempts {

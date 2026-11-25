@@ -20,6 +20,9 @@ func TestSettle(t *testing.T) {
 		// nothing to bring back, and nothing to try again.
 		{"gone from where it waited", Gone, 0, StatusCancelled, false},
 		{"gone after failed tries", Gone, 4, StatusCancelled, false},
+		// "Annuler" brought the mail back: the report ends before its hour.
+		{"undone by the user", Undone, 0, StatusCancelled, false},
+		{"undone after failed tries", Undone, 2, StatusCancelled, false},
 		// A failure is tried again at the next pass, and counts.
 		{"first failure", Failed, 0, StatusScheduled, true},
 		{"failure before the last", Failed, max - 2, StatusScheduled, true},
