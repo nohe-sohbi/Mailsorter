@@ -351,13 +351,20 @@ display name, or the address read when the name holds an `@` in any width
 (`"boss@corp.com" <evil@evil.io>`, `boss＠corp.com` or `boss﹫corp.com`, RFC
 2047 encoded or not, show `evil@evil.io`), the address when there is no name
 or one that shows nothing (zero-width spaces, blank Braille or Hangul
-fillers), and the From's text when it names no sender. It holds no control
-character and no format character (bidi overrides and isolates, marks,
-zero-width spaces), the zero-width joiner and non-joiner aside. The reader,
-the suggestions, the history (`GET /api/activity/log`) and "Plus tard" (`GET
-/api/snoozes`) carry it too; a screen given none (a mail kept from before)
-shows the From as it is, never a cut of it. A stored From holds no control
-byte.
+fillers), and the From's text when it names no sender. A name shows without
+control or format characters (bidi overrides and isolates, marks, zero-width
+spaces), the zero-width joiner and non-joiner aside. An address is never
+cleaned into another one: each control or format character in it, joiners
+included, and each character drawn as nothing, is shown as `�` (U+FFFD), so
+`x@pay<U+202E>pal.com` shows `x@pay�pal.com`, never `x@paypal.com`, a domain
+the app does not compare; the text of a From that names no sender is shown
+the same way. The reader, the suggestions, the history (`GET
+/api/activity/log`) and "Plus tard" (`GET /api/snoozes`) carry it too; a
+screen given none (a mail kept from before) shows the From as it is, never a
+cut of it. A stored From holds no control byte.
+
+`senderAddressShown` is `senderAddress` as the reader shows it under the name,
+by the same rule (`protect.ShownAddress`); none when From names no sender.
 
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
@@ -1008,7 +1015,10 @@ the selection (`POST /api/emails/batch-action`, `POST
 sentence), "Tout archiver" / "Tout supprimer" (`POST /api/ai/apply-bulk`) and
 "Se désabonner et archiver" answer `503` "Vos expéditeurs protégés n'ont pas
 pu être lus : rien n'a été rangé, réessayez dans un instant." before anything
-is done. A sync stores the mail and applies no rule (the next one does). The
+is done. The selection reads the list only for what takes mail out of the
+inbox (archive, delete, a label over IMAP): read, unread, a star and a Gmail
+label do not depend on it. A sync stores the mail and applies no rule (the
+next one does). The
 list was read as empty before, which let all of them move a protected
 sender's mail.
 
@@ -2041,7 +2051,11 @@ Poll an analysis job.
   "autoApplied": 6, "suggestionsCreated": 30, "cachedHits": 4
 }
 ```
-`status` is one of `queued`, `running`, `done`, `error` (with an `error` field).
+`status` is one of `queued`, `running`, `done`, `error` (with an `error` field,
+a French sentence for the screen: "Vos expéditeurs protégés n'ont pas pu être
+lus : rien n'a été rangé, réessayez dans un instant." when the protected list
+could not be read, "Analyse interrompue. Réessayez." otherwise; the cause is
+in the server's log).
 
 ### Learn a sender
 
