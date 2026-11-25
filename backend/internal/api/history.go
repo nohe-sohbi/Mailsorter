@@ -18,6 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
 )
 
 // actionLogView is one row of the user-facing action history. It enriches the
@@ -425,6 +426,11 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.applyInverseAction(gmailClient, entry.MessageID, inverse); err != nil {
+			if gmailNamesNoMail(err) {
+				log.Printf("history: undo entry %s of %s, Gmail knows no message %q: %v", oid.Hex(), userEmail, entry.MessageID, err)
+				writeError(w, http.StatusNotFound, undoNoMailMessage)
+				return
+			}
 			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
 			return
 		}
@@ -445,6 +451,19 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 // mailboxGoneMessage is what the user reads for "Annuler" on an entry of a
 // mailbox no longer connected (ofCurrentGeneration).
 const mailboxGoneMessage = "Cette action concerne une boîte débranchée depuis."
+
+// undoNoMailMessage is what the user reads for "Annuler" over the Gmail API on
+// an entry whose message Gmail does not know (gmailNamesNoMail): deleted for
+// good since, or an entry of an IMAP mailbox disconnected before entries
+// carried their generation, whose number Gmail refuses as an id.
+const undoNoMailMessage = "Ce mail n'est pas dans votre boîte Gmail : cette action ne peut pas être annulée d'ici."
+
+// gmailNamesNoMail says whether the Gmail API refused a message id as naming
+// no message: not found (404), or not an id at all (400, an IMAP number).
+func gmailNamesNoMail(err error) bool {
+	var apiErr *googleapi.Error
+	return errors.As(err, &apiErr) && (apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusBadRequest)
+}
 
 // sameUndoWindow is how long after an "Annuler" another "Annuler" of the
 // same entry may be the same click seen twice (two tabs, a double click, a

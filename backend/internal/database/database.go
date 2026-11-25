@@ -172,9 +172,11 @@ func (d *Database) dropStaleAnalysisCache(ctx context.Context) {
 	}
 }
 
-// EnsureIndexes creates the indexes that keep hot queries fast at scale, and
-// drops from the shared analysis cache the verdicts of another version.
-// It is best-effort: a failure on one index does not block the others.
+// EnsureIndexes creates the indexes that keep hot queries fast at scale,
+// gives what was kept of the IMAP mailboxes connected their generation
+// (stampGenerations), and drops from the shared analysis cache the verdicts of
+// another version. It is best-effort: a failure on one index does not block
+// the others.
 func (d *Database) EnsureIndexes(ctx context.Context) error {
 	// Last, under its own time: on a large cache that never expired, the
 	// deletion must not eat the time the indexes are given.
@@ -183,6 +185,14 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		defer cancel()
 		d.dropStaleAnalysisCache(dctx)
 	}()
+	// After the indexes, under its own time too, and before the cache: cut
+	// short by the indexes' deadline, it would leave rows without their
+	// generation, which the next sync erases, and "Annuler" with them.
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stampTimeout)
+		defer cancel()
+		d.stampGenerations(sctx)
+	}()
 	var firstErr error
 	for _, name := range legacyEmailIndexes {
 		if _, err := d.Emails().Indexes().DropOne(ctx, name); err != nil && !isMissingIndex(err) && firstErr == nil {
@@ -190,9 +200,6 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		}
 	}
 	if err := d.ensureEmailIdentity(ctx); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	if err := d.stampGenerations(ctx); err != nil && firstErr == nil {
 		firstErr = err
 	}
 
@@ -279,10 +286,15 @@ func (d *Database) ensureEmailIdentity(ctx context.Context) error {
 	return nil
 }
 
+// stampTimeout bounds stampGenerations at boot: a few updates per IMAP
+// mailbox, done once, then finding nothing.
+const stampTimeout = 5 * time.Minute
+
 // stampGenerations gives what was kept of an IMAP mailbox before it carried a
 // generation the generation of the mailbox connected now: the _id of its
 // mail_accounts row (see api/generation.go). At each boot, and it finds
-// nothing once done.
+// nothing once done. It logs how many rows it stamped, and its failures: the
+// boot goes on, and the next one stamps what is left.
 //
 //   - The copy of the inbox (the rows that carry a folder): all of it, the
 //     copy of another mailbox having been cleared when this one was connected.
@@ -292,11 +304,12 @@ func (d *Database) ensureEmailIdentity(ctx context.Context) error {
 //
 // A row of a mailbox no longer connected keeps none: it is never read, and
 // the next connection or sync of the person erases it.
-func (d *Database) stampGenerations(ctx context.Context) error {
+func (d *Database) stampGenerations(ctx context.Context) {
 	cur, err := d.MailAccounts().Find(ctx, bson.M{"transport": "imap"},
 		options.Find().SetProjection(bson.M{"_id": 1, "userId": 1, "createdAt": 1}))
 	if err != nil {
-		return fmt.Errorf("mail accounts: read the IMAP mailboxes to stamp their generation: %w", err)
+		log.Printf("database: read the IMAP mailboxes to stamp their generation, done at the next boot: %v", err)
+		return
 	}
 	var accounts []struct {
 		ID        primitive.ObjectID `bson:"_id"`
@@ -304,26 +317,35 @@ func (d *Database) stampGenerations(ctx context.Context) error {
 		CreatedAt time.Time          `bson:"createdAt"`
 	}
 	if err := cur.All(ctx, &accounts); err != nil {
-		return fmt.Errorf("mail accounts: read the IMAP mailboxes to stamp their generation: %w", err)
+		log.Printf("database: read the IMAP mailboxes to stamp their generation, done at the next boot: %v", err)
+		return
 	}
-	var firstErr error
-	keep := func(err error) {
-		if err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("stamp the generation of an IMAP mailbox: %w", err)
-		}
-	}
+	var copies, proposals, entries int64
+	failed := 0
 	none := bson.M{"$exists": false}
 	for _, a := range accounts {
 		stamp := bson.M{"$set": bson.M{"generation": a.ID.Hex()}}
-		_, err := d.Emails().UpdateMany(ctx, bson.M{"userId": a.UserID, "folder": bson.M{"$exists": true}, "generation": none}, stamp)
-		keep(err)
 		since := bson.M{"$gte": a.CreatedAt}
-		_, err = d.AISuggestions().UpdateMany(ctx, bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, stamp)
-		keep(err)
-		_, err = d.ActionLog().UpdateMany(ctx, bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, stamp)
-		keep(err)
+		for _, step := range []struct {
+			coll   *mongo.Collection
+			filter bson.M
+			count  *int64
+		}{
+			{d.Emails(), bson.M{"userId": a.UserID, "folder": bson.M{"$exists": true}, "generation": none}, &copies},
+			{d.AISuggestions(), bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, &proposals},
+			{d.ActionLog(), bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, &entries},
+		} {
+			res, err := step.coll.UpdateMany(ctx, step.filter, stamp)
+			if err != nil {
+				failed++
+				log.Printf("database: stamp the generation of the IMAP mailbox of %s in %s, done at the next boot: %v", a.UserID, step.coll.Name(), err)
+				continue
+			}
+			*step.count += res.ModifiedCount
+		}
 	}
-	return firstErr
+	log.Printf("database: generations stamped for %d IMAP mailboxes: %d rows of their copy, %d AI proposals, %d history entries (%d failures)",
+		len(accounts), copies, proposals, entries, failed)
 }
 
 // isIndexConflict reports whether an index could not be created because one on

@@ -1134,7 +1134,16 @@ and the history entries carry it.
 The Gmail API names a message on the account: its rows carry no generation.
 What was kept before generations existed is given, at boot, the generation of
 the IMAP mailbox connected then: its whole copy, and the proposals and history
-entries made since it was connected.
+entries made since it was connected (under its own time, after the indexes;
+the boot log says how many rows it stamped).
+
+A limit remains for the history entries of an IMAP mailbox disconnected before
+generations existed: they carry none, like the Gmail API's, so once a Gmail
+mailbox is connected through Google they are offered "Annuler". Gmail knows no
+message by their number and refuses it: the answer is `404` "Ce mail n'est pas
+dans votre boîte Gmail : cette action ne peut pas être annulée d'ici.", nothing
+moves, and the entry stays not undone. On a mailbox connected over IMAP they
+are final like any entry of another mailbox.
 
 ### Read the connected mailbox
 
@@ -1434,7 +1443,11 @@ answers `200` like it (two clicks, two tabs): once the mail was archived again,
 a screen left open on the old line gets `409`, and so does a screen loaded on
 another mailbox than the one connected now (`X-Mailbox-Generation`); `410`
 "Cette action concerne une boîte débranchée depuis." for an entry of another
-mailbox than the one connected now (`mailboxGone`), nothing moving; `500` "Annulation impossible à
+mailbox than the one connected now (`mailboxGone`), nothing moving; on the
+Gmail API, `404` "Ce mail n'est pas dans votre boîte Gmail : cette action ne
+peut pas être annulée d'ici." when Gmail knows no message by that id (deleted
+for good, or an entry of an IMAP mailbox disconnected before history entries
+carried their generation, see "Mailbox generations"), nothing moving; `500` "Annulation impossible à
 vérifier, réessayez." when the actions since cannot be read; `502` the provider
 refused the reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette

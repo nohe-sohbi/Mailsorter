@@ -21,6 +21,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // holdingTLSProxy sits between Mailsorter and a person's IMAP server, both
@@ -434,4 +435,35 @@ func TestAcceptance_BootGivesTheConnectedMailboxWhatWasKeptOfIt(t *testing.T) {
 		app.failf("« Annuler » de l'archivage de %s après le démarrage a répondu %s", moi.email, got)
 	}
 	moi.expectOnServer(serverInbox, shopOrder.Subject)
+}
+
+// A history entry of an IMAP mailbox disconnected before entries carried
+// their generation has none, like the Gmail API's: on a Gmail mailbox it is
+// offered "Annuler", and Gmail knows no message by its number. The screen
+// reads a French sentence, nothing moves, and the entry stays not undone.
+func TestAcceptance_UndoOfAMailGmailDoesNotKnowSaysSo(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := app.h.db.ActionLog().InsertOne(ctx, models.ActionLog{
+		UserID: scenarioUser, MessageID: "7", Action: "archive", Source: SourceRule,
+		Subject: "Un mail de l'ancienne boîte", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		app.fatalf("ligne d'historique sans génération : %v", err)
+	}
+	id := res.InsertedID.(primitive.ObjectID).Hex()
+
+	code, out := app.call(http.MethodPost, "/api/activity/undo", map[string]string{"id": id})
+	if code != http.StatusNotFound {
+		app.failf("« Annuler » sur un mail que Gmail ne connaît pas devrait répondre 404, il a répondu %d : %v", code, out)
+	}
+	if msg, _ := out["error"].(string); msg != undoNoMailMessage {
+		app.failf("l'écran devrait lire %q, il lit %q", undoNoMailMessage, msg)
+	}
+	var entry models.ActionLog
+	if err := app.h.db.ActionLog().FindOne(ctx, bson.M{"_id": res.InsertedID}).Decode(&entry); err != nil || entry.Undone {
+		app.failf("la ligne ne devrait pas être marquée annulée (%v, %v)", entry.Undone, err)
+	}
 }
