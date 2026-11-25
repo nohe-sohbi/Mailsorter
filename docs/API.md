@@ -978,7 +978,7 @@ mailbox is on IMAP, rather than acting on the wrong message.
 
 | Works on IMAP | Answers 501 on IMAP |
 |---|---|
-| `POST /api/emails/sync` (rules on the messages that arrive), `POST /api/rules/apply`, `POST /api/rules/preview` (on the stored mailbox, see "Sorting Rules Endpoints") | a rule's `label` action (skipped: a rule does not file into a folder yet; the rule's other actions run) |
+| `POST /api/emails/sync` (rules on the messages that arrive), `POST /api/rules/apply`, `POST /api/rules/preview` (on the stored mailbox, see "Sorting Rules Endpoints") | |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
 | `GET /api/emails/{id}` (body and attachment list included), `GET /api/emails/{id}/attachments/{attachmentId}` | |
 | `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message, archived, deleted or filed in a folder, is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
@@ -2089,10 +2089,22 @@ message that is all text and larger). No rule on `body` or `snippet` judges
 such a message, not even "does not contain", which would match what was not
 read; rules on the sender, the subject or the recipients still do. A read the
 server stops, or that runs out of time, fails the request (`502`). `apply`
-leaves out a message a sync holds at that moment. A `label`
-action is skipped there: a label is a folder over IMAP, and a rule does not
-file into one yet (the AI's proposals do); the rule's other actions run. A mail judged by `apply` is no longer marked for the sync (see
-`POST /api/emails/sync`).
+leaves out a message a sync holds at that moment. A mail judged by `apply` is
+no longer marked for the sync (see `POST /api/emails/sync`).
+
+Over IMAP a label is a folder: a rule's `label` files the message in the
+user's folder of that name, as an AI proposal to label it does (the name
+matched with an existing folder, case, accents and a plural aside; made,
+subscribed, when there is none; never a special folder, and at most 10 new
+folders a request), out of the inbox like an archive, written in the history
+with the folder and undone like an archive. A protected sender's message is
+not filed. And a message moves once: the flags first, then only the last move
+the rule writes among `archive`, `trash` and `label` ("label Factures, then
+archive" archives; "archive, then label Factures" files in Factures). A folder
+no message is filed into (a special one, a name no folder is made under) is
+left aside, logged, and not tried again; one new folder too many is tried
+again at the next sync. The preview shows, for each message, what applying the
+rule does there: the flags, then the one folder.
 
 A rule has the shape:
 
@@ -2126,15 +2138,17 @@ A rule has the shape:
   `regex`); temporal: `olderThan` / `newerThan`, whose `value` is a **number of
   days** compared against the email's received date (an undated email never
   matches a temporal condition).
-- **`actions`** : an **ordered list** of actions, all applied (e.g. *label*
-  and *archive*). Each is `{ "type": ..., "labelName": ... }` where `type` is
-  `archive`, `trash`, `label` (requires `labelName`), `markRead` or `star`.
-  The ones that change the message where it is (`label`, `markRead`, `star`)
-  run first, in the order written, then the ones that move it out of the inbox
-  (`archive`, `trash`): over IMAP a moved message takes a new number in its new
-  folder, so "archive then star" still stars it. A protected (VIP) sender has
-  destructive actions (archive/trash) skipped while non-destructive actions in
-  the same rule still run.
+- **`actions`** : an **ordered list** of actions, all applied on the Gmail API
+  (e.g. *label* and *archive*). Each is `{ "type": ..., "labelName": ... }`
+  where `type` is `archive`, `trash`, `label` (requires `labelName`),
+  `markRead` or `star`. The ones that change the message where it is (`label`,
+  `markRead`, `star`) run first, in the order written, then the ones that move
+  it out of the inbox (`archive`, `trash`): over IMAP a moved message takes a
+  new number in its new folder, so "archive then star" still stars it. Over
+  IMAP a `label` is a move too (the folder of that name), and a message moves
+  once: the last move written (see above). A protected (VIP) sender has
+  destructive actions (archive/trash, and over IMAP the filing) skipped while
+  the other actions in the same rule still run.
 - **`action` / `labelName`** : legacy single-action fields, kept for backward
   compatibility. A client may send either shape; the server normalizes them and
   mirrors the primary (first) action onto these fields. Rules created before

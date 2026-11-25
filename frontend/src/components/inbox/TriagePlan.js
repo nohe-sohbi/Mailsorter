@@ -79,10 +79,9 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   // Every verdict applies on both transports: over IMAP a label is a folder,
   // so it reads "Classer" there (`isImap`). A label waits until the mailbox is
   // known (canApplyVerdict). Rules run on both transports too, so a sender
-  // becomes a rule on either once the mailbox is known (`known`); a rule
-  // labels on the Gmail API only for now (`fullFeatures`), so "Toujours
-  // classer" is not offered over IMAP.
-  const { fullFeatures, isImap, known } = useMailbox();
+  // becomes a rule on either once the mailbox is known (`known`), a rule that
+  // labels included: over IMAP it files in the folder, as the verdict does.
+  const { isImap, known } = useMailbox();
   const canApply = useCallback((g) => canApplyVerdict(g.action, known), [known]);
   const [applyingAll, setApplyingAll] = useState(false);
   const [ruling, setRuling] = useState(null);
@@ -303,9 +302,6 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
     totals,
     canApply,
     rulesAvailable: known,
-    // A rule labels on the Gmail API only for now (over IMAP a rule does not
-    // file into a folder yet).
-    labelRulesAvailable: fullFeatures,
     // A label is a folder on this mailbox (IMAP): the verdicts say "Classer".
     folders: isImap,
     applyingAll,
@@ -354,7 +350,7 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
     plan.rulesAvailable &&
       ruleAction &&
       group.address &&
-      (group.action !== 'label' || (plan.labelRulesAvailable && group.labelName))
+      (group.action !== 'label' || group.labelName)
   );
   const ruled = plan.ruled.has(group.key);
 
@@ -477,7 +473,8 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
                   title={selfHosted ? 'Les règles trient sans IA' : 'Les règles trient sans IA ni quota'}
                 >
                   {plan.ruling === group.key ? <Spinner size={14} /> : <Bolt size={14} />}
-                  Toujours {meta.label.toLowerCase()} ses emails{where ? ` « ${group.labelName} »` : ''}
+                  Toujours {meta.label.toLowerCase()} ses emails
+                  {group.action === 'label' ? labelPlace(group.labelName, { folders: plan.folders }) : ''}
                 </button>
               ))}
           </div>

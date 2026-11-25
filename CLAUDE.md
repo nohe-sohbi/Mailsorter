@@ -198,7 +198,7 @@ in its package doc:
 
 | Package | Owns | Key entry points |
 |---|---|---|
-| `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset. `ApplyOrder` runs what changes a mail where it is (read, star, label) before what moves it out of the inbox, since over IMAP a moved mail takes a new number; `ReadsText` says when a ruleset needs the text a stored IMAP inbox does not keep; `PreviewWithout` is the preview of a mailbox that cannot label | `Matches`, `Validate`, `Preview`, `PreviewWithout`, `ApplyOrder`, `ReadsText`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
+| `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset. `ApplyOrder` runs what changes a mail where it is (read, star, label) before what moves it out of the inbox, since over IMAP a moved mail takes a new number; `ApplyOrderOnFolders` is that order over IMAP, where a label is a folder and filing a move: the flags, then one move, the last written; `ReadsText` says when a ruleset needs the text a stored IMAP inbox does not keep; `PreviewOnFolders` is the preview in that order | `Matches`, `Validate`, `Preview`, `PreviewOnFolders`, `ApplyOrder`, `ApplyOrderOnFolders`, `ReadsText`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
 | `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted, nor, on IMAP where a label is a folder, auto-filed | `Allowed`, `AllowedOnFolders`, `ActionArchive/Trash/Delete/Label` |
 | `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
@@ -899,8 +899,10 @@ Do not duplicate these into this file. Point at them.
   like an archive, undone like one (`activity.InverseOnFolders`, and "unlabel" on
   the single-message action right after), shielded like one for a protected
   sender at analysis and in a batch (`allowsOn`), and `GetLabels` lists the
-  user's own folders. A rule's `label` action does not file yet: it is skipped
-  over IMAP (`errRuleLabelOnIMAP`), not journaled, the rule's other actions run.
+  user's own folders. A rule's `label` files the same way (`FilingName`, then
+  `Destination` in the move, at most `maxNewFolders` new folders a request),
+  shielded like an archive (`allowsOn`), written in the history with its folder,
+  and the rule moves a mail once (`rules.ApplyOrderOnFolders`).
   Everything else (snooze and its wake sweeper, unsubscribe, smart labels, batch
   action, bulk by sender) refuses: 8 call sites of `gmailClientFor`. Three more
   are the Gmail branch of a ported handler (`GetLabels`, `UndoAction`,

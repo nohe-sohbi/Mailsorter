@@ -118,6 +118,31 @@ func ApplyOrder(actions []models.RuleAction) []models.RuleAction {
 	return append(out, moves...)
 }
 
+// ApplyOrderOnFolders is ApplyOrder for a mailbox made of folders (IMAP),
+// where a label is the folder of that name and labelling files the mail
+// there, out of the inbox: a move, like archive and trash. A mail is in one
+// folder, so a rule moves it once: the flags first (mark read, star), in the
+// order written, then the LAST move written, the folder where doing the moves
+// one after the other would leave it ("Étiqueter Factures, puis Archiver"
+// archives; "Archiver, puis Étiqueter Factures" files in Factures). The other
+// moves are not done.
+func ApplyOrderOnFolders(actions []models.RuleAction) []models.RuleAction {
+	out := make([]models.RuleAction, 0, len(actions))
+	var move *models.RuleAction
+	for i, a := range actions {
+		switch a.Type {
+		case ActionArchive, ActionTrash, ActionLabel:
+			move = &actions[i]
+		default:
+			out = append(out, a)
+		}
+	}
+	if move != nil {
+		out = append(out, *move)
+	}
+	return out
+}
+
 // ReadsText says whether a ruleset reads the text of a mail: an enabled rule
 // with a condition on the body or the snippet that can match. A listing that
 // does not carry the text (the stored copy of an IMAP inbox keeps none) has
@@ -324,21 +349,17 @@ func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Tim
 	return previewAt(emails, ruleset, now, nil)
 }
 
-// PreviewWithout is Preview for a mailbox that cannot perform some action
-// types: a rule cannot label over IMAP, where a message sits in one folder.
-// Those actions are left out of each item and of the tally, and an email
-// whose rule is left with nothing to do is not counted: applying the rule
-// changes nothing there. It is still that rule's (first match wins), so it
-// does not fall through to the next one, exactly as applying it would not.
-func PreviewWithout(emails []models.Email, ruleset []models.SortingRule, skipped ...string) ([]PreviewItem, []RuleHits) {
-	skip := make(map[string]bool, len(skipped))
-	for _, a := range skipped {
-		skip[a] = true
-	}
-	return previewAt(emails, ruleset, time.Now(), skip)
+// PreviewOnFolders is Preview for a mailbox made of folders (IMAP): each item
+// and tally carries the actions applying the rule does there
+// (ApplyOrderOnFolders: the flags, then one move), the primary action being
+// the first of them.
+func PreviewOnFolders(emails []models.Email, ruleset []models.SortingRule) ([]PreviewItem, []RuleHits) {
+	return previewAt(emails, ruleset, time.Now(), ApplyOrderOnFolders)
 }
 
-func previewAt(emails []models.Email, ruleset []models.SortingRule, now time.Time, skip map[string]bool) ([]PreviewItem, []RuleHits) {
+// previewAt is the preview at now, the actions of each matched rule as
+// performed (performed nil: as written).
+func previewAt(emails []models.Email, ruleset []models.SortingRule, now time.Time, performed func([]models.RuleAction) []models.RuleAction) ([]PreviewItem, []RuleHits) {
 	items := make([]PreviewItem, 0)
 	hits := make([]RuleHits, 0)
 	idx := map[string]int{} // rule name -> position in hits
@@ -349,17 +370,8 @@ func previewAt(emails []models.Email, ruleset []models.SortingRule, now time.Tim
 			continue
 		}
 		acts := EffectiveActions(*match)
-		if len(skip) > 0 {
-			kept := make([]models.RuleAction, 0, len(acts))
-			for _, a := range acts {
-				if !skip[a.Type] {
-					kept = append(kept, a)
-				}
-			}
-			if len(kept) == 0 {
-				continue
-			}
-			acts = kept
+		if performed != nil {
+			acts = performed(acts)
 		}
 		primary, primaryLabel := primaryAction(acts)
 		items = append(items, PreviewItem{

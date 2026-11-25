@@ -588,7 +588,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 					ruled.applied++
 					byRule[match.Name]++
 					for _, act := range appliedActs {
-						h.logActionMeta(ctx, userEmail, msg.Id, act, SourceRule, email.Subject, email.From)
+						h.logActionFiled(ctx, userEmail, msg.Id, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
 					}
 				}
 			}

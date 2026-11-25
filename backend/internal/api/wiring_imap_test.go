@@ -385,14 +385,15 @@ func TestAcceptance_AutoRulesLeaveAMailTheCopyHoldsUnderAnotherNumber(t *testing
 
 // Over IMAP the preview reads the stored copy, without opening the mailbox
 // unless a rule reads the text: with the server out of reach it still
-// answers. It leaves out what a rule cannot do there (label), and a mail
-// whose rule would only label it.
-func TestAcceptance_IMAPPreviewReadsTheCopyAndLeavesOutTheLabel(t *testing.T) {
+// answers. It counts the mails a rule would file in a folder (a label is a
+// folder there), and shows what applying the rule does: the flags, then the
+// folder.
+func TestAcceptance_IMAPPreviewReadsTheCopyAndCountsTheFiling(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
 	moi, _ := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
-	moi.rule("Étiqueter la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com",
+	moi.rule("Classer la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com",
 		models.RuleAction{Type: rules.ActionLabel, LabelName: "Boutique"})
-	moi.rule("Lire et étiqueter les voyages", 2, rules.FieldFrom, rules.OpContains, "voyages.fr",
+	moi.rule("Classer et lire les voyages", 2, rules.FieldFrom, rules.OpContains, "voyages.fr",
 		models.RuleAction{Type: rules.ActionLabel, LabelName: "Voyages"}, models.RuleAction{Type: rules.ActionMarkRead})
 
 	// The mailbox no longer answers: a port nothing listens on.
@@ -413,20 +414,28 @@ func TestAcceptance_IMAPPreviewReadsTheCopyAndLeavesOutTheLabel(t *testing.T) {
 		app.fatalf("l'aperçu de %s, sans règle sur le texte, devrait se lire dans la copie sans ouvrir la boîte et répondre 200, il a répondu %s", moi.email, got)
 	}
 	subjects, announced := previewedMails(app, got)
-	if len(subjects) != 1 || subjects[0] != travelOffer.Subject || announced != 1 {
-		app.failf("l'aperçu de %s devrait montrer le seul mail %q (la règle de la boutique ne ferait qu'étiqueter), il montre %s et en annonce %d", moi.email, travelOffer.Subject, quotedList(subjects), announced)
+	if len(subjects) != 2 || announced != 2 {
+		app.failf("l'aperçu de %s devrait montrer et annoncer les 2 mails que ses règles classeraient, il montre %s et en annonce %d", moi.email, quotedList(subjects), announced)
+	}
+	want := map[string][]string{
+		shopOrder.Subject:   {rules.ActionLabel},
+		travelOffer.Subject: {rules.ActionMarkRead, rules.ActionLabel},
 	}
 	samples, _ := got.body["samples"].([]interface{})
 	for _, v := range samples {
 		item, _ := v.(map[string]interface{})
+		subject, _ := item["subject"].(string)
 		acts, _ := item["actions"].([]interface{})
+		var types []string
 		for _, a := range acts {
-			if act, _ := a.(map[string]interface{}); act["type"] == rules.ActionLabel {
-				app.failf("l'aperçu de %s montre l'action « Étiqueter » sur %v : elle ne s'applique pas sur une boîte IMAP", moi.email, item["subject"])
+			act, _ := a.(map[string]interface{})
+			types = append(types, fmt.Sprint(act["type"]))
+			if act["type"] == rules.ActionLabel && act["labelName"] == "" {
+				app.failf("l'aperçu de %s montre pour %q un classement sans dossier", moi.email, subject)
 			}
 		}
-		if item["action"] != rules.ActionMarkRead {
-			app.failf("l'aperçu de %s devrait annoncer « Marquer comme lu » pour %v, il annonce %v", moi.email, item["subject"], item["action"])
+		if fmt.Sprint(types) != fmt.Sprint(want[subject]) {
+			app.failf("l'aperçu de %s devrait montrer pour %q les actions %v (les drapeaux, puis le dossier), il montre %v", moi.email, subject, want[subject], types)
 		}
 	}
 
@@ -434,6 +443,43 @@ func TestAcceptance_IMAPPreviewReadsTheCopyAndLeavesOutTheLabel(t *testing.T) {
 	moi.rule("Remboursements", 3, rules.FieldBody, rules.OpContains, "remboursement", models.RuleAction{Type: rules.ActionArchive})
 	if got := moi.previewRules(); got.code == http.StatusOK {
 		app.failf("l'aperçu de %s, avec une règle sur le texte et la boîte injoignable, a répondu 200 : il aurait jugé le texte sans le lire (%v)", moi.email, got.body)
+	}
+}
+
+// A rule that stars and files a mail, over IMAP: the star first, then the
+// mail filed once, in the last folder written (a label then an archive: the
+// archive), and the history says which folder.
+func TestAcceptance_IMAPRuleMovesAMailOnce(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, shopOrder, travelOffer)
+	moi.rule("Suivre et classer la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com",
+		models.RuleAction{Type: rules.ActionLabel, LabelName: "Boutique"}, models.RuleAction{Type: rules.ActionStar})
+	moi.rule("Classer puis archiver les voyages", 2, rules.FieldFrom, rules.OpContains, "voyages.fr",
+		models.RuleAction{Type: rules.ActionLabel, LabelName: "Voyages"}, models.RuleAction{Type: rules.ActionArchive})
+
+	if got := moi.applyRules(); got.code != http.StatusOK {
+		app.fatalf("« Appliquer mes règles » de %s a répondu %s", moi.email, got)
+	}
+	moi.expectOnServer("Boutique", shopOrder.Subject)
+	if !moi.flaggedOnServer("Boutique", shopOrder.Subject) {
+		app.failf("le mail %q de %s devrait être en favori dans le dossier Boutique : la règle le met en favori avant de le classer", shopOrder.Subject, moi.email)
+	}
+	var filedIn string
+	for _, l := range moi.history(uids[0]) {
+		if l.Source == SourceRule && l.Action == rules.ActionLabel {
+			filedIn = l.LabelName
+		}
+	}
+	if filedIn != "Boutique" {
+		app.failf("l'historique de %s devrait noter que la règle a classé le mail %q dans « Boutique », il note %q (%s)", moi.email, shopOrder.Subject, filedIn, describeHistory(moi.historyLinesOf(uids[0])))
+	}
+
+	moi.expectOnServer(serverArchive, travelOffer.Subject)
+	if moi.hasFolder("Voyages") {
+		moi.expectNotOnServer("Voyages", travelOffer.Subject, "la règle le range une seule fois, au dernier rangement écrit : l'archive")
+	}
+	if n := ruleLines(moi, uids[1], rules.ActionLabel); n != 0 {
+		app.failf("l'historique de %s ne devrait pas noter de classement du mail %q, rangé une seule fois à l'archive, il en note %d", moi.email, travelOffer.Subject, n)
 	}
 }
 

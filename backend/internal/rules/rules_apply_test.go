@@ -84,43 +84,60 @@ func TestReadsText(t *testing.T) {
 	}
 }
 
-// Over IMAP a rule cannot label: the preview leaves the label out of what a
-// rule would do, and does not count a mail whose rule would only label it.
-// That mail stays its rule's, as applying it would: it does not fall through
-// to the next rule.
-func TestPreviewWithout(t *testing.T) {
-	newsletters := models.RuleAction{Type: ActionLabel, LabelName: "Newsletters"}
+func TestApplyOrderOnFolders(t *testing.T) {
 	archive := models.RuleAction{Type: ActionArchive}
+	trash := models.RuleAction{Type: ActionTrash}
+	star := models.RuleAction{Type: ActionStar}
+	read := models.RuleAction{Type: ActionMarkRead}
+	bills := models.RuleAction{Type: ActionLabel, LabelName: "Factures"}
+	news := models.RuleAction{Type: ActionLabel, LabelName: "Newsletters"}
+
+	cases := []struct {
+		name string
+		in   []models.RuleAction
+		want []models.RuleAction
+	}{
+		{"a label is a move: after the flags", []models.RuleAction{bills, star}, []models.RuleAction{star, bills}},
+		{"label then archive: one move, the last written", []models.RuleAction{bills, archive}, []models.RuleAction{archive}},
+		{"archive then label: files in the folder", []models.RuleAction{archive, bills}, []models.RuleAction{bills}},
+		{"two labels: the last one", []models.RuleAction{bills, read, news}, []models.RuleAction{read, news}},
+		{"trash among them, last written", []models.RuleAction{star, bills, trash}, []models.RuleAction{star, trash}},
+		{"flags only: unchanged", []models.RuleAction{read, star}, []models.RuleAction{read, star}},
+		{"none", nil, []models.RuleAction{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ApplyOrderOnFolders(tc.in); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ApplyOrderOnFolders(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Over IMAP the preview shows what applying a rule does there: the flags,
+// then one move, a label being one (the folder it files in).
+func TestPreviewOnFolders(t *testing.T) {
+	bills := models.RuleAction{Type: ActionLabel, LabelName: "Factures"}
 	star := models.RuleAction{Type: ActionStar}
 	ruleset := []models.SortingRule{
-		{Name: "Étiqueter Acme", Enabled: true, MatchAll: true, Actions: []models.RuleAction{newsletters},
-			Conditions: []models.RuleCondition{{Field: FieldFrom, Operator: OpContains, Value: "acme"}}},
-		{Name: "Ranger la boutique", Enabled: true, MatchAll: true, Actions: []models.RuleAction{newsletters, star, archive},
-			Conditions: []models.RuleCondition{{Field: FieldFrom, Operator: OpContains, Value: "boutique"}}},
-		{Name: "Tout le reste", Enabled: true, MatchAll: true, Actions: []models.RuleAction{archive},
-			Conditions: []models.RuleCondition{{Field: FieldFrom, Operator: OpContains, Value: "@"}}},
+		{Name: "Classer les factures", Enabled: true, MatchAll: true, Actions: []models.RuleAction{bills, star},
+			Conditions: []models.RuleCondition{{Field: FieldSubject, Operator: OpContains, Value: "facture"}}},
 	}
 	emails := []models.Email{
-		{MessageID: "1", From: "news@acme.com", Subject: "Acme"},
-		{MessageID: "2", From: "info@boutique.com", Subject: "Boutique"},
+		{MessageID: "1", From: "a@b.com", Subject: "Votre facture"},
+		{MessageID: "2", From: "a@b.com", Subject: "Bonjour"},
 	}
-
-	items, hits := PreviewWithout(emails, ruleset, ActionLabel)
-	if len(items) != 1 || items[0].MessageID != "2" {
-		t.Fatalf("PreviewWithout(label) items = %+v, want only message 2 (message 1's rule only labels, and stays its rule's)", items)
+	items, hits := PreviewOnFolders(emails, ruleset)
+	want := []models.RuleAction{star, bills}
+	if len(items) != 1 || items[0].MessageID != "1" || !reflect.DeepEqual(items[0].Actions, want) || items[0].Action != ActionStar {
+		t.Fatalf("PreviewOnFolders items = %+v, want message 1 with the star then the folder", items)
 	}
-	want := []models.RuleAction{star, archive}
-	if !reflect.DeepEqual(items[0].Actions, want) || items[0].Action != ActionStar || items[0].LabelName != "" {
-		t.Errorf("PreviewWithout(label) item = %+v, want actions %v, primary star, no label", items[0], want)
+	if len(hits) != 1 || hits[0].Matched != 1 || !reflect.DeepEqual(hits[0].Actions, want) {
+		t.Errorf("PreviewOnFolders hits = %+v, want one tally, 1 mail, star then the folder", hits)
 	}
-	if len(hits) != 1 || hits[0].RuleName != "Ranger la boutique" || hits[0].Matched != 1 || hits[0].Action != ActionStar || !reflect.DeepEqual(hits[0].Actions, want) {
-		t.Errorf("PreviewWithout(label) hits = %+v, want one tally for \"Ranger la boutique\", 1 mail, star then archive", hits)
-	}
-
-	// Nothing skipped: the preview as Preview gives it.
-	all, allHits := PreviewWithout(emails, ruleset)
-	plain, plainHits := Preview(emails, ruleset)
-	if !reflect.DeepEqual(all, plain) || !reflect.DeepEqual(allHits, plainHits) {
-		t.Errorf("PreviewWithout() = %+v %+v, want Preview's %+v %+v", all, allHits, plain, plainHits)
+	// On the Gmail API the preview keeps the order written.
+	plain, _ := Preview(emails, ruleset)
+	if len(plain) != 1 || !reflect.DeepEqual(plain[0].Actions, []models.RuleAction{bills, star}) {
+		t.Errorf("Preview items = %+v, want the actions as written", plain)
 	}
 }

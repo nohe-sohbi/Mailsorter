@@ -298,7 +298,7 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 	var items []rules.PreviewItem
 	var hits []rules.RuleHits
 	if transport == provider.TransportIMAP {
-		items, hits = rules.PreviewWithout(emails, enabled, rules.ActionLabel)
+		items, hits = rules.PreviewOnFolders(emails, enabled)
 	} else {
 		items, hits = rules.Preview(emails, enabled)
 	}
@@ -556,13 +556,16 @@ func (h *Handler) runRules(ctx context.Context, session *mailSession, userEmail 
 		// A protected sender is shielded from destructive actions, but
 		// non-destructive actions in the same rule still run.
 		appliedActs, skipped, failed := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache, before)
+		all := append([]string{}, before...)
 		for _, act := range appliedActs {
-			h.logActionMeta(ctx, userEmail, email.MessageID, act, SourceRule, email.Subject, email.From)
+			// A label is written with where it filed the mail: the label,
+			// or over IMAP its folder, which the history shows.
+			h.logActionFiled(ctx, userEmail, email.MessageID, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
+			all = append(all, act.Type)
 		}
 		if len(before) == 0 && len(appliedActs) > 0 {
 			done.byRule[match.Name]++
 		}
-		all := append(append([]string{}, before...), appliedActs...)
 		switch {
 		case failed:
 			done.progress[email.MessageID] = all
@@ -653,35 +656,49 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, rule)
 }
 
-// applyRuleToMessage runs every action of a matched rule on one message, in
-// rules.ApplyOrder: what changes the message where it is before what moves it
-// out of the inbox, since over IMAP a moved message takes a new number. A
-// protected (VIP) sender shields against destructive actions only:
-// archive/trash are skipped, but a non-destructive action in the same rule
-// (label/star/markRead) still runs. It returns the action types actually
-// applied (for the ledger), whether a destructive action was skipped for
-// protection, and whether an action failed (logged). An action type in done
-// was applied at an earlier try that failed on another one: it is not done
-// again (a mail marked unread since stays unread).
-func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList []string, labelCache map[string]string, done []string) (applied []string, protectedSkip, failed bool) {
+// applyRuleToMessage runs the actions of a matched rule on one message, in the
+// order of its transport: rules.ApplyOrder over the Gmail API (what changes
+// the message where it is before what moves it out of the inbox), and
+// rules.ApplyOrderOnFolders over IMAP, where a label is a folder and filing
+// into it a move, and a mail moves once (the flags, then the last move
+// written), since a moved message takes a new number. A protected (VIP)
+// sender is shielded from what takes a mail out of the inbox (allowsOn:
+// archive, trash, and over IMAP the filing into a folder); the other actions
+// of the same rule still run. It returns the actions actually applied, a
+// label with where it filed the mail (the label, or over IMAP its folder),
+// whether an action was skipped for protection, and whether an action failed
+// (logged). An action type in done was applied at an earlier try that failed
+// on another one: it is not done again (a mail marked unread since stays
+// unread).
+func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList []string, labelCache map[string]string, done []string) (applied []models.RuleAction, protectedSkip, failed bool) {
+	order := rules.ApplyOrder
+	if session.Transport == provider.TransportIMAP {
+		order = rules.ApplyOrderOnFolders
+	}
 	ref := session.RefFor(ctx, email.MessageID)
-	for _, a := range rules.ApplyOrder(rules.EffectiveActions(rule)) {
+	for _, a := range order(rules.EffectiveActions(rule)) {
 		if containsString(done, a.Type) {
 			continue
 		}
-		if !allows(a.Type, email.From, protectedList) {
+		if !allowsOn(session.Transport, a.Type, email.From, protectedList) {
 			protectedSkip = true
 			continue
 		}
-		err := h.applyOneAction(ctx, session, ref, userEmail, a, labelCache)
+		filed, err := h.applyOneAction(ctx, session, ref, userEmail, a, labelCache)
 		switch {
 		case err == nil:
-			applied = append(applied, a.Type)
-		case errors.Is(err, errRuleLabelOnIMAP), errors.Is(err, errAlreadyOut), errors.Is(err, errLeftInbox):
-			// Nothing to do, and nothing went wrong: a rule does not file into
-			// a folder over IMAP yet, or the message already left the inbox
-			// (moved by hand, or by another mail program, since it was read).
+			applied = append(applied, models.RuleAction{Type: a.Type, LabelName: filed})
+		case errors.Is(err, errAlreadyOut), errors.Is(err, errLeftInbox):
+			// Nothing to do, and nothing went wrong: the message already left
+			// the inbox (moved by hand, or by another mail program, since it
+			// was read).
+		case errors.Is(err, imap.ErrNotOwnFolder), errors.Is(err, imap.ErrBadFolderName), errors.Is(err, mailbox.ErrLabelRequired):
+			// A folder no mail is filed into (a special one, a name no folder
+			// is made under): trying again changes nothing, so it is not a
+			// failure to retry. Logged, the rule's other actions run.
+			log.Printf("rules: %s on message %s of %s (rule %q) left aside: %v", a.Type, email.MessageID, userEmail, rule.Name, err)
 		default:
+			// ErrTooManyNewFolders among them: the next sync files it.
 			failed = true
 			log.Printf("rules: %s on message %s of %s (rule %q): %v", a.Type, email.MessageID, userEmail, rule.Name, err)
 		}
@@ -689,28 +706,30 @@ func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, 
 	return applied, protectedSkip, failed
 }
 
-// errRuleLabelOnIMAP is a rule's "label" action on an IMAP mailbox: filing
-// the mail into a folder, which a rule does not do yet (the AI's proposals
-// do). The action is left aside, not journaled; the rule's other actions run.
-var errRuleLabelOnIMAP = errors.New("api: a rule does not file into a folder over IMAP yet")
-
-// applyOneAction performs a single rule action on one message.
-func (h *Handler) applyOneAction(ctx context.Context, session *mailSession, ref mailbox.Ref, userEmail string, a models.RuleAction, labelCache map[string]string) error {
-	// Only the label action needs anything resolved before it can run: the
-	// label has to exist in the mailbox before a message can carry it, and the
-	// cache keeps one rule application from creating it once per message.
+// applyOneAction performs a single rule action on one message, and says, for
+// a label, where it filed it: the label's name over the Gmail API, the folder
+// over IMAP.
+func (h *Handler) applyOneAction(ctx context.Context, session *mailSession, ref mailbox.Ref, userEmail string, a models.RuleAction, labelCache map[string]string) (string, error) {
 	var labelID string
 	if a.Type == rules.ActionLabel {
 		if session.Transport == provider.TransportIMAP {
-			// A message sits in one folder over IMAP: a label is filing it
-			// into a folder, which a rule does not do there yet.
-			return errRuleLabelOnIMAP
+			// A label is a folder over IMAP: the mail is filed in the user's
+			// folder named alike, made when there is none (FilingName, then
+			// Destination in the move), as an AI proposal to label it is.
+			folder, err := session.imapc.FilingName(a.LabelName)
+			if err != nil {
+				return "", err
+			}
+			return folder, h.applyVerb(ctx, session.Mailbox(), ref, a.Type, folder)
 		}
+		// The label has to exist in the mailbox before a message can carry
+		// it, and the cache keeps one rule application from creating it once
+		// per message.
 		id, ok := labelCache[a.LabelName]
 		if !ok {
 			created, err := h.ensureLabel(ctx, session.gmail, userEmail, a.LabelName)
 			if err != nil {
-				return err
+				return "", err
 			}
 			id = created
 			labelCache[a.LabelName] = created
@@ -722,9 +741,12 @@ func (h *Handler) applyOneAction(ctx context.Context, session *mailSession, ref 
 	// skipped rather than failed: it must not abort the rest of the ruleset.
 	err := h.applyVerb(ctx, session.Mailbox(), ref, a.Type, labelID)
 	if errors.Is(err, mailbox.ErrUnknownAction) {
-		return nil
+		return "", nil
 	}
-	return err
+	if a.Type == rules.ActionLabel {
+		return a.LabelName, err
+	}
+	return "", err
 }
 
 // ruleFromInput maps an input payload onto a SortingRule owned by the caller. It
