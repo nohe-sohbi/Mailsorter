@@ -1835,21 +1835,35 @@ type reportedMail struct {
 // reported is this person's mails reported and not back yet: the "Prévus" tab
 // of the Reporté screen, as it loads it (GET /api/snoozes?status=scheduled).
 func (p *imapPerson) reported() []reportedMail {
-	a := p.app
+	p.app.t.Helper()
+	return p.app.reportedAs(p.token, p.email)
+}
+
+// reportedAs is the "Prévus" tab of the Reporté screen of the account signed
+// in with token: the Gmail person's as well as an IMAP person's. who names
+// the person in a failure.
+func (a *testApp) reportedAs(token, who string) []reportedMail {
 	a.t.Helper()
-	code, out := a.callAs(p.token, http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	code, out := a.callAs(token, http.MethodGet, "/api/snoozes?status=scheduled", nil)
 	if code != http.StatusOK {
-		a.fatalf("les mails reportés de %s ne s'affichent pas : GET /api/snoozes a répondu %d : %v", p.email, code, out)
+		a.fatalf("les mails reportés de %s ne s'affichent pas : GET /api/snoozes a répondu %d : %v", who, code, out)
 	}
 	raw, err := json.Marshal(out["snoozes"])
 	if err != nil {
-		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", p.email, err)
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", who, err)
 	}
 	var rows []reportedMail
 	if err := json.Unmarshal(raw, &rows); err != nil {
-		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", p.email, err)
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", who, err)
 	}
 	return rows
+}
+
+// reportsHourPasses is the hour of every report of this person passing,
+// whatever became of them (reportsHourPassesFor).
+func (p *imapPerson) reportsHourPasses() {
+	p.app.t.Helper()
+	p.app.reportsHourPassesFor(p.email)
 }
 
 // reportedRow returns the row of the "Prévus" tab for the mail with this

@@ -717,6 +717,25 @@ func (a *testApp) timeComesForSnoozes() {
 	a.h.wakeDueSnoozes()
 }
 
+// reportsHourPassesFor is the hour of every report of this account passing,
+// whatever became of them: each wake time moved into the past, then the
+// background sweep run once. timeComesForSnoozes moves only the reports still
+// scheduled; a sentence about a report ended before its hour needs that hour
+// to pass all the same, and a sweep that would still take an ended report
+// must find it due. An account with no report at all is not stopped: the
+// hour then passes over nothing, which is what such a sentence expects.
+func (a *testApp) reportsHourPassesFor(email string) {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := a.h.db.Snoozes().UpdateMany(ctx,
+		bson.M{"userId": email},
+		bson.M{"$set": bson.M{"wakeAt": time.Now().Add(-time.Minute)}}); err != nil {
+		a.fatalf("avance de l'heure des reports de %s : %v", email, err)
+	}
+	a.h.wakeDueSnoozes()
+}
+
 // senderCard is one row of the Expediteurs screen: the sender key it holds
 // and the count it shows, which is also the count the "Tout supprimer" /
 // "Tout archiver" confirmation announces.

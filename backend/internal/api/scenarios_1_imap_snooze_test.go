@@ -323,5 +323,61 @@ func TestScenarios_IMAPSnooze(t *testing.T) {
 				moi.expectBackInInbox(shopOrder.Subject, "après son réveil et une synchronisation")
 			},
 		},
+		{
+			phrase: "« Annuler » sur un report depuis l'Historique remet le mail dans ta boîte de réception et le retire de tes mails reportés : à l'heure prévue, rien ne bouge plus.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+				// Read first, so a return at the hour, which marks unread,
+				// would show.
+				moi.openMail(uids[1])
+				reportedOnIMAP(moi, uids[1], shopOrder)
+
+				// The line the Historique screen shows for the report.
+				line := moi.historyLineFor(uids[1], "archive")
+				if line.Source != SourceSnooze {
+					app.fatalf("la ligne « archive » du mail n°%s %q de %s devrait venir du report, elle vient de %q : le scénario ne prouve rien", uids[1], shopOrder.Subject, moi.email, line.Source)
+				}
+				if !line.Undoable {
+					app.failf("l'historique de %s devrait proposer « Annuler » sur la ligne du report du mail n°%s %q, il ne le propose pas", moi.email, uids[1], shopOrder.Subject)
+				}
+
+				// "Annuler" on it (handleUndo in History.js).
+				if got := moi.undoFromHistory(line); got.code != http.StatusOK {
+					app.fatalf("« Annuler » sur la ligne du report du mail n°%s %q de %s devrait répondre 200, le serveur a répondu %s", uids[1], shopOrder.Subject, moi.email, got)
+				}
+				moi.expectBackInInbox(shopOrder.Subject, "juste après « Annuler » sur son report")
+				moi.expectOnServer(serverInbox, shopOrder.Subject)
+				expectNotInLater(moi, shopOrder, "« Annuler » l'a remis dans la boîte de réception")
+				expectNotReported(moi, shopOrder, "« Annuler » sur sa ligne de l'Historique a défait son report")
+
+				// Its hour passes: nothing moves any more, nothing is marked
+				// unread, nothing is written in the history.
+				before := moi.historyScreen()
+				inInbox := func() bool {
+					for _, s := range moi.onServer(serverInbox) {
+						if s == shopOrder.Subject {
+							return true
+						}
+					}
+					return false
+				}
+				wasSeen := inInbox() && moi.seenOnServer(serverInbox, shopOrder.Subject)
+				moi.reportsHourPasses()
+				moi.expectOnServer(serverInbox, shopOrder.Subject)
+				expectNotInLater(moi, shopOrder, "son report est annulé, l'heure prévue ne doit plus le déplacer")
+				moi.expectBackInInbox(shopOrder.Subject, "à l'heure prévue du report annulé")
+				if inInbox() {
+					if seen := moi.seenOnServer(serverInbox, shopOrder.Subject); seen != wasSeen {
+						app.failf("à l'heure prévue du report annulé, le mail %q ne devrait pas changer sur le serveur IMAP de %s : il était lu=%v, il est lu=%v", shopOrder.Subject, moi.email, wasSeen, seen)
+					}
+				}
+				if after := moi.historyScreen(); len(after) != len(before) {
+					app.failf("à l'heure prévue du report annulé, l'historique de %s ne devrait rien montrer de nouveau, il montre %d ligne(s) de plus, la plus récente : %q (%s)", moi.email, len(after)-len(before), after[0].Action, after[0].Source)
+				}
+				// The control: the mail nobody reported is still there.
+				moi.expectShows(uids[0], bankStatement.Subject)
+			},
+		},
 	})
 }
