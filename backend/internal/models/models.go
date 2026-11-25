@@ -117,6 +117,10 @@ type Email struct {
 	// SenderLabel is what the list shows for the sender (protect.Label).
 	// Set with SenderAddress; never stored.
 	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderAddressShown is SenderAddress as the reader shows it under the
+	// name (protect.ShownAddress: what would not show, or would move what
+	// follows, made visible). Set with SenderAddress; never stored.
+	SenderAddressShown string `json:"senderAddressShown,omitempty" bson:"-"`
 }
 
 // RegisterRequest is the body for POST /api/auth/register.

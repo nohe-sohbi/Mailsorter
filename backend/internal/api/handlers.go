@@ -423,9 +423,8 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 			UnsubMailto:   unsubMailto,
 			UnsubOneClick: oneClick,
 			CreatedAt:     time.Now(),
-			SenderAddress: protect.Address(from),
-			SenderLabel:   protect.Label(from),
 		}
+		readSender(&email)
 		emails = append(emails, email)
 	}
 

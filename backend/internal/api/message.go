@@ -15,7 +15,6 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
-	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -194,8 +193,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 		opts,
 	)
 
-	view.SenderAddress = protect.Address(view.From)
-	view.SenderLabel = protect.Label(view.From)
+	readSender(&view.Email)
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -377,8 +375,7 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 		Attachments:  imapAttachmentViews(msg.Attachments),
 		InlineImages: msg.InlineImages,
 	}
-	view.SenderAddress = protect.Address(view.From)
-	view.SenderLabel = protect.Label(view.From)
+	readSender(&view.Email)
 	writeJSON(w, http.StatusOK, view)
 }
 

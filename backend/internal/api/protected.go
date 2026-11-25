@@ -52,6 +52,16 @@ func (h *Handler) protectedValues(ctx context.Context, userEmail string) (protec
 	return protect.NewShield(values), nil
 }
 
+// readSender sets, on an email on its way to a screen, what the screens show
+// for its sender, out of its From: the address read (protect.Address), as
+// the reader shows it (protect.ShownAddress), and the label of the list
+// (protect.Label).
+func readSender(e *models.Email) {
+	e.SenderAddress = protect.Address(e.From)
+	e.SenderAddressShown = protect.ShownAddress(e.SenderAddress)
+	e.SenderLabel = protect.Label(e.From)
+}
+
 // writeProtectedUnreadable answers a call that would have moved mail while
 // the protected list could not be read: 503, nothing moved.
 func writeProtectedUnreadable(w http.ResponseWriter, userEmail string, err error) {

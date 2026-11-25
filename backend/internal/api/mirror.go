@@ -11,7 +11,6 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
-	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/search"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -179,8 +178,7 @@ func (h *Handler) listFromMirror(ctx context.Context, userEmail, query string, m
 		return nil, fmt.Errorf("read stored messages: %w", err)
 	}
 	for i := range emails {
-		emails[i].SenderAddress = protect.Address(emails[i].From)
-		emails[i].SenderLabel = protect.Label(emails[i].From)
+		readSender(&emails[i])
 	}
 
 	// A next token only when there is a next page. Handing one out at the end

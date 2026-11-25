@@ -11,11 +11,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -1068,6 +1070,14 @@ func TestAcceptance_UnreadableProtectedListMovesNothingGmail(t *testing.T) {
 	expectNothingMoved(app, "« Se désabonner et archiver »", code, out)
 	app.sync()
 
+	// What leaves the mail where it is does not depend on the list.
+	for _, action := range []string{"read", "star"} {
+		code, out = app.call(http.MethodPost, "/api/emails/batch-action", map[string]interface{}{"messageIds": ids, "action": action})
+		if applied, _ := out["applied"].([]interface{}); code != http.StatusOK || len(applied) != len(ids) {
+			app.failf("l'action %q sur la sélection ne dépend pas des protégés et devrait passer, elle répond %d : %v", action, code, out)
+		}
+	}
+
 	app.expectInInbox(ids...)
 }
 
@@ -1156,5 +1166,94 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameOnPlusTardIMAP(t *testi
 	}
 	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" {
 		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, il montre %v", tricky, s["senderLabel"])
+	}
+}
+
+// hiddenCharacterSenders are Froms whose address holds a character that
+// would hide or reorder what follows, in the domain or in the local part,
+// and what the screens must show of them: the character made visible, never
+// dropped (dropped, x@pay<U+202E>pal.com read x@paypal.com while the app
+// compared another domain).
+var hiddenCharacterSenders = []struct{ from, shown string }{
+	{"x@pay‮pal.com", "x@pay�pal.com"},
+	{"y@pay‍pal.com", "y@pay�pal.com"},
+	{"pay‮pal@x.com", "pay�pal@x.com"},
+	{"pay‍pal@y.com", "pay�pal@y.com"},
+}
+
+// expectHiddenCharactersShown checks the list and the reader of the person
+// signed in with token, for mails whose subjects are the indexes of
+// hiddenCharacterSenders and ids are ids.
+func expectHiddenCharactersShown(app *testApp, token string, ids []string) {
+	app.t.Helper()
+	code, out := app.callAs(token, http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	listed := map[string]string{}
+	list, _ := out["emails"].([]interface{})
+	for _, raw := range list {
+		m, _ := raw.(map[string]interface{})
+		subject, _ := m["subject"].(string)
+		label, _ := m["senderLabel"].(string)
+		listed[subject] = label
+	}
+	for i, c := range hiddenCharacterSenders {
+		subject := fmt.Sprintf("Caché %d", i)
+		if listed[subject] != c.shown {
+			app.failf("la liste devrait montrer %q pour %q, elle montre %q", c.shown, c.from, listed[subject])
+		}
+		code, out := app.callAs(token, http.MethodGet, "/api/emails/"+url.PathEscape(ids[i]), nil)
+		if code != http.StatusOK {
+			app.fatalf("GET /api/emails/%s a répondu %d : %v", ids[i], code, out)
+		}
+		if out["senderLabel"] != c.shown || out["senderAddressShown"] != c.shown {
+			app.failf("le lecteur devrait montrer %q pour %q, il montre %v et %v", c.shown, c.from, out["senderLabel"], out["senderAddressShown"])
+		}
+	}
+}
+
+func hiddenCharacterMails() []incoming {
+	mails := make([]incoming, 0, len(hiddenCharacterSenders))
+	for i, c := range hiddenCharacterSenders {
+		mails = append(mails, incoming{From: c.from, Subject: fmt.Sprintf("Caché %d", i)})
+	}
+	return mails
+}
+
+func TestAcceptance_AnAddressIsNeverCleanedIntoAnotherGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(hiddenCharacterMails()...)
+	expectHiddenCharactersShown(app, app.token, ids)
+}
+
+func TestAcceptance_AnAddressIsNeverCleanedIntoAnotherIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, hiddenCharacterMails()...)
+	expectHiddenCharactersShown(app, moi.token, uids)
+}
+
+// The Expediteurs and Abonnements cards name a sender as every screen does:
+// never the address a display name writes.
+func TestAcceptance_SenderCardsNeverNameTheAddressOfTheNameGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const tricky = `"boss@corp.com" <evil@evil.io>`
+	app.receiveAndSync(incoming{From: tricky, Subject: "Le faux patron", Unsubscribe: "<https://evil.io/stop>"})
+
+	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
+		code, out := app.call(http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			app.fatalf("GET %s a répondu %d : %v", path, code, out)
+		}
+		raw, _ := out["_raw"].(string)
+		var cards []map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &cards); err != nil || len(cards) == 0 {
+			app.fatalf("GET %s ne donne aucune carte lisible (%v) : %s", path, err, raw)
+		}
+		for _, c := range cards {
+			if c["senderName"] != "evil@evil.io" {
+				app.failf("GET %s devrait nommer evil@evil.io pour %s, il nomme %v", path, tricky, c["senderName"])
+			}
+		}
 	}
 }

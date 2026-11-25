@@ -1,6 +1,7 @@
 package protect
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect/protecttest"
@@ -248,26 +249,42 @@ func TestLabel(t *testing.T) {
 		"=?UTF-8?B?Ym9zc++8oGNvcnAuY29t?= <evil@evil.io>":  "evil@evil.io",
 		"\"\u202Emoc.lapyap\" <evil@evil.io>":              "moc.lapyap",
 		"\"Ma\u200B Banque\u2066\u200E\" <info@banque.fr>": "Ma Banque",
-		"<\u202Emoc.lapyap@evil.io>":                       "moc.lapyap@evil.io",
+		"<\u202Emoc.lapyap@evil.io>":                       "\uFFFDmoc.lapyap@evil.io",
+		"<x@pay\u202Epal.com>":                             "x@pay\uFFFDpal.com",
+		"<x@pay\u200Dpal.com>":                             "x@pay\uFFFDpal.com",
+		"<x@pay\u200Cpal.com>":                             "x@pay\uFFFDpal.com",
+		"<pay\u202Epal@x.com>":                             "pay\uFFFDpal@x.com",
+		"<pay\u200Dpal@x.com>":                             "pay\uFFFDpal@x.com",
+		"\"boss@corp.com\" <x@pay\u202Epal.com>":           "x@pay\uFFFDpal.com",
+		"\"\u200B\" <x@paypa\uFE0Fl.com>":                  "x@paypa\uFFFDl.com",
 		"\"\u200B\" <evil@evil.io>":                        "evil@evil.io",
 		"\"\u2800\u2800\" <evil@evil.io>":                  "evil@evil.io",
 		"\"\u3164\" <evil@evil.io>":                        "evil@evil.io",
 		"\"\u202E\u2067\" <evil@evil.io>":                  "evil@evil.io",
 		"\"\u0301\" <evil@evil.io>":                        "evil@evil.io",
 		"\"Équipe \U0001F468\u200D\U0001F4BB\" <dev@x.fr>": "Équipe \U0001F468\u200D\U0001F4BB",
-		"\"Lettre\u202E\" <lettre@journal.fr>, x@y.fr":     `"Lettre" <lettre@journal.fr>, x@y.fr`,
+		"\"Lettre\u202E\" <lettre@journal.fr>, x@y.fr":     "\"Lettre\uFFFD\" <lettre@journal.fr>, x@y.fr",
 		`"<patron@victime.fr>" <lettre@journal.fr>`:        "lettre@journal.fr",
 		"Ma Banque <info@banque.fr>":                       "Ma Banque",
 		"info@banque.fr":                                   "info@banque.fr",
 		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>":         "Réseau",
 		`"Lettre <lettre@journal.fr>, Patron <p@v.fr>"`:    "Lettre <lettre@journal.fr>, Patron <p@v.fr>",
-		"Broken\x01 <unterminated":                         "Broken  <unterminated",
+		"Broken\x01 <unterminated":                         "Broken\uFFFD <unterminated",
+		"tab\tkept, a@x.fr, b@x.fr":                        "tab kept, a@x.fr, b@x.fr",
 		"patron@victime.fr, Lettre <lettre@journal.fr>":    "patron@victime.fr, Lettre <lettre@journal.fr>",
 		"": "",
 	}
 	for from, want := range cases {
 		if got := Label(from); got != want {
 			t.Errorf("Label(%q) = %q, want %q", from, got, want)
+		}
+	}
+	// An address is never cleaned into another one: the character that hid
+	// is shown, so what the label shows is never an address free of it
+	// (x@paypal.com) while the app compares another.
+	for _, from := range []string{"<x@pay\u202Epal.com>", "<x@pay\u200Dpal.com>", "<pay\u202Epal@x.com>", "\"boss@corp.com\" <pay\u200Cpal@x.com>"} {
+		if got := Label(from); !strings.ContainsRune(got, '\uFFFD') {
+			t.Errorf("Label(%q) = %q: the hidden character was removed, not shown", from, got)
 		}
 	}
 }

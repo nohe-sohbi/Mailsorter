@@ -183,19 +183,48 @@ func FromText(raw string) string {
 // showed boss@corp.com). The address when there is no name, or none that
 // shows (a name of zero-width spaces, of blank Braille or Hangul fillers).
 // When the From names no sender, its text, without the quotes it was stored
-// in. Whatever it shows has no control character, no format character (bidi
-// overrides and isolates, marks, zero-width spaces: shown, they reordered or
-// hid what follows) but the joiners letters and emoji need: shownText.
+// in.
+//
+// A name shows without control or format characters (bidi overrides and
+// isolates, marks, zero-width spaces: shown, they reordered or hid what
+// follows) but the joiners letters and emoji need: shownText. An address is
+// never cleaned into another one: x@pay<U+202E>pal.com is not paypal.com, and
+// shown without its override it read "x@paypal.com" while the app compared
+// another domain. Each of those characters in it is made visible instead
+// (ShownAddress), and so it is in the text of a From that names no sender,
+// which may hold addresses.
 func Label(from string) string {
 	name, address := Sender(from)
 	if address == "" {
-		return unquoted(shownText(strings.ToValidUTF8(from, "\uFFFD")))
+		return unquoted(strings.TrimSpace(ShownAddress(strings.ToValidUTF8(from, "\uFFFD"))))
 	}
-	name, address = shownText(name), shownText(address)
+	name = shownText(name)
 	if !visible(name) || strings.Contains(norm.NFKC.String(name), "@") {
-		return address
+		return ShownAddress(address)
 	}
 	return name
+}
+
+// ShownAddress is an address as a screen shows it: as written, each
+// character that would not show, or would move what follows, made visible
+// as U+FFFD: a control character, a format character (bidi overrides,
+// embeddings, isolates and marks, zero-width spaces, the zero-width joiner
+// and non-joiner, the soft hyphen), a character Unicode says to draw as
+// nothing (a Hangul filler, a variation selector). Never removed: removed,
+// they made one address read as another. A tab, which no address holds but
+// the text of a From that names no sender may, is a space.
+func ShownAddress(address string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return ' '
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r),
+			unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r),
+			unicode.Is(unicode.Variation_Selector, r):
+			return '\uFFFD'
+		}
+		return r
+	}, address)
 }
 
 // shownText is text for a screen: each control character but a tab turned
