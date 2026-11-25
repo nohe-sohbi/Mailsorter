@@ -80,7 +80,7 @@ POST /api/ai/analyze (200 ids au plus) ou POST /api/ai/analyze-async (500, file 
   -> runAnalysis
        -> chaque message est lu dans le miroir, ou récupéré par la session s'il y manque
        -> pilote automatique par expéditeur -> action appliquée tout de suite par la session (source "ai-auto"),
-          sauf sur un expéditeur protégé, et sauf une étiquette sur IMAP
+          sauf sur un expéditeur protégé ; sur IMAP, une étiquette range le mail dans le dossier de ce nom
        -> cache partagé -> suggestion sans appel au modèle
        -> le reste par lots de 8 -> registre d'IA : la clé du compte d'abord, puis les fournisseurs
           de l'instance par priorité ; erreur transitoire -> fournisseur suivant
