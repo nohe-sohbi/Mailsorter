@@ -91,10 +91,19 @@ func TestTheSameFromNamesTheSameSenderOnBothTransports(t *testing.T) {
 				if i := strings.IndexFunc(f, func(r rune) bool { return r != '\t' && unicode.IsControl(r) }); i >= 0 {
 					t.Errorf("%s stores %q, a control byte included", transport, f)
 				}
-				if protect.Address(f) == "" {
+				address := protect.Address(f)
+				if address == "" {
 					continue
 				}
 				entry := protect.EntryFromMail(f)
+				if _, ok := protect.ASCIIDomain(address[strings.LastIndex(address, "@")+1:]); !ok {
+					// A domain IDNA refuses ('patron@victime.fr' ends
+					// with the apostrophe): not protectable from the mail.
+					if entry != "" {
+						t.Errorf("%s: « Protéger » on the mail from %q stores %q, want none: IDNA refuses its domain", transport, f, entry)
+					}
+					continue
+				}
 				if !protect.Match(f, []string{entry}) {
 					t.Errorf("%s: « Protéger » on the mail from %q stores %q, which does not protect it", transport, f, entry)
 				}

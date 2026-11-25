@@ -62,6 +62,17 @@ func readSender(e *models.Email) {
 	e.SenderLabel = protect.Label(e.From)
 }
 
+// shownSenderAddress is what a sender card shows as the address of a From:
+// the address read in the one form addresses are shown in
+// (protect.ShownAddress), or the From's text, made visible, when it names no
+// sender (protect.Label).
+func shownSenderAddress(from string) string {
+	if address := protect.Address(from); address != "" {
+		return protect.ShownAddress(address)
+	}
+	return protect.Label(from)
+}
+
 // writeProtectedUnreadable answers a call that would have moved mail while
 // the protected list could not be read: 503, nothing moved.
 func writeProtectedUnreadable(w http.ResponseWriter, userEmail string, err error) {
@@ -109,6 +120,9 @@ func (h *Handler) GetProtected(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to decode protected senders")
 		return
 	}
+	for i := range rows {
+		rows[i].ValueShown = protect.ShownEntry(rows[i].Value)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"protected": rows})
 }
@@ -122,6 +136,11 @@ const (
 // unreadableSenderProtectMessage is "Protéger" on a mail whose From names no
 // sender (protect.Address): nothing can be protected from it.
 const unreadableSenderProtectMessage = "L'adresse de cet expéditeur est illisible : il ne peut pas être protégé depuis ce mail."
+
+// unprotectableDomainMessage is "Protéger" on a mail whose sender writes a
+// domain IDNA refuses (protect.EntryFromMail): stored as written, it would
+// show in the settings as what it is not.
+const unprotectableDomainMessage = "Le domaine de cet expéditeur n'est pas un nom de domaine valide : il ne peut pas être protégé depuis ce mail."
 
 // CreateProtected adds a sender (full address or whole domain) to the protected
 // list. The value is normalized and classified server-side; duplicates are a
@@ -146,8 +165,12 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 	var value, kind string
 	if in.FromMail {
 		value, kind = protect.EntryFromMail(in.Value), protect.KindAddress
-		if value == "" {
+		switch {
+		case protect.Address(in.Value) == "":
 			writeError(w, http.StatusBadRequest, unreadableSenderProtectMessage)
+			return
+		case value == "":
+			writeError(w, http.StatusBadRequest, unprotectableDomainMessage)
 			return
 		}
 	} else {
@@ -179,7 +202,7 @@ func (h *Handler) CreateProtected(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry := models.ProtectedSender{UserID: userEmail, Value: value, Kind: kind, Note: in.Note, CreatedAt: now}
+	entry := models.ProtectedSender{UserID: userEmail, Value: value, Kind: kind, Note: in.Note, CreatedAt: now, ValueShown: protect.ShownEntry(value)}
 	if oid, ok := res.UpsertedID.(primitive.ObjectID); ok {
 		entry.ID = oid.Hex()
 	}

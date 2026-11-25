@@ -162,7 +162,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 			// Written already, a moment ago: nothing to open either.
 			status, mailto, sentTo, alreadySent = "done", "", already.to, true
 			notDone = append(notDone, fmt.Sprintf(
-				"Une demande de désabonnement est déjà partie vers %s il y a moins de 24 h : la liste peut mettre quelques jours à la traiter.", already.to))
+				"Une demande de désabonnement est déjà partie vers %s il y a moins de 24 h : la liste peut mettre quelques jours à la traiter.", protect.ShownAddress(already.to)))
 		case errors.Is(err, errNotWrittenForYou):
 			// Not for Mailsorter to write without showing it: the client
 			// opens it in the person's own mail program, as on Gmail.
@@ -213,6 +213,8 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	if sentTo != "" {
 		answer["sentTo"] = sentTo
+		// What the screen shows of it: the one form an address is shown in.
+		answer["sentToShown"] = protect.ShownAddress(sentTo)
 	}
 	if alreadySent {
 		answer["alreadySent"] = true
@@ -516,13 +518,14 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 	for _, res := range results {
 		addr := extractSenderAddress(res.ID)
 		subscriptions = append(subscriptions, models.Subscription{
-			SenderEmail:     addr,
-			SenderName:      extractSenderName(res.ID),
-			EmailCount:      res.EmailCount,
-			LastReceived:    res.LastReceived,
-			SampleMessageID: res.SampleMsgID,
-			OneClick:        res.OneClick,
-			Unsubscribed:    done[addr],
+			SenderEmail:      addr,
+			SenderEmailShown: shownSenderAddress(res.ID),
+			SenderName:       extractSenderName(res.ID),
+			EmailCount:       res.EmailCount,
+			LastReceived:     res.LastReceived,
+			SampleMessageID:  res.SampleMsgID,
+			OneClick:         res.OneClick,
+			Unsubscribed:     done[addr],
 		})
 	}
 

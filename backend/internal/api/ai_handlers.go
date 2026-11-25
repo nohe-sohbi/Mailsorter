@@ -641,6 +641,9 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		SenderAddress string `json:"senderAddress,omitempty"`
 		// SenderLabel is what the plan shows for the sender (protect.Label).
 		SenderLabel string `json:"senderLabel,omitempty"`
+		// SenderAddressShown is SenderAddress as the reader shows it while
+		// it opens a mail of the plan (protect.ShownAddress).
+		SenderAddressShown string `json:"senderAddressShown,omitempty"`
 	}
 	views := make([]suggestionView, 0, len(suggestions))
 	for _, s := range suggestions {
@@ -649,6 +652,7 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 			v.Subject, v.From, v.Snippet = e.Subject, e.From, e.Snippet
 			v.SenderAddress = protect.Address(e.From)
 			v.SenderLabel = protect.Label(e.From)
+			v.SenderAddressShown = protect.ShownAddress(v.SenderAddress)
 		}
 		views = append(views, v)
 	}
@@ -804,10 +808,11 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 	var senders []models.SenderStats
 	for _, r := range results {
 		sender := models.SenderStats{
-			SenderEmail:  r.ID,
-			SenderDomain: extractDomain(r.ID),
-			SenderName:   extractSenderName(r.ID),
-			EmailCount:   r.EmailCount,
+			SenderEmail:      r.ID,
+			SenderEmailShown: shownSenderAddress(r.ID),
+			SenderDomain:     extractDomain(r.ID),
+			SenderName:       extractSenderName(r.ID),
+			EmailCount:       r.EmailCount,
 		}
 
 		// Check for existing preference

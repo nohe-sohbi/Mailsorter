@@ -21,6 +21,7 @@ import (
 	"net/mail"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/emersion/go-message/charset"
 	"golang.org/x/net/idna"
@@ -181,22 +182,19 @@ func FromText(raw string) string {
 // "boss＠corp.com" or "boss﹫corp.com" <evil@evil.io> shows evil@evil.io: a
 // name is the sender's to write, and cutting the header at its first "<"
 // showed boss@corp.com). The address when there is no name, or none that
-// shows (a name of zero-width spaces, of blank Braille or Hangul fillers).
-// When the From names no sender, its text, without the quotes it was stored
-// in.
+// shows (a name of zero-width spaces, of blank Braille or Hangul fillers),
+// in the one form an address is shown in (ShownAddress). When the From names
+// no sender, its text, without the quotes it was stored in, each character
+// that hides or reorders made visible (markedText), since it may hold
+// addresses.
 //
 // A name shows without control or format characters (bidi overrides and
 // isolates, marks, zero-width spaces: shown, they reordered or hid what
-// follows) but the joiners letters and emoji need: shownText. An address is
-// never cleaned into another one: x@pay<U+202E>pal.com is not paypal.com, and
-// shown without its override it read "x@paypal.com" while the app compared
-// another domain. Each of those characters in it is made visible instead
-// (ShownAddress), and so it is in the text of a From that names no sender,
-// which may hold addresses.
+// follows) but the joiners letters and emoji need: shownText.
 func Label(from string) string {
 	name, address := Sender(from)
 	if address == "" {
-		return unquoted(strings.TrimSpace(ShownAddress(strings.ToValidUTF8(from, "\uFFFD"))))
+		return unquoted(strings.TrimSpace(markedText(strings.ToValidUTF8(from, "\uFFFD"))))
 	}
 	name = shownText(name)
 	if !visible(name) || strings.Contains(norm.NFKC.String(name), "@") {
@@ -205,15 +203,64 @@ func Label(from string) string {
 	return name
 }
 
-// ShownAddress is an address as a screen shows it: as written, each
-// character that would not show, or would move what follows, made visible
-// as U+FFFD: a control character, a format character (bidi overrides,
-// embeddings, isolates and marks, zero-width spaces, the zero-width joiner
-// and non-joiner, the soft hyphen), a character Unicode says to draw as
-// nothing (a Hangul filler, a variation selector). Never removed: removed,
-// they made one address read as another. A tab, which no address holds but
-// the text of a From that names no sender may, is a space.
+// ShownAddress is the one form a screen shows an address in, whatever screen:
+// never cleaned into another address, never one that reads as another.
+//
+// The local part as written, each character that would not show or would
+// move what follows, and each "@" of another width, made visible as U+FFFD
+// (markedText): x@pay<U+202E>pal.com read "x@paypal.com" with its override
+// dropped. The domain as browsers show it when IDNA takes it (ShownDomain:
+// y@pаypal.com, with a Cyrillic "а", is y@xn--pypal-4ve.com), each non-ASCII
+// character made visible when IDNA refuses it (x@paypal<U+2024>com, a one
+// dot leader drawn like a dot, is x@paypal<U+FFFD>com). Either way the domain shown
+// is the one the app compares, or visibly not a name.
 func ShownAddress(address string) string {
+	at := strings.LastIndex(address, "@")
+	if at < 0 {
+		return markedText(address)
+	}
+	return markedText(address[:at]) + "@" + ShownDomain(address[at+1:])
+}
+
+// ShownDomain is a domain as a screen shows it: entryDomain of its ASCII form
+// when IDNA takes it, as written with each non-ASCII or control character
+// made visible (U+FFFD) otherwise.
+func ShownDomain(domain string) string {
+	if ascii, ok := ASCIIDomain(domain); ok {
+		return entryDomain(ascii)
+	}
+	return strings.Map(func(r rune) rune {
+		if r >= utf8.RuneSelf || unicode.IsControl(r) {
+			return '\uFFFD'
+		}
+		return r
+	}, domain)
+}
+
+// ShownEntry is a protected entry as the settings show it: an address
+// (ShownAddress) or a domain (ShownDomain).
+func ShownEntry(value string) string {
+	if strings.Contains(value, "@") {
+		return ShownAddress(value)
+	}
+	return ShownDomain(value)
+}
+
+// ShownText is text a screen shows that may hold an address (a rule's
+// condition, the text of a From that names no sender): markedText.
+func ShownText(text string) string {
+	return markedText(text)
+}
+
+// markedText is text with each character that would not show, or would move
+// what follows, made visible as U+FFFD: a control character (a tab is a
+// space), a format character (bidi overrides, embeddings, isolates and
+// marks, zero-width spaces, the zero-width joiner and non-joiner, the soft
+// hyphen), a character Unicode says to draw as nothing (a Hangul filler, a
+// variation selector); and each "@" of another width (U+FF20, U+FE6B, read
+// through NFKC), which draws like the one that ends a local part. Never
+// removed: removed, they made one address read as another.
+func markedText(text string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
 		case r == '\t':
@@ -222,9 +269,11 @@ func ShownAddress(address string) string {
 			unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r),
 			unicode.Is(unicode.Variation_Selector, r):
 			return '\uFFFD'
+		case r >= utf8.RuneSelf && norm.NFKC.String(string(r)) == "@":
+			return '\uFFFD'
 		}
 		return r
-	}, address)
+	}, text)
 }
 
 // shownText is text for a screen: each control character but a tab turned
@@ -394,21 +443,21 @@ func Domain(raw string) string {
 // reads it out of the mail's From, its local part in lowercase and its domain
 // in the form an entry shows (entryDomain), which Match reads back as the
 // same address. Nothing else is touched ('patron@victime.fr' is an address,
-// apostrophes included). "" when From names no sender: it cannot be
-// protected from that mail.
+// apostrophes included). "" when From names no sender, or names one on a
+// domain IDNA refuses (x@pay<U+202E>pal.com): neither can be protected from
+// that mail, and the second, stored as written, would show in the settings
+// as what it is not.
 func EntryFromMail(from string) string {
 	addr := Address(from)
 	if addr == "" {
 		return ""
 	}
 	at := strings.LastIndex(addr, "@")
-	domain := addr[at+1:]
-	if ascii, ok := ASCIIDomain(domain); ok {
-		domain = entryDomain(ascii)
-	} else {
-		domain = lowerASCII(domain)
+	ascii, ok := ASCIIDomain(addr[at+1:])
+	if !ok {
+		return ""
 	}
-	return strings.ToLower(addr[:at]) + "@" + domain
+	return strings.ToLower(addr[:at]) + "@" + entryDomain(ascii)
 }
 
 // NormalizeEntry canonicalizes a value the user typed into the protection list

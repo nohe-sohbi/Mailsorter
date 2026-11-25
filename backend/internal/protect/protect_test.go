@@ -30,20 +30,34 @@ func TestAddressOfRealHeaders(t *testing.T) {
 }
 
 // "Protéger" on a mail stores EntryFromMail of its From, and the shield
-// compares senders with Match: for every header that names a sender, the one
-// must find the other. 'patron@victime.fr' is such an address, apostrophes
-// included: trimmed (the typed-entry path), it protected nobody.
+// compares senders with Match: for every header that names a sender on a
+// domain IDNA takes, the one must find the other. 'patron'@victime.fr is such
+// an address, apostrophes included: trimmed (the typed-entry path), it
+// protected nobody. A sender on a domain IDNA refuses ('patron@victime.fr',
+// whose domain ends with the apostrophe, or x@pay<U+202E>pal.com) cannot be
+// protected from its mail.
 func TestProtectingAMailShieldsItsSender(t *testing.T) {
-	froms := []string{`"a b"@x.com`, `"Ami" <"a b"@x.com>`, `"<boss@corp.com>"@evil.io`, `"jean dupont"@exemple.fr`, "'patron@victime.fr'"}
+	froms := []string{`"a b"@x.com`, `"Ami" <"a b"@x.com>`, `"<boss@corp.com>"@evil.io`, `"jean dupont"@exemple.fr`, "'patron'@victime.fr"}
+	refused := []string{"'patron@victime.fr'", "x@pay\u202Epal.com", "x@paypal\u2024com"}
 	for _, tc := range protecttest.Headers {
-		if tc.Want != "" && tc.Second == "" {
+		if tc.Want == "" || tc.Second != "" {
+			continue
+		}
+		if _, ok := ASCIIDomain(tc.Want[strings.LastIndex(tc.Want, "@")+1:]); ok {
 			froms = append(froms, tc.From)
+		} else {
+			refused = append(refused, tc.From)
 		}
 	}
 	for _, from := range froms {
 		value := EntryFromMail(from)
 		if value == "" || !Match(from, []string{value}) {
 			t.Errorf("EntryFromMail(%q) = %q, and Match(%q) on it = %v, want an entry that matches", from, value, from, Match(from, []string{value}))
+		}
+	}
+	for _, from := range refused {
+		if value := EntryFromMail(from); value != "" {
+			t.Errorf("EntryFromMail(%q) = %q, want none: IDNA refuses its domain", from, value)
 		}
 	}
 	// A From that names no sender cannot be protected from its mail.
@@ -256,7 +270,14 @@ func TestLabel(t *testing.T) {
 		"<pay\u202Epal@x.com>":                             "pay\uFFFDpal@x.com",
 		"<pay\u200Dpal@x.com>":                             "pay\uFFFDpal@x.com",
 		"\"boss@corp.com\" <x@pay\u202Epal.com>":           "x@pay\uFFFDpal.com",
-		"\"\u200B\" <x@paypa\uFE0Fl.com>":                  "x@paypa\uFFFDl.com",
+		"\"\u200B\" <x@paypa\uFE0Fl.com>":                  "x@paypal.com",
+		"y@p\u0430ypal.com":                                "y@xn--pypal-4ve.com",
+		"x@paypal\u2024com":                                "x@paypal\uFFFDcom",
+		"pay\u2024pal@x.com":                               "pay\u2024pal@x.com",
+		"boss\uFF20corp.com@evil.io":                       "boss\uFFFDcorp.com@evil.io",
+		"boss\uFE6Bcorp.com@evil.io":                       "boss\uFFFDcorp.com@evil.io",
+		"x@EVIL.io":                                        "x@evil.io",
+		"x@caf\u00E9.fr":                                   "x@caf\u00E9.fr",
 		"\"\u200B\" <evil@evil.io>":                        "evil@evil.io",
 		"\"\u2800\u2800\" <evil@evil.io>":                  "evil@evil.io",
 		"\"\u3164\" <evil@evil.io>":                        "evil@evil.io",

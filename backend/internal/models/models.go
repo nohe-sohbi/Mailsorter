@@ -200,6 +200,11 @@ type RuleCondition struct {
 	Field    string `json:"field" bson:"field"`
 	Operator string `json:"operator" bson:"operator"`
 	Value    string `json:"value" bson:"value"`
+	// ValueShown is Value as the rules screen shows it (an address in its
+	// shown form, protect.ShownAddress; other text with what hides made
+	// visible, protect.ShownText). Set on the way out of GET /api/rules,
+	// never stored.
+	ValueShown string `json:"valueShown,omitempty" bson:"-"`
 }
 
 // RuleAction is a single thing a rule does to a matching email. A rule can
@@ -274,6 +279,9 @@ type ProtectedSender struct {
 	Kind      string    `json:"kind" bson:"kind"`   // "address" | "domain"
 	Note      string    `json:"note,omitempty" bson:"note,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	// ValueShown is Value as the settings show it (protect.ShownEntry); set
+	// on the way out, never stored.
+	ValueShown string `json:"valueShown,omitempty" bson:"-"`
 }
 
 // ProtectedSenderInput is the request body for POST /api/protected.
@@ -446,6 +454,9 @@ type ActionLog struct {
 	// SenderLabel is what the history shows for the sender (protect.Label),
 	// set on the way out; never stored.
 	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderAddressShown is the sender's address as the history shows it in
+	// its tooltip (protect.ShownAddress); set on the way out, never stored.
+	SenderAddressShown string `json:"senderAddressShown,omitempty" bson:"-"`
 }
 
 // ============================================
@@ -602,22 +613,31 @@ type UnsubscribeRequest struct {
 // Subscription is an aggregated mailing-list sender that advertises an
 // unsubscribe link, returned by GET /api/subscriptions.
 type Subscription struct {
-	SenderEmail     string    `json:"senderEmail"`
-	SenderName      string    `json:"senderName"`
-	EmailCount      int       `json:"emailCount"`
-	LastReceived    time.Time `json:"lastReceived"`
-	SampleMessageID string    `json:"sampleMessageId"`
-	OneClick        bool      `json:"oneClick"`
-	Unsubscribed    bool      `json:"unsubscribed"`
+	SenderEmail string `json:"senderEmail"`
+	// SenderEmailShown is the sender's address as the card shows it
+	// (protect.ShownAddress), or the From's text when it names no sender:
+	// SenderEmail stays the key the screen sends back.
+	SenderEmailShown string    `json:"senderEmailShown"`
+	SenderName       string    `json:"senderName"`
+	EmailCount       int       `json:"emailCount"`
+	LastReceived     time.Time `json:"lastReceived"`
+	SampleMessageID  string    `json:"sampleMessageId"`
+	OneClick         bool      `json:"oneClick"`
+	Unsubscribed     bool      `json:"unsubscribed"`
 }
 
 // SenderStats represents aggregated info about a sender
 type SenderStats struct {
-	SenderEmail  string            `json:"senderEmail"`
-	SenderDomain string            `json:"senderDomain"`
-	SenderName   string            `json:"senderName"`
-	EmailCount   int               `json:"emailCount"`
-	Preference   *SenderPreference `json:"preference,omitempty"`
+	// SenderEmail is the card's key: the raw From the mails were grouped by,
+	// which the screen sends back for a sender-wide action. Never shown.
+	SenderEmail string `json:"senderEmail"`
+	// SenderEmailShown is what the card shows as the sender's address
+	// (protect.ShownAddress), or the From's text when it names no sender.
+	SenderEmailShown string            `json:"senderEmailShown"`
+	SenderDomain     string            `json:"senderDomain"`
+	SenderName       string            `json:"senderName"`
+	EmailCount       int               `json:"emailCount"`
+	Preference       *SenderPreference `json:"preference,omitempty"`
 }
 
 // ============================================

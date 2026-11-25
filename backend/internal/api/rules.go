@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -67,8 +68,23 @@ func (h *Handler) GetRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to load rules")
 		return
 	}
+	for i := range ruleset {
+		for j := range ruleset[i].Conditions {
+			ruleset[i].Conditions[j].ValueShown = shownConditionValue(ruleset[i].Conditions[j].Value)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": ruleset})
+}
+
+// shownConditionValue is a rule's condition value as the screen shows it: an
+// address (a sender rule's, written by the sender) in the one form addresses
+// are shown in, any other text with what would hide or reorder made visible.
+func shownConditionValue(value string) string {
+	if strings.Contains(value, "@") {
+		return protect.ShownAddress(value)
+	}
+	return protect.ShownText(value)
 }
 
 // CreateRule validates and persists a new rule.
@@ -334,9 +350,19 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 
 	items, hits := rules.Preview(emails, enabled)
 
-	samples := items
-	if len(samples) > previewSampleCap {
-		samples = samples[:previewSampleCap]
+	shown := items
+	if len(shown) > previewSampleCap {
+		shown = shown[:previewSampleCap]
+	}
+	// What the preview shows for each sender is what every screen shows
+	// (protect.Label), never the From as written.
+	type previewSample struct {
+		rules.PreviewItem
+		SenderLabel string `json:"senderLabel"`
+	}
+	samples := make([]previewSample, 0, len(shown))
+	for _, it := range shown {
+		samples = append(samples, previewSample{PreviewItem: it, SenderLabel: protect.Label(it.From)})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -355,8 +381,10 @@ func ruleForSender(userEmail string, req models.CreateSenderRuleRequest) models.
 	addr := extractSenderAddress(req.SenderEmail)
 	now := time.Now()
 	return models.SortingRule{
-		UserID:   userEmail,
-		Name:     "Expéditeur : " + addr,
+		UserID: userEmail,
+		// The name is shown as it is: the address in its shown form, the
+		// condition below keeps it as written, which is what matches.
+		Name:     "Expéditeur : " + protect.ShownAddress(addr),
 		Enabled:  true,
 		MatchAll: true,
 		Conditions: []models.RuleCondition{

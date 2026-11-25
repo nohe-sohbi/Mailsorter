@@ -117,7 +117,7 @@ func senderFrom(msg *imapclient.FetchMessageBuffer) string {
 	case len(froms) > 1:
 		return protect.QuotedText(strings.Join(froms, ", "))
 	}
-	raw := strings.ToValidUTF8(froms[0], "�")
+	raw := strings.ToValidUTF8(froms[0], "\uFFFD")
 	name, address := protect.Sender(raw)
 	switch {
 	case address == "":

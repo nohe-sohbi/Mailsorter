@@ -749,12 +749,12 @@ func protectFromMail(a *testApp, token, from string) answer {
 	return answer{code: code, body: out}
 }
 
-// 'patron@victime.fr' is an address, apostrophes included: "Protéger" on its
-// mail protects exactly it, and an archived selection spares the mail. The
-// typed-entry path trims the apostrophes, and protected nobody from there.
+// 'patron'@victime.fr is an address, apostrophes included: "Protéger" on its
+// mail protects exactly it, and an archived selection spares the mail.
+// Retouched (the apostrophes dropped), it protected nobody.
 func TestAcceptance_ProtectingFromTheMailKeepsTheAddressAsReadGmail(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
-	const patron = "'patron@victime.fr'"
+	const patron = "'patron'@victime.fr"
 	ids := app.receiveAndSync(incoming{From: patron, Subject: "Du patron"}, incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"})
 	if got := protectFromMail(app, app.token, patron); got.code != http.StatusCreated && got.code != http.StatusOK {
 		app.fatalf("« Protéger » sur le mail de %s a répondu %s", patron, got)
@@ -770,7 +770,7 @@ func TestAcceptance_ProtectingFromTheMailKeepsTheAddressAsReadGmail(t *testing.T
 
 func TestAcceptance_ProtectingFromTheMailKeepsTheAddressAsReadIMAP(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
-	patron := incoming{From: "'patron@victime.fr'", Subject: "Du patron"}
+	patron := incoming{From: "'patron'@victime.fr", Subject: "Du patron"}
 	other := incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"}
 	moi, uids := syncedIMAPInbox(app, patron, other)
 	row, _ := moi.shownRow(uids[0])
@@ -793,6 +793,23 @@ func TestAcceptance_ProtectingFromAMailWithNoSenderIsRefused(t *testing.T) {
 	got := protectFromMail(app, app.token, twoAuthors)
 	if got.code != http.StatusBadRequest || got.said() != unreadableSenderProtectMessage {
 		app.failf("« Protéger » sur un mail à deux auteurs devrait être refusé (400, %q), il a répondu %s", unreadableSenderProtectMessage, got)
+	}
+}
+
+// A sender on a domain IDNA refuses cannot be protected from its mail:
+// stored as written, x@pay<U+202E>pal.com showed in the settings as what it
+// is not. The answer says why, and nothing is stored.
+func TestAcceptance_ProtectingASenderOnADomainIDNARefusesIsRefused(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	for _, from := range []string{"x@pay\u202Epal.com", "'patron@victime.fr'", "x@paypal\u2024com"} {
+		got := protectFromMail(app, app.token, from)
+		if got.code != http.StatusBadRequest || got.said() != unprotectableDomainMessage {
+			app.failf("« Protéger » sur un mail de %q devrait être refusé (400, %q), il a répondu %s", from, unprotectableDomainMessage, got)
+		}
+	}
+	code, out := app.call(http.MethodGet, "/api/protected", nil)
+	if list, _ := out["protected"].([]interface{}); code != http.StatusOK || len(list) != 0 {
+		app.failf("rien ne devrait être protégé, GET /api/protected répond %d : %v", code, out)
 	}
 }
 
@@ -1126,6 +1143,11 @@ func TestAcceptance_UnsubscribeMailGoesToTheASCIIDomain(t *testing.T) {
 	if to, _ := got["sentTo"].(string); to != "stop@xn--caf-dma.fr" {
 		app.failf("la réponse devrait nommer stop@xn--caf-dma.fr, elle nomme %q", to)
 	}
+	// What the screen says: the address in the one form addresses are shown
+	// in, the domain readable since its one script imitates nothing.
+	if shown, _ := got["sentToShown"].(string); shown != "stop@caf\u00E9.fr" {
+		app.failf("l'écran devrait dire stop@café.fr, la réponse donne %q", shown)
+	}
 }
 
 // An address whose local part is not ASCII has no form every server takes:
@@ -1175,10 +1197,10 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameOnPlusTardIMAP(t *testi
 // dropped (dropped, x@pay<U+202E>pal.com read x@paypal.com while the app
 // compared another domain).
 var hiddenCharacterSenders = []struct{ from, shown string }{
-	{"x@pay‮pal.com", "x@pay�pal.com"},
-	{"y@pay‍pal.com", "y@pay�pal.com"},
-	{"pay‮pal@x.com", "pay�pal@x.com"},
-	{"pay‍pal@y.com", "pay�pal@y.com"},
+	{"x@pay\u202Epal.com", "x@pay\uFFFDpal.com"},
+	{"y@pay\u200Dpal.com", "y@pay\uFFFDpal.com"},
+	{"pay\u202Epal@x.com", "pay\uFFFDpal@x.com"},
+	{"pay\u200Dpal@y.com", "pay\uFFFDpal@y.com"},
 }
 
 // expectHiddenCharactersShown checks the list and the reader of the person
@@ -1255,5 +1277,127 @@ func TestAcceptance_SenderCardsNeverNameTheAddressOfTheNameGmail(t *testing.T) {
 				app.failf("GET %s devrait nommer evil@evil.io pour %s, il nomme %v", path, tricky, c["senderName"])
 			}
 		}
+	}
+}
+
+// The Expediteurs and Abonnements cards show a sender's address in the one
+// form addresses are shown in (senderEmailShown), never the From or the
+// address as written; senderEmail stays the key sent back. The same goes for
+// the protected list, the rules, their preview and the history's tooltip.
+func TestAcceptance_EveryAddressShownIsTheServersFormGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const hidden = "Promo <x@pay\u202Epal.com>"
+	const shown = "x@pay\uFFFDpal.com"
+	ids := app.receiveAndSync(
+		incoming{From: hidden, Subject: "Soldes", Unsubscribe: "<https://pay.example/stop>"},
+		incoming{From: "y@p\u0430ypal.com", Subject: "Votre compte"},
+	)
+
+	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
+		code, out := app.call(http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			app.fatalf("GET %s a répondu %d : %v", path, code, out)
+		}
+		raw, _ := out["_raw"].(string)
+		var cards []map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &cards); err != nil {
+			app.fatalf("GET %s illisible (%v) : %s", path, err, raw)
+		}
+		found := false
+		for _, c := range cards {
+			if c["senderEmailShown"] == shown {
+				found = true
+			}
+			if s, _ := c["senderEmailShown"].(string); strings.ContainsRune(s, '\u202E') || s == "x@paypal.com" {
+				app.failf("GET %s montre %q : l'adresse telle qu'écrite", path, s)
+			}
+		}
+		if !found {
+			app.failf("GET %s devrait montrer %q pour %q, il montre : %s", path, shown, hidden, raw)
+		}
+	}
+
+	// The settings: "Protéger" from a mail on a Cyrillic look-alike domain
+	// shows the domain in punycode, in the answer and in the list.
+	got := protectFromMail(app, app.token, "y@p\u0430ypal.com")
+	if got.code != http.StatusCreated && got.code != http.StatusOK {
+		app.fatalf("« Protéger » a répondu %s", got)
+	}
+	if got.body["valueShown"] != "y@xn--pypal-4ve.com" {
+		app.failf("la réponse de « Protéger » devrait montrer y@xn--pypal-4ve.com, elle montre %v", got.body["valueShown"])
+	}
+	code, out := app.call(http.MethodGet, "/api/protected", nil)
+	list, _ := out["protected"].([]interface{})
+	if code != http.StatusOK || len(list) != 1 {
+		app.fatalf("GET /api/protected a répondu %d : %v", code, out)
+	}
+	if row, _ := list[0].(map[string]interface{}); row["valueShown"] != "y@xn--pypal-4ve.com" {
+		app.failf("les Réglages devraient montrer y@xn--pypal-4ve.com, ils montrent %v", row["valueShown"])
+	}
+
+	// A sender rule: its name and its condition as the rules screen shows them.
+	app.mustCall(http.MethodPost, "/api/senders/rule", map[string]string{"senderEmail": hidden, "action": "archive"}, http.StatusCreated, http.StatusOK)
+	code, out = app.call(http.MethodGet, "/api/rules", nil)
+	rulesList, _ := out["rules"].([]interface{})
+	if code != http.StatusOK || len(rulesList) != 1 {
+		app.fatalf("GET /api/rules a répondu %d : %v", code, out)
+	}
+	rule, _ := rulesList[0].(map[string]interface{})
+	conds, _ := rule["conditions"].([]interface{})
+	cond, _ := conds[0].(map[string]interface{})
+	if rule["name"] != "Expéditeur : "+shown || cond["valueShown"] != shown {
+		app.failf("la règle devrait se montrer avec %q, elle montre %v et %v", shown, rule["name"], cond["valueShown"])
+	}
+
+	// Its preview names the sender as every screen does.
+	code, out = app.call(http.MethodPost, "/api/rules/preview", nil)
+	samples, _ := out["samples"].([]interface{})
+	if code != http.StatusOK || len(samples) == 0 {
+		app.fatalf("POST /api/rules/preview a répondu %d : %v", code, out)
+	}
+	for _, raw := range samples {
+		if s, _ := raw.(map[string]interface{}); s["senderLabel"] != "Promo" {
+			app.failf("l'aperçu des règles devrait nommer « Promo », il nomme %v", s["senderLabel"])
+		}
+	}
+
+	// The history's tooltip.
+	app.act(ids[1], "archive")
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	entries, _ := out["entries"].([]interface{})
+	if code != http.StatusOK || len(entries) == 0 {
+		app.fatalf("GET /api/activity/log a répondu %d : %v", code, out)
+	}
+	if e, _ := entries[0].(map[string]interface{}); e["senderAddressShown"] != "y@xn--pypal-4ve.com" {
+		app.failf("l'infobulle de l'historique devrait montrer y@xn--pypal-4ve.com, elle montre %v", e["senderAddressShown"])
+	}
+}
+
+// A failed background analysis says why in French: the protected senders
+// that could not be read, or the generic sentence for any other cause (the
+// AI does not answer). The cause itself stays in the log.
+func TestAcceptance_AFailedAnalysisJobSaysWhyInFrench(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(incoming{From: "Boutique <promo@boutique.fr>", Subject: "Soldes"})
+	jobError := func(why string) string {
+		app.t.Helper()
+		out := app.mustCall(http.MethodPost, "/api/ai/analyze-async", map[string]interface{}{"emailIds": ids}, http.StatusAccepted)
+		jobID, _ := out["jobId"].(string)
+		app.workersRunQueuedAnalyses()
+		code, job := app.call(http.MethodGet, "/api/ai/jobs/"+jobID, nil)
+		if code != http.StatusOK || job["status"] != "error" {
+			app.fatalf("l'analyse en arrière-plan (%s) devrait finir en erreur, elle répond %d : %v", why, code, job)
+		}
+		e, _ := job["error"].(string)
+		return e
+	}
+
+	app.ai.close()
+	if e := jobError("IA muette"); e != analysisInterruptedMessage {
+		app.failf("une analyse arrêtée par l'IA devrait dire « %s », elle dit %q", analysisInterruptedMessage, e)
+	}
+	protectedListUnreadable(app)
+	if e := jobError("protégés illisibles"); e != protectedUnreadableMessage {
+		app.failf("une analyse arrêtée par la liste des protégés devrait dire « %s », elle dit %q", protectedUnreadableMessage, e)
 	}
 }
