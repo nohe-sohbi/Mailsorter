@@ -314,6 +314,7 @@ Get a page of the mailbox, through the caller's transport.
       "userId": "user@gmail.com",
       "threadId": "18c8c1f2a3b4d5e6",
       "from": "sender@example.com",
+      "senderAddress": "sender@example.com",
       "to": ["user@gmail.com"],
       "subject": "Test Email",
       "snippet": "This is a test email...",
@@ -330,6 +331,13 @@ Get a page of the mailbox, through the caller's transport.
 
 Bodies are deliberately omitted: the page carries up to 500 messages and the
 reader fetches the one it opens (`GET /api/emails/{id}`).
+
+`senderAddress` is the sender's address as the server reads it out of `from`
+(RFC 5322, never an address in the display name, a local part quoted when it
+is not a dot-atom), the one the screens show and act on; it is absent when
+`from` does not read as one address, and the screens then show `from` as it
+is rather than read an address out of it. `GET /api/emails/{id}` carries it
+too.
 
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
@@ -825,13 +833,18 @@ was written by whoever sent the newsletter, so it is written only when
   `desabonnement@journal.fr`, never for `groupe+subscribe@googlegroups.com`).
   The sender is the address of the From header as RFC 5322 reads it, never an
   address in its display name, which the sender writes:
-  `"<patron@victime.fr>" <lettre@journal.fr>` is `lettre@journal.fr`, and a
-  From that is not exactly one address writes nothing. An IP address or a
-  domain literal is no registrable domain;
-- its `subject` is one line of at most 100 characters, with no control,
-  format (U+202E, zero-width characters) or line and paragraph separator
-  characters (`unsubscribe` when it gives none). Its `body` is ignored: the
-  text is always `unsubscribe`;
+  `"<patron@victime.fr>" <lettre@journal.fr>` is `lettre@journal.fr`, and
+  `"<patron@victime.fr>"@evil.io` an address on `evil.io`. A From that is not
+  exactly one address names no sender: nothing is written, swept or recorded
+  for it. An IP address or a domain literal is no registrable domain;
+- its `subject` is an unsubscribe command, case aside: a command word
+  (`unsubscribe`, `unsub`, `remove`, `stop`, `désinscription`,
+  `desinscription`) followed at most by one ASCII token without a space
+  (`unsubscribe 8f3a`, `remove:news`), or one such token alone, 100 characters
+  at most (`unsubscribe` when it gives none). A sentence ("Je démissionne avec
+  effet immédiat", "unsubscribe I quit") is not written for the person. Its
+  `body` is ignored: the text is always `unsubscribe`. The mail goes to the
+  address as the link writes it;
 - no unsubscribe mail went to that address for this account in the last 24
   hours, whichever list asked for it: one document per address in
   `unsubscribe_mails`, unique on the account and the address, so two lists
@@ -1798,7 +1811,8 @@ List the caller's suggestions, filtered by `status` (default `pending`), the
 
 **Response:** `200 OK`, an array of `AISuggestion` enriched with the identity of
 the email each one is about: `subject`, `from`, `snippet`, resolved in one
-lookup. Without them the client had to find the message among those currently on
+lookup, and `senderAddress`, read as for `GET /api/emails`: what the plan groups
+by and makes a sender rule of. Without them the client had to find the message among those currently on
 screen, so any suggestion for an email outside the loaded page asked the user to
 approve an action on an email shown as "Sans sujet" from "Expéditeur inconnu".
 The three fields are omitted when the message is no longer in the stored mailbox.
