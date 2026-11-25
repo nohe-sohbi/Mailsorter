@@ -58,18 +58,26 @@ syncInbox(compte)
        -> si autoApplyRules : un mail qui arrive est marqué (rulesDue) à son upsert ;
           il arrive si la copie ne le connaissait pas et si le serveur l'a reçu
           (INTERNALDATE, à la seconde) après l'activation de l'option et après le
-          branchement de la boîte ; pas un mail dont la copie tient le Message-ID sous
+          branchement de la boîte (remis à la date du jour quand une autre adresse
+          ou un autre serveur est branché ; l'horloge du serveur et celle de
+          Mailsorter peuvent différer d'autant) ; pas un mail dont la copie tient le Message-ID sous
           un autre numéro au début de la synchro (remis par "Annuler" sans son nouveau
           numéro, rangé par Mailsorter depuis moins de 30 jours puis remis par un autre
           logiciel, ou sorti puis remis par un autre logiciel entre deux synchros ; pas
           reconnu : sorti, une synchro passée, puis remis)
-       -> les règles jugent les mails marqués encore dans la boîte (pris par cette
-          synchro seule) ; leur texte lu en PEEK si une règle le regarde (pas jugé : un
-          texte illisible, ou au-delà des 256 Ko lus) ; lu et favori avant le rangement,
-          expéditeurs protégés épargnés, entrée au journal (source "rule") ; un mail
-          dont la lecture ou une action a échoué reste marqué, les suivantes le
-          rejugent, 3 fois en tout ; la synchro répond 200 quand même (rulesPending,
-          et rulesMessage, que l'écran montre comme une information)
+       -> les règles jugent les mails marqués encore dans la boîte (réservés 10 minutes
+          par cette synchro, ni une autre ni "Appliquer maintenant" n'y touchent) ;
+          leur texte lu en PEEK si une règle le regarde ; lu et favori avant le
+          rangement, expéditeurs protégés épargnés, entrée au journal (source "rule")
+       -> rejugé à la synchro suivante, 3 fois en tout : un mail dont la lecture du
+          texte a été coupée par le serveur ou faute de temps, ou dont un déplacement
+          a échoué ; les actions déjà faites restent notées sur sa ligne (rulesDone) et
+          ne sont pas refaites. Pas rejugé, laissé de côté : un texte illisible, ou pas
+          lu en entier (au-delà des 256 Ko lus). Après 3 essais, abandonné, laissé
+          dans la boîte, et le compte le garde jusqu'à ce qu'une synchro lancée de
+          l'écran le dise
+       -> la synchro répond 200 quand même : rulesApplied (tout fait) ou rulesPending
+          (à refaire), et rulesMessage, que l'écran montre comme une information
        -> les mails en favori que la copie n'a pas encore (un ancien favori), 500 au
           plus par synchro, les plus récents d'abord
        -> lu, favori et taille remis à jour sur chaque mail de la copie, ancien compris ;

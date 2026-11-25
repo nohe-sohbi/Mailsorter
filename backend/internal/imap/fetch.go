@@ -102,21 +102,34 @@ func wholeMessage(msg *imapclient.FetchMessageBuffer) []byte {
 // reader. Falling back to the HTML when there is no plain part is what stops a
 // marketing email, which routinely ships HTML only, from rendering blank.
 func bodies(raw []byte) (plain, html string) {
-	return readBodies(raw, false)
+	b := readBodies(raw, false)
+	return b.plain, b.html
 }
 
-// readBodies is bodies, on a whole message or (cut) on its first bytes only,
-// as Texts reads it: there the last part read may end mid-way, and what was
-// read of it is kept rather than dropped.
-func readBodies(raw []byte, cut bool) (plain, html string) {
+// bodiesRead is what readBodies found: both renderings, and for each whether
+// the read stopped inside it (cut), on a message read only up to a size.
+type bodiesRead struct {
+	plain, html       string
+	plainCut, htmlCut bool
+}
+
+// readBodies is bodies, on a whole message or, truncated, on its first bytes
+// only, as Texts reads a message larger than what it reads. There a part the
+// read stops inside is kept as far as it was read and marked cut: a part of a
+// multipart message whose end was not read, or the body of a message that is
+// not multipart, which ends where the message does.
+func readBodies(raw []byte, truncated bool) bodiesRead {
 	reader, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil {
 		// Not every sender produces something the parser accepts. A message that
 		// cannot be walked is still worth showing as text rather than as an
 		// error, so the raw payload is the last resort.
-		return string(raw), ""
+		return bodiesRead{plain: string(raw), plainCut: truncated}
 	}
+	topType, _, _ := reader.Header.ContentType()
+	single := !strings.HasPrefix(strings.ToLower(topType), "multipart/")
 
+	var out bodiesRead
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -132,18 +145,19 @@ func readBodies(raw []byte, cut bool) (plain, html string) {
 			continue
 		}
 		content, err := io.ReadAll(io.LimitReader(part.Body, maxBodyBytes))
+		cut := truncated && (err != nil || single)
 		if err != nil && !(cut && len(content) > 0) {
 			continue
 		}
 		mediaType, _, _ := header.ContentType()
 		switch {
-		case strings.EqualFold(mediaType, "text/html") && html == "":
-			html = string(content)
-		case strings.EqualFold(mediaType, "text/plain") && plain == "":
-			plain = string(content)
+		case strings.EqualFold(mediaType, "text/html") && out.html == "":
+			out.html, out.htmlCut = string(content), cut
+		case strings.EqualFold(mediaType, "text/plain") && out.plain == "":
+			out.plain, out.plainCut = string(content), cut
 		}
 	}
-	return plain, html
+	return out
 }
 
 // snippet is the one-line preview the list shows. Gmail hands one over; IMAP

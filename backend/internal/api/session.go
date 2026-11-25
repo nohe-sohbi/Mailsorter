@@ -407,8 +407,9 @@ type syncRulesDone struct {
 
 // rulesMessage is what the screen tells after a sync whose rules could not
 // judge every mail that arrived, as information: the sync itself worked, the
-// mails were read and are listed. Empty when there is nothing to tell. A mail
-// given up is told at the sync that gives it up, once.
+// mails were read and are listed. Empty when there is nothing to tell.
+// pending is this sync's; givenUp is what the syncs since the screen last
+// asked gave up on (takeGivenUp), told once.
 func rulesMessage(pending, givenUp int) string {
 	var parts []string
 	switch {
@@ -429,17 +430,23 @@ func rulesMessage(pending, givenUp int) string {
 // rulesOnArrivals applies the rules to the mails marked for them (rulesDue):
 // the arrivals of this sync and of the syncs before that could not judge
 // them, still in the inbox and received since the option counts. Each action
-// is written in the history like those of "Appliquer maintenant" (runRules). A
-// mail judged, or whose text cannot be read (NotReached, unparseable: logged
-// by withTexts), is unmarked; one whose text read stopped or whose rule failed
-// stays marked for the next sync (pending), maxRuleTries times at most
-// (givenUp). A datastore that cannot be asked which mails are marked is
-// logged: they stay marked, and the next sync judges them.
+// is written in the history like those of "Appliquer maintenant" (runRules).
+//
+// What is tried again at the next sync (pending): a mail whose text read the
+// server stopped or that ran out of time, and a mail on which an action of its
+// rule failed (a move the server refused, for instance); the actions already
+// done on it are kept on its row (rulesDone) and not done again. What is not:
+// a mail judged, and a mail whose text cannot be read (unparseable, or
+// NotReached: logged by withTexts), left aside without a new try. After
+// maxRuleTries a mail is given up, and the user row keeps how many until the
+// screen is told (rulesGivenUp, takeGivenUp). A datastore that cannot be asked
+// which mails are marked is logged: they stay marked, and the next sync
+// judges them.
 func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session *mailSession, auto syncRules) syncRulesDone {
 	if !auto.on() {
 		return syncRulesDone{}
 	}
-	due, claim, err := h.claimRulesDue(ctx, userEmail, auto.since)
+	due, already, claim, err := h.claimRulesDue(ctx, userEmail, auto.since)
 	if err != nil {
 		log.Printf("imap sync: take the mails of %s marked for the rules, judged at the next sync: %v", userEmail, err)
 		return syncRulesDone{}
@@ -447,76 +454,74 @@ func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session
 	if len(due) == 0 {
 		return syncRulesDone{}
 	}
-	ids := make([]string, 0, len(due))
-	for _, e := range due {
-		ids = append(ids, e.MessageID)
-	}
 	judged := due
 	if rules.ReadsText(auto.ruleset) {
 		withText, err := h.withTexts(ctx, userEmail, session, due)
 		if err != nil {
 			log.Printf("imap sync: the text of %d mails of %s marked for the rules could not be read, judged at the next sync: %v", len(due), userEmail, err)
-			pending, givenUp := h.releaseRulesDue(ctx, userEmail, claim, nil, ids)
+			failed := make(map[string][]string, len(due))
+			for _, e := range due {
+				failed[e.MessageID] = already[e.MessageID]
+			}
+			pending, givenUp := h.releaseRulesDue(ctx, userEmail, claim, nil, failed)
 			return syncRulesDone{pending: pending, givenUp: givenUp}
 		}
 		judged = withText
 	}
-	done := h.runRules(ctx, session, userEmail, judged, auto.ruleset, auto.protected)
-	failed := make(map[string]bool, len(done.failed))
-	for _, id := range done.failed {
-		failed[id] = true
-	}
+	done := h.runRules(ctx, session, userEmail, judged, auto.ruleset, auto.protected, already)
 	var ok []string
-	for _, id := range ids {
-		if !failed[id] {
-			ok = append(ok, id)
+	for _, e := range due {
+		if _, failed := done.progress[e.MessageID]; !failed {
+			ok = append(ok, e.MessageID)
 		}
 	}
-	pending, givenUp := h.releaseRulesDue(ctx, userEmail, claim, ok, done.failed)
+	pending, givenUp := h.releaseRulesDue(ctx, userEmail, claim, ok, done.progress)
 	return syncRulesDone{applied: done.applied, pending: pending, givenUp: givenUp}
 }
 
 // claimRulesDue takes the mails this sync judges: marked for the rules, still
 // in the inbox, received since the option counts, and not held by another
-// sync running at the same time (a claim older than moveInFlight is one that
-// never ended). Of two syncs at once, one judges each mail.
-func (h *Handler) claimRulesDue(ctx context.Context, userEmail string, since time.Time) ([]models.Email, string, error) {
+// sync (a claim lasts rulesClaimFor, longer than any sync: one older is one a
+// sync never released). Of two syncs at once, one judges each mail, and
+// "Appliquer maintenant" leaves the ones held alone. It answers them with the
+// actions already done on each (ruleRow.RulesDone).
+func (h *Handler) claimRulesDue(ctx context.Context, userEmail string, since time.Time) ([]models.Email, map[string][]string, string, error) {
 	folder := string(mailbox.FolderInbox)
 	claim := primitive.NewObjectID().Hex()
 	now := time.Now()
 	if _, err := h.db.Emails().UpdateMany(ctx, bson.M{
 		"userId": userEmail, "folder": folder, "rulesDue": true, "leftInbox": notLeftInbox,
 		"receivedDate": bson.M{"$gte": since},
-		"$or": []bson.M{
-			{"rulesClaimAt": bson.M{"$exists": false}},
-			{"rulesClaimAt": bson.M{"$lt": now.Add(-moveInFlight)}},
-		},
+		"rulesClaimAt": notClaimedSince(now),
 	}, bson.M{"$set": bson.M{"rulesClaim": claim, "rulesClaimAt": now}}); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim},
 		options.Find().SetSort(bson.D{{Key: "receivedDate", Value: -1}}))
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	due := make([]models.Email, 0)
-	if err := cur.All(ctx, &due); err != nil {
-		return nil, "", err
+	rows := make([]ruleRow, 0)
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, nil, "", err
 	}
-	return due, claim, nil
+	due, already := splitRuleRows(rows)
+	return due, already, claim, nil
 }
 
-// releaseRulesDue ends a claim: the mails judged are unmarked; the ones that
-// failed stay marked for the next sync, with one try more (pending), and are
-// unmarked once they reach maxRuleTries (givenUp). A write that fails is
-// logged: the mail is then judged once more, or its claim expires
-// (moveInFlight), and it counts as pending.
-func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, judged, failed []string) (pending, givenUp int) {
+// releaseRulesDue ends a claim. The mails judged are unmarked. The ones that
+// failed (by message, the actions done on it so far) keep their mark for the
+// next sync, with what was done (rulesDone) and one try more (pending), and
+// are unmarked once they reach maxRuleTries (givenUp), which the user row
+// keeps for the screen (rulesGivenUp). A write that fails is logged: the mail
+// is then judged once more, or its claim expires (rulesClaimFor), and it
+// counts as pending.
+func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, judged []string, failed map[string][]string) (pending, givenUp int) {
 	folder := string(mailbox.FolderInbox)
 	if len(judged) > 0 {
 		if _, err := h.db.Emails().UpdateMany(ctx,
 			bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim, "messageId": bson.M{"$in": judged}},
-			bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesClaim": "", "rulesClaimAt": ""}},
+			bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesDone": "", "rulesClaim": "", "rulesClaimAt": ""}},
 		); err != nil {
 			log.Printf("imap sync: %d mails of %s judged by the rules, not unmarked: %v", len(judged), userEmail, err)
 		}
@@ -524,16 +529,25 @@ func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, 
 	if len(failed) == 0 {
 		return 0, 0
 	}
-	if _, err := h.db.Emails().UpdateMany(ctx,
-		bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim, "messageId": bson.M{"$in": failed}},
-		bson.M{"$unset": bson.M{"rulesClaim": "", "rulesClaimAt": ""}, "$inc": bson.M{"rulesTries": 1}},
-	); err != nil {
+	ids := make([]string, 0, len(failed))
+	writes := make([]mongo.WriteModel, 0, len(failed))
+	for id, progress := range failed {
+		ids = append(ids, id)
+		set := bson.M{"$unset": bson.M{"rulesClaim": "", "rulesClaimAt": ""}, "$inc": bson.M{"rulesTries": 1}}
+		if len(progress) > 0 {
+			set["$set"] = bson.M{"rulesDone": progress}
+		}
+		writes = append(writes, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim, "messageId": id}).
+			SetUpdate(set))
+	}
+	if _, err := h.db.Emails().BulkWrite(ctx, writes, options.BulkWrite().SetOrdered(false)); err != nil {
 		log.Printf("imap sync: %d mails of %s the rules could not judge, not released for the next sync: %v", len(failed), userEmail, err)
 		return len(failed), 0
 	}
 	res, err := h.db.Emails().UpdateMany(ctx,
-		bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": failed}, "rulesTries": bson.M{"$gte": maxRuleTries}},
-		bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": ""}},
+		bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": ids}, "rulesTries": bson.M{"$gte": maxRuleTries}},
+		bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesDone": ""}},
 	)
 	if err != nil {
 		log.Printf("imap sync: give up the rules on mails of %s after %d tries: %v", userEmail, maxRuleTries, err)
@@ -541,9 +555,39 @@ func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, 
 	}
 	givenUp = int(res.ModifiedCount)
 	if givenUp > 0 {
-		log.Printf("imap sync: the rules gave up on %d mails of %s after %d tries (among %v)", givenUp, userEmail, maxRuleTries, failed)
+		log.Printf("imap sync: the rules gave up on %d mails of %s after %d tries (among %v)", givenUp, userEmail, maxRuleTries, ids)
+		// Kept until a sync from the screen tells it: a background sync, or
+		// one whose answer nobody shows, must not use up the three tries
+		// without the user ever knowing.
+		if _, err := h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail},
+			bson.M{"$inc": bson.M{"rulesGivenUp": givenUp}}); err != nil {
+			log.Printf("imap sync: the %d mails of %s the rules gave up on will not be told: %v", givenUp, userEmail, err)
+		}
 	}
 	return len(failed) - givenUp, givenUp
+}
+
+// takeGivenUp answers how many mails the rules gave up on since the screen was
+// last told (rulesGivenUp on the user row), and clears it: a sync from the
+// screen tells it once. A datastore that cannot answer is logged, and the
+// count is told at a later sync.
+func (h *Handler) takeGivenUp(ctx context.Context, userEmail string) int {
+	var before struct {
+		RulesGivenUp int `bson:"rulesGivenUp"`
+	}
+	err := h.db.Users().FindOneAndUpdate(ctx,
+		bson.M{"email": userEmail, "rulesGivenUp": bson.M{"$gt": 0}},
+		bson.M{"$unset": bson.M{"rulesGivenUp": ""}},
+		options.FindOneAndUpdate().SetReturnDocument(options.Before).SetProjection(bson.M{"rulesGivenUp": 1}),
+	).Decode(&before)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return 0
+	}
+	if err != nil {
+		log.Printf("sync: read the mails the rules of %s gave up on, told at a later sync: %v", userEmail, err)
+		return 0
+	}
+	return before.RulesGivenUp
 }
 
 // storeInboxMessage writes a message the sync read in full (its envelope)

@@ -290,12 +290,21 @@ function Inbox() {
   // Switch to the async worker beyond this many emails so the UI never blocks.
   const ASYNC_THRESHOLD = 10;
 
+  // What a sync that worked has to say besides (over IMAP, rules that could
+  // not run on some new mails, or gave up on some): shown as information,
+  // whichever sync brought it, the page load's included. The server tells a
+  // mail given up once, to the first sync from the screen after it.
+  const showSyncNotice = (result) => {
+    if (result?.syncNotice) toast.info(result.syncNotice);
+  };
+  const syncAgain = () => fetchData({ forceRefresh: true, sync: true }).then(showSyncNotice);
+
   useEffect(() => {
     if (!localStorage.getItem('userEmail')) {
       navigate('/');
       return;
     }
-    fetchData();
+    fetchData().then(showSyncNotice);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
@@ -1873,7 +1882,7 @@ function Inbox() {
                     : error}
                 </span>
                 {errorRetryable ? (
-                  <button onClick={() => fetchData({ forceRefresh: true, sync: true })} className="btn-secondary btn-sm">
+                  <button onClick={syncAgain} className="btn-secondary btn-sm">
                     Réessayer
                   </button>
                 ) : (
@@ -1907,7 +1916,7 @@ function Inbox() {
               <ErrorState
                 title="Impossible de charger votre boîte"
                 message={error}
-                onRetry={() => fetchData({ forceRefresh: true, sync: true })}
+                onRetry={syncAgain}
               />
             ) : emails.length === 0 ? (
               <EmptyState

@@ -32,13 +32,18 @@ func (h *Handler) startAutoSyncLoop() {
 	}()
 }
 
+// autoSyncTimeout bounds one sweep of the background syncs, every user due
+// included: no sync runs longer, which is what a hold on mails a sync judges
+// is sized on (rulesClaimFor).
+const autoSyncTimeout = 5 * time.Minute
+
 // runDueAutoSyncs syncs every opted-in user whose last background sync is older
 // than autoSyncInterval. It is best-effort and resilient: each user is stamped
 // before the attempt so a transient failure costs at most one cycle rather than
 // triggering a retry storm, and a per-user failure is logged and skipped so one
 // bad account never stalls the rest.
 func (h *Handler) runDueAutoSyncs() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), autoSyncTimeout)
 	defer cancel()
 
 	cursor, err := h.db.Users().Find(ctx, bson.M{"autoSyncEnabled": true})

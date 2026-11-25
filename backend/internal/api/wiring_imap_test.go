@@ -331,8 +331,8 @@ func TestAcceptance_AutoRulesJudgeAgainWhatTheyCouldNotRange(t *testing.T) {
 }
 
 // A mail its rule cannot range sync after sync is given up after maxRuleTries
-// syncs: the sync that gives it up says so, once; the next ones say nothing,
-// and leave it where it is, even once the archive is back.
+// syncs: the sync from the screen that gives it up says so, once; the next
+// ones say nothing, and leave it where it is, even once the archive is back.
 func TestAcceptance_AutoRulesGiveUpAfterTries(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
 	moi := app.imapPerson(imapInboxOwner)
@@ -496,4 +496,129 @@ func TestAcceptance_AutoApplyRulesStampedWhenTurnedOn(t *testing.T) {
 	if later := stamp(); !later.After(first) {
 		app.failf("couper puis réactiver l'option devrait noter une nouvelle date d'activation, elle reste %v (avant : %v)", later, first)
 	}
+}
+
+// ruleLines counts the lines the rules wrote in this person's history for the
+// mail with this number, with this action.
+func ruleLines(moi *imapPerson, uid, action string) int {
+	moi.app.t.Helper()
+	n := 0
+	for _, l := range moi.historyLinesOf(uid) {
+		if l.Source == SourceRule && l.Action == action {
+			n++
+		}
+	}
+	return n
+}
+
+// appliedCountOf is the count the Règles screen shows for this rule.
+func appliedCountOf(moi *imapPerson, name string) int {
+	a := moi.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var rule models.SortingRule
+	if err := a.h.db.SortingRules().FindOne(ctx, bson.M{"userId": moi.email, "name": name}).Decode(&rule); err != nil {
+		a.fatalf("lecture de la règle %q de %s : %v", name, moi.email, err)
+	}
+	return rule.AppliedCount
+}
+
+// A rule that half-succeeds (read and star done, the archive refused) is tried
+// again at the next syncs for what failed only: "lu" and "favori" are not done
+// again (a mail marked unread since stays unread), nor written twice in the
+// history, nor counted twice; the mail is pending until the archive passes,
+// then counted once as applied.
+func TestAcceptance_AutoRulesDoOnlyWhatFailedAgain(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	const name = "Lire, suivre et archiver la boutique"
+	moi.rule(name, 1, rules.FieldFrom, rules.OpContains, "boutique.com",
+		models.RuleAction{Type: rules.ActionMarkRead}, models.RuleAction{Type: rules.ActionStar}, models.RuleAction{Type: rules.ActionArchive})
+	moi.setAutoApplyRules(true)
+	archiveFolderGone(moi)
+
+	uids := moi.arrive(shopOrder)
+	pending := "Vos règles n'ont pas pu être appliquées à 1 nouveau mail : la prochaine synchronisation réessaiera."
+	expectRulesPending(moi, "la synchronisation qui reçoit le mail, l'archive refusée,", 1, pending)
+	if !moi.seenOnServer(serverInbox, shopOrder.Subject) || !moi.flaggedOnServer(serverInbox, shopOrder.Subject) {
+		app.fatalf("la règle devrait avoir marqué lu et mis en favori le mail %q de %s avant l'archive refusée", shopOrder.Subject, moi.email)
+	}
+
+	// The person marks it unread again before the next sync.
+	moi.act(uids[0], "unread")
+	expectRulesPending(moi, "la synchronisation suivante, l'archive encore refusée,", 1, pending)
+	if moi.seenOnServer(serverInbox, shopOrder.Subject) {
+		app.failf("le mail %q de %s, remis en non lu, a été marqué lu de nouveau par la règle au nouvel essai", shopOrder.Subject, moi.email)
+	}
+
+	moi.newFolderElsewhere(serverArchive)
+	code, out := moi.syncAnswer()
+	if code != http.StatusOK {
+		app.fatalf("la synchronisation de %s, l'archive revenue, a répondu %d : %v", moi.email, code, out)
+	}
+	if n := app.number(out, "rulesApplied"); n != 1 {
+		app.failf("la synchronisation qui archive enfin le mail devrait compter 1 mail rangé, elle en compte %d", n)
+	}
+	moi.expectOnServer(serverArchive, shopOrder.Subject)
+	moi.expectNotOnServer(serverInbox, shopOrder.Subject, "l'archive est revenue, le nouvel essai l'archive")
+	if moi.seenOnServer(serverArchive, shopOrder.Subject) {
+		app.failf("le mail %q de %s, remis en non lu, est arrivé lu dans l'archive", shopOrder.Subject, moi.email)
+	}
+	for action, want := range map[string]int{rules.ActionMarkRead: 1, rules.ActionStar: 1, rules.ActionArchive: 1} {
+		if got := ruleLines(moi, uids[0], action); got != want {
+			app.failf("l'historique de %s devrait noter %d fois %q par la règle sur le mail %q, il le note %d fois (%s)", moi.email, want, action, shopOrder.Subject, got, describeHistory(moi.historyLinesOf(uids[0])))
+		}
+	}
+	if n := appliedCountOf(moi, name); n != 1 {
+		app.failf("la règle %q devrait compter 1 mail traité, elle en compte %d", name, n)
+	}
+}
+
+// A mail given up by background syncs is told by the next sync from the
+// screen, once: the background sync only logs it, and three tries could pass
+// without the person knowing.
+func TestAcceptance_GivenUpInTheBackgroundIsToldByTheScreen(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+	moi.setAutoApplyRules(true)
+	archiveFolderGone(moi)
+	moi.arrive(shopOrder)
+
+	ctx, cancel := context.WithTimeout(context.Background(), autoSyncTimeout)
+	defer cancel()
+	for i := 1; i <= maxRuleTries; i++ {
+		if _, _, _, err := app.h.syncInbox(ctx, moi.email); err != nil {
+			app.fatalf("synchronisation de fond n°%d de %s : %v", i, moi.email, err)
+		}
+	}
+
+	expectRulesPending(moi, "la synchronisation depuis l'écran, après trois essais en arrière-plan,", 0,
+		"1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte.")
+	expectRulesPending(moi, "la synchronisation depuis l'écran d'après", 0, "")
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+}
+
+// "Appliquer mes règles" leaves alone a mail a sync is judging (rulesClaim),
+// the claim lasting longer than any sync: the two never act on it at once.
+func TestAcceptance_ApplyRulesLeavesAMailASyncHolds(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, shopOrder, shopSale)
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	held := time.Now().Add(-autoSyncTimeout) // a sync running for five minutes
+	if _, err := app.h.db.Emails().UpdateOne(ctx, bson.M{"userId": moi.email, "messageId": uids[0]},
+		bson.M{"$set": bson.M{"rulesDue": true, "rulesClaim": "une-synchro", "rulesClaimAt": held}}); err != nil {
+		app.fatalf("réservation du mail n°%s de %s : %v", uids[0], moi.email, err)
+	}
+
+	if got := moi.applyRules(); got.code != http.StatusOK {
+		app.fatalf("« Appliquer mes règles » de %s a répondu %s", moi.email, got)
+	}
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+	moi.expectNotOnServer(serverArchive, shopOrder.Subject, "une synchronisation le juge en ce moment")
+	moi.expectOnServer(serverArchive, shopSale.Subject)
 }

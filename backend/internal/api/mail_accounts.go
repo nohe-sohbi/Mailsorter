@@ -13,6 +13,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/smtpsend"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -84,7 +85,21 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 		return models.MailAccount{}, fmt.Errorf("seal mailbox secret: %w", err)
 	}
 
-	account, update := mailboxRow(userEmail, p.Key, address, route, sealed, time.Now())
+	// The same mailbox connected again (a new app password) keeps the moment
+	// it was first connected; another one (another address, another server)
+	// is connected now. Over IMAP the rules a sync applies on its own judge
+	// the mails received after it (arrivalsSince).
+	var prev models.MailAccount
+	prevErr := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&prev)
+	if prevErr != nil && !errors.Is(prevErr, mongo.ErrNoDocuments) {
+		return models.MailAccount{}, fmt.Errorf("read the mail account: %w", prevErr)
+	}
+	same := prevErr == nil && sameMailbox(prev, address, route)
+
+	account, update := mailboxRow(userEmail, p.Key, address, route, sealed, time.Now(), same)
+	if same {
+		account.CreatedAt = prev.CreatedAt
+	}
 	if _, err := h.db.MailAccounts().UpdateOne(ctx,
 		bson.M{"userId": userEmail},
 		update,
@@ -95,13 +110,27 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 	return account, nil
 }
 
+// sameMailbox says whether a connection to address over route is the mailbox
+// already connected (prev): the same address, on the same server.
+func sameMailbox(prev models.MailAccount, address string, route provider.Route) bool {
+	if !strings.EqualFold(strings.TrimSpace(prev.Username), strings.TrimSpace(address)) {
+		return false
+	}
+	if route.IMAP == nil {
+		return prev.Host == ""
+	}
+	return strings.EqualFold(prev.Host, route.IMAP.Host) && prev.Port == route.IMAP.Port
+}
+
 // mailboxRow is what a connection proved over route becomes: the account
 // connectAndStore answers with, and the upsert that writes it over the user's
 // previous row, sealed password included. The sending server comes from the
 // same route, so the recap leaves from the provider whose IMAP server was
 // just proved. A route without one clears what a mailbox connected before may
-// have left on the row, rather than keep another provider's server.
-func mailboxRow(userEmail, providerKey, address string, route provider.Route, sealed string, now time.Time) (models.MailAccount, bson.M) {
+// have left on the row, rather than keep another provider's server. The
+// moment of the connection (createdAt) is kept when it is the same mailbox
+// connected again (same), and is now otherwise.
+func mailboxRow(userEmail, providerKey, address string, route provider.Route, sealed string, now time.Time, same bool) (models.MailAccount, bson.M) {
 	account := models.MailAccount{
 		UserID:    userEmail,
 		Provider:  providerKey,
@@ -126,9 +155,14 @@ func mailboxRow(userEmail, providerKey, address string, route provider.Route, se
 		"tls":       account.TLS,
 		"updatedAt": now,
 	}
+	onInsert := bson.M{"userId": userEmail, "createdAt": now}
+	if !same {
+		set["createdAt"] = now
+		delete(onInsert, "createdAt")
+	}
 	update := bson.M{
 		"$set":         set,
-		"$setOnInsert": bson.M{"userId": userEmail, "createdAt": now},
+		"$setOnInsert": onInsert,
 	}
 	if route.SMTP != nil {
 		account.SMTPHost = route.SMTP.Host

@@ -499,7 +499,10 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		// worked all the same, so this is information, not an error.
 		"rulesPending": ruled.pending,
 	}
-	if msg := rulesMessage(ruled.pending, ruled.givenUp); msg != "" {
+	// The mails the rules gave up on are told by a sync from the screen
+	// (this route: the button and the page load), whichever sync gave them
+	// up, the background one included.
+	if msg := rulesMessage(ruled.pending, h.takeGivenUp(ctx, userEmail)); msg != "" {
 		out["rulesMessage"] = msg
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -580,7 +583,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 
 		if len(autoRules) > 0 {
 			if match := rules.FirstMatch(email, autoRules); match != nil {
-				appliedActs, _, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
+				appliedActs, _, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache, nil)
 				if len(appliedActs) > 0 {
 					ruled.applied++
 					byRule[match.Name]++

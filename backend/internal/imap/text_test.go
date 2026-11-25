@@ -72,36 +72,78 @@ func TestTextsDoesNotMarkTheMessagesRead(t *testing.T) {
 }
 
 // Only the beginning of a message is read: its text, not the file attached
-// after it. And a text longer than what is read is kept up to where the read
-// stopped, rather than dropped for ending mid-way.
+// after it. A text the read stops inside is not read in full, and no rule may
+// judge it on its beginning: it comes back NotReached, whatever cut it (a
+// long text, an HTML larger than what is read, a text after a large file, a
+// message that is all text).
 func TestTextsReadsTheBeginningOfALargeMessage(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
-	file := strings.Repeat("QUJDRA==", textBytes/8*2) // twice what is read, base64
-	appendRaw(t, c, "INBOX", "From: a@b.com\r\nTo: "+testUser+"\r\nSubject: Avec un fichier\r\n"+
-		"MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"sep\"\r\n\r\n"+
-		"--sep\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nVotre remboursement est en route.\r\n"+
-		"--sep\r\nContent-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\n"+
-		"Content-Transfer-Encoding: base64\r\n\r\n"+file+"\r\n--sep--\r\n")
+	file := func(n int) string { return strings.Repeat("QUJDRA==", n/8) } // n bytes of base64
 	long := "Le remboursement arrive. " + strings.Repeat("Encore du texte. ", textBytes/16)
-	appendRaw(t, c, "INBOX", "From: a@b.com\r\nTo: "+testUser+"\r\nSubject: Un long texte\r\n"+
-		"MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"sep\"\r\n\r\n"+
-		"--sep\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"+long+"\r\n"+
-		"--sep\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>"+long+"</p>\r\n--sep--\r\n")
-	uids := uidsIn(t, c, "INBOX") // the long text, then the one with a file
+	mixed := func(subject string, parts ...string) string {
+		raw := "From: a@b.com\r\nTo: " + testUser + "\r\nSubject: " + subject + "\r\n" +
+			"MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"sep\"\r\n\r\n"
+		for _, p := range parts {
+			raw += "--sep\r\n" + p + "\r\n"
+		}
+		return raw + "--sep--\r\n"
+	}
+	text := func(body string) string {
+		return "Content-Type: text/plain; charset=utf-8\r\n\r\n" + body
+	}
+	html := func(body string) string {
+		return "Content-Type: text/html; charset=utf-8\r\n\r\n" + body
+	}
+	attached := func(body string) string {
+		return "Content-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\n" +
+			"Content-Transfer-Encoding: base64\r\n\r\n" + body
+	}
+
+	cases := []struct {
+		subject, raw string
+		wantBody     string // "" with NotReached
+	}{
+		{"Le texte puis un fichier", mixed("Le texte puis un fichier", text("Votre remboursement est en route."), attached(file(2*textBytes))), "Votre remboursement est en route."},
+		{"Un long texte", mixed("Un long texte", text(long), html("<p>"+long+"</p>")), ""},
+		{"Un long HTML", mixed("Un long HTML", html("<p>"+long+"</p>")), ""},
+		// The file ends just before the bound, the text runs across it.
+		{"Un fichier puis le texte", mixed("Un fichier puis le texte", attached(file(textBytes-1000)), text("Votre remboursement est en route. "+strings.Repeat("Encore. ", 250))), ""},
+		// A file of 250 KB and a short text: the whole message is read.
+		{"Un fichier de 250 Ko et un mot", mixed("Un fichier de 250 Ko et un mot", attached(file(250_000)), text("Votre remboursement est en route.")), "Votre remboursement est en route."},
+		{"Tout en texte", "From: a@b.com\r\nTo: " + testUser + "\r\nSubject: Tout en texte\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + long + "\r\n", ""},
+	}
+	for _, tc := range cases {
+		appendRaw(t, c, "INBOX", tc.raw)
+	}
+	emails, err := c.List(context.Background(), "INBOX", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	uidOf := map[string]string{}
+	uids := make([]string, 0, len(emails))
+	for _, e := range emails {
+		uidOf[e.Subject] = e.MessageID
+		uids = append(uids, e.MessageID)
+	}
 
 	got, err := c.Texts(context.Background(), "INBOX", uids)
 	if err != nil {
 		t.Fatalf("Texts: %v", err)
 	}
-	if body := got[uids[1]].Body; strings.TrimSpace(body) != "Votre remboursement est en route." {
-		t.Errorf("Body of the message with a file = %q, want its text alone", body)
-	}
-	body := got[uids[0]].Body
-	if !strings.HasPrefix(body, "Le remboursement arrive.") {
-		t.Errorf("Body of the long message starts %q, want its text, kept though the read stopped inside it", firstRunes(body, 40))
-	}
-	if len(body) > textBytes {
-		t.Errorf("Body of the long message is %d bytes, want at most the %d read", len(body), textBytes)
+	for _, tc := range cases {
+		text := got[uidOf[tc.subject]]
+		if tc.wantBody == "" {
+			if !text.NotReached || text.Body != "" {
+				t.Errorf("Texts of %q = NotReached %v, Body %q: want NotReached and no text, the read stops inside it", tc.subject, text.NotReached, firstRunes(text.Body, 40))
+			}
+			continue
+		}
+		if text.NotReached || strings.TrimSpace(text.Body) != tc.wantBody {
+			t.Errorf("Texts of %q = NotReached %v, Body %q: want %q, read whole", tc.subject, text.NotReached, firstRunes(text.Body, 40), tc.wantBody)
+		}
+		if len(text.Body) > textBytes {
+			t.Errorf("Body of %q is %d bytes, want at most the %d read", tc.subject, len(text.Body), textBytes)
+		}
 	}
 }
 

@@ -213,10 +213,15 @@ snippet, so when `rules.ReadsText(enabled)` (an enabled rule with a `body` or
 messages stay unread), 20 a FETCH, through `imap.ReadInHalves`, the request's
 context checked before each FETCH. A message whose text cannot be parsed is left
 out, logged (judged on an empty text, "does not contain" would match it), and so
-is one `Texts` reports `NotReached` (larger than what is read, no text part in
-its beginning: a file before the text). A read the server stops, or that runs
-out of time, fails the request. A mail `apply` judged without a failure loses
-its mark for the sync (`unmarkJudged`).
+is one `Texts` reports `NotReached`: larger than what is read, and either no
+text part in its beginning (a file before the text) or the read stopped inside
+the text part a rule would judge (the plain one, or the HTML when there is
+none; `readBodies` marks a part cut when its end was not read, or when the
+message is not multipart). Rules on the sender or the subject still judge it.
+A read the server stops, or that runs out of time, fails the request. `apply`
+skips the rows a sync holds, starts from the actions already done
+(`rulesDone`), and then settles the marks (`settleMarks`): a marked mail judged
+without a failure is unmarked, one that failed keeps what was done.
 
 | | `POST /api/rules/apply` (`ApplyRules`) | `POST /api/rules/preview` (`PreviewRules`) |
 |---|---|---|
@@ -268,17 +273,23 @@ mail. Each sentence of "Tes règles sur une boîte IMAP" pins part of this.
   `rulesDue: true` on a new row only (`$setOnInsert`). Right after the store
   loop, `rulesOnArrivals` claims the marked rows still in the inbox and received
   since `arrivalsSince` (`claimRulesDue`: `rulesClaim` token and `rulesClaimAt`,
-  so two syncs at once never judge one mail; a claim older than `moveInFlight`
-  is taken over), reads their text if a rule needs it, and runs `runRules`.
-  `releaseRulesDue` unmarks the mails judged (and those whose text cannot be
-  read or is `NotReached`, logged); a mail whose text read stopped or whose
-  rule failed keeps its mark with `rulesTries + 1` (pending); at
-  `maxRuleTries` (3) it is unmarked and logged (given up). The sync still
-  answers 200, the mails being read and listed: `rulesPending` and
-  `rulesMessage` (`rulesMessage(pending, givenUp)`, the given-up ones told at
-  the sync that gives them up, once), which `handleSync` in `Inbox.js` shows
-  as an information toast. A marked mail that left the inbox meanwhile is not
-  judged nor counted.
+  held `rulesClaimFor` = 2 x `autoSyncTimeout`, longer than any sync, so two
+  syncs, or a sync and `ApplyRules`, which skips held rows, never act on one
+  mail at once), reads their text if a rule needs it, and runs `runRules`.
+- **What is tried again, and what is not.** Tried again at the next sync
+  (`releaseRulesDue`: `rulesTries + 1`, pending): a mail whose text read the
+  server stopped or that ran out of time, and a mail on which an action of its
+  rule failed (a move refused). The actions its rule already did are kept on
+  the row (`rulesDone`) and skipped at the next try (`applyRuleToMessage`'s
+  `done`): not done again (a mail marked unread since stays unread), not
+  journaled twice, `appliedCount` counted once, at the first action. A mail is
+  in `rulesApplied` (everything done, something at least) or in
+  `rulesPending`, never both. Not tried again (unmarked, logged): a mail whose
+  text cannot be parsed, or `NotReached`. At `maxRuleTries` (3) a mail is
+  given up (unmarked, logged), and `users.rulesGivenUp` is incremented: a sync
+  from the screen (`SyncEmails`, the button and the page load) takes it
+  (`takeGivenUp`) and tells it once in `rulesMessage`, whichever sync gave the
+  mail up, the background one included. The sync answers 200 all the same.
 - Old favorites stored by `storeStarredOutsideList` are never marked.
 
 `rulesApplied` counts the marked mails a rule acted on at this sync.
@@ -585,17 +596,18 @@ response `protectedSkipped` and that the message is still in the inbox.
   and is neither counted nor journaled.
 - **An IMAP arrival is judged 3 syncs at most.** A failure that does not go
   away (a folder the server refuses) is told at 3 syncs, then the mail is
-  given up (logged, told once) and left where it is; "Appliquer maintenant"
-  still judges it. Only the "Synchroniser" button shows the message: a sync
-  run on page load or in the background (`auto_sync.go`, which logs it) does
-  not.
+  given up (logged, told once by the next sync from the screen, the page
+  load's included) and left where it is; "Appliquer maintenant" still judges
+  it. The background sync (`auto_sync.go`) only logs; the count waits on the
+  user row (`rulesGivenUp`).
 - **A mail is an arrival by its server's clock.** INTERNALDATE is set by the
   mail server, the option's stamp by Mailsorter's: a skew between the two moves
-  the boundary by as much.
+  the boundary by as much. A mailbox connected again with another address or
+  server gets a new `createdAt` (`sameMailbox`); its stored copy does not start
+  empty (the copy is per account, not per mailbox).
 - **A rule on the text costs a read over IMAP.** `withTexts` reads up to 200
   messages, 256 KiB each at most, only when `rules.ReadsText` is true; a text
-  that starts within 256 KiB is judged on its beginning, one that starts beyond
-  is not judged at all.
+  not read in full within 256 KiB is not judged by a rule on the text.
 - **A `label` action does nothing over IMAP.** It is skipped silently (not
   journaled); the rule's other actions run.
 - **Apply and preview are N+1 Gmail calls.** `ListMessages` issues one

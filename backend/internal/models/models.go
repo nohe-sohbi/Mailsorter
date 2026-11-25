@@ -26,6 +26,11 @@ type User struct {
 	// in the inbox are "Appliquer maintenant"'s. Zero when it was turned on
 	// before Mailsorter stamped it.
 	AutoApplyRulesSince time.Time `json:"-" bson:"autoApplyRulesSince,omitempty"`
+	// RulesGivenUp counts the mails a sync's rules gave up on (after three
+	// tries) that the screen has not been told of yet: a sync from the screen
+	// tells it once and clears it, so one given up by a background sync is
+	// not lost.
+	RulesGivenUp int `json:"-" bson:"rulesGivenUp,omitempty"`
 	// AutoSyncEnabled, when true, lets a background scheduler periodically sync the
 	// user's inbox (and, if AutoApplyRules is on, run their rules) with no manual
 	// click, the hands-free path to "Inbox Zero, forever". LastAutoSyncAt stamps

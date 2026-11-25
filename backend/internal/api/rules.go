@@ -221,17 +221,19 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
-	emails, err := h.ruleCandidates(ctx, session, userEmail, enabled)
+	// A mail a sync is judging right now (rulesClaim) is left to it.
+	emails, already, err := h.ruleCandidates(ctx, session, userEmail, enabled, true)
 	if err != nil {
 		writeCandidatesError(w, err)
 		return
 	}
 
-	done := h.runRules(ctx, session, userEmail, emails, enabled, h.protectedValues(ctx, userEmail))
+	done := h.runRules(ctx, session, userEmail, emails, enabled, h.protectedValues(ctx, userEmail), already)
 	if session.Transport == provider.TransportIMAP {
 		// Judged here, a mail marked for the rules at a sync is not judged
-		// again there (a second star, a second line in the history).
-		h.unmarkJudged(ctx, userEmail, emails, done.failed)
+		// again there (a second star, a second line in the history); one
+		// whose rule failed half-way keeps what was done for the next try.
+		h.settleMarks(ctx, userEmail, emails, done)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -278,7 +280,7 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 	}
 	var emails []models.Email
 	if transport == provider.TransportIMAP && !rules.ReadsText(enabled) {
-		emails, err = h.storedInboxCandidates(ctx, userEmail)
+		emails, _, err = h.storedInboxCandidates(ctx, userEmail, false)
 	} else {
 		session, sErr := h.openSession(ctx, userEmail)
 		if sErr != nil {
@@ -286,7 +288,7 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer session.Close()
-		emails, err = h.ruleCandidates(ctx, session, userEmail, enabled)
+		emails, _, err = h.ruleCandidates(ctx, session, userEmail, enabled, false)
 	}
 	if err != nil {
 		writeCandidatesError(w, err)
@@ -340,11 +342,14 @@ func writeCandidatesError(w http.ResponseWriter, err error) {
 // a message Mailsorter or the user moved out is not there, one arrived since
 // the last sync not yet. The copy keeps no text, so when a rule reads it
 // (rules.ReadsText) it is read from the server (withTexts), and only then.
-func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, userEmail string, ruleset []models.SortingRule) ([]models.Email, error) {
+// already is, by message, the actions its rule did at a sync that failed on
+// another one (IMAP only): they are not done again. skipClaimed leaves out a
+// mail a sync is judging right now.
+func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, userEmail string, ruleset []models.SortingRule, skipClaimed bool) (emails []models.Email, already map[string][]string, err error) {
 	if session.Transport != provider.TransportIMAP {
 		messages, err := h.gmailService.ListMessages(session.gmail, "in:inbox", rulesScanLimit)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		emails := make([]models.Email, 0, len(messages))
 		for _, msg := range messages {
@@ -359,57 +364,103 @@ func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, user
 				ReceivedDate: date,
 			})
 		}
-		return emails, nil
+		return emails, nil, nil
 	}
 
-	emails, err := h.storedInboxCandidates(ctx, userEmail)
+	emails, already, err = h.storedInboxCandidates(ctx, userEmail, skipClaimed)
 	if err != nil || !rules.ReadsText(ruleset) {
-		return emails, err
+		return emails, already, err
 	}
-	return h.withTexts(ctx, userEmail, session, emails)
+	emails, err = h.withTexts(ctx, userEmail, session, emails)
+	return emails, already, err
+}
+
+// ruleRow is a stored IMAP inbox message as a run of the rules reads it: the
+// message, and what the rules left on its row. RulesDone is the actions its
+// rule did at a sync that failed on another one: kept so that the next try
+// does only the rest, without a second line in the history nor a second count.
+type ruleRow struct {
+	models.Email `bson:",inline"`
+	RulesDone    []string `bson:"rulesDone"`
+}
+
+// rulesClaimFor is how long a sync holds the mails it judges (rulesClaim):
+// longer than any sync runs (the background sweep is bounded by
+// autoSyncTimeout, a sync from the screen by 30 s), so a claim still held is
+// one a sync is working on, and one older is one a sync never released.
+const rulesClaimFor = 2 * autoSyncTimeout
+
+// notClaimedSince is the filter of a row no sync holds at now.
+func notClaimedSince(now time.Time) bson.M {
+	return bson.M{"$not": bson.M{"$gte": now.Add(-rulesClaimFor)}}
 }
 
 // storedInboxCandidates is the stored copy of an IMAP inbox as a run of the
 // rules on demand judges it, without the text: the rulesScanLimit most recent
-// messages still in the inbox.
-func (h *Handler) storedInboxCandidates(ctx context.Context, userEmail string) ([]models.Email, error) {
-	cur, err := h.db.Emails().Find(ctx,
-		bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "leftInbox": notLeftInbox},
+// messages still in the inbox, and, by message, the actions a rule already
+// did on it (ruleRow.RulesDone). skipClaimed leaves out a mail a sync holds.
+func (h *Handler) storedInboxCandidates(ctx context.Context, userEmail string, skipClaimed bool) ([]models.Email, map[string][]string, error) {
+	filter := bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "leftInbox": notLeftInbox}
+	if skipClaimed {
+		filter["rulesClaimAt"] = notClaimedSince(time.Now())
+	}
+	cur, err := h.db.Emails().Find(ctx, filter,
 		options.Find().SetSort(bson.D{{Key: "receivedDate", Value: -1}}).SetLimit(rulesScanLimit))
 	if err != nil {
 		log.Printf("rules: read the inbox copy of %s: %v", userEmail, err)
-		return nil, errInboxCopyUnread
+		return nil, nil, errInboxCopyUnread
 	}
-	emails := make([]models.Email, 0)
-	if err := cur.All(ctx, &emails); err != nil {
+	rows := make([]ruleRow, 0)
+	if err := cur.All(ctx, &rows); err != nil {
 		log.Printf("rules: read the inbox copy of %s: %v", userEmail, err)
-		return nil, errInboxCopyUnread
+		return nil, nil, errInboxCopyUnread
 	}
-	return emails, nil
+	emails, already := splitRuleRows(rows)
+	return emails, already, nil
 }
 
-// unmarkJudged unmarks for the rules (rulesDue) the stored IMAP messages a run
-// of the rules on demand judged without a failure. A failure is logged: the
-// next sync judges the mail once more.
-func (h *Handler) unmarkJudged(ctx context.Context, userEmail string, judged []models.Email, failed []string) {
-	skip := make(map[string]bool, len(failed))
-	for _, id := range failed {
-		skip[id] = true
+// splitRuleRows is the messages of these rows, and the actions already done
+// on those that have some.
+func splitRuleRows(rows []ruleRow) ([]models.Email, map[string][]string) {
+	emails := make([]models.Email, 0, len(rows))
+	already := map[string][]string{}
+	for _, r := range rows {
+		emails = append(emails, r.Email)
+		if len(r.RulesDone) > 0 {
+			already[r.MessageID] = r.RulesDone
+		}
 	}
+	return emails, already
+}
+
+// settleMarks keeps the marks for the rules (rulesDue) right after a run of
+// the rules on demand over the stored IMAP inbox: a marked mail judged without
+// a failure is unmarked, so a sync does not judge it again; one whose rule
+// failed half-way keeps, for the sync's next try, what was done (rulesDone).
+// A failure is logged: the next sync judges the mail once more.
+func (h *Handler) settleMarks(ctx context.Context, userEmail string, judged []models.Email, done rulesDone) {
+	folder := string(mailbox.FolderInbox)
 	ids := make([]string, 0, len(judged))
 	for _, e := range judged {
-		if !skip[e.MessageID] {
+		if _, failed := done.progress[e.MessageID]; !failed {
 			ids = append(ids, e.MessageID)
 		}
 	}
-	if len(ids) == 0 {
-		return
+	if len(ids) > 0 {
+		if _, err := h.db.Emails().UpdateMany(ctx,
+			bson.M{"userId": userEmail, "folder": folder, "rulesDue": true, "messageId": bson.M{"$in": ids}},
+			bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesDone": ""}},
+		); err != nil {
+			log.Printf("rules: %d mails of %s judged, not unmarked for the sync: %v", len(ids), userEmail, err)
+		}
 	}
-	if _, err := h.db.Emails().UpdateMany(ctx,
-		bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "rulesDue": true, "messageId": bson.M{"$in": ids}},
-		bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": ""}},
-	); err != nil {
-		log.Printf("rules: %d mails of %s judged, not unmarked for the sync: %v", len(ids), userEmail, err)
+	for id, progress := range done.progress {
+		if _, err := h.db.Emails().UpdateOne(ctx,
+			bson.M{"userId": userEmail, "folder": folder, "rulesDue": true, "messageId": id},
+			bson.M{"$set": bson.M{"rulesDone": progress}},
+		); err != nil {
+			log.Printf("rules: what the rule did on message %s of %s is not kept for the next try: %v", id, userEmail, err)
+		}
 	}
 }
 
@@ -469,47 +520,56 @@ func (h *Handler) withTexts(ctx context.Context, userEmail string, session *mail
 	return out, nil
 }
 
-// rulesDone is what one run of the rules over messages did.
+// rulesDone is what one run of the rules over messages did. A message is
+// counted in applied or in progress, never both.
 type rulesDone struct {
-	// applied counts the messages a rule acted on, byRule the same by rule
-	// name.
+	// applied counts the messages whose rule did everything it does (at this
+	// run, or partly at an earlier try), something at least.
 	applied int
-	byRule  map[string]int
+	// byRule counts by rule name the messages a rule acted on for the first
+	// time at this run, for appliedCount: a message is counted once, at its
+	// first action, whatever the tries.
+	byRule map[string]int
 	// protectedSkipped counts the messages a rule matched and did nothing to,
 	// their sender being protected.
 	protectedSkipped int
-	// failed lists the messages an action of their rule failed on (logged).
-	failed []string
+	// progress is, for each message an action of its rule failed on (logged),
+	// the actions done on it so far, this run and before: what a next try
+	// does not do again.
+	progress map[string][]string
 }
 
 // runRules applies the ruleset to these messages, on whichever transport the
 // session is: for each, the first rule that matches (rules.FirstMatch), its
-// actions in rules.ApplyOrder, each written in the history (SourceRule), and
-// the count of each rule kept on it (appliedCount).
-func (h *Handler) runRules(ctx context.Context, session *mailSession, userEmail string, emails []models.Email, ruleset []models.SortingRule, protectedList []string) rulesDone {
-	done := rulesDone{byRule: map[string]int{}}
+// actions in rules.ApplyOrder but those already done on it (already, a try
+// that failed half-way), each written in the history (SourceRule), and the
+// count of each rule kept on it (appliedCount).
+func (h *Handler) runRules(ctx context.Context, session *mailSession, userEmail string, emails []models.Email, ruleset []models.SortingRule, protectedList []string, already map[string][]string) rulesDone {
+	done := rulesDone{byRule: map[string]int{}, progress: map[string][]string{}}
 	labelCache := map[string]string{} // labelName -> Gmail label ID
 	for _, email := range emails {
 		match := rules.FirstMatch(email, ruleset)
 		if match == nil {
 			continue
 		}
+		before := already[email.MessageID]
 		// A protected sender is shielded from destructive actions, but
 		// non-destructive actions in the same rule still run.
-		appliedActs, skipped, failed := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache)
-		if failed {
-			done.failed = append(done.failed, email.MessageID)
-		}
-		if len(appliedActs) == 0 {
-			if skipped {
-				done.protectedSkipped++
-			}
-			continue
-		}
-		done.applied++
-		done.byRule[match.Name]++
+		appliedActs, skipped, failed := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache, before)
 		for _, act := range appliedActs {
 			h.logActionMeta(ctx, userEmail, email.MessageID, act, SourceRule, email.Subject, email.From)
+		}
+		if len(before) == 0 && len(appliedActs) > 0 {
+			done.byRule[match.Name]++
+		}
+		all := append(append([]string{}, before...), appliedActs...)
+		switch {
+		case failed:
+			done.progress[email.MessageID] = all
+		case len(all) > 0:
+			done.applied++
+		case skipped:
+			done.protectedSkipped++
 		}
 	}
 	h.countRuleHits(ctx, userEmail, done.byRule)
@@ -600,10 +660,15 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 // archive/trash are skipped, but a non-destructive action in the same rule
 // (label/star/markRead) still runs. It returns the action types actually
 // applied (for the ledger), whether a destructive action was skipped for
-// protection, and whether an action failed (logged).
-func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList []string, labelCache map[string]string) (applied []string, protectedSkip, failed bool) {
+// protection, and whether an action failed (logged). An action type in done
+// was applied at an earlier try that failed on another one: it is not done
+// again (a mail marked unread since stays unread).
+func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList []string, labelCache map[string]string, done []string) (applied []string, protectedSkip, failed bool) {
 	ref := session.RefFor(ctx, email.MessageID)
 	for _, a := range rules.ApplyOrder(rules.EffectiveActions(rule)) {
+		if containsString(done, a.Type) {
+			continue
+		}
 		if !allows(a.Type, email.From, protectedList) {
 			protectedSkip = true
 			continue
@@ -622,6 +687,16 @@ func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, 
 		}
 	}
 	return applied, protectedSkip, failed
+}
+
+// containsString says whether list holds s.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // applyOneAction performs a single rule action on one message.

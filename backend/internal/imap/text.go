@@ -30,11 +30,12 @@ type Text struct {
 	Body string
 	// Snippet is the one-line preview the list would show, as Fetch makes it.
 	Snippet string
-	// NotReached is a message larger than what is read, in whose beginning
-	// no text part was found: a file before the text, for instance. Its text
-	// was not read, and Body is empty for that reason, not because the
-	// message has none: a rule must not judge it ("does not contain" would
-	// match a text nobody read).
+	// NotReached is a message larger than what is read whose text was not
+	// read in full: no text part was found in its beginning (a file before
+	// the text), or the read stopped inside the text part it would be judged
+	// on (an HTML larger than what is read, a text after a large file). Body
+	// is then empty: a rule must not judge it on a text nobody read whole
+	// ("does not contain" would match what it did not read).
 	NotReached bool
 }
 
@@ -87,16 +88,19 @@ func (c *Client) Texts(ctx context.Context, folder string, uids []string) (map[s
 			continue
 		}
 		uid := strconv.FormatUint(uint64(m.UID), 10)
-		plain, html := readBodies(wholeMessage(m), true)
-		if plain == "" && html == "" && m.RFC822Size > textBytes {
+		truncated := m.RFC822Size > textBytes
+		b := readBodies(wholeMessage(m), truncated)
+		// The text a rule reads: the plain part, or the HTML's when there is
+		// none.
+		body, cut := b.plain, b.plainCut
+		if body == "" {
+			body, cut = stripTags(b.html), b.htmlCut
+		}
+		if cut || (truncated && b.plain == "" && b.html == "") {
 			out[uid] = Text{NotReached: true}
 			continue
 		}
-		body := plain
-		if body == "" {
-			body = stripTags(html)
-		}
-		out[uid] = Text{Body: body, Snippet: snippet(plain, html)}
+		out[uid] = Text{Body: body, Snippet: snippet(b.plain, b.html)}
 	}
 	return out, nil
 }

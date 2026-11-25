@@ -366,26 +366,50 @@ on each synced message. Over IMAP they run on the messages that arrive. A
 listed message arrives when this sync stores it for the first time and its
 server received it (INTERNALDATE, to the second) no earlier than the later of
 two moments: the option turned on (stamped when it goes from off to on) and
-the mailbox connected (`mail_accounts.createdAt`). So turning the option on, or
-connecting a mailbox with the option on, sorts nothing already in the inbox
-(`POST /api/rules/apply` does). Nor is a message one whose Message-ID the
+the mailbox connected (`mail_accounts.createdAt`, set when a mailbox is
+connected, and set again when another address or another server is connected
+in its place; connecting the same mailbox again, with a new app password,
+keeps it). So turning the option on, or connecting a mailbox with the option
+on, sorts nothing already in the inbox (`POST /api/rules/apply` does).
+INTERNALDATE is written by the mail server's clock and the two moments by
+Mailsorter's: a gap between the two clocks moves the line by as much (a mail
+received just before the option was turned on may count as arrived, or the
+reverse). Nor is a message one whose Message-ID the
 stored copy holds under another number when the sync starts: a message put
 back by "Annuler" when the server did not say its new number, one Mailsorter
 moved out in the last 30 days and another mail program moved back, or one
 another program moved out and back between two syncs. One another program
 moved out, then back after a sync went by, is not recognized: that sync
 dropped it from the copy, and it is judged as a message that arrives if its
-INTERNALDATE allows it. An arrival is marked as it is stored, then judged. One
-whose text could not be read, or on which an action of its rule failed, stays
-marked, and the next syncs judge it again, 3 syncs in all, then give up on it
-(logged, and left in the inbox). The sync still answers `200`, since the
-messages were read and listed: `rulesPending` counts the messages left for the
-next sync, and `rulesMessage` says it for the screen to show as information,
-in French ("Vos règles n'ont pas pu être appliquées à 2 nouveaux mails : la
-prochaine synchronisation réessaiera.", and, at the sync that gives up, once:
-"1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte.").
-`rulesMessage` is absent when there is nothing to tell. A marked message that
-left the inbox meanwhile is not judged, nor counted. A rule on
+INTERNALDATE allows it.
+
+An arrival is marked as it is stored, then judged. Tried again at the next
+syncs, 3 syncs in all: a message whose text read the server stopped or that
+ran out of time, and a message on which an action of its rule failed (a move
+the server refused, for instance). The actions its rule already did are kept
+on its row and not done again: a message starred, then refused by the
+archive, is not starred a second time, nor written twice in the history, nor
+counted twice (`appliedCount` counts it at its first action), and one marked
+read then unread again by its owner stays unread. Not tried again: a message
+whose text cannot be parsed, and one whose text was not read in full (see
+"Sorting Rules Endpoints"): left aside, logged. After 3 syncs a message is
+given up (logged, left in the inbox). A marked message that left the inbox
+meanwhile is not judged, nor counted. A sync holds the messages it judges for
+10 minutes, longer than any sync runs, so two syncs, or a sync and
+`POST /api/rules/apply`, never act on one message at once.
+
+The sync still answers `200` when its rules could not judge every message,
+since the messages were read and listed. `rulesApplied` counts the messages
+whose rule did everything it does (something at least), `rulesPending` the
+messages left for the next sync: a message is in one or the other.
+`rulesMessage` says it for the screen to show as information, in French:
+"Vos règles n'ont pas pu être appliquées à 2 nouveaux mails : la prochaine
+synchronisation réessaiera." for this sync's pending messages, and "1 mail n'a
+pas pu être rangé par vos règles : laissé dans la boîte." for the messages
+given up since a sync from the screen last told it, whichever sync gave them
+up, the background one included: the account keeps the count until a call of
+this route answers it, once. `rulesMessage` is absent when there is nothing to
+tell. A rule on
 `body` or `snippet` reads the text of those messages from the server first.
 The listing, and that text, are read with PEEK, so syncing never marks a
 message read.
@@ -1866,10 +1890,16 @@ since the last sync not yet. The copy keeps no text, so when an enabled rule
 has a condition on `body` or `snippet`, the text of those messages is read from
 the server, with PEEK (the messages stay unread), the first 256 KiB of each,
 20 messages a FETCH, checking the request's time limit between two FETCHes.
-A message whose text cannot be read is left out, logged, and so is one larger
-than what is read in whose beginning no text part was found (a file before the
-text): judged on an empty text, "does not contain" would match it. A read the
-server stops, or that runs out of time, fails the request (`502`). A `label`
+A message whose text cannot be parsed is left out, logged, and so is a message
+whose text was not read in full: larger than what is read, and either no text
+part was found in its beginning (a file before the text) or the read stopped
+inside the text part a rule would judge (the plain text, or the HTML when there
+is none: a text or an HTML larger than 256 KiB, a text after a large file, a
+message that is all text and larger). No rule on `body` or `snippet` judges
+such a message, not even "does not contain", which would match what was not
+read; rules on the sender, the subject or the recipients still do. A read the
+server stops, or that runs out of time, fails the request (`502`). `apply`
+leaves out a message a sync holds at that moment. A `label`
 action is skipped there (a message sits in one folder); the rule's other
 actions run. A mail judged by `apply` is no longer marked for the sync (see
 `POST /api/emails/sync`).
