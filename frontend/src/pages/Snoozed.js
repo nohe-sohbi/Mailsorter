@@ -21,10 +21,13 @@ const gradientFor = (seed = '') => {
 };
 const senderName = (from = '') => from.split('<')[0].replace(/"/g, '').trim() || from;
 
-// Le backend connaît trois états (`scheduled`, `done`, `failed`) et la page n'en
-// montrait qu'un. Un report en échec (message introuvable côté Gmail, cinq
-// tentatives épuisées) quittait donc la liste sans un mot : l'email restait
-// hors de la boîte, définitivement, sans que personne ne l'apprenne.
+// Le backend connaît trois états à montrer (`scheduled`, `done`, `failed`) et la
+// page n'en montrait qu'un. Un report en échec (message introuvable dans la
+// boîte, cinq tentatives épuisées) quittait donc la liste sans un mot : l'email
+// restait hors de la boîte, définitivement, sans que personne ne l'apprenne. Le
+// quatrième, `cancelled` (annulé par « Annuler », ou sorti de « Plus tard » par
+// un autre logiciel sur une boîte IMAP), n'a pas d'onglet : il n'y a plus rien
+// à faire revenir.
 const TABS = [
   {
     key: 'scheduled',
@@ -436,9 +439,9 @@ function Snoozed() {
                       <Alert size={14} className="mt-0.5 shrink-0" />
                       <span>
                         Le retour dans votre boîte a échoué {s.attempts || 5} fois, puis Mailsorter a cessé
-                        de réessayer. Le message a sans doute été supprimé ou déplacé définitivement dans
-                        Gmail. Cet email est donc toujours hors de votre boîte : « Réactiver » relance la
-                        tentative.
+                        de réessayer. Le message a sans doute été supprimé ou déplacé depuis votre messagerie,
+                        ou celle-ci n'a pas répondu. Cet email est donc toujours hors de votre boîte :
+                        « Réactiver » relance la tentative.
                       </span>
                     </p>
                   )}
