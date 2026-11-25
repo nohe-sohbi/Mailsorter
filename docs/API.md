@@ -336,7 +336,8 @@ reader fetches the one it opens (`GET /api/emails/{id}`).
 (RFC 5322, never an address in the display name, a local part quoted when it
 is not a dot-atom; a display name nobody quoted, `Doe, John <j@x.com>`, is read
 again in quotes when it holds no `<`, `>` or quote), the one the screens show
-and act on; it is absent when `from` names several authors, and when
+and act on; it is absent when `from` names several authors or uses the group
+syntax (`Undisclosed: a@x.fr;`), and when
 `from` does not read as one address, and the screens then show `from` as it
 is rather than read an address out of it. `GET /api/emails/{id}` carries it
 too.
@@ -849,10 +850,22 @@ Returns `{ "protected": [ { "id", "value", "kind", "note", "createdAt" } ] }`.
 
 **Body:**
 ```json
-{ "value": "boss@corp.com", "note": "" }
+{ "value": "boss@corp.com", "note": "", "fromMail": false }
 ```
-The value is normalized and classified server-side (`kind`: `address` or
-`domain`). A raw `Name <addr>` header is accepted; the bare address is stored.
+Two ways in:
+
+- `fromMail: true` ("Protéger" in the reader): `value` is the mail's From
+  header, and the sender's address is stored exactly as it is read out of it
+  (`protect.EntryFromMail`, the reading of `senderAddress`), lowercased and
+  nothing else (`'patron@victime.fr'` keeps its apostrophes, a quoted local
+  part its quotes): that is how the next mails are compared with it. A From
+  that names no sender (unreadable, several authors, a group) answers `400`
+  "L'adresse de cet expéditeur est illisible : il ne peut pas être protégé
+  depuis ce mail.".
+- Otherwise (typed in the settings): the value is normalized and classified
+  (`kind`: `address` or `domain`), apostrophes around it dropped; a raw `Name
+  <addr>` header is accepted and its address stored. A value that does not read
+  and holds `<`, `,`, `;`, `:` or a quote answers `400`.
 
 ### Remove a protected sender
 
