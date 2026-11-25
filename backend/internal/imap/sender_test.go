@@ -3,7 +3,9 @@ package imap
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
@@ -85,6 +87,11 @@ func TestTheSameFromNamesTheSameSenderOnBothTransports(t *testing.T) {
 			}
 			for transport, f := range map[string]string{"Gmail": viaGmail, "IMAP": imapFrom} {
 				if protect.Address(f) == "" {
+					// What a screen shows for a From with no sender: no
+					// control byte (a tab aside).
+					if i := strings.IndexFunc(f, func(r rune) bool { return r != '\t' && unicode.IsControl(r) }); i >= 0 {
+						t.Errorf("%s stores %q for a From that names no sender, a control byte included", transport, f)
+					}
 					continue
 				}
 				entry := protect.EntryFromMail(f)

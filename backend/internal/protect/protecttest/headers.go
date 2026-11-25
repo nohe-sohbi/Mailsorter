@@ -78,6 +78,7 @@ var Headers = []Header{
 	{Name: "a control byte in the name", From: "Lettre\x01 <lettre@journal.fr>", Want: ""},
 	{Name: "a DEL byte in the name", From: "Lettre\x7f <lettre@journal.fr>", Want: ""},
 	{Name: "a control byte in a quoted name", From: "\"Lettre\x01\" <lettre@journal.fr>", Want: ""},
+	{Name: "a control byte in a From that names nobody", From: "Broken\x01 <unterminated", Want: ""},
 	// Two From headers name no single sender.
 	{Name: "two From headers", From: "Lettre <lettre@journal.fr>", Second: "Patron <patron@victime.fr>", Want: ""},
 	{Name: "two From headers, the same", From: "lettre@journal.fr", Second: "lettre@journal.fr", Want: ""},

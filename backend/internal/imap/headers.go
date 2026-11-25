@@ -96,7 +96,8 @@ func (h headerFields) first(name string) string {
 // One From header naming a sender is stored as its decoded display name and
 // its address ("Réseau" <news@reseau.fr>): readable on the screen, and read
 // back by protect.Address as the same address. One naming none is stored as
-// written (made valid UTF-8), which reads as no sender. Two or more name no
+// written, its control bytes turned into spaces (protect.NoSenderText), which
+// still reads as no sender. Two or more name no
 // single sender: stored as one quoted text, which reads as none. No header
 // block, or no From in it: no sender either, logged; the envelope's text, in
 // quotes, only for the screen.
@@ -121,7 +122,7 @@ func senderFrom(msg *imapclient.FetchMessageBuffer, uid string) string {
 	name, address := protect.Sender(raw)
 	switch {
 	case address == "":
-		return raw
+		return protect.NoSenderText(raw)
 	case name == "":
 		return address
 	}

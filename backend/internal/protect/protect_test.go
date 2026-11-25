@@ -54,6 +54,27 @@ func TestProtectingAMailShieldsItsSender(t *testing.T) {
 	}
 }
 
+// A From that names no sender is stored without its control bytes, and
+// still names no sender, even when cleaning would have given it one.
+func TestNoSenderText(t *testing.T) {
+	cases := map[string]string{
+		"Broken\x01 <unterminated":           "Broken  <unterminated",
+		"No\x7fAddress":                      "No Address",
+		"tab\tkept, a@x.fr, b@x.fr":          "tab\tkept, a@x.fr, b@x.fr",
+		"Lettre\x01 <lettre@journal.fr>":     `"Lettre  <lettre@journal.fr>"`,
+		"\"Lettre\x01\" <lettre@journal.fr>": `"\"Lettre \" <lettre@journal.fr>"`,
+	}
+	for raw, want := range cases {
+		got := NoSenderText(raw)
+		if got != want {
+			t.Errorf("NoSenderText(%q) = %q, want %q", raw, got, want)
+		}
+		if a := Address(got); a != "" {
+			t.Errorf("NoSenderText(%q) = %q, which reads as %q, want no sender", raw, got, a)
+		}
+	}
+}
+
 // An address typed between apostrophes protects that address.
 func TestATypedEntryInApostrophesProtects(t *testing.T) {
 	value, _ := NormalizeEntry("'jean@x.fr'")

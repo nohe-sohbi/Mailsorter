@@ -557,7 +557,9 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 }
 
 // fromOf is the From a message's From headers give. One is the sender as
-// written. Two or more name no single sender: overwriting kept the last one,
+// written; when it names no sender, its control bytes are turned into spaces
+// for the screen (protect.NoSenderText), as the IMAP listing does. Two or
+// more name no single sender: overwriting kept the last one,
 // whoever the first named, so the mail read as the second author's, swept by
 // his unsubscribe and spared by his protection. They are kept for the screen
 // as one quoted text, which names no sender (protect.QuotedText), as the IMAP
@@ -567,6 +569,9 @@ func fromOf(froms []string) string {
 	case 0:
 		return ""
 	case 1:
+		if protect.Address(froms[0]) == "" {
+			return protect.NoSenderText(froms[0])
+		}
 		return froms[0]
 	}
 	return protect.QuotedText(strings.Join(froms, ", "))

@@ -145,6 +145,32 @@ func Sender(raw string) (name, address string) {
 	return a.Name, strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
 }
 
+// NoSenderText is how a From that names no sender (Address reads "") is
+// stored, for the screen: as written, made valid UTF-8 and with each control
+// character (but a tab) turned into a space, so no control byte reaches a
+// screen. Cleaning must not give it a sender: a From that only failed to read
+// for a control byte ("Lettre\x01 <lettre@journal.fr>") would read once
+// cleaned, so that one is stored as quoted text instead (QuotedText), which
+// never reads as an address.
+func NoSenderText(raw string) string {
+	cleaned := withoutControls(strings.ToValidUTF8(raw, "\uFFFD"))
+	if Address(cleaned) == "" {
+		return cleaned
+	}
+	return QuotedText(raw)
+}
+
+// withoutControls is text with each control character but a tab turned into
+// a space.
+func withoutControls(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\t' && unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)
+}
+
 // QuotedText is text as an RFC 5322 quoted string: valid UTF-8, a control
 // character (but a tab) turned into a space, "\" and quotes escaped. A From
 // stored as QuotedText names no sender (Address reads ""): it is how a
@@ -152,13 +178,7 @@ func Sender(raw string) (name, address string) {
 // From headers, a header that does not read), and how a display name is
 // written before its address.
 func QuotedText(text string) string {
-	text = strings.ToValidUTF8(text, "\uFFFD")
-	text = strings.Map(func(r rune) rune {
-		if r != '\t' && unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, text)
+	text = withoutControls(strings.ToValidUTF8(text, "\uFFFD"))
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(text, `\`, `\\`), `"`, `\"`) + `"`
 }
 
