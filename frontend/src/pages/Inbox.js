@@ -11,6 +11,7 @@ import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
 import TriagePlan, { useTriagePlan } from '../components/inbox/TriagePlan';
 import SnoozeButton from '../ui/SnoozeMenu';
+import { useMailboxErrorToast } from '../ui/mailboxError';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
@@ -230,6 +231,7 @@ const STAT_CARDS = [
 
 function Inbox() {
   const navigate = useNavigate();
+  const showMailboxError = useMailboxErrorToast();
   const toast = useToast();
   const hotel = useHotel();
   const confirm = useConfirm();
@@ -444,12 +446,16 @@ function Inbox() {
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
-        // The failures worth their own words: another mail client moved the
-        // mail meanwhile (404 with the reason), or several copies of it are
-        // where Mailsorter put it (409 severalCopies). Anything else stays
-        // generic.
-        const own = err?.response?.status === 404 || err?.response?.data?.severalCopies;
-        toast.error(own ? apiError(err, "Impossible d'annuler.") : "Impossible d'annuler");
+        // The failures the server words for the user: another mail client
+        // moved the mail meanwhile (404), several copies of it (409), its
+        // report being brought back (423), the mailbox to connect again
+        // (428, with the way there), or not answering (502). Anything else
+        // stays generic.
+        if ([404, 409, 423, 428, 502].includes(err?.response?.status)) {
+          showMailboxError(err, "Impossible d'annuler.");
+        } else {
+          toast.error("Impossible d'annuler");
+        }
       }
     });
   };
@@ -524,7 +530,13 @@ function Inbox() {
     // announced as done; a failed listing is already on screen as an error.
     // The list of an IMAP mailbox is the stored copy, so it is the last sync's.
     // Over the Gmail API the list is read live, and saying so would be false.
-    if (result?.syncError) {
+    if (result?.syncNeedsMailbox) {
+      // The mailbox to connect again: the server's sentence, and the way.
+      toast.action(result.syncError, 'Mettre à jour', () => navigate('/connect'), { variant: 'error' });
+    } else if (result?.syncSaid) {
+      // The server's own sentence says it all: alone, one sentence.
+      toast.error(result.syncError);
+    } else if (result?.syncError) {
       toast.error(
         `La synchronisation a échoué. ${result.syncError}${
           isImap ? ' Les emails affichés sont ceux de la dernière synchronisation réussie.' : ''
@@ -1046,7 +1058,7 @@ function Inbox() {
       bumpGamify(1);
       toast.success('Email reporté, il reviendra au bon moment');
     } catch (err) {
-      toast.error(apiError(err, 'Report impossible. Réessayez.'));
+      showMailboxError(err, 'Report impossible. Réessayez.');
       fetchData({ forceRefresh: true, sync: false });
     }
   };

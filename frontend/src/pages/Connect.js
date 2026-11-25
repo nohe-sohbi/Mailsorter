@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { mailboxService, configService, authService } from '../services/api';
+import { mailboxService, configService, authService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { useInstance } from '../contexts/InstanceContext';
@@ -183,15 +183,10 @@ function Connect() {
     } catch (err) {
       const status = err.response?.status;
       track('mailbox_connect_failed', { status: status || 0 });
-      if (status === 401) {
-        toast.error("Identifiants refusés. Vérifiez qu'il s'agit d'un mot de passe d'application, pas de celui du compte.");
-      } else if (status === 422) {
-        toast.error("Cette boîte ne se branche pas en IMAP sur cette instance.");
-      } else if (status === 502) {
-        toast.error('Le serveur de mail ne répond pas. Réessayez dans un instant.');
-      } else {
-        toast.error("La connexion n'a pas pu être enregistrée.");
-      }
+      // The server's sentence, the same one every screen shows for the case
+      // (a password refused, a mailbox that did not answer, an address with
+      // no IMAP route): written once, server-side.
+      toast.error(apiError(err, "La connexion n'a pas pu être enregistrée."));
     } finally {
       setConnecting(false);
     }

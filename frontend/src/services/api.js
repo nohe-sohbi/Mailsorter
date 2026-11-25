@@ -270,7 +270,10 @@ export const configService = {
 // carries the password back.
 export const mailboxService = {
   get: () => apiClient.get('/api/mailbox'),
-  connect: (address, password) => apiClient.post('/api/mailbox/connect', { address, password }),
+  // optional: a password the provider refuses answers 401 here, which is not
+  // a dead Mailsorter session; signing out would leave the screen before it
+  // says so.
+  connect: (address, password) => apiClient.post('/api/mailbox/connect', { address, password }, { optional: true }),
   disconnect: () => apiClient.delete('/api/mailbox'),
 };
 

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { snoozeService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
+import { useMailboxErrorToast } from '../ui/mailboxError';
 import { EmptyState, ErrorState, LiveAnnouncer } from '../ui/primitives';
 import { Clock, Undo, Mail, Alert, Check } from '../ui/icons';
 import Spinner from '../ui/Spinner';
@@ -153,6 +154,7 @@ function countdown(dateStr, now) {
 
 function Snoozed() {
   const toast = useToast();
+  const showMailboxError = useMailboxErrorToast();
   const hotel = useHotel();
   const confirm = useConfirm();
   const [tab, setTab] = useState('scheduled');
@@ -261,7 +263,10 @@ function Snoozed() {
       if (tab === 'failed') setFailedCount((c) => Math.max(0, c - 1));
       toast.success('Email réactivé, de retour dans votre boîte');
     } catch (err) {
-      toast.error(apiError(err, 'Réactivation impossible. Réessayez.'));
+      // The server's sentence: the mailbox to connect again (428, with the
+      // way there), not answering (502), being brought back already (423),
+      // several copies in "Plus tard" (409).
+      showMailboxError(err, 'Réactivation impossible. Réessayez.');
     } finally {
       setWaking(null);
     }
