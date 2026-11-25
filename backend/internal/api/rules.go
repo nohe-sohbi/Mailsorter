@@ -10,6 +10,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -410,7 +411,7 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 // archive/trash are skipped, but a non-destructive action in the same rule
 // (label/star/markRead) still runs. It returns the action types actually applied
 // (for the ledger) and whether a destructive action was skipped for protection.
-func (h *Handler) applyRuleToMessage(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID, from string, rule models.SortingRule, protectedList []string, labelCache map[string]string) (applied []string, protectedSkip bool) {
+func (h *Handler) applyRuleToMessage(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID, from string, rule models.SortingRule, protectedList protect.Shield, labelCache map[string]string) (applied []string, protectedSkip bool) {
 	for _, a := range rules.EffectiveActions(rule) {
 		if !allows(a.Type, from, protectedList) {
 			protectedSkip = true

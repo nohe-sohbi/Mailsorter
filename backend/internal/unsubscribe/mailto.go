@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
-	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -120,17 +119,23 @@ func registrableDomain(address string) (string, bool) {
 	if at < 0 {
 		return "", false
 	}
-	domain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(address[at+1:])), ".")
-	// An IP is no name: the Public Suffix List would read 192.168.0.1 and
-	// 10.0.0.1 as the same "0.1".
-	if domain == "" || strings.ContainsAny(domain, "[]:") || net.ParseIP(domain) != nil {
+	domain := strings.TrimSuffix(strings.TrimSpace(address[at+1:]), ".")
+	if domain == "" || strings.ContainsAny(domain, "[]:") {
 		return "", false
 	}
 	// In ASCII, the one form two domains are compared in, and the one the
 	// Public Suffix List reads: lettre@café.fr and stop@xn--caf-dma.fr are on
-	// one domain.
-	ascii, err := idna.Lookup.ToASCII(domain)
-	if err != nil {
+	// one domain. The domain goes to IDNA as written, the way the shield reads
+	// it (protect.ASCIIDomain): lowered by Go first, "lİnkedin.com" became
+	// linkedin.com.
+	ascii, ok := protect.ASCIIDomain(domain)
+	if !ok {
+		return "", false
+	}
+	// An IP is no name: the Public Suffix List would read 192.168.0.1 and
+	// 10.0.0.1 as the same "0.1". Read once in ASCII too, where full-width
+	// digits have become digits.
+	if net.ParseIP(domain) != nil || net.ParseIP(ascii) != nil {
 		return "", false
 	}
 	site, err := publicsuffix.EffectiveTLDPlusOne(ascii)

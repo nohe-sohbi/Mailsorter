@@ -364,7 +364,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		// Shield protected senders from a bulk "apply all" that would take
 		// their mail out of the inbox (archive, trash, and over IMAP filing
 		// into a folder). The suggestion is left pending, untouched.
-		if len(protectedList) > 0 && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
+		if !protectedList.Empty() && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, suggestion.EmailID), protectedList) {
 			protectedSkipped++
 			continue
 		}

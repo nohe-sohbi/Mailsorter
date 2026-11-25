@@ -1,7 +1,6 @@
 package protect
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect/protecttest"
@@ -22,8 +21,8 @@ func TestAddressOfRealHeaders(t *testing.T) {
 			if got != "" && Address(got) != got {
 				t.Errorf("Address(Address(%q)) = %q, want it to read back as %q", tc.From, Address(got), got)
 			}
-			if n := NormalizeAddress(tc.From); n != strings.ToLower(tc.Want) {
-				t.Errorf("NormalizeAddress(%q) = %q, want %q", tc.From, n, strings.ToLower(tc.Want))
+			if n := NormalizeAddress(tc.From); n != addressForm(tc.Want) {
+				t.Errorf("NormalizeAddress(%q) = %q, want %q", tc.From, n, addressForm(tc.Want))
 			}
 		})
 	}
@@ -119,20 +118,147 @@ func TestInternationalDomainsAreOneDomain(t *testing.T) {
 	}
 }
 
+// A domain is read as IDNA reads it as written, never lowered by Go first:
+// Go lowers "İ" (U+0130) to "i" and "ẞ" (U+1E9E) to "ß", UTS 46 maps them to
+// "i̇" and, in the tables x/net carries, "ss". news@lİnkedin.com is not
+// linkedin.com's, and x@STRAẞE.de is strasse.de's, not straße.de's.
+func TestDomainsAreReadAsWrittenByIDNA(t *testing.T) {
+	if Match("news@lİnkedin.com", []string{"linkedin.com"}) || Match("news@lİnkedin.com", []string{"news@linkedin.com"}) {
+		t.Error("linkedin.com protects news@lİnkedin.com, another domain")
+	}
+	if Match("news@linkedin.com", []string{"lİnkedin.com"}) {
+		t.Error("lİnkedin.com protects news@linkedin.com, another domain")
+	}
+	if Match("x@STRAẞE.de", []string{"straße.de"}) {
+		t.Error("straße.de protects x@STRAẞE.de, which IDNA reads strasse.de")
+	}
+	if !Match("x@STRAẞE.de", []string{"strasse.de"}) {
+		t.Error("strasse.de does not protect x@STRAẞE.de, which IDNA reads strasse.de")
+	}
+	if SameAddress("news@lİnkedin.com", "news@linkedin.com") || SameAddress("x@STRAẞE.de", "x@straße.de") {
+		t.Error("SameAddress takes two domains IDNA tells apart for one")
+	}
+	if !SameAddress("News@LİNKEDIN.com", "news@lİnkedin.com") {
+		t.Error("SameAddress does not see one domain in News@LİNKEDIN.com and news@lİnkedin.com")
+	}
+	// The local part alone goes to lowercase.
+	if !SameAddress("Jean.Dupont@x.fr", "jean.dupont@x.fr") {
+		t.Error("SameAddress tells Jean.Dupont@x.fr from jean.dupont@x.fr")
+	}
+}
+
+// What is typed in the settings, or protected from a mail, protects a From
+// written the same way, whatever the way: accented, in punycode, full-width,
+// with the letters Go and IDNA lower differently, in a script that is shown
+// in punycode.
+func TestAnEntryProtectsAFromWrittenTheSameWay(t *testing.T) {
+	for _, domain := range []string{
+		"lİnkedin.com", "LİNKEDIN.com", "STRAẞE.de", "straße.de", "Café.fr",
+		"xn--caf-dma.fr", "ｅｘａｍｐｌｅ.fr", "xn--80ak6aa92e.com", "аррӏе.com",
+		"pаypal.com", "日本.jp", "ドメイン名例.jp", "ΑΒΓ.gr", "Kelvin.com",
+	} {
+		from := "Contact <Contact@" + domain + ">"
+		typed, kind := NormalizeEntry(domain)
+		if typed == "" || kind != KindDomain || !Match(from, []string{typed}) {
+			t.Errorf("the domain typed %q is stored %q, which does not protect %q", domain, typed, from)
+		}
+		address, kind := NormalizeEntry("Contact@" + domain)
+		if address == "" || kind != KindAddress || !Match(from, []string{address}) {
+			t.Errorf("the address typed %q is stored %q, which does not protect %q", "Contact@"+domain, address, from)
+		}
+		if entry := EntryFromMail(from); entry == "" || !Match(from, []string{entry}) {
+			t.Errorf("Protéger on a mail from %q stores %q, which does not protect it", from, entry)
+		}
+	}
+}
+
+// How an entry shows a domain, the browsers' rule: Unicode only when each
+// label is in one script that does not imitate Latin, punycode otherwise.
+func TestEntryShowsADomainTheBrowsersWay(t *testing.T) {
+	cases := map[string]string{
+		"café.fr":            "café.fr",
+		"xn--caf-dma.fr":     "café.fr",
+		"日本.jp":              "日本.jp",
+		"xn--80ak6aa92e.com": "xn--80ak6aa92e.com",
+		"аррӏе.com":          "xn--80ak6aa92e.com",
+		"пример.рф":          "xn--e1afmkfd.xn--p1ai",
+		"αβγ.gr":             "xn--mxacd.gr",
+		"pаypal.com":         "xn--pypal-4ve.com",
+		"ドメイン名例.jp":          "xn--eckwd4c7cu47r2wf.jp",
+		"example.com":        "example.com",
+	}
+	for typed, want := range cases {
+		if got, _ := NormalizeEntry(typed); got != want {
+			t.Errorf("NormalizeEntry(%q) = %q, want %q", typed, got, want)
+		}
+	}
+	if got, _ := NormalizeEntry("Jean@пример.рф"); got != "jean@xn--e1afmkfd.xn--p1ai" {
+		t.Errorf("NormalizeEntry(Jean@пример.рф) = %q, want jean@xn--e1afmkfd.xn--p1ai", got)
+	}
+	if got := EntryFromMail("Apple <id@xn--80ak6aa92e.com>"); got != "id@xn--80ak6aa92e.com" {
+		t.Errorf("EntryFromMail(Apple <id@xn--80ak6aa92e.com>) = %q, want id@xn--80ak6aa92e.com", got)
+	}
+}
+
+// A Shield puts each entry in its comparison form once, and answers what
+// Match, Allowed and AllowedOnFolders answer.
+func TestShieldAnswersLikeTheEntries(t *testing.T) {
+	entries := []string{"boss@corp.com", "café.fr", "Contact@Ｓhop.fr", "lİnkedin.com"}
+	shield := NewShield(entries)
+	froms := []string{
+		"Boss <BOSS@corp.com>", "a@xn--caf-dma.fr", "x@mail.café.fr", "contact@shop.fr",
+		"news@linkedin.com", "news@lİnkedin.com", "stranger@other.com", "not an address",
+	}
+	for _, from := range froms {
+		for _, action := range []string{ActionArchive, ActionLabel, "markRead"} {
+			if got, want := shield.Allows(action, from), Allowed(action, from, entries); got != want {
+				t.Errorf("Shield.Allows(%q, %q) = %v, Allowed = %v", action, from, got, want)
+			}
+			if got, want := shield.AllowsOnFolders(action, from), AllowedOnFolders(action, from, entries); got != want {
+				t.Errorf("Shield.AllowsOnFolders(%q, %q) = %v, AllowedOnFolders = %v", action, from, got, want)
+			}
+		}
+	}
+	if !shield.Protects("a@xn--caf-dma.fr") || shield.Protects("news@linkedin.com") || !shield.Protects("news@lİnkedin.com") {
+		t.Error("the shield does not read the entries as written")
+	}
+	if shield.Allows(ActionArchive, "not an address") {
+		t.Error("an unreadable sender is archived while someone is protected")
+	}
+	empty := NewShield(nil)
+	if !empty.Empty() || !empty.Allows(ActionArchive, "not an address") {
+		t.Error("an empty shield refuses something")
+	}
+}
+
 // What a screen shows for a sender: never an address of the display name
-// that is not the sender's, and no control byte.
+// that is not the sender's, in any width, no control or format character,
+// and the address when the name shows nothing.
 func TestLabel(t *testing.T) {
 	cases := map[string]string{
-		`"boss@corp.com" <evil@evil.io>`:                "evil@evil.io",
-		"boss@corp.com <evil@evil.io>":                  "evil@evil.io",
-		`"Evil@Evil.io" <evil@evil.io>`:                 "Evil@Evil.io",
-		`"<patron@victime.fr>" <lettre@journal.fr>`:     "lettre@journal.fr",
-		"Ma Banque <info@banque.fr>":                    "Ma Banque",
-		"info@banque.fr":                                "info@banque.fr",
-		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>":      "Réseau",
-		`"Lettre <lettre@journal.fr>, Patron <p@v.fr>"`: "Lettre <lettre@journal.fr>, Patron <p@v.fr>",
-		"Broken\x01 <unterminated":                      "Broken  <unterminated",
-		"patron@victime.fr, Lettre <lettre@journal.fr>": "patron@victime.fr, Lettre <lettre@journal.fr>",
+		`"boss@corp.com" <evil@evil.io>`:                   "evil@evil.io",
+		"boss@corp.com <evil@evil.io>":                     "evil@evil.io",
+		`"Evil@Evil.io" <evil@evil.io>`:                    "evil@evil.io",
+		"\"boss\uFF20corp.com\" <evil@evil.io>":            "evil@evil.io",
+		"\"boss\uFE6Bcorp.com\" <evil@evil.io>":            "evil@evil.io",
+		"=?UTF-8?B?Ym9zc++8oGNvcnAuY29t?= <evil@evil.io>":  "evil@evil.io",
+		"\"\u202Emoc.lapyap\" <evil@evil.io>":              "moc.lapyap",
+		"\"Ma\u200B Banque\u2066\u200E\" <info@banque.fr>": "Ma Banque",
+		"<\u202Emoc.lapyap@evil.io>":                       "moc.lapyap@evil.io",
+		"\"\u200B\" <evil@evil.io>":                        "evil@evil.io",
+		"\"\u2800\u2800\" <evil@evil.io>":                  "evil@evil.io",
+		"\"\u3164\" <evil@evil.io>":                        "evil@evil.io",
+		"\"\u202E\u2067\" <evil@evil.io>":                  "evil@evil.io",
+		"\"\u0301\" <evil@evil.io>":                        "evil@evil.io",
+		"\"Équipe \U0001F468\u200D\U0001F4BB\" <dev@x.fr>": "Équipe \U0001F468\u200D\U0001F4BB",
+		"\"Lettre\u202E\" <lettre@journal.fr>, x@y.fr":     `"Lettre" <lettre@journal.fr>, x@y.fr`,
+		`"<patron@victime.fr>" <lettre@journal.fr>`:        "lettre@journal.fr",
+		"Ma Banque <info@banque.fr>":                       "Ma Banque",
+		"info@banque.fr":                                   "info@banque.fr",
+		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>":         "Réseau",
+		`"Lettre <lettre@journal.fr>, Patron <p@v.fr>"`:    "Lettre <lettre@journal.fr>, Patron <p@v.fr>",
+		"Broken\x01 <unterminated":                         "Broken  <unterminated",
+		"patron@victime.fr, Lettre <lettre@journal.fr>":    "patron@victime.fr, Lettre <lettre@journal.fr>",
 		"": "",
 	}
 	for from, want := range cases {

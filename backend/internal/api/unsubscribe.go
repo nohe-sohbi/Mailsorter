@@ -296,10 +296,15 @@ func (h *Handler) sendUnsubscribeMail(ctx context.Context, account models.MailAc
 		log.Printf("unsubscribe: the mailto of %q is not written for %s, handed to the screen: %v", from, userEmail, err)
 		return "", time.Time{}, fmt.Errorf("%w: %w", errNotWrittenForYou, err)
 	}
-	// Written to as the list wrote it; lowercased only to count it once in
-	// the window, since an address is the same in any case.
+	// Written to as the list wrote it; counted in the window in the form
+	// senders are compared in (protect.NormalizeAddress: the local part in
+	// lowercase, the domain as IDNA reads it), since stop@café.fr and
+	// STOP@xn--caf-dma.fr are one address.
 	to := request.To
-	key := strings.ToLower(to)
+	key := protect.NormalizeAddress(to)
+	if key == "" {
+		return "", time.Time{}, fmt.Errorf("%w: %q does not read as one address", errNotWrittenForYou, to)
+	}
 	now := time.Now().Truncate(time.Millisecond)
 	claimed, err := h.claimUnsubscribeMail(ctx, userEmail, key, now)
 	if err != nil {

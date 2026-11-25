@@ -210,7 +210,7 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 	// needs each sender, and the snoozed list needs the subject to be readable.
 	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
 	protectedList := h.protectedValues(ctx, userEmail)
-	if len(protectedList) > 0 || len(identities) < len(req.MessageIDs) {
+	if !protectedList.Empty() || len(identities) < len(req.MessageIDs) {
 		h.fillMissingIdentities(ctx, gmailClient, req.MessageIDs, identities)
 	}
 
@@ -226,7 +226,7 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 		meta.MessageID = id
 		// Fail safe, like the batch actions: a sender we could not establish is
 		// treated as possibly protected rather than assumed harmless.
-		if len(protectedList) > 0 && (meta.From == "" || !allows(protect.ActionArchive, meta.From, protectedList)) {
+		if !protectedList.Empty() && (meta.From == "" || !allows(protect.ActionArchive, meta.From, protectedList)) {
 			res.Protected++
 			continue
 		}

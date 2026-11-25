@@ -332,7 +332,16 @@ func TestSameRegistrableDomain(t *testing.T) {
 		{"a@[10.0.0.1]", "b@[10.0.0.1]", false},
 		{"a@[IPv6:2001:db8::1]", "b@[IPv6:2001:db8::1]", false},
 		{"a@2001:db8::1", "b@2001:db8::1", false},
+		{"a@１０.０.０.１", "b@１９２.１６８.０.１", false},
 		{"", "", false},
+		// The domain goes to IDNA as written (UTS 46 maps "İ" to "i̇" and,
+		// in the tables x/net carries, "ẞ" to "ss"), never lowered by Go
+		// first, which made lİnkedin.com linkedin.com and STRAẞE.de
+		// straße.de.
+		{"lettre@lİnkedin.com", "stop@linkedin.com", false},
+		{"lettre@lİnkedin.com", "stop@LİNKEDIN.com", true},
+		{"x@STRAẞE.de", "stop@straße.de", false},
+		{"x@STRAẞE.de", "stop@strasse.de", true},
 	}
 	for _, tc := range cases {
 		if got := SameRegistrableDomain(tc.a, tc.b); got != tc.want {

@@ -14,43 +14,45 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// protectedValues returns the caller's normalized protected entries (addresses
-// and domains), consulted before any automated destructive action. Protection
-// is a safety bonus layered on top of the user's own choices, not an
-// access-control boundary, so on a query error we return nil and let the caller
-// proceed rather than blocking legitimate triage.
-func (h *Handler) protectedValues(ctx context.Context, userEmail string) []string {
+// protectedValues returns the caller's protected entries (addresses and
+// domains) made ready to read the mails of this call with (protect.Shield:
+// each entry put in the form senders are compared in once, not once per
+// mail), consulted before any automated destructive action. Protection is a
+// safety bonus layered on top of the user's own choices, not an
+// access-control boundary, so on a query error we return an empty shield and
+// let the caller proceed rather than blocking legitimate triage.
+func (h *Handler) protectedValues(ctx context.Context, userEmail string) protect.Shield {
 	cursor, err := h.db.ProtectedSenders().Find(ctx, bson.M{"userId": userEmail})
 	if err != nil {
-		return nil
+		return protect.Shield{}
 	}
 	defer cursor.Close(ctx)
 
 	var rows []models.ProtectedSender
 	if err := cursor.All(ctx, &rows); err != nil {
-		return nil
+		return protect.Shield{}
 	}
 	values := make([]string, 0, len(rows))
 	for _, r := range rows {
 		values = append(values, r.Value)
 	}
-	return values
+	return protect.NewShield(values)
 }
 
 // allows reports whether action may be applied to an email from `from` given the
 // user's protected list. A small wrapper so callers read naturally.
-func allows(action, from string, protectedList []string) bool {
-	return protect.Allowed(action, from, protectedList)
+func allows(action, from string, protectedList protect.Shield) bool {
+	return protectedList.Allows(action, from)
 }
 
 // allowsOn is allows for a mailbox on this transport. Over IMAP a label is a
 // folder, and filing a mail there takes it out of the inbox the way an
 // archive does, so the shield reads it as one (protect.AllowedOnFolders).
-func allowsOn(transport provider.Transport, action, from string, protectedList []string) bool {
+func allowsOn(transport provider.Transport, action, from string, protectedList protect.Shield) bool {
 	if transport == provider.TransportIMAP {
-		return protect.AllowedOnFolders(action, from, protectedList)
+		return protectedList.AllowsOnFolders(action, from)
 	}
-	return protect.Allowed(action, from, protectedList)
+	return protectedList.Allows(action, from)
 }
 
 // GetProtected lists the caller's protected senders.

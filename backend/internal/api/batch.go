@@ -167,7 +167,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	if imapBox {
 		destructive = protect.IsDestructiveOnFolders(req.Action)
 	}
-	if !imapBox && (len(protectedList) > 0 || len(identities) < len(req.MessageIDs)) {
+	if !imapBox && (!protectedList.Empty() || len(identities) < len(req.MessageIDs)) {
 		h.fillMissingIdentities(ctx, session.gmail, req.MessageIDs, identities)
 	}
 
@@ -196,7 +196,7 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 		// Fail safe. A destructive action on a message whose sender could not be
 		// established is refused rather than assumed harmless: the whole point of
 		// the protected list is that it cannot be bypassed by a missing lookup.
-		if destructive && len(protectedList) > 0 && meta.From == "" {
+		if destructive && !protectedList.Empty() && meta.From == "" {
 			res.Protected++
 			continue
 		}

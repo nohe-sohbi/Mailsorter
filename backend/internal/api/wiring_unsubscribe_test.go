@@ -861,13 +861,43 @@ func TestAcceptance_AccentedDomainIsOneDomainIMAP(t *testing.T) {
 }
 
 // What the screens show for a sender whose display name is another address:
-// the address read, in the list, the history and "Plus tard".
+// the address read, in the list, the reader, the triage plan, the history
+// and "Plus tard".
 func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
 	const tricky = `"boss@corp.com" <evil@evil.io>`
-	ids := app.receiveAndSync(incoming{From: tricky, Subject: "Le faux patron"}, incoming{From: tricky, Subject: "Le faux patron, encore"})
+	ids := app.receiveAndSync(
+		incoming{From: tricky, Subject: "Le faux patron"},
+		incoming{From: tricky, Subject: "Le faux patron, encore"},
+		incoming{From: tricky, Subject: "Le faux patron, toujours"},
+	)
 
-	code, out := app.call(http.MethodGet, "/api/emails?q=in:inbox", nil)
+	code, out := app.call(http.MethodGet, "/api/emails/"+ids[2], nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails/%s a répondu %d : %v", ids[2], code, out)
+	}
+	if out["senderLabel"] != "evil@evil.io" {
+		app.failf("le lecteur devrait montrer evil@evil.io pour %s, il montre %v", tricky, out["senderLabel"])
+	}
+
+	app.ai.willSay("archive", 0.95)
+	app.analyze(ids[2])
+	code, out = app.call(http.MethodGet, "/api/ai/suggestions", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/ai/suggestions a répondu %d : %v", code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var suggestions []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &suggestions); err != nil || len(suggestions) == 0 {
+		app.fatalf("aucune proposition lisible après l'analyse (%v) : %s", err, raw)
+	}
+	for _, sg := range suggestions {
+		if sg["senderLabel"] != "evil@evil.io" {
+			app.failf("le plan de tri devrait montrer evil@evil.io pour %s, il montre %v", tricky, sg["senderLabel"])
+		}
+	}
+
+	code, out = app.call(http.MethodGet, "/api/emails?q=in:inbox", nil)
 	if code != http.StatusOK {
 		app.fatalf("GET /api/emails a répondu %d : %v", code, out)
 	}
@@ -903,5 +933,50 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
 	}
 	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" {
 		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, il montre %v", tricky, s["senderLabel"])
+	}
+}
+
+// A mail whose From names no sender is logged once, when its row is made,
+// however many syncs read it again.
+const senderlessLog = "names no sender"
+
+func TestAcceptance_SenderlessMailIsLoggedOnceGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	logs := captureLog(t)
+	app.receiveAndSync(incoming{From: "patron@victime.fr, Lettre <lettre@journal.fr>", Subject: "Deux auteurs"})
+	app.sync()
+	if n := strings.Count(logs.String(), senderlessLog); n != 1 {
+		app.failf("le mail sans expéditeur devrait être journalisé une fois en deux synchronisations, il l'est %d fois", n)
+	}
+}
+
+func TestAcceptance_SenderlessMailIsLoggedOnceIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	logs := captureLog(t)
+	moi, _ := syncedIMAPInbox(app, incoming{From: "patron@victime.fr, Lettre <lettre@journal.fr>", Subject: "Deux auteurs"})
+	moi.sync()
+	if n := strings.Count(logs.String(), senderlessLog); n != 1 {
+		app.failf("le mail sans expéditeur devrait être journalisé une fois en deux synchronisations, il l'est %d fois", n)
+	}
+}
+
+// One address in two forms is one address for the 24 hours: a list that
+// asks for stop@café.fr after another asked for stop@xn--caf-dma.fr gets no
+// second mail.
+func TestAcceptance_UnsubscribeMailCountsOneAddressInAnyForm(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app,
+		incoming{From: "Le Café <lettre@xn--caf-dma.fr>", Subject: "La lettre du café", Unsubscribe: "<mailto:stop@xn--caf-dma.fr>"},
+		incoming{From: "Les offres du café <offres@xn--caf-dma.fr>", Subject: "Les offres du café", Unsubscribe: "<mailto:STOP@café.fr>"},
+	)
+	moi.withSendingServer()
+
+	moi.unsubscribeFrom(uids[0], false)
+	again := moi.unsubscribeFrom(uids[1], false)
+	if sent := moi.sentThroughBox(); len(sent) != 1 {
+		app.failf("stop@xn--caf-dma.fr puis STOP@café.fr, une seule adresse, devraient recevoir un seul mail en 24 h, le serveur d'envoi en a reçu : %s", describeSent(sent))
+	}
+	if already, _ := again["alreadySent"].(bool); !already {
+		app.failf("la seconde réponse devrait dire que la demande est déjà partie : %v", again)
 	}
 }

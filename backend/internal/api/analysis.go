@@ -16,6 +16,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -312,7 +313,7 @@ func (h *Handler) analysisTransport(ctx context.Context, userEmail string, sessi
 // never suggested for archive/trash, nor, over IMAP where a label is a folder,
 // for filing (allowsOn): the plan does not propose what "Tout ranger" would
 // refuse. Other verdicts pass through untouched.
-func protectAnalysis(a ai.EmailAnalysis, from string, protectedList []string, transport provider.Transport) ai.EmailAnalysis {
+func protectAnalysis(a ai.EmailAnalysis, from string, protectedList protect.Shield, transport provider.Transport) ai.EmailAnalysis {
 	if allowsOn(transport, a.Action, from, protectedList) {
 		return a
 	}

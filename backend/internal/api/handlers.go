@@ -538,7 +538,7 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 	// Autopilot: when the user opted in, run their deterministic rules over each
 	// freshly synced email: instant, AI-free, quota-free triage at sync time.
 	var autoRules []models.SortingRule
-	var protectedList []string
+	var protectedList protect.Shield
 	if h.autoApplyRulesEnabled(ctx, userEmail) {
 		autoRules = h.enabledRules(ctx, userEmail)
 		protectedList = h.protectedValues(ctx, userEmail)
