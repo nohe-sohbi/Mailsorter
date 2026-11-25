@@ -108,7 +108,7 @@ func TestWriteAuthErrorWordsAMailboxThatCannotBeOpened(t *testing.T) {
 	}{
 		{"password refused", fmt.Errorf("open: %w: NO [AUTHENTICATIONFAILED]", imap.ErrAuth), http.StatusPreconditionRequired, mailboxRejectedMessage},
 		{"did not answer", fmt.Errorf("open: %w: login: EOF", imap.ErrUnreachable), http.StatusBadGateway, mailboxNoAnswerMessage},
-		{"no mailbox", errNoMailboxConnected, http.StatusPreconditionRequired, "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une."},
+		{"no mailbox", errNoMailboxConnected, http.StatusPreconditionRequired, "Aucune boîte mail n'est branchée à ce compte."},
 		{"anything else", errors.New("boom"), http.StatusInternalServerError, "Impossible d'ouvrir votre boîte pour le moment, réessayez dans un instant."},
 	}
 	for _, c := range cases {

@@ -392,14 +392,15 @@ dans un instant.", or the proxy) is worded by the inbox itself.
   ("L'autorisation Google a expiré. Reconnectez votre compte Google.")
 - `428 Precondition Required`: the mail provider refuses the IMAP password on
   file: "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
-  d'application.", as on the connect screen
+  d'application.", as on the connect screen (`passwordRefused`: the inbox
+  offers "Mettre à jour", to the new password form); or no mailbox is
+  connected: "Aucune boîte mail n'est branchée à ce compte." (marked
+  `syncMessage`: the inbox offers "Brancher une boîte", to `/connect`)
 - `502 Bad Gateway`: the IMAP mailbox did not answer (out of reach, too slow
   for the request's 30 s, or unavailable): "Votre boîte n'a pas répondu,
   réessayez dans un instant."
-- `500 Internal Server Error`: no mailbox connected ("Aucune boîte mail n'est
-  connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", a
-  `500` on this route, not a `428`); a sync that read the mailbox only in part
-  (its own sentence, see below); anything else, "La synchronisation a échoué,
+- `500 Internal Server Error`: a sync that read the mailbox only in part (its
+  own sentence, see below); anything else, "La synchronisation a échoué,
   réessayez dans un instant."
 
 ### Direct action on a message
@@ -875,9 +876,9 @@ moving or recording anything.
 
 **Error Responses:**
 - `404 Not Found`: No such snooze; or a snooze `cancelled` ("Ce mail n'est plus là où Mailsorter l'avait rangé."): brought back by "Annuler", or, over IMAP, taken out of `Plus tard` by another mail program
-- `409 Conflict`: Over IMAP, several messages of `Plus tard` carry the mail's `Message-ID` and its number there no longer names it: "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie." (`severalCopies: true`); nothing moved, the snooze stays `scheduled` (the sweep does not count those attempts either)
+- `409 Conflict`: Over IMAP, several messages of `Plus tard` carry the mail's `Message-ID` and its number there no longer names it: "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie." (`severalCopies: true`); nothing moved, nothing counted. The sweep does count those attempts: after five passes the snooze is `failed` ("En échec"), where this route still answers this `409`
 - `423 Locked`: The sweep or an "Annuler" is bringing it back at that moment ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
-- `502 Bad Gateway`: The mailbox refused the return; nothing is counted, try again
+- `502 Bad Gateway`: The mailbox refused the return: "Ce mail n'a pas pu être ramené, réessayez dans un instant." (what failed is logged); nothing is counted
 
 ---
 
@@ -1216,13 +1217,45 @@ returns under `mailbox`.
 
 **Error Responses:**
 - `400 Bad Request`: missing address or password, or a password over 1024 bytes
-- `401 Unauthorized`: no session, or the provider rejected the credentials
-  ("Identifiants refusés par le fournisseur. Vérifiez le mot de passe
-  d'application.", the sentence every screen shows for it; the SPA calls this
-  route `optional`, so this 401 does not sign it out)
+- `401 Unauthorized`: no session, or the provider rejected the credentials:
+  "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
+  d'application.", the sentence every screen shows for it, marked
+  `"mailboxRejected": true`. The SPA does not take a marked 401 for a dead
+  session; any other 401 (a session expired) signs out as everywhere
 - `422 Unprocessable Entity`: this address has no IMAP route with a known
   server in the running edition (see above)
 - `500 Internal Server Error`: the connection worked but could not be stored
+- `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
+  répondu, réessayez dans un instant.")
+
+### Change the app password
+
+#### PUT /api/mailbox/password
+
+A new app password for the mailbox already connected over IMAP: "Changer le
+mot de passe d'application" on `/connect`, and where "Mettre à jour" leads when
+the provider refuses the one on file (a `428` with `passwordRefused: true`, see
+the error table). The password is proved against the server the mailbox was
+connected on (its stored host, never one from the request, nor the catalog's
+again, which would make it a new connection), then only it is replaced: the
+mailbox row (its creation included), its server, its sending server, the
+stored copy of its inbox, the proposals and the history, with what "Annuler"
+can still bring back, all stay. A password the provider refuses replaces
+nothing. The body names no address, so no other mailbox can be reached.
+
+**Body:** `{ "password": "xxxx xxxx xxxx xxxx" }`
+
+**Response:** `200 OK`, the mailbox, in the shape `GET /api/mailbox` returns
+under `mailbox`.
+
+**Error Responses:**
+- `400 Bad Request`: no password, or one over 1024 bytes
+- `401 Unauthorized`: no session, or the provider refused the password:
+  "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
+  d'application.", marked `"mailboxRejected": true`, which the SPA does not
+  take for a dead session
+- `428 Precondition Required`: no mailbox connected over IMAP
+- `500 Internal Server Error`: the password worked but could not be stored
 - `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
   répondu, réessayez dans un instant.")
 
@@ -2656,15 +2689,15 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 
 | Status | Means | Typical body |
 |---|---|---|
-| `400` | The request is malformed or rejected on its merits | `{ "error": "Invalid request body", "status": 400 }` |
-| `401` | No session, an expired one, a dead Google grant, wrong sign-in credentials, or credentials the mail provider refused | `{ "error": "Authentication required", "status": 401 }` |
+| `400` | The request is malformed or rejected on its merits | `{ "error": "Requête illisible.", "status": 400 }` |
+| `401` | No session, an expired one, a dead Google grant, wrong sign-in credentials, or credentials the mail provider refused (on the routes where they were just typed, marked `mailboxRejected: true`) | `{ "error": "Authentication required", "status": 401 }` |
 | `402` | The hosted service's free monthly AI quota is spent (`analyze` and `analyze-async` only) | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
 | `404` | No such resource for this caller, or no such route | `{ "error": "Rule not found", "status": 404 }` |
 | `405` | The route exists, not with this method | `{ "error": "Method not allowed on this route", "status": 405 }` |
 | `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro; or, over IMAP, an "Annuler" that finds several copies of the mail where Mailsorter put it (`severalCopies: true`, nothing moved) | `{ "error": "Action déjà annulée", "status": 409 }`, `{ "error": "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie.", "status": 409, "severalCopies": true }` |
-| `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Request body too large", "status": 413 }` |
+| `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Requête trop volumineuse.", "status": 413 }` |
 | `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
-| `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }`, `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428 }` |
+| `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est branchée à ce compte.", "status": 428 }` (the screens then offer "Brancher une boîte", to `/connect`), `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428, "passwordRefused": true }` (the screens then lead to the new password form, `/connect?motdepasse=1`) |
 | `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter is far lower | `{ "error": "Too many requests", "status": 429 }` |
 | `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
 | `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a label on IMAP, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
@@ -2672,7 +2705,8 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `503` | A dependency is not configured (AI, billing), or the datastore is unreachable (`/health`) | `{ "error": "Aucune IA n'est configurée sur cette instance.", "status": 503 }` |
 
 A `401` on a route the SPA considers non-optional clears the session and returns
-the user to the login screen.
+the user to the login screen, unless it is marked `mailboxRejected` (the mail
+provider refused a password just typed, which says nothing of the session).
 
 ## CORS
 

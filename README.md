@@ -280,6 +280,7 @@ La carte du dépôt, les conventions et les pièges connus : [`CLAUDE.md`](CLAUD
 | `POST` | `/api/auth/register`, `/api/auth/login` | Création de compte et connexion par adresse et mot de passe |
 | `GET` | `/api/providers` | Les fournisseurs joignables par cette édition |
 | `POST` | `/api/mailbox/connect` | Branche une boîte par IMAP, après avoir essayé la connexion |
+| `PUT` | `/api/mailbox/password` | Nouveau mot de passe d'application pour la boîte branchée, essayé avant d'être enregistré |
 | `GET` | `/api/emails` | Liste paginée de la boîte (sans les corps) |
 | `GET` | `/api/emails/{id}` | Un message avec son corps décodé et ses pièces jointes |
 | `POST` | `/api/emails/action` | Action directe sur un message |
@@ -293,7 +294,7 @@ La carte du dépôt, les conventions et les pièges connus : [`CLAUDE.md`](CLAUD
 | `GET` | `/api/account/export`, `DELETE` `/api/account` | Export et suppression RGPD |
 | `GET` | `/health`, `/metrics` | Ping MongoDB, build, uptime, compteurs |
 
-Les 79 routes (70 chemins) et leurs charges utiles : [`docs/API.md`](docs/API.md).
+Les 80 routes (71 chemins) et leurs charges utiles : [`docs/API.md`](docs/API.md).
 
 ## Licence
 

@@ -496,8 +496,8 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errMailboxNoAnswer):
 			writeSyncError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
 		case errors.Is(err, errNoMailboxConnected):
-			// A 500 here, as this route always answered it.
-			writeSyncError(w, http.StatusInternalServerError, noMailboxMessage)
+			// The mailbox to connect: the inbox says so, with the way there.
+			writeSyncError(w, http.StatusPreconditionRequired, noMailboxMessage)
 		default:
 			writeSyncError(w, http.StatusInternalServerError, syncFailureMessage(userEmail, err))
 		}

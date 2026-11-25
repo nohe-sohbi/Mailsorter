@@ -344,6 +344,13 @@ type ConnectMailboxRequest struct {
 	Password string `json:"password"`
 }
 
+// MailboxPasswordRequest is the body for PUT /api/mailbox/password: the new
+// app password of the mailbox already connected, and nothing else (not even
+// its address: the mailbox is the one on file).
+type MailboxPasswordRequest struct {
+	Password string `json:"password"`
+}
+
 // SnoozeRequest is the request body for POST /api/emails/snooze. Either Preset
 // (resolved server-side) or an explicit WakeAt (RFC 3339) must be provided.
 type SnoozeRequest struct {

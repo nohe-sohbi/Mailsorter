@@ -25,7 +25,7 @@ const mailboxRejectedMessage = "Identifiants refusés par le fournisseur. Vérif
 const mailboxNoAnswerMessage = "Votre boîte n'a pas répondu, réessayez dans un instant."
 
 // noMailboxMessage is what the user reads when no mailbox is connected.
-const noMailboxMessage = "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une."
+const noMailboxMessage = "Aucune boîte mail n'est branchée à ce compte."
 
 // severalCopiesMessage is what the user reads when "Annuler" would bring back
 // a mail whose Message-ID several messages carry where Mailsorter put it
@@ -70,7 +70,11 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errReauthRequired):
 		writeError(w, http.StatusUnauthorized, "L'autorisation Google a expiré. Reconnectez votre compte Google.")
 	case errors.Is(err, imap.ErrAuth):
-		writeError(w, http.StatusPreconditionRequired, mailboxRejectedMessage)
+		// passwordRefused tells a screen to lead to the new password form
+		// (/connect?motdepasse=1) rather than to connecting a mailbox.
+		writeJSON(w, http.StatusPreconditionRequired, map[string]interface{}{
+			"error": mailboxRejectedMessage, "status": http.StatusPreconditionRequired, "passwordRefused": true,
+		})
 	case errors.Is(err, imap.ErrUnreachable):
 		writeError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
 	case errors.Is(err, errWrongTransport):
@@ -111,10 +115,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "Request body too large")
+			writeError(w, http.StatusRequestEntityTooLarge, "Requête trop volumineuse.")
 			return false
 		}
-		writeError(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Requête illisible.")
 		return false
 	}
 	return true

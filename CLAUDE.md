@@ -137,7 +137,8 @@ frontend/
   src/services/api.js    every HTTP call in the app, grouped by service object
   src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak, avatar),
                          and mailboxError (useMailboxErrorToast: the server's sentence for
-                         a failed action on the mailbox, "Mettre à jour" to /connect on a 428)
+                         a failed action on the mailbox, and on a 428 the way: "Mettre à jour"
+                         to the new password form, or "Brancher une boîte" to /connect)
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
@@ -236,9 +237,9 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (79 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (80 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `securityHeadersMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `clientIP`, `publicPrefixes` |
-| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501, IMAP password refused -> 428 with the connect screen's sentence, mailbox that did not answer -> 502, anything else -> 500, in French), `writeSeveralCopies` (409 with `severalCopies`: "Annuler" that finds several copies of the mail, `imap.ErrAmbiguous`, which the history screen must not take for "already undone"), `errReauthRequired`, 1 MiB body cap |
+| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501, IMAP password refused -> 428 with the connect screen's sentence, mailbox that did not answer -> 502, anything else -> 500, in French), 428s marked `passwordRefused` (to the new password form) or not (no mailbox, to `/connect`), read by `reconnectAction` in `services/api.js`, `writeSeveralCopies` (409 with `severalCopies`: "Annuler" that finds several copies of the mail, `imap.ErrAmbiguous`, which the history screen must not take for "already undone"), `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
 | `message.go` | `GET /api/emails/{id}`: one message with its body and its attachment list, on both transports. `writeMailboxFailure`: what a read of the mailbox that failed answers, on both transports and for the download too: a French sentence, 404 when the mail is no longer there (`mailGone`), 502 otherwise, the error itself only in the log |
@@ -262,7 +263,7 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
-| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap to the mailbox's sending server: the only two readers of the sealed app password |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), a new app password (`ChangeMailboxPassword`, PUT `/api/mailbox/password`: `replacePassword` proves it against the stored server and replaces only the password, so the mailbox, its copy, its proposals and its history stay; a refused one replaces nothing), read, disconnect (which also drops the Google tokens). A password the provider refuses where it was just typed answers 401 marked `mailboxRejected`, which the SPA does not take for a dead session. `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap to the mailbox's sending server: the only two readers of the sealed app password |
 | `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
 | `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `storeStarredOutsideList`, `refreshInboxState` and `completeInboxStructure` keep the read state, the star, the size and the attachments of every stored row right, old favorites included, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`). `bringBack` is a reported mail's return: moved back from where the snooze recorded it (`MoveRecorded`), marked unread, and the stored row takes its new number as after "Annuler" (`landedBack`); gone from there, it is looked for in the inbox by its Message-ID first (`backAlready`: there, it is back), and only then `errNotWhereLeft`, nothing moved |
@@ -350,7 +351,7 @@ telling them to create a Google Cloud project that edition can never use.
 | `/history` | `pages/History.js` | Action ledger + undo |
 | `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist. Redirects away in the `self-hosted` edition, which bills nobody |
 | `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour, and the way in to `/connect` |
-| `/connect` | `pages/Connect.js` | Connect a mailbox over IMAP. Detects the provider from the address against the catalog the SERVER returned, and shows that route's blockers BEFORE the attempt, because each of them otherwise surfaces as "credentials refused" |
+| `/connect` | `pages/Connect.js` | Connect a mailbox over IMAP, or give the connected one a new app password ("Changer le mot de passe d'application"; `?motdepasse=1`, where "Mettre à jour" leads after a refused password, opens that form at once). Detects the provider from the address against the catalog the SERVER returned, and shows that route's blockers BEFORE the attempt, because each of them otherwise surfaces as "credentials refused" |
 | `/account` | `pages/Account.js` | Profile, usage, GDPR export and delete |
 | `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config. Edition-aware: the own-project guide (6 steps, including "Publier l'application") self-hosted, the operator one (5 steps) otherwise, plus the reachable providers read from `GET /api/providers` |
 | `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token. The ONLY callback: `Login` used to handle `?code=` too, in a path `GMAIL_REDIRECT_URL` could never reach |
@@ -683,7 +684,7 @@ Do not duplicate these into this file. Point at them.
 | Doc | Holds | Trust |
 |---|---|---|
 | `README.md` | Product pitch, editions and providers, what works over IMAP, the engineering decisions worth reading, quickstart | Current |
-| `docs/API.md` | Every endpoint (all 79 registrations), payload, error, auth rule, and what each one does over IMAP | Current, English |
+| `docs/API.md` | Every endpoint (all 80 registrations), payload, error, auth rule, and what each one does over IMAP | Current, English |
 | `docs/ARCHITECTURE.md` | Overview, sign-in, sync and analysis flows, security, background loops, observability | Current, short; the detail is here |
 | `docs/ROADMAP.md` | The 13 delivered phases (0 to 12), as a history, and the deploy checklist | History; the checklist is current |
 | `BACKLOG.md` | Last audit: every finding, all closed | Historical record, useful for "why is it like this" |

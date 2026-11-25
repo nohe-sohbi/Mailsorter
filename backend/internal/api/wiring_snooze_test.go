@@ -1168,9 +1168,10 @@ func copiesInLater(p *imapPerson, later string, m incoming) {
 
 // A reported mail whose Message-ID two messages of "Plus tard" carry, its
 // number there no longer naming it: which one to bring back cannot be told.
-// "Réactiver" says so in French (409, severalCopies) and moves nothing; the
-// sweep does not count the attempt, and the report stays scheduled, where
-// "Réactiver" can say why.
+// "Réactiver" says so in French (409, severalCopies) and moves nothing. The
+// sweep counts each attempt, so the report is given up ("En échec") after
+// maxSnoozeWakeAttempts passes instead of a session every minute forever;
+// "Réactiver" there still says why.
 func TestAcceptance_IMAPSnoozeTakesNoneOfTwoCopiesInLater(t *testing.T) {
 	app := newTestApp(t, &scenarioResult{})
 	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
@@ -1186,10 +1187,20 @@ func TestAcceptance_IMAPSnoozeTakesNoneOfTwoCopiesInLater(t *testing.T) {
 		app.failf("« Réactiver » sur un mail en deux copies dans « Plus tard » devrait répondre 409 %q (severalCopies), il a répondu %s", severalCopiesWakeMessage, got)
 	}
 
-	moi.timeComesForSnoozes()
-	moi.timeComesForSnoozes()
-	if s := moi.storedReport(shopOrder.Subject); s.Attempts != 0 || s.Status != "scheduled" {
-		app.failf("le réveil d'un mail en deux copies ne devrait pas compter d'essai et laisser le report prévu, il est %q après %d essai(s)", s.Status, s.Attempts)
+	for pass := 1; pass <= maxSnoozeWakeAttempts; pass++ {
+		moi.timeComesForSnoozes()
+		s := moi.storedReport(shopOrder.Subject)
+		want := "scheduled"
+		if pass == maxSnoozeWakeAttempts {
+			want = "failed"
+		}
+		if s.Attempts != pass || s.Status != want {
+			app.fatalf("après %d passage(s) du réveil sur un mail en deux copies, le report devrait être %q après %d essai(s), il est %q après %d", pass, want, pass, s.Status, s.Attempts)
+		}
+	}
+	// "En échec": "Réactiver" still says why.
+	if got := moi.wakeNowAnswer(row); got.code != http.StatusConflict || got.body["error"] != severalCopiesWakeMessage {
+		app.failf("« Réactiver » sur le report en échec d'un mail en deux copies devrait répondre 409 %q, il a répondu %s", severalCopiesWakeMessage, got)
 	}
 	for _, subject := range []string{shopOrder.Subject + " (copie 1)", shopOrder.Subject + " (copie 2)"} {
 		moi.expectOnServer(later, subject)
@@ -1304,5 +1315,105 @@ func TestAcceptance_IMAPSnoozeRecordedWhenTheRequestEndsAfterTheMove(t *testing.
 	}
 	if !found {
 		app.failf("la ligne d'historique du report du mail %q devrait être écrite, elle ne l'est pas", shopOrder.Subject)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A new app password for the mailbox already connected
+// ---------------------------------------------------------------------------
+
+// changePassword is "Enregistrer" in the form "Changer le mot de passe
+// d'application" of /connect, as this person.
+func (p *imapPerson) changePassword(password string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPut, "/api/mailbox/password", map[string]string{"password": password})
+	return answer{code: code, body: out}
+}
+
+// storedMailbox is this person's mail_accounts row, as stored.
+func (p *imapPerson) storedMailbox() models.MailAccount {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var account models.MailAccount
+	if err := a.h.db.MailAccounts().FindOne(ctx, bson.M{"userId": p.email}).Decode(&account); err != nil {
+		a.fatalf("la boîte branchée de %s n'est pas en base : %v", p.email, err)
+	}
+	return account
+}
+
+// The provider refuses the password on file (a new one was made on its
+// side): "Synchroniser" says so (428, passwordRefused). A wrong new password
+// replaces nothing; the right one replaces the password only: the same
+// mailbox row (its creation, its server), and with it the stored copy, the
+// AI's proposals and what "Annuler" can still bring back.
+func TestAcceptance_IMAPNewAppPasswordKeepsTheMailbox(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	moi.act(uids[2], "archive")
+	line := moi.historyLineFor(uids[2], "archive")
+	moi.analyze(uids[0])
+	proposal := moi.proposalFor(uids[0])
+	before := moi.storedMailbox()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stale, err := app.h.sealSecret("ancien-mot-de-passe")
+	if err != nil {
+		app.fatalf("chiffrement d'un ancien mot de passe : %v", err)
+	}
+	if _, err := app.h.db.MailAccounts().UpdateOne(ctx, bson.M{"userId": moi.email}, bson.M{"$set": bson.M{"secret": stale}}); err != nil {
+		app.fatalf("pose d'un mot de passe que le fournisseur refuse : %v", err)
+	}
+	if code, out := moi.syncAnswer(); code != http.StatusPreconditionRequired || out["passwordRefused"] != true || out["error"] != mailboxRejectedMessage {
+		app.fatalf("« Synchroniser » avec un mot de passe que le fournisseur refuse devrait répondre 428 %q (passwordRefused), il a répondu %d : %v", mailboxRejectedMessage, code, out)
+	}
+
+	got := moi.changePassword("pas-le-bon")
+	if got.code != http.StatusUnauthorized || got.body["error"] != mailboxRejectedMessage || got.body["mailboxRejected"] != true {
+		app.failf("un nouveau mot de passe refusé devrait répondre 401 %q (mailboxRejected), il a répondu %s", mailboxRejectedMessage, got)
+	}
+	if now := moi.storedMailbox(); now.Secret != stale {
+		app.failf("un nouveau mot de passe refusé ne devrait pas remplacer celui enregistré, il l'a remplacé")
+	}
+
+	if got := moi.changePassword(imapTestPassword); got.code != http.StatusOK {
+		app.fatalf("le bon nouveau mot de passe devrait être enregistré (200), il a répondu %s", got)
+	}
+	after := moi.storedMailbox()
+	if after.ID != before.ID || !after.CreatedAt.Equal(before.CreatedAt) || after.Host != before.Host || after.Port != before.Port || after.Username != before.Username {
+		app.failf("un nouveau mot de passe devrait garder la même boîte (ligne, création, serveur), elle est passée de %+v à %+v", before, after)
+	}
+	if after.Secret == stale {
+		app.failf("le bon nouveau mot de passe n'a pas remplacé l'ancien")
+	}
+
+	moi.sync()
+	moi.expectShows(uids[0], bankStatement.Subject)
+	moi.expectShows(uids[1], shopOrder.Subject)
+	if !moi.inPlan(proposal.ID) {
+		app.failf("la proposition de l'IA sur le mail %q devrait rester dans le plan après un nouveau mot de passe", bankStatement.Subject)
+	}
+	if got := moi.undoFromHistory(line); got.code != http.StatusOK {
+		app.failf("« Annuler » sur l'archivage d'avant le nouveau mot de passe devrait marcher (200), il a répondu %s", got)
+	}
+	moi.expectOnServer(serverInbox, travelOffer.Subject)
+}
+
+// "Synchroniser" for an account with no mailbox: one French sentence, 428,
+// marked for the inbox, which offers "Brancher une boîte" (no "/connect"
+// written in it).
+func TestAcceptance_SyncWithoutMailboxSaysSo(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson("sans-boite@exemple.fr")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err != nil {
+		app.fatalf("retrait de la boîte de %s : %v", moi.email, err)
+	}
+	code, out := moi.syncAnswer()
+	if code != http.StatusPreconditionRequired || out["error"] != noMailboxMessage || out["syncMessage"] != true {
+		app.failf("« Synchroniser » sans boîte branchée devrait répondre 428 %q (syncMessage), il a répondu %d : %v", noMailboxMessage, code, out)
 	}
 }
