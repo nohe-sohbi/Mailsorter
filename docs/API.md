@@ -1263,9 +1263,11 @@ under `mailbox`.
 - `428 Precondition Required`: no mailbox connected over IMAP, or the mailbox
   was disconnected (or replaced) while the password was being tried: nothing
   is stored, never "Mot de passe mis à jour."
-- `429 Too Many Requests`: the same throttle as `POST /api/mailbox/connect`,
-  before any LOGIN at the provider: "Trop de tentatives. Patientez quelques
-  instants.", `Retry-After: 3`
+- `429 Too Many Requests`: the throttle of `POST /api/mailbox/connect`,
+  before any LOGIN at the provider, keyed on the account alone here (the
+  address is the one on file, and its bucket is shared with the public
+  sign-in, where a stranger could empty it): "Trop de tentatives. Patientez
+  quelques instants.", `Retry-After: 3`
 - `500 Internal Server Error`: the password worked but could not be stored
 - `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
   répondu, réessayez dans un instant.")

@@ -259,7 +259,7 @@ func (h *Handler) ConnectMailbox(w http.ResponseWriter, r *http.Request) {
 
 	// Every attempt here is a LOGIN at the provider: throttled before it,
 	// as the mailbox sign-in is.
-	if !h.allowMailboxLogin(w, userEmail, address) {
+	if !h.allowMailboxLogin(w, userLoginKey(userEmail), addrLoginKey(address)) {
 		return
 	}
 
@@ -330,8 +330,9 @@ func (h *Handler) ChangeMailboxPassword(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusPreconditionRequired, noMailboxMessage)
 		return
 	}
-	// Every attempt here is a LOGIN at the provider: throttled before it.
-	if !h.allowMailboxLogin(w, userEmail, stored.Username) {
+	// Every attempt here is a LOGIN at the provider: throttled before it, on
+	// the account alone (allowMailboxLogin says why).
+	if !h.allowMailboxLogin(w, userLoginKey(userEmail)) {
 		return
 	}
 	account, err := h.replacePassword(ctx, *stored, req.Password)
@@ -355,19 +356,35 @@ func (h *Handler) ChangeMailboxPassword(w http.ResponseWriter, r *http.Request) 
 const googleMailboxPasswordMessage = "Cette boîte est branchée par Google : son mot de passe ne se change pas ici."
 
 // allowMailboxLogin throttles the routes of a signed-in person that try a
-// password at their mail provider (connect, new password), before any LOGIN,
-// with the mailbox sign-in's limiter and its rate (signInRatePerSec,
-// signInBurst): keyed on the account and on the address tried, so neither
-// changing the address nor using another account on the same address gets a
-// fresh bucket. Over it, 429 with Retry-After, and the provider is not asked.
-func (h *Handler) allowMailboxLogin(w http.ResponseWriter, userEmail, address string) bool {
+// password at their mail provider, before any LOGIN, with the mailbox
+// sign-in's limiter and its rate (signInRatePerSec, signInBurst), on every one
+// of keys: "user:" the account, and, where the caller chooses the address
+// tried (connect), "addr:" that address too, so neither changing the address
+// nor using another account on it gets a fresh bucket. Over it, 429 with
+// Retry-After, and the provider is not asked.
+//
+// A new password (PUT /api/mailbox/password) is keyed on the account alone:
+// its address is the one on file, proved already, not one the caller picks,
+// and the "addr:" bucket is shared with the public mailbox sign-in, where a
+// stranger could empty it and lock the owner out of their own "Mettre à
+// jour".
+func (h *Handler) allowMailboxLogin(w http.ResponseWriter, keys ...string) bool {
 	limiter := h.signInLimiter()
-	if !limiter.allow("user:"+strings.ToLower(userEmail)) || !limiter.allow("addr:"+strings.ToLower(strings.TrimSpace(address))) {
-		w.Header().Set("Retry-After", "3")
-		writeError(w, http.StatusTooManyRequests, "Trop de tentatives. Patientez quelques instants.")
-		return false
+	for _, key := range keys {
+		if !limiter.allow(key) {
+			w.Header().Set("Retry-After", "3")
+			writeError(w, http.StatusTooManyRequests, "Trop de tentatives. Patientez quelques instants.")
+			return false
+		}
 	}
 	return true
+}
+
+// userLoginKey and addrLoginKey are the limiter's keys for an account and for
+// an address tried, as SignInWithMailbox writes the latter.
+func userLoginKey(userEmail string) string { return "user:" + strings.ToLower(userEmail) }
+func addrLoginKey(address string) string {
+	return "addr:" + strings.ToLower(strings.TrimSpace(address))
 }
 
 // GetMailbox returns the connected mailbox, or a null one when there is none.

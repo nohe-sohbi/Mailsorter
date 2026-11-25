@@ -864,9 +864,12 @@ Do not duplicate these into this file. Point at them.
   `POST /api/mailbox/connect` has no Google check: its caller is signed in, and it is
   how an account deliberately switches from Google to IMAP. It and `PUT
   /api/mailbox/password` do share the sign-in limiter, before any LOGIN
-  (`allowMailboxLogin`, keyed on the account and on the address tried): each
-  attempt is a LOGIN at the provider, and without it a script holding a session
-  could try passwords there at the global rate.
+  (`allowMailboxLogin`): each attempt is a LOGIN at the provider, and without it
+  a script holding a session could try passwords there at the global rate. The
+  connect route is keyed on the account and on the address tried; the new
+  password on the account alone, as its address is the one on file and the
+  "addr:" bucket is shared with the public sign-in, where a stranger could
+  empty it and lock the owner out of "Mettre à jour".
 - **The boot gate is `isConfigured || mailboxSignIn`, never `isConfigured` alone.**
   `GET /api/config/status` reports both doors, and `mailboxSignIn` is computed
   from `provider.ForEdition(Edition)` rather than from the edition name, so the

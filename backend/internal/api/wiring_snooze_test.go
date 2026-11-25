@@ -1549,3 +1549,73 @@ func TestAcceptance_IMAPReactivateRefusedSaysSoInFrench(t *testing.T) {
 		app.failf("« Réactiver » refusé ne devrait rien compter, le report est %q après %d essai(s)", s.Status, s.Attempts)
 	}
 }
+
+// A stranger who empties the "addr:" bucket of the address through the
+// public mailbox sign-in does not lock its owner out of their new password:
+// that route is throttled on the account alone, its address being the one on
+// file, not one the caller chooses.
+func TestAcceptance_IMAPNewPasswordNotLockedByTheSignInOfAStranger(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, bankStatement)
+	last := 0
+	for i := 1; i <= 6; i++ {
+		last, _ = app.send(http.MethodPost, "/api/auth/mailbox",
+			map[string]string{"address": moi.email, "password": "pas-le-bon"}, nil)
+	}
+	if last != http.StatusTooManyRequests {
+		app.fatalf("la 6e connexion publique de suite sur l'adresse %s devrait être freinée (429), elle a répondu %d : le test ne prouve rien", moi.email, last)
+	}
+	if got := moi.changePassword(imapTestPassword); got.code != http.StatusOK {
+		app.failf("le nouveau mot de passe de %s ne devrait pas être freiné par les essais d'un inconnu sur son adresse, il a répondu %s", moi.email, got)
+	}
+}
+
+// The mailbox replaced while its new password was being tried (connected
+// again by the hook of the LOGIN: another address, or the same address on a
+// new row): the password is stored nowhere, the answer is 428, and the row
+// the hook wrote stays as it wrote it.
+func TestAcceptance_IMAPNewPasswordForAMailboxReplacedMeanwhile(t *testing.T) {
+	for name, address := range map[string]string{
+		"another address":           "autre-adresse@exemple.org",
+		"the same address, new row": imapInboxOwner,
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := newTestApp(t, &scenarioResult{})
+			moi, _ := syncedIMAPInbox(app, bankStatement)
+			sealed, err := app.h.sealSecret("mot-de-passe-du-crochet")
+			if err != nil {
+				app.fatalf("chiffrement du mot de passe du crochet : %v", err)
+			}
+			var replaced atomic.Bool
+			moi.reachThrough(answerHookTLSProxy(app, moi.port, "LOGIN", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				var old models.MailAccount
+				if err := app.h.db.MailAccounts().FindOne(ctx, bson.M{"userId": moi.email}).Decode(&old); err != nil {
+					return
+				}
+				if _, err := app.h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": moi.email}); err != nil {
+					return
+				}
+				fresh := old
+				fresh.ID = ""
+				fresh.Username = address
+				fresh.Secret = sealed
+				if _, err := app.h.db.MailAccounts().InsertOne(ctx, fresh); err == nil {
+					replaced.Store(true)
+				}
+			}))
+
+			got := moi.changePassword(imapTestPassword)
+			if !replaced.Load() {
+				app.fatalf("la boîte n'a pas été rebranchée pendant l'essai du mot de passe : le test ne prouve rien")
+			}
+			if got.code != http.StatusPreconditionRequired || got.body["error"] != noMailboxMessage {
+				app.failf("un nouveau mot de passe pour une boîte rebranchée pendant l'essai devrait répondre 428 %q, il a répondu %s", noMailboxMessage, got)
+			}
+			if now := moi.storedMailbox(); now.Secret != sealed || now.Username != address {
+				app.failf("la boîte rebranchée pendant l'essai devrait rester telle que rebranchée (adresse %q, son mot de passe), elle a l'adresse %q et un autre mot de passe : %v", address, now.Username, now.Secret != sealed)
+			}
+		})
+	}
+}
