@@ -405,6 +405,70 @@ func TestScenarios_IMAPMirror(t *testing.T) {
 				}
 			},
 		},
+		{
+			phrase: "Sur une boîte IMAP, changer le mot de passe d'application garde la boîte telle quelle : un mot de passe refusé par le fournisseur n'est pas enregistré, et avec le bon, la synchronisation repart et « Annuler » marche encore sur ce qui avait été rangé avant.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+
+				// Something ranged before: the third mail archived, with its
+				// line in the history.
+				moi.act(uids[2], "archive")
+				moi.requireOnServer(serverArchive, travelOffer.Subject, "il vient d'être archivé")
+				line := moi.historyLineFor(uids[2], "archive")
+
+				// A password the provider refuses, typed in "Changer le mot
+				// de passe d'application": refused, in words that do not
+				// sign the person out of Mailsorter (401 marked
+				// mailboxRejected, api.js), and not stored.
+				const wrong = "pas-le-bon-mot-de-passe"
+				stored := moi.storedAppPassword()
+				refused := func(when string) {
+					app.t.Helper()
+					got := moi.saveAppPassword(wrong)
+					if got.code != http.StatusUnauthorized || got.body["mailboxRejected"] != true {
+						app.failf("%s, enregistrer un mot de passe d'application que le fournisseur refuse devrait être refusé pour %s (401 marqué mailboxRejected, qui ne déconnecte pas de Mailsorter), le serveur a répondu %s", when, moi.email, got)
+					}
+					if now := moi.storedAppPassword(); now != stored {
+						app.failf("%s, un mot de passe d'application que le fournisseur refuse ne devrait pas être enregistré pour %s, il l'a été", when, moi.email)
+					}
+				}
+				// While the stored one still works: the mailbox goes on
+				// syncing with it, which it could not with the wrong one.
+				refused("tant que celui enregistré marche encore")
+				if code, out := moi.syncAnswer(); code != http.StatusOK {
+					app.failf("après un mot de passe d'application refusé, « Synchroniser » devrait marcher encore pour %s avec celui enregistré, il a répondu %d : %v", moi.email, code, out)
+				}
+
+				// The person makes a new app password on the provider's
+				// side: the stored one is refused, and "Synchroniser" says
+				// so, in the words that lead to the form (passwordRefused).
+				const fresh = "nouveau-mot-de-passe-d-application"
+				moi.providerReplacesAppPassword(fresh)
+				if code, out := moi.syncAnswer(); code != http.StatusPreconditionRequired || out["passwordRefused"] != true {
+					app.fatalf("« Synchroniser » avec un mot de passe d'application que le fournisseur refuse devrait répondre 428 marqué passwordRefused pour %s, il a répondu %d : %v : le scénario ne prouve rien", moi.email, code, out)
+				}
+				refused("une fois celui enregistré refusé par le fournisseur")
+
+				// The right one.
+				if got := moi.saveAppPassword(fresh); got.code != http.StatusOK {
+					app.fatalf("enregistrer le nouveau mot de passe d'application de %s, que le fournisseur accepte, devrait répondre 200, le serveur a répondu %s", moi.email, got)
+				}
+				if code, out := moi.syncAnswer(); code != http.StatusOK {
+					app.failf("avec le nouveau mot de passe d'application, « Synchroniser » devrait repartir pour %s, il a répondu %d : %v", moi.email, code, out)
+				}
+				moi.expectShows(uids[0], bankStatement.Subject)
+				moi.expectShows(uids[1], shopOrder.Subject)
+
+				// "Annuler" on what was ranged before.
+				if got := moi.undoFromHistory(line); got.code != http.StatusOK {
+					app.failf("avec le nouveau mot de passe d'application, « Annuler » sur l'archivage d'avant du mail n°%s %q de %s devrait répondre 200, le serveur a répondu %s", uids[2], travelOffer.Subject, moi.email, got)
+				}
+				moi.expectBackInInbox(travelOffer.Subject, "après « Annuler » sur l'archivage d'avant le nouveau mot de passe")
+				moi.expectOnServer(serverInbox, travelOffer.Subject)
+				moi.expectNotOnServer(serverArchive, travelOffer.Subject, "« Annuler » l'a remis dans la boîte de réception")
+			},
+		},
 	})
 }
 

@@ -234,6 +234,55 @@ type imapPerson struct {
 	// sending is the sending server next to the IMAP one, nil until
 	// withSendingServer (acceptance_smtp_test.go) gives the person one.
 	sending *fakeSMTP
+
+	// passwordMu guards newPassword, which the server's sessions read.
+	passwordMu sync.Mutex
+	// newPassword is the app password the provider accepts, once
+	// providerReplacesAppPassword changed it; empty while it is
+	// imapTestPassword, the one the person connected with.
+	newPassword string
+}
+
+// appPasswordOnServer is the app password this person's provider accepts
+// now: the only one their server lets in.
+func (p *imapPerson) appPasswordOnServer() string {
+	p.passwordMu.Lock()
+	defer p.passwordMu.Unlock()
+	if p.newPassword != "" {
+		return p.newPassword
+	}
+	return imapTestPassword
+}
+
+// providerReplacesAppPassword is the person making a new app password on
+// their provider's side, the old one revoked: from then on their server lets
+// in this one only, Mailsorter's stored one included. Another mail program of
+// theirs uses the new one (otherProgram).
+func (p *imapPerson) providerReplacesAppPassword(password string) {
+	p.app.t.Helper()
+	if password == "" || password == p.appPasswordOnServer() {
+		p.app.fatalf("le nouveau mot de passe d'application de %s doit être un autre que celui accepté jusque-là (à corriger dans le scénario)", p.email)
+	}
+	p.passwordMu.Lock()
+	p.newPassword = password
+	p.passwordMu.Unlock()
+}
+
+// mailboxSession is a session of a person's server: the in-memory server's own
+// (imapmemserver), built the way it builds one (a UserSession embedded, Login
+// overridden), so the server offers exactly what it did, except that the
+// password is checked against the one the provider accepts now.
+type mailboxSession struct {
+	*imapmemserver.UserSession // nil until the login
+	p                          *imapPerson
+}
+
+func (s *mailboxSession) Login(username, password string) error {
+	if username != s.p.email || password != s.p.appPasswordOnServer() {
+		return imapserver.ErrAuthFailed
+	}
+	s.UserSession = imapmemserver.NewUserSession(s.p.mailbox)
+	return nil
 }
 
 // imapPerson signs a person up the way POST /api/auth/mailbox leaves them: a
@@ -341,12 +390,9 @@ func (p *imapPerson) startServer() {
 			a.fatalf("création du dossier %q sur le serveur IMAP de %s : %v", name, p.email, err)
 		}
 	}
-	mem := imapmemserver.New()
-	mem.AddUser(p.mailbox)
-
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return mem.NewSession(), nil, nil
+			return &mailboxSession{p: p}, nil, nil
 		},
 		Caps: imapv2.CapSet{imapv2.CapIMAP4rev1: {}, imapv2.CapIMAP4rev2: {}},
 	})
@@ -721,6 +767,32 @@ func (p *imapPerson) expectNumbered(uid, want string) {
 func (p *imapPerson) syncAnswer() (int, map[string]interface{}) {
 	p.app.t.Helper()
 	return p.app.callAs(p.token, http.MethodPost, "/api/emails/sync", nil)
+}
+
+// saveAppPassword is "Enregistrer" in the form "Changer le mot de passe
+// d'application" of /connect, as this person (also where "Mettre à jour"
+// leads when the provider refuses the password on file): PUT
+// /api/mailbox/password. It returns the answer, whatever it is.
+func (p *imapPerson) saveAppPassword(password string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPut, "/api/mailbox/password", map[string]string{"password": password})
+	return answer{code: code, body: out}
+}
+
+// storedAppPassword is the app password stored for this person's mailbox, as
+// the database holds it, sealed: what the app will log in with next. Two
+// readings compare equal only if nothing was stored between them, since
+// sealing the same password twice gives two different values.
+func (p *imapPerson) storedAppPassword() string {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var account models.MailAccount
+	if err := a.h.db.MailAccounts().FindOne(ctx, bson.M{"userId": p.email}).Decode(&account); err != nil {
+		a.fatalf("la boîte branchée de %s n'est pas en base : %v", p.email, err)
+	}
+	return account.Secret
 }
 
 // sync presses "Synchroniser" and expects it to succeed.
@@ -1314,7 +1386,7 @@ func (p *imapPerson) otherProgram() *imapclient.Client {
 	if err != nil {
 		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s : %v", p.email, err)
 	}
-	if err := c.Login(p.email, imapTestPassword).Wait(); err != nil {
+	if err := c.Login(p.email, p.appPasswordOnServer()).Wait(); err != nil {
 		_ = c.Close()
 		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP de %s : %v", p.email, err)
 	}
