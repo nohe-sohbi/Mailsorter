@@ -198,10 +198,15 @@ function Connect() {
   };
 
   const handleDisconnect = async () => {
+    // Over IMAP a mail is named by a number the next mailbox gives to its own
+    // mails: what Mailsorter kept of this one goes, and its history is final.
+    const message =
+      mailbox?.transport === 'imap'
+        ? "L'accès de Mailsorter à cette boîte sera retiré. Les suggestions de tri en attente seront effacées, et les actions de l'historique ne pourront plus être annulées. Vos règles, protections et historique Mailsorter restent conservés."
+        : "L'accès de Mailsorter à cette boîte sera retiré. Vos règles, protections et historique Mailsorter restent conservés.";
     const confirmed = await confirm({
       title: 'Déconnecter cette boîte ?',
-      message:
-        "L'accès de Mailsorter à cette boîte sera retiré. Vos règles, protections et historique Mailsorter restent conservés.",
+      message,
       confirmLabel: 'Déconnecter',
       danger: true,
     });

@@ -109,8 +109,9 @@ const HAS_INVERSE = new Set(['archive', 'delete', 'trash', 'read', 'markRead']);
 
 const hasInverse = (e, folders) => HAS_INVERSE.has(e.action) || (folders && e.action === 'label');
 
-// An action on a mailbox disconnected since (`mailboxGone`) is final: its mail
-// number names a mail of the mailbox connected now.
+// An action on another mailbox than the one connected now (`mailboxGone`: one
+// disconnected or replaced since) is final: its mail number names a mail of
+// the mailbox connected now.
 const finalLabel = (e, folders, none = 'Définitif') =>
   e.mailboxGone ? 'Définitif' : hasInverse(e, folders) ? 'Plus annulable' : none;
 

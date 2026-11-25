@@ -1,5 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { emailService, aiService, senderService, subscriptionService, mailboxService } from '../services/api';
+import {
+  emailService,
+  aiService,
+  senderService,
+  subscriptionService,
+  mailboxService,
+  setMailboxGeneration,
+} from '../services/api';
 
 const EmailContext = createContext(null);
 
@@ -271,17 +278,48 @@ export function EmailProvider({ children }) {
   // disconnect) must not be overwritten by a slower request about the mailbox
   // as it was before.
   const mailboxSeqRef = useRef(0);
+  // The mailbox what this provider holds was loaded from (its generation),
+  // which every request names (setMailboxGeneration).
+  const generationRef = useRef(null);
+  // Forgets what was loaded of a mailbox: the mails, the proposals and the
+  // rest were another mailbox's, and their numbers name, in the next one,
+  // other mails. A request still on its way answers into nothing
+  // (requestSeqRef), and the next screen loads everything again.
+  const forgetMailbox = useCallback(() => {
+    requestSeqRef.current += 1;
+    setEmails([]);
+    setSenders([]);
+    setSubscriptions([]);
+    setSuggestions([]);
+    setStats(null);
+    setPagination({ nextPageToken: null, resultSizeEstimate: 0 });
+    setLoading(false);
+    setError('');
+    lastFetchRef.current = null;
+    lastSyncRef.current = null;
+    lastStatsRef.current = null;
+  }, []);
   const loadMailbox = useCallback(({ force = false } = {}) => {
     if (mailboxRequestRef.current && !force) return mailboxRequestRef.current;
     clearTimeout(mailboxRetryRef.current);
-    // A forced reload follows a change of mailbox: until it answers, what was
-    // known is no longer true.
-    if (force) setMailbox(undefined);
+    // A forced reload follows a change of mailbox (a connection, a
+    // disconnection): until it answers, what was known is no longer true,
+    // and what was loaded of the mailbox before goes.
+    if (force) {
+      setMailbox(undefined);
+      forgetMailbox();
+      generationRef.current = null;
+      setMailboxGeneration('');
+    }
     const seq = ++mailboxSeqRef.current;
     mailboxRequestRef.current = mailboxService
       .get()
       .then(({ data }) => {
         if (seq !== mailboxSeqRef.current) return;
+        const generation = data?.generation || '';
+        if (generationRef.current !== null && generationRef.current !== generation) forgetMailbox();
+        generationRef.current = generation;
+        setMailboxGeneration(generation);
         setMailbox(data?.mailbox || null);
         setMailboxFailed(false);
       })
@@ -292,7 +330,7 @@ export function EmailProvider({ children }) {
         mailboxRetryRef.current = setTimeout(() => loadMailbox(), MAILBOX_RETRY_MS);
       });
     return mailboxRequestRef.current;
-  }, []);
+  }, [forgetMailbox]);
   useEffect(() => () => clearTimeout(mailboxRetryRef.current), []);
 
   const markUnsubscribed = useCallback((senderEmail) => {

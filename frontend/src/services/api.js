@@ -10,6 +10,16 @@ const apiClient = axios.create({
   },
 });
 
+// The mailbox the screen loaded (GET /api/mailbox answers its `generation`),
+// sent with every request: the server refuses with a 409 a request from a
+// screen loaded on another mailbox than the one connected now, whose message
+// numbers would name that one's mails. Set by EmailContext only, which empties
+// what it holds of the mailbox when it changes.
+let mailboxGeneration = '';
+export function setMailboxGeneration(generation) {
+  mailboxGeneration = generation || '';
+}
+
 // Authenticate requests with the signed session token issued at login.
 // The server derives the user identity from this token, so we no longer send a
 // (spoofable) X-User-Email header.
@@ -17,6 +27,9 @@ apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('accessToken');
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`;
+  }
+  if (mailboxGeneration) {
+    config.headers['X-Mailbox-Generation'] = mailboxGeneration;
   }
   return config;
 });
