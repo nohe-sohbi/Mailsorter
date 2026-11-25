@@ -353,27 +353,44 @@ display name, or the address read when the name holds an `@` in any width
 or one that shows nothing (zero-width spaces, blank Braille or Hangul
 fillers), and the From's text when it names no sender. A name shows without
 control or format characters (bidi overrides and isolates, marks, zero-width
-spaces), the zero-width joiner and non-joiner aside. An address is never
-cleaned into another one: each control or format character in it, joiners
-included, and each character drawn as nothing, is shown as U+FFFD (the replacement character), so
-`x@pay<U+202E>pal.com` shows `x@pay<U+FFFD>pal.com`, never `x@paypal.com`, a domain
-the app does not compare; the text of a From that names no sender is shown
-the same way. The reader, the suggestions, the history (`GET
-/api/activity/log`) and "Plus tard" (`GET /api/snoozes`) carry it too; a
-screen given none (a mail kept from before) shows the From as it is, never a
-cut of it. A stored From holds no control byte.
+spaces), the zero-width joiner and non-joiner aside. An address is shown in
+the one form below (`protect.ShownAddress`); the text of a From that names no
+sender with each control, format or drawn-as-nothing character shown as
+U+FFFD. The reader, the suggestions, the history (`GET /api/activity/log`)
+and "Plus tard" (`GET /api/snoozes`) carry it too; a screen given none shows
+"Expéditeur inconnu", or nothing, never the From. A stored From holds no
+control byte.
 
 `senderAddressShown` is `senderAddress` as the reader shows it under the name
 (`protect.ShownAddress`); none when From names no sender.
 
 The screens never show a From or an address as written: every one comes in a
-form the server computed, `protect.ShownAddress` for an address. Its local
-part as written, each control or format character (joiners included), each
-character drawn as nothing and each `@` of another width (`＠`, `﹫`) shown as
-U+FFFD; its domain the browsers' way when IDNA takes it (`y@pаypal.com`, a
-Cyrillic `а`, shows `y@xn--pypal-4ve.com`), each non-ASCII character shown as
-U+FFFD when IDNA refuses it (`x@paypal<U+2024>com`, a one dot leader, shows
-`x@paypal<U+FFFD>com`). The forms: `senderLabel` and `senderAddressShown`
+form the server computed, `protect.ShownAddress` for an address, from a
+closed list of characters: the ASCII letters and digits, the hyphen, and the
+letters of Latin-1 Supplement (U+00C0-U+00FF but `×` and `÷`) and Latin
+Extended-A (U+0100-U+017F but `ı`, `ĸ`, `ŀ`, `ŉ` and `ſ`, drawn like an ASCII
+letter or a dot). The promise: the domain never reads as another one; an
+unusual character of the local part shows as U+FFFD (the replacement
+character).
+
+- **The domain**: each label in Unicode only when all its characters are in
+  the list and it is stable in NFC (`café.fr`, `crème-brûlée.fr`,
+  `straße.de`), in punycode otherwise, also when the sender wrote it so:
+  `y@pаypal.com` (a Cyrillic `а`) shows `y@xn--pypal-4ve.com`, `ɡoogle.com`
+  (an IPA `ɡ`) `xn--oogle-qmc.com`, `gıthub.com`, `yahᴏᴏ.com`, Greek, CJK and
+  a combining mark left over likewise. A domain IDNA refuses shows each
+  non-ASCII character as U+FFFD (`x@paypal<U+2024>com`, a one dot leader,
+  shows `x@paypal<U+FFFD>com`; `x@pay<U+202E>pal.com` shows
+  `x@pay<U+FFFD>pal.com`, never `x@paypal.com`).
+- **The local part**: printable ASCII and the list as they are, any other
+  character as U+FFFD, a U+FFFD already there included: `ѕupport@paypal.com`
+  (a Cyrillic `ѕ`) shows `<U+FFFD>upport@paypal.com`, and so does a hidden or
+  reordering character or an `@` of another width (`＠`, `﹫`).
+- **On screen**: the local part may be truncated, the domain never is; a
+  domain too long for its line wraps (`AddressLine` in the frontend, on the
+  Expéditeurs and Abonnements cards and in the reader).
+
+The forms: `senderLabel` and `senderAddressShown`
 (listing, reader, plan, history, "Plus tard"), `senderEmailShown` (Expéditeurs,
 Abonnements), `valueShown` (protected senders, a rule's conditions),
 `sentToShown` (an unsubscribe mail), `senderLabel` on the rules preview.
@@ -972,7 +989,7 @@ mail in the inbox (a Gmail label, star, mark read) are unaffected.
 
 Returns `{ "protected": [ { "id", "value", "valueShown", "kind", "note", "createdAt" } ] }`.
 `valueShown` is what the settings show (`protect.ShownEntry`: an address in
-the one form addresses are shown in, a domain the browsers' way); `value` is
+the one form addresses are shown in, a domain from the same closed list); `value` is
 the entry as stored, never shown. The answer of `POST /api/protected` carries
 it too.
 
@@ -1017,16 +1034,13 @@ carries, as well as `contact@café.fr`; `linkedin.com` does not protect
 `lİnkedin.com`. The unsubscribe rules (same registrable domain), the 24 hours
 of an unsubscribe mail and the sweep by sender compare the same way.
 
-An entry's domain is stored the way browsers show one: in Unicode (`café.fr`,
-whether typed so or as `xn--caf-dma.fr`; full-width letters folded,
-`ｅｘａｍｐｌｅ.fr` is `example.fr`) only when each label is written in one
-script that does not imitate Latin; otherwise, and for any mix of scripts in a
-label, in punycode (`xn--80ak6aa92e.com`, Cyrillic drawn like "apple", stays
-so). The scripts that imitate Latin are Armenian, Canadian Aboriginal,
-Cherokee, Coptic, Cyrillic, Ethiopic, Georgian, Greek, Lisu and Tifinagh. A
-Latin label holding a combining mark (`li̇nkedin.com`, an `i` with a dot above
-it) is shown in punycode too: IDNA composes every accented Latin letter that
-has a form of its own, so a mark left over sits where no letter carries it.
+An entry's domain is stored the way every screen shows a domain (the closed
+list of `GET /api/emails`): in Unicode (`café.fr`, whether typed so or as
+`xn--caf-dma.fr`; full-width letters folded, `ｅｘａｍｐｌｅ.fr` is
+`example.fr`) only for labels whose characters are all in the list;
+otherwise in punycode (`xn--80ak6aa92e.com`, Cyrillic drawn like "apple",
+stays so; `日本.jp` is stored `xn--wgv71a.jp`; `li̇nkedin.com`, an `i` with a
+combining dot above it, `xn--linkedin-p0e.com`).
 
 When the protected list cannot be read, nothing moves on its own or in bulk:
 the selection (`POST /api/emails/batch-action`, `POST
@@ -2446,6 +2460,11 @@ A rule has the shape:
 ```
 
 - **`matchAll`** : `true` ANDs every condition, `false` ORs them.
+- **`nameShown`** (`GET /api/rules` only, never stored): the name as the
+  screen shows it, each hidden or reordering character as U+FFFD (a sender
+  rule saved before names were written in their shown form holds the
+  sender's address as written). The editor shows a condition's `valueShown`
+  under its field when it differs from `value`.
 - **Condition `valueShown`** (`GET /api/rules` only, never stored): the value
   as the screen shows it, an address in the one form addresses are shown in
   (a rule made from a sender holds the sender's address as written), other
