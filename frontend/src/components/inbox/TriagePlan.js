@@ -169,18 +169,22 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
 
       const protectedSkipped = data?.protectedSkipped || 0;
       const failed = data?.failed || 0;
+      // Proposals about a mailbox no longer connected: not applied, and the
+      // server's message says how many.
+      const gone = data?.mailboxGone || 0;
       if (applied.length === 0) {
-        if (!protectedSkipped && !failed) {
+        if (!protectedSkipped && !failed && !gone) {
           // Nothing applied and nothing failed: every mail had already left
           // the inbox (tidied by hand, or from another device).
           toast.success(items.length > 1 ? 'Ces mails étaient déjà rangés.' : 'Ce mail était déjà rangé.');
           return;
         }
         toast.error(
-          protectedSkipped
+          protectedSkipped && !gone
             ? 'Rien appliqué : ces expéditeurs sont protégés.'
             : // The server says why when trying again would not help (a
-              // folder Mailsorter does not file into, too many new folders).
+              // folder Mailsorter does not file into, too many new folders,
+              // a mailbox no longer connected).
               data?.message || "Le tri n'a pas pu être appliqué. Réessayez."
         );
         return;
@@ -197,6 +201,8 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
         // many new folders at once over IMAP).
         const why = data?.message ? ` ${data.message}` : '';
         toast.error(`${emailsCount(failed)} n'${failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(failed)}.${why}`);
+      } else if (gone && data?.message) {
+        toast.error(data.message);
       }
     } catch (err) {
       refresh();

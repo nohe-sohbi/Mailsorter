@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { signOut } from '../lib/session';
+import { mailboxGeneration, signOut } from '../lib/session';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
 
@@ -10,14 +10,15 @@ const apiClient = axios.create({
   },
 });
 
-// The mailbox the screen loaded (GET /api/mailbox answers its `generation`),
-// sent with every request: the server refuses with a 409 a request from a
-// screen loaded on another mailbox than the one connected now, whose message
-// numbers would name that one's mails. Set by EmailContext only, which empties
-// what it holds of the mailbox when it changes.
-let mailboxGeneration = '';
-export function setMailboxGeneration(generation) {
-  mailboxGeneration = generation || '';
+// What the screen does when the server says the mailbox changed since it was
+// loaded (a 409 with `mailboxChanged`): EmailContext asks again which mailbox
+// this is and forgets what it held of the other one. One at a time.
+let mailboxChangedHandler = null;
+export function whenMailboxChanged(handler) {
+  mailboxChangedHandler = handler;
+  return () => {
+    if (mailboxChangedHandler === handler) mailboxChangedHandler = null;
+  };
 }
 
 // Authenticate requests with the signed session token issued at login.
@@ -28,8 +29,12 @@ apiClient.interceptors.request.use((config) => {
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`;
   }
-  if (mailboxGeneration) {
-    config.headers['X-Mailbox-Generation'] = mailboxGeneration;
+  // The mailbox the screen loaded (lib/session.js): a request from a screen
+  // loaded on another one than the one connected now is refused (409), its
+  // message numbers naming that one's mails.
+  const generation = mailboxGeneration();
+  if (generation) {
+    config.headers['X-Mailbox-Generation'] = generation;
   }
   return config;
 });
@@ -48,6 +53,12 @@ apiClient.interceptors.response.use(
       if (window.location.pathname !== '/') {
         window.location.assign('/');
       }
+    }
+    // The mailbox changed since the screen was loaded: it is loaded again
+    // (EmailContext), and the request's own screen shows the server's
+    // sentence, "Votre boîte a changé depuis l'ouverture de cette page".
+    if (error.response?.status === 409 && error.response?.data?.mailboxChanged) {
+      mailboxChangedHandler?.();
     }
     return Promise.reject(error);
   }

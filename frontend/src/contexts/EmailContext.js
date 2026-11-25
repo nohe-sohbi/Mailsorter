@@ -5,8 +5,9 @@ import {
   senderService,
   subscriptionService,
   mailboxService,
-  setMailboxGeneration,
+  whenMailboxChanged,
 } from '../services/api';
+import { setMailboxGeneration } from '../lib/session';
 
 const EmailContext = createContext(null);
 
@@ -332,6 +333,9 @@ export function EmailProvider({ children }) {
     return mailboxRequestRef.current;
   }, [forgetMailbox]);
   useEffect(() => () => clearTimeout(mailboxRetryRef.current), []);
+  // A request refused because the mailbox changed since this was loaded
+  // (409, api.js): ask again which mailbox it is, and forget the other one's.
+  useEffect(() => whenMailboxChanged(() => loadMailbox({ force: true })), [loadMailbox]);
 
   const markUnsubscribed = useCallback((senderEmail) => {
     setSubscriptions((prev) =>
