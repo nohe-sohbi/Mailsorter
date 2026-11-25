@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
@@ -251,7 +252,7 @@ func (h *Handler) ApplySuggestion(w http.ResponseWriter, r *http.Request) {
 	if suggestion.Generation != session.generation() {
 		// About a mailbox no longer connected: its message number names,
 		// now, a mail of the one connected since.
-		writeError(w, http.StatusNotFound, "Suggestion not found")
+		writeError(w, http.StatusGone, proposalGoneMessage)
 		return
 	}
 
@@ -333,6 +334,8 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	labelNames := map[string]string{}
 	failed := 0
 	protectedSkipped := 0
+	// Proposals about a mailbox no longer connected, left alone.
+	otherMailbox := 0
 	// Why some failed, when the user can do something about it: each
 	// sentence once, in the order met.
 	var reasons []string
@@ -358,10 +361,15 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 			failed++
 			continue
 		}
-		if suggestion.Status == proposalMoot || suggestion.Generation != gen {
-			// Its mail left the inbox some other way, or it is about a
-			// mailbox no longer connected (a screen loaded before still
-			// sends its id): neither applied nor failed.
+		if suggestion.Status == proposalMoot {
+			// Its mail left the inbox some other way (a screen loaded before
+			// still sends its id): neither applied nor failed.
+			continue
+		}
+		if suggestion.Generation != gen {
+			// About a mailbox no longer connected: its number names a mail
+			// of the one connected now. Not applied, and said.
+			otherMailbox++
 			continue
 		}
 
@@ -414,6 +422,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		// Lets the client offer "Annuler" only where it would work, the way
 		// batch-action already says so for a selection.
 		"reversible": batchUndoReaches(session.Transport),
+		// Proposals about a mailbox no longer connected, not applied.
+		"mailboxGone": otherMailbox,
+	}
+	if otherMailbox > 0 {
+		reasons = append(reasons, proposalsGoneMessage(otherMailbox))
 	}
 	if len(reasons) > 0 {
 		answer["message"] = strings.Join(reasons, " ")
@@ -956,6 +969,20 @@ func filingRefusal(err error) (string, bool) {
 		return labelRequiredOnIMAPMessage, true
 	}
 	return "", false
+}
+
+// proposalGoneMessage is what the user reads for "Appliquer" on a proposal
+// about a mailbox no longer connected (see generation.go), as for "Annuler"
+// on an entry of one (mailboxGoneMessage).
+const proposalGoneMessage = "Cette proposition concerne une boîte débranchée depuis."
+
+// proposalsGoneMessage is what "Tout ranger" says of the n proposals it left
+// alone because they are about a mailbox no longer connected.
+func proposalsGoneMessage(n int) string {
+	if n == 1 {
+		return "1 proposition concernait une boîte débranchée depuis : elle n'a pas été appliquée."
+	}
+	return fmt.Sprintf("%d propositions concernaient une boîte débranchée depuis : elles n'ont pas été appliquées.", n)
 }
 
 // containsString reports whether list holds s.

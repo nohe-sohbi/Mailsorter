@@ -143,10 +143,10 @@ func (d *Database) AISettings() *mongo.Collection {
 // message 1, and the index refused the second person's, every time, while the
 // sync reported success.
 //
-// userId_1_messageId_1 was unique on (userId, messageId), which a person with
-// two IMAP mailboxes one after the other breaks the same way: both have a
-// message 1. emailIdentityKeys replaces it.
-var legacyEmailIndexes = []string{"messageId_1", "userId_1_messageId_1"}
+// userId_1_messageId_1, unique on (userId, messageId), is replaced too (a person
+// with two IMAP mailboxes one after the other has a message 1 in each), but by
+// ensureEmailIdentity, and only once its replacement holds.
+var legacyEmailIndexes = []string{"messageId_1"}
 
 // AnalysisCacheVersion is the version every entry of analysis_cache carries
 // (and its key starts with, in internal/api). It changes when what a verdict
@@ -250,6 +250,13 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 // through, none over the Gmail API), and the id that mailbox gives it.
 var emailIdentityKeys = bson.D{{Key: "userId", Value: 1}, {Key: "messageId", Value: 1}, {Key: "generation", Value: 1}}
 
+// The names MongoDB gives the index on emailIdentityKeys, and the one it
+// replaces, unique on (userId, messageId) alone.
+const (
+	emailIdentityIndex    = "userId_1_messageId_1_generation_1"
+	oldEmailIdentityIndex = "userId_1_messageId_1"
+)
+
 // ensureEmailIdentity makes (userId, messageId, generation) unique: one stored
 // copy of a message per person and mailbox.
 //
@@ -261,27 +268,33 @@ var emailIdentityKeys = bson.D{{Key: "userId", Value: 1}, {Key: "messageId", Val
 // would show twice. With it, the second upsert hits the unique key and
 // MongoDB retries it as an update.
 //
-// A boot that could not build it unique left a plain index on the same keys,
-// and MongoDB refuses a second index on identical keys, so that one is dropped
-// and rebuilt. Should the build fail (a person already has duplicates, which
-// only a database that never had a unique index can hold), the plain index is
-// put back so the lookups stay fast, and the failure is returned for the boot
-// log.
+// The old key (userId, messageId) is dropped only once the new one is built:
+// until then it still keeps one row per number. A boot that could not build
+// the new one unique left a plain index on the same keys, and MongoDB refuses
+// a second index on identical keys, so that one is dropped and rebuilt. Any
+// other failure (a person already has duplicates, error 11000, or the boot's
+// deadline) leaves a plain index on the new keys, so the lookups stay fast,
+// keeps the old key, and is logged and returned.
 func (d *Database) ensureEmailIdentity(ctx context.Context) error {
 	idx := d.Emails().Indexes()
 	unique := mongo.IndexModel{Keys: emailIdentityKeys, Options: options.Index().SetUnique(true)}
 	_, err := idx.CreateOne(ctx, unique)
-	if err == nil || !isIndexConflict(err) {
-		return err
-	}
-	if _, err := idx.DropOne(ctx, "userId_1_messageId_1_generation_1"); err != nil && !isMissingIndex(err) {
-		return err
-	}
-	if _, err := idx.CreateOne(ctx, unique); err != nil {
-		if _, plainErr := idx.CreateOne(ctx, mongo.IndexModel{Keys: emailIdentityKeys}); plainErr != nil {
-			return fmt.Errorf("emails: per-person unique index not built (%v), and the plain one not restored: %w", err, plainErr)
+	if err != nil && isIndexConflict(err) {
+		if _, dropErr := idx.DropOne(ctx, emailIdentityIndex); dropErr != nil && !isMissingIndex(dropErr) {
+			return fmt.Errorf("emails: drop the plain index on the per-mailbox key to build it unique: %w", dropErr)
 		}
-		return fmt.Errorf("emails: per-person unique index not built, plain index kept: %w", err)
+		_, err = idx.CreateOne(ctx, unique)
+	}
+	if err != nil {
+		log.Printf("database: emails: the per-mailbox unique index is not built, the per-person one is kept: %v", err)
+		if _, plainErr := idx.CreateOne(ctx, mongo.IndexModel{Keys: emailIdentityKeys}); plainErr != nil {
+			log.Printf("database: emails: the plain index on the per-mailbox key is not built either: %v", plainErr)
+			return fmt.Errorf("emails: per-mailbox unique index not built (%v), nor the plain one: %w", err, plainErr)
+		}
+		return fmt.Errorf("emails: per-mailbox unique index not built, plain index built, per-person one kept: %w", err)
+	}
+	if _, err := idx.DropOne(ctx, oldEmailIdentityIndex); err != nil && !isMissingIndex(err) {
+		return fmt.Errorf("emails: drop the per-person unique index the per-mailbox one replaces: %w", err)
 	}
 	return nil
 }
@@ -293,20 +306,29 @@ const stampTimeout = 5 * time.Minute
 // stampGenerations gives what was kept of an IMAP mailbox before it carried a
 // generation the generation of the mailbox connected now: the _id of its
 // mail_accounts row (see api/generation.go). At each boot, and it finds
-// nothing once done. It logs how many rows it stamped, and its failures: the
-// boot goes on, and the next one stamps what is left.
+// nothing once done. It logs how many rows it stamped and erased, and its
+// failures: the boot goes on, and the next one does what is left.
 //
-//   - The copy of the inbox (the rows that carry a folder): all of it, the
-//     copy of another mailbox having been cleared when this one was connected.
-//   - The AI's proposals and the history entries made since the mailbox was
-//     connected (createdAt): the ones before are of the mailbox before, a
-//     Gmail one or none, and stay without, final on this one.
+// Before generations, connecting another address wrote over the same row and
+// erased nothing: the row's last connection (updatedAt) is the one moment
+// from which what was kept is known to be the connected mailbox's, the
+// moment of its first one (createdAt) is not.
 //
-// A row of a mailbox no longer connected keeps none: it is never read, and
-// the next connection or sync of the person erases it.
+//   - The copy of the inbox (the rows that carry a folder): a row still in
+//     the inbox is of the connected mailbox (each sync rewrites or drops it
+//     against the inbox listed); a row kept for "Annuler" only if the mail
+//     left the inbox since that connection (leftAt).
+//   - The AI's proposals and the history entries made since that connection.
+//
+// What comes before stays without a generation: final in the history, and
+// erased from the copy here. So are the rows of the copy of the accounts with
+// no IMAP mailbox connected (disconnected, or gone to Gmail, before
+// generations), which the senders, the subscriptions and the sweeps of the
+// Gmail API would read. Not those of a mailbox whose stamping failed: the
+// next boot stamps them.
 func (d *Database) stampGenerations(ctx context.Context) {
 	cur, err := d.MailAccounts().Find(ctx, bson.M{"transport": "imap"},
-		options.Find().SetProjection(bson.M{"_id": 1, "userId": 1, "createdAt": 1}))
+		options.Find().SetProjection(bson.M{"_id": 1, "userId": 1, "updatedAt": 1}))
 	if err != nil {
 		log.Printf("database: read the IMAP mailboxes to stamp their generation, done at the next boot: %v", err)
 		return
@@ -314,7 +336,7 @@ func (d *Database) stampGenerations(ctx context.Context) {
 	var accounts []struct {
 		ID        primitive.ObjectID `bson:"_id"`
 		UserID    string             `bson:"userId"`
-		CreatedAt time.Time          `bson:"createdAt"`
+		UpdatedAt time.Time          `bson:"updatedAt"`
 	}
 	if err := cur.All(ctx, &accounts); err != nil {
 		log.Printf("database: read the IMAP mailboxes to stamp their generation, done at the next boot: %v", err)
@@ -322,30 +344,52 @@ func (d *Database) stampGenerations(ctx context.Context) {
 	}
 	var copies, proposals, entries int64
 	failed := 0
+	// Their copies are not erased: the next boot stamps them.
+	unstamped := make([]string, 0)
 	none := bson.M{"$exists": false}
 	for _, a := range accounts {
 		stamp := bson.M{"$set": bson.M{"generation": a.ID.Hex()}}
-		since := bson.M{"$gte": a.CreatedAt}
+		// A row that never says when it was last connected: nothing kept
+		// before now is known to be its mailbox's.
+		connected := a.UpdatedAt
+		if connected.IsZero() {
+			connected = time.Now()
+		}
+		since := bson.M{"$gte": connected}
+		ok := true
 		for _, step := range []struct {
 			coll   *mongo.Collection
 			filter bson.M
 			count  *int64
 		}{
-			{d.Emails(), bson.M{"userId": a.UserID, "folder": bson.M{"$exists": true}, "generation": none}, &copies},
+			{d.Emails(), bson.M{"userId": a.UserID, "folder": bson.M{"$exists": true}, "generation": none,
+				"$or": []bson.M{{"leftInbox": bson.M{"$ne": true}}, {"leftAt": since}}}, &copies},
 			{d.AISuggestions(), bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, &proposals},
 			{d.ActionLog(), bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, &entries},
 		} {
 			res, err := step.coll.UpdateMany(ctx, step.filter, stamp)
 			if err != nil {
 				failed++
+				ok = false
 				log.Printf("database: stamp the generation of the IMAP mailbox of %s in %s, done at the next boot: %v", a.UserID, step.coll.Name(), err)
 				continue
 			}
 			*step.count += res.ModifiedCount
 		}
+		if !ok {
+			unstamped = append(unstamped, a.UserID)
+		}
 	}
-	log.Printf("database: generations stamped for %d IMAP mailboxes: %d rows of their copy, %d AI proposals, %d history entries (%d failures)",
-		len(accounts), copies, proposals, entries, failed)
+	var erased int64
+	res, err := d.Emails().DeleteMany(ctx, bson.M{"folder": bson.M{"$exists": true}, "generation": none, "userId": bson.M{"$nin": unstamped}})
+	if err != nil {
+		failed++
+		log.Printf("database: erase the rows of copies of no IMAP mailbox connected, done at the next boot: %v", err)
+	} else {
+		erased = res.DeletedCount
+	}
+	log.Printf("database: generations stamped for %d IMAP mailboxes: %d rows of their copy, %d AI proposals, %d history entries; %d rows of copies of no mailbox connected erased (%d failures)",
+		len(accounts), copies, proposals, entries, erased, failed)
 }
 
 // isIndexConflict reports whether an index could not be created because one on

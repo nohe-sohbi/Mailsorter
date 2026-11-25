@@ -11,17 +11,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // holdingTLSProxy sits between Mailsorter and a person's IMAP server, both
@@ -170,6 +174,8 @@ func TestAcceptance_AScreenOfAReplacedMailboxActsOnNothing(t *testing.T) {
 		app.failf("« Archiver » depuis l'écran chargé sur l'ancienne boîte de %s devrait être refusé (409), il a répondu %d : %v", moi.email, code, out)
 	} else if msg, _ := out["error"].(string); msg != mailboxChangedMessage {
 		app.failf("le refus devrait dire %q, il dit %q", mailboxChangedMessage, msg)
+	} else if changed, _ := out["mailboxChanged"].(bool); !changed {
+		app.failf("le refus devrait dire à l'écran de recharger la boîte (mailboxChanged), il ne le dit pas : %v", out)
 	}
 	moi.expectOnServer(serverInbox, otherBoxMails[1].Subject)
 	if in := moi.onServer(serverArchive); len(in) != 0 {
@@ -466,4 +472,243 @@ func TestAcceptance_UndoOfAMailGmailDoesNotKnowSaysSo(t *testing.T) {
 	if err := app.h.db.ActionLog().FindOne(ctx, bson.M{"_id": res.InsertedID}).Decode(&entry); err != nil || entry.Undone {
 		app.failf("la ligne ne devrait pas être marquée annulée (%v, %v)", entry.Undone, err)
 	}
+}
+
+// unstampAll takes the generation off everything kept of this person, as it
+// was before generations existed.
+func unstampAll(moi *imapPerson) {
+	a := moi.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, c := range []*mongo.Collection{a.h.db.Emails(), a.h.db.ActionLog(), a.h.db.AISuggestions()} {
+		if _, err := c.UpdateMany(ctx, bson.M{"userId": moi.email}, bson.M{"$unset": bson.M{"generation": ""}}); err != nil {
+			a.fatalf("retrait de la génération de %s : %v", c.Name(), err)
+		}
+	}
+}
+
+// boot runs what the backend runs at start (EnsureIndexes).
+func boot(a *testApp) error {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return a.h.db.EnsureIndexes(ctx)
+}
+
+// Before generations, connecting another address wrote over the same
+// mail_accounts row (createdAt kept) and erased nothing. At the boot, what was
+// kept of the first mailbox does not become the second's: its history line is
+// final ("Annuler" refused, the second mailbox's mail of the same number left
+// where it is), its proposal is not in the plan, and its mail kept for
+// "Annuler" is erased.
+func TestAcceptance_BootDoesNotGiveTheMailboxConnectedInPlaceTheFirstOnesRows(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, oldUIDs := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	moi.act(oldUIDs[1], "archive")
+	line := moi.historyLineFor(oldUIDs[1], "archive")
+	app.ai.willSay("archive", 0.95)
+	moi.analyze(oldUIDs[0])
+	if len(moi.plan()) == 0 {
+		app.fatalf("le plan de %s est vide avant le changement de boîte : le test ne prouve rien", moi.email)
+	}
+	unstampAll(moi)
+
+	// What main did when another address was connected: the same row, its
+	// last connection now, nothing erased.
+	time.Sleep(20 * time.Millisecond)
+	moi.address = otherMailbox
+	moi.startServer()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.MailAccounts().UpdateOne(ctx, bson.M{"userId": moi.email}, bson.M{"$set": bson.M{
+		"username": otherMailbox, "provider": provider.Detect(otherMailbox).Key, "port": moi.port, "updatedAt": time.Now(),
+	}}); err != nil {
+		app.fatalf("la deuxième adresse de %s sur la même ligne : %v", moi.email, err)
+	}
+	newUIDs := moi.receive(otherBoxMails...)
+	moi.expectNumbered(newUIDs[1], oldUIDs[1])
+
+	if err := boot(app); err != nil {
+		app.fatalf("EnsureIndexes : %v", err)
+	}
+	for _, l := range historyViewOf(moi) {
+		if l.ID == line.ID && (l.Undoable || !l.MailboxGone) {
+			app.failf("la ligne d'archivage de la première boîte de %s devrait être définitive, elle dit undoable %v, mailboxGone %v", moi.email, l.Undoable, l.MailboxGone)
+		}
+	}
+	if got := moi.undoFromHistory(line); got.code != http.StatusGone {
+		app.failf("« Annuler » sur la ligne de la première boîte de %s devrait être refusé (410), il a répondu %s", moi.email, got)
+	}
+	moi.expectOnServer(serverInbox, otherBoxMails[1].Subject)
+	if in := moi.onServer(serverArchive); len(in) != 0 {
+		app.failf("rien ne devrait bouger sur le serveur de la deuxième boîte de %s, son archive contient %s", moi.email, quotedList(in))
+	}
+	if plan := moi.plan(); len(plan) != 0 {
+		app.failf("le plan de la deuxième boîte de %s ne devrait pas montrer la proposition de la première, il en montre %d", moi.email, len(plan))
+	}
+	if n, err := app.h.db.Emails().CountDocuments(ctx, bson.M{"userId": moi.email, "leftInbox": true}); err != nil || n != 0 {
+		app.failf("le mail de la première boîte gardé pour « Annuler » devrait être effacé au démarrage, il en reste %d (%v)", n, err)
+	}
+
+	moi.sync()
+	for i, m := range otherBoxMails {
+		moi.expectShows(newUIDs[i], m.Subject)
+	}
+	moi.expectDoesNotShow(bankStatement.Subject, "c'est un mail de la première boîte")
+}
+
+// The rows of a copy that no IMAP mailbox connected holds (the account went
+// back to Gmail before generations existed) are erased at the boot: the
+// senders of the Gmail mailbox no longer count them. Its own rows stay.
+func TestAcceptance_BootErasesTheCopyOfNoMailboxConnected(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	app.receiveAndSync(incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.Emails().InsertOne(ctx, bson.M{
+		"userId": scenarioUser, "messageId": "3", "folder": serverInbox, "from": "Ancienne <vieux@ancienne-boite.fr>",
+		"subject": "Un mail de l'ancienne boîte IMAP", "receivedDate": time.Now(),
+	}); err != nil {
+		app.fatalf("ligne de copie restée de l'ancienne boîte : %v", err)
+	}
+	senders := func() []string {
+		code, out := app.call(http.MethodGet, "/api/senders", nil)
+		if code != http.StatusOK {
+			app.fatalf("GET /api/senders a répondu %d : %v", code, out)
+		}
+		raw, _ := out["_raw"].(string)
+		var list []struct {
+			SenderEmail string `json:"senderEmail"`
+		}
+		_ = json.Unmarshal([]byte(raw), &list)
+		names := make([]string, 0, len(list))
+		for _, s := range list {
+			names = append(names, s.SenderEmail)
+		}
+		return names
+	}
+	if !containsString(senders(), "Ancienne <vieux@ancienne-boite.fr>") {
+		app.fatalf("avant le démarrage, les expéditeurs de %s devraient compter la ligne restée : le test ne prouve rien (%v)", scenarioUser, senders())
+	}
+
+	if err := boot(app); err != nil {
+		app.fatalf("EnsureIndexes : %v", err)
+	}
+	if got := senders(); containsString(got, "Ancienne <vieux@ancienne-boite.fr>") || !containsString(got, "Boutique <info@boutique.com>") {
+		app.failf("après le démarrage, les expéditeurs de %s devraient être ceux de sa boîte Gmail seulement, ils sont %v", scenarioUser, got)
+	}
+}
+
+// The per-mailbox unique index is built before the per-person one it replaces
+// is dropped. A person holding duplicates (an older database) keeps the
+// per-person index and gets a plain one on the new keys, and the boot says
+// so; once the duplicates are gone (erased by that boot: rows of no mailbox
+// connected), the next boot builds it unique and drops the old one.
+func TestAcceptance_BootDropsTheOldKeyOnlyOnceTheNewOneHolds(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	idx := app.h.db.Emails().Indexes()
+	if _, err := idx.DropOne(ctx, "userId_1_messageId_1_generation_1"); err != nil {
+		app.fatalf("retrait de l'index par boîte : %v", err)
+	}
+	if _, err := idx.CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "messageId", Value: 1}}}); err != nil {
+		app.fatalf("index par personne d'avant : %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := app.h.db.Emails().InsertOne(ctx, bson.M{"userId": "double@exemple.fr", "messageId": "1", "folder": serverInbox}); err != nil {
+			app.fatalf("doublon %d : %v", i, err)
+		}
+	}
+	indexes := func() map[string]bool {
+		cur, err := idx.List(ctx)
+		if err != nil {
+			app.fatalf("liste des index : %v", err)
+		}
+		var specs []struct {
+			Name   string `bson:"name"`
+			Unique bool   `bson:"unique"`
+		}
+		if err := cur.All(ctx, &specs); err != nil {
+			app.fatalf("liste des index : %v", err)
+		}
+		out := map[string]bool{}
+		for _, s := range specs {
+			out[s.Name] = s.Unique
+		}
+		return out
+	}
+
+	if err := boot(app); err == nil {
+		app.failf("le démarrage devrait dire que l'index unique par boîte n'est pas construit (doublons)")
+	}
+	got := indexes()
+	if unique, ok := got["userId_1_messageId_1_generation_1"]; !ok || unique {
+		app.failf("avec des doublons, l'index sur (userId, messageId, generation) devrait être simple, il est : présent %v, unique %v", ok, unique)
+	}
+	if _, ok := got["userId_1_messageId_1"]; !ok {
+		app.failf("avec des doublons, l'index par personne devrait rester, il a été retiré")
+	}
+
+	if err := boot(app); err != nil {
+		app.fatalf("le démarrage suivant, doublons effacés : %v", err)
+	}
+	got = indexes()
+	if unique := got["userId_1_messageId_1_generation_1"]; !unique {
+		app.failf("sans doublons, l'index par boîte devrait être unique : %v", got)
+	}
+	if _, ok := got["userId_1_messageId_1"]; ok {
+		app.failf("une fois l'index par boîte construit, l'index par personne devrait être retiré : %v", got)
+	}
+}
+
+// "Appliquer" on a proposal about a mailbox no longer connected (one an
+// analysis of it wrote after the change) is refused with a French sentence,
+// and "Tout ranger" leaves it, says how many, and applies the others.
+func TestAcceptance_ApplyingAProposalOfAReplacedMailboxIsRefused(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, bankStatement, shopOrder)
+	old := screenGeneration(moi)
+	moi.disconnectMailbox()
+	moi.connectOtherMailbox(otherMailbox)
+	newUIDs := moi.receive(otherBoxMails...)
+	moi.sync()
+	app.ai.willSay("archive", 0.95)
+	moi.analyze(newUIDs[0])
+	current := moi.proposalFor(newUIDs[0])
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := app.h.db.AISuggestions().InsertOne(ctx, models.AISuggestion{
+		UserID: moi.email, EmailID: newUIDs[1], Action: "archive", Confidence: 0.95,
+		Status: "pending", Generation: old, CreatedAt: time.Now(),
+	})
+	if err != nil {
+		app.fatalf("proposition de l'ancienne boîte : %v", err)
+	}
+	stale := res.InsertedID.(primitive.ObjectID).Hex()
+
+	got := moi.applyProposal(stale)
+	if got.code != http.StatusGone {
+		app.failf("« Appliquer » une proposition de l'ancienne boîte de %s devrait être refusé (410), il a répondu %s", moi.email, got)
+	} else if msg, _ := got.body["error"].(string); msg != proposalGoneMessage {
+		app.failf("le refus devrait dire %q, il dit %q", proposalGoneMessage, msg)
+	}
+
+	all := moi.tidyAll(stale, current.ID)
+	if all.code != http.StatusOK {
+		app.fatalf("« Tout ranger » de %s a répondu %s", moi.email, all)
+	}
+	if n, _ := all.body["mailboxGone"].(float64); n != 1 {
+		app.failf("« Tout ranger » devrait compter 1 proposition de l'ancienne boîte laissée, il en compte %v", all.body["mailboxGone"])
+	}
+	if msg, _ := all.body["message"].(string); !strings.Contains(msg, proposalsGoneMessage(1)) {
+		app.failf("« Tout ranger » devrait dire %q, il dit %q", proposalsGoneMessage(1), msg)
+	}
+	if n, _ := all.body["applied"].(float64); n != 1 {
+		app.failf("« Tout ranger » devrait appliquer la proposition de la boîte branchée, il en applique %v", all.body["applied"])
+	}
+	moi.expectOnServer(serverInbox, otherBoxMails[1].Subject)
+	moi.expectOnServer(serverArchive, otherBoxMails[0].Subject)
 }

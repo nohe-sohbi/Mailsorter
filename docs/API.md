@@ -28,7 +28,9 @@ A signed-in screen also names the mailbox it loaded, in
 (`generation`). A request naming another mailbox than the one connected now
 (another was connected since the screen loaded, from another tab or device)
 is refused with `409` "Votre boîte a changé depuis l'ouverture de cette page :
-rechargez-la.", before anything is read or done: over IMAP a message number
+rechargez-la." and `mailboxChanged: true` (the screen then loads the mailbox
+again and forgets what it held of the other one), before anything is read or
+done: over IMAP a message number
 names a mail of one mailbox only, and the next one gives the same numbers to
 its own. A request without the header is not checked (see "Mailbox
 generations").
@@ -1133,9 +1135,20 @@ and the history entries carry it.
 
 The Gmail API names a message on the account: its rows carry no generation.
 What was kept before generations existed is given, at boot, the generation of
-the IMAP mailbox connected then: its whole copy, and the proposals and history
-entries made since it was connected (under its own time, after the indexes;
-the boot log says how many rows it stamped).
+the IMAP mailbox connected then, as far as it is known to be that mailbox's:
+before generations, connecting another address wrote over the same row and
+erased nothing, so the row's last connection (`updatedAt`) is the line. The
+rows of its copy still in the inbox (each sync rewrites or drops them against
+the inbox it lists), a row kept for "Annuler" if the mail left the inbox
+since that connection, and the proposals and history entries made since.
+What comes before stays without a generation: final in the history (on an IMAP
+mailbox), and erased from the copy. So are the rows of the copies of the
+accounts with no IMAP mailbox connected. This runs under its own time, after
+the indexes, and the boot log says how many rows it stamped and erased. The
+index on (userId, messageId, generation) is built unique before the one it
+replaces, on (userId, messageId), is dropped; should it fail (duplicates, the
+boot's time), a plain one is built, the old one kept, and the boot log says
+so.
 
 A limit remains for the history entries of an IMAP mailbox disconnected before
 generations existed: they carry none, like the Gmail API's, so once a Gmail
@@ -1894,8 +1907,10 @@ tidied it by hand): nothing moves, nothing is recorded, and the proposal
 becomes `moot`.
 
 **Error Responses:** `400` invalid id; `404` no such suggestion for this caller;
-`422` over IMAP, a label naming a special folder or a name no folder is made
-under; `428` no mailbox connected;
+`410` "Cette proposition concerne une boîte débranchée depuis." for a
+suggestion about another mailbox than the one connected now (see "Mailbox
+generations"), nothing moving; `422` over IMAP, a label naming a special
+folder or a name no folder is made under; `428` no mailbox connected;
 `500` the mailbox refused the action.
 
 ### Apply many suggestions
@@ -1916,13 +1931,17 @@ answers in `message`; several reasons are joined, each once. Each filing
 settles its folder's name as `apply` does. A suggestion whose mail already left the
 inbox (tidied by hand, from a screen loaded before) is counted neither in
 `applied` nor in `failed`, and becomes `moot`; nor is a suggestion already
-`moot`.
+`moot`. A suggestion about another mailbox than the one connected now (see
+"Mailbox generations") is not applied either: counted in `mailboxGone`, and
+said in `message`, "1 proposition concernait une boîte débranchée depuis :
+elle n'a pas été appliquée." (or "2 propositions concernaient ... elles n'ont
+pas été appliquées.").
 
 **Request body:** `{ "suggestionIds": ["a", "b", "c"] }`
 
 **Response:** `200 OK`
 ```json
-{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1, "reversible": true }
+{ "applied": 8, "failed": 1, "total": 10, "appliedIds": ["a", "b"], "protectedSkipped": 1, "mailboxGone": 0, "reversible": true }
 ```
 
 `reversible` says whether `POST /api/emails/batch-undo` can reverse what this

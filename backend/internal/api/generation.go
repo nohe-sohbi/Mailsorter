@@ -135,9 +135,13 @@ func checkScreenMailbox(ctx context.Context, transport provider.Transport, accou
 	return errMailboxChanged
 }
 
-// writeMailboxChanged answers a request refused by errMailboxChanged.
+// writeMailboxChanged answers a request refused by errMailboxChanged: the
+// usual envelope, and mailboxChanged, by which the screen tells this 409 from
+// the others and loads the mailbox again (api.js).
 func writeMailboxChanged(w http.ResponseWriter) {
-	writeError(w, http.StatusConflict, mailboxChangedMessage)
+	writeJSON(w, http.StatusConflict, map[string]interface{}{
+		"error": mailboxChangedMessage, "status": http.StatusConflict, "mailboxChanged": true,
+	})
 }
 
 // ofCurrentGeneration says whether a history entry is of the mailbox
