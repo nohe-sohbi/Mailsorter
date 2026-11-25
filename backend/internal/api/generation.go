@@ -5,10 +5,12 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/snooze"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -153,9 +155,10 @@ func ofCurrentGeneration(entry models.ActionLog, gen string) bool {
 
 // clearMailboxCopy erases what Mailsorter kept of the IMAP mailboxes that are
 // not connected now: the copy of their inbox (moved-out rows kept for
-// "Annuler" included) and the AI's pending proposals about their mails. The
-// history stays, final on them (ofCurrentGeneration). The rows of a Gmail
-// mailbox, which carry no generation, are not touched.
+// "Annuler" included) and the AI's pending proposals about their mails; and
+// it ends their reports still open (cancelled), whose mails stay where they
+// wait. The history stays, final on them (ofCurrentGeneration). The rows of a
+// Gmail mailbox, which carry no generation, are not touched.
 //
 // The generations to erase are read before the one connected now: one that is
 // not connected at that moment never is again (a mailbox connected again
@@ -196,8 +199,30 @@ func (h *Handler) clearMailboxCopy(ctx context.Context, userEmail string) error 
 	if _, err := h.db.AISuggestions().DeleteMany(ctx, bson.M{"userId": userEmail, "status": "pending", "$or": stale}); err != nil {
 		return err
 	}
+	// A report of another mailbox ends (cancelled): its hour would bring
+	// back, in the mailbox connected now, the mail of that number. Its mail
+	// stays where it waits, in that other mailbox. Read with the others:
+	// a report without a generation is of the Gmail API, as a proposal is.
+	reportGens, err := h.db.Snoozes().Distinct(ctx, "generation", bson.M{"userId": userEmail, "status": bson.M{"$in": openReports}})
+	if err != nil {
+		return err
+	}
+	staleReports := []bson.M{{"generation": bson.M{"$in": otherGenerations(reportGens, current)}}}
+	if current != "" {
+		staleReports = append(staleReports, bson.M{"generation": bson.M{"$exists": false}})
+	}
+	if _, err := h.db.Snoozes().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "status": bson.M{"$in": openReports}, "$or": staleReports},
+		bson.M{"$set": bson.M{"status": snooze.StatusCancelled, "updatedAt": time.Now()}},
+	); err != nil {
+		return err
+	}
 	return nil
 }
+
+// openReports are the statuses of a report whose mail still waits:
+// scheduled, and given up (failed), which "Réactiver" may still bring back.
+var openReports = []string{snooze.StatusScheduled, snooze.StatusFailed}
 
 // otherGenerations is, of the generations Distinct read, the ones that are
 // not current.

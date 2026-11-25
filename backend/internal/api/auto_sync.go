@@ -15,6 +15,12 @@ import (
 // sweep keeps the box tidy without hammering the Gmail API or the user's quota.
 const autoSyncInterval = 30 * time.Minute
 
+// autoSyncAccountBound is how long one account's background sync may take.
+// Its IMAP session is bound to it (imap.Connect): a server that stops
+// answering, at LOGIN or at the first SELECT, holds its own account that
+// long, never the accounts after it. A variable, so a test can shorten it.
+var autoSyncAccountBound = time.Minute
+
 // autoSyncSweepInterval is how often the scheduler wakes to look for users due
 // for a background sync. schedule.Due gates the actual work per user, so a
 // frequent tick only shortens the lag, it does not cause extra syncs.
@@ -64,10 +70,16 @@ func (h *Handler) runDueAutoSyncs() {
 		if !schedule.Due(u.LastAutoSyncAt, now, autoSyncInterval) {
 			continue
 		}
+		if ctx.Err() != nil {
+			// Out of time: the rest waits for the next sweep, unstamped.
+			return
+		}
 		// Stamp first so a failure does not get retried every sweep all day.
 		h.stampAutoSync(ctx, u.Email)
 
-		_, _, ruled, err := h.syncInbox(ctx, u.Email)
+		userCtx, cancelUser := context.WithTimeout(ctx, autoSyncAccountBound)
+		_, _, ruled, err := h.syncInbox(userCtx, u.Email)
+		cancelUser()
 		if err != nil {
 			log.Printf("autosync: sync failed for %s: %v", u.Email, err)
 			continue

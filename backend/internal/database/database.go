@@ -319,13 +319,18 @@ const stampTimeout = 5 * time.Minute
 //     against the inbox listed); a row kept for "Annuler" only if the mail
 //     left the inbox since that connection (leftAt).
 //   - The AI's proposals and the history entries made since that connection.
+//   - Its reports (snoozes, the ones that carry the folder their mail waits
+//     in), whatever their date: ending one strands its mail in "Plus tard",
+//     while waking one of a mailbox the row held before moves nothing there
+//     (its return checks the Message-ID, imap.Client.MoveRecorded).
 //
 // What comes before stays without a generation: final in the history, and
 // erased from the copy here. So are the rows of the copy of the accounts with
 // no IMAP mailbox connected (disconnected, or gone to Gmail, before
 // generations), which the senders, the subscriptions and the sweeps of the
-// Gmail API would read. Not those of a mailbox whose stamping failed: the
-// next boot stamps them.
+// Gmail API would read, and their open reports end (cancelled), which the
+// sweep would otherwise try over the Gmail API. Not those of a mailbox whose
+// stamping failed: the next boot stamps them.
 func (d *Database) stampGenerations(ctx context.Context) {
 	cur, err := d.MailAccounts().Find(ctx, bson.M{"transport": "imap"},
 		options.Find().SetProjection(bson.M{"_id": 1, "userId": 1, "updatedAt": 1}))
@@ -342,7 +347,7 @@ func (d *Database) stampGenerations(ctx context.Context) {
 		log.Printf("database: read the IMAP mailboxes to stamp their generation, done at the next boot: %v", err)
 		return
 	}
-	var copies, proposals, entries int64
+	var copies, proposals, entries, reports int64
 	failed := 0
 	// Their copies are not erased: the next boot stamps them.
 	unstamped := make([]string, 0)
@@ -366,6 +371,7 @@ func (d *Database) stampGenerations(ctx context.Context) {
 				"$or": []bson.M{{"leftInbox": bson.M{"$ne": true}}, {"leftAt": since}}}, &copies},
 			{d.AISuggestions(), bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, &proposals},
 			{d.ActionLog(), bson.M{"userId": a.UserID, "generation": none, "createdAt": since}, &entries},
+			{d.Snoozes(), bson.M{"userId": a.UserID, "generation": none, "folder": bson.M{"$exists": true}}, &reports},
 		} {
 			res, err := step.coll.UpdateMany(ctx, step.filter, stamp)
 			if err != nil {
@@ -380,7 +386,7 @@ func (d *Database) stampGenerations(ctx context.Context) {
 			unstamped = append(unstamped, a.UserID)
 		}
 	}
-	var erased int64
+	var erased, ended int64
 	res, err := d.Emails().DeleteMany(ctx, bson.M{"folder": bson.M{"$exists": true}, "generation": none, "userId": bson.M{"$nin": unstamped}})
 	if err != nil {
 		failed++
@@ -388,8 +394,19 @@ func (d *Database) stampGenerations(ctx context.Context) {
 	} else {
 		erased = res.DeletedCount
 	}
-	log.Printf("database: generations stamped for %d IMAP mailboxes: %d rows of their copy, %d AI proposals, %d history entries; %d rows of copies of no mailbox connected erased (%d failures)",
-		len(accounts), copies, proposals, entries, erased, failed)
+	// snooze.StatusScheduled, StatusFailed and StatusCancelled.
+	cancelledRes, err := d.Snoozes().UpdateMany(ctx,
+		bson.M{"folder": bson.M{"$exists": true}, "generation": none, "userId": bson.M{"$nin": unstamped},
+			"status": bson.M{"$in": []string{"scheduled", "failed"}}},
+		bson.M{"$set": bson.M{"status": "cancelled", "updatedAt": time.Now()}})
+	if err != nil {
+		failed++
+		log.Printf("database: end the reports of no IMAP mailbox connected, done at the next boot: %v", err)
+	} else {
+		ended = cancelledRes.ModifiedCount
+	}
+	log.Printf("database: generations stamped for %d IMAP mailboxes: %d rows of their copy, %d AI proposals, %d history entries, %d reports; %d rows of copies and %d reports of no mailbox connected erased and ended (%d failures)",
+		len(accounts), copies, proposals, entries, reports, erased, ended, failed)
 }
 
 // isIndexConflict reports whether an index could not be created because one on

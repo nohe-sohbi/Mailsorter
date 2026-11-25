@@ -137,5 +137,51 @@ func TestScenarios_SingleMessage(t *testing.T) {
 				app.expectHistory(ids[0], "unarchive", SourceSnooze)
 			},
 		},
+		{
+			phrase: "« Annuler » sur un report depuis l'Historique remet le mail dans ta boîte de réception et le retire de tes mails reportés : à l'heure prévue, rien ne bouge plus.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				const subject = "Votre rendez-vous"
+				ids := app.receiveAndSync(incoming{From: "Garage <rdv@garage.fr>", Subject: subject})
+				app.act(ids[0], "read")
+				app.snooze(ids[0])
+				if app.gmail.inInbox(ids[0]) {
+					app.fatalf("le mail %s devrait avoir quitté ta boîte de réception une fois reporté, il y est encore : le scénario ne prouve rien", app.describe(ids[0]))
+				}
+
+				// The line the Historique screen shows for the report.
+				line := app.historyLineFor(ids[0], "archive")
+				if line.Source != SourceSnooze {
+					app.fatalf("la ligne « archive » du mail %s devrait venir du report, elle vient de %q : le scénario ne prouve rien", app.describe(ids[0]), line.Source)
+				}
+				if !line.Undoable {
+					app.failf("l'historique devrait proposer « Annuler » sur la ligne du report du mail %s, il ne le propose pas", app.describe(ids[0]))
+				}
+
+				// "Annuler" on it (handleUndo in History.js).
+				if code, out := app.call(http.MethodPost, "/api/activity/undo", map[string]string{"id": line.ID}); code != http.StatusOK {
+					app.fatalf("« Annuler » sur la ligne du report du mail %s devrait répondre 200, le serveur a répondu %d : %v", app.describe(ids[0]), code, out)
+				}
+				app.expectInInbox(ids[0])
+				for _, r := range app.reportedAs(app.token, scenarioUser) {
+					if r.Subject == subject {
+						app.failf("après « Annuler » sur son report, les mails reportés ne devraient plus montrer le mail %s, ils le montrent encore", app.describe(ids[0]))
+					}
+				}
+
+				// Its hour passes: nothing moves any more, nothing is marked
+				// unread, nothing is written in the history.
+				before := app.historyScreenAs(app.token, scenarioUser)
+				wasUnread := app.gmail.has(ids[0], labelUnread)
+				app.reportsHourPassesFor(scenarioUser)
+				app.expectInInbox(ids[0])
+				if unread := app.gmail.has(ids[0], labelUnread); unread != wasUnread {
+					app.failf("à l'heure prévue du report annulé, le mail %s ne devrait pas changer : il était non lu=%v, il est non lu=%v", app.describe(ids[0]), wasUnread, unread)
+				}
+				if after := app.historyScreenAs(app.token, scenarioUser); len(after) != len(before) {
+					app.failf("à l'heure prévue du report annulé, l'historique ne devrait rien montrer de nouveau, il montre %d ligne(s) de plus, la plus récente : %q (%s)", len(after)-len(before), after[0].Action, after[0].Source)
+				}
+			},
+		},
 	})
 }

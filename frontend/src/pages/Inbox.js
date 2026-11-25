@@ -11,6 +11,7 @@ import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
 import TriagePlan, { useTriagePlan } from '../components/inbox/TriagePlan';
 import SnoozeButton from '../ui/SnoozeMenu';
+import { useMailboxErrorToast } from '../ui/mailboxError';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
@@ -230,6 +231,7 @@ const STAT_CARDS = [
 
 function Inbox() {
   const navigate = useNavigate();
+  const showMailboxError = useMailboxErrorToast();
   const toast = useToast();
   const hotel = useHotel();
   const confirm = useConfirm();
@@ -241,8 +243,9 @@ function Inbox() {
   const { selfHosted } = useInstance();
   // Over IMAP reading, archiving, deleting, read and the star on one mail, the
   // quick filters, the AI's proposals (a label proposal files the mail in its
-  // folder there) and undo work today. Every control the server would answer
-  // "not available" to is hidden, not disabled: one rule everywhere.
+  // folder there), reporting (one mail or a selection) and undo work today.
+  // Every control the server would answer "not available" to is hidden, not
+  // disabled: one rule everywhere.
   // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
   // and stays false when that answer failed: a guess offers nothing the server
   // may refuse. `known` is for what works on both transports once the mailbox
@@ -452,9 +455,16 @@ function Inbox() {
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
-        // The one failure worth its own words: another mail client moved the
-        // mail meanwhile (404 with the reason). Anything else stays generic.
-        toast.error(err?.response?.status === 404 ? apiError(err, "Impossible d'annuler.") : "Impossible d'annuler");
+        // The failures the server words for the user: another mail client
+        // moved the mail meanwhile (404), several copies of it (409), its
+        // report being brought back (423), the mailbox to connect again
+        // (428, with the way there), or not answering (502). Anything else
+        // stays generic.
+        if ([404, 409, 423, 428, 502].includes(err?.response?.status)) {
+          showMailboxError(err, "Impossible d'annuler.");
+        } else {
+          toast.error("Impossible d'annuler");
+        }
       }
     });
   };
@@ -529,7 +539,15 @@ function Inbox() {
     // announced as done; a failed listing is already on screen as an error.
     // The list of an IMAP mailbox is the stored copy, so it is the last sync's.
     // Over the Gmail API the list is read live, and saying so would be false.
-    if (result?.syncError) {
+    if (result?.syncReconnect) {
+      // The mailbox to connect again: the server's sentence, and the way
+      // (the new password form, or the connect screen).
+      const { label, to } = result.syncReconnect;
+      toast.action(result.syncError, label, () => navigate(to), { variant: 'error' });
+    } else if (result?.syncSaid) {
+      // The server's own sentence says it all: alone, one sentence.
+      toast.error(result.syncError);
+    } else if (result?.syncError) {
       toast.error(
         `La synchronisation a échoué. ${result.syncError}${
           isImap ? ' Les emails affichés sont ceux de la dernière synchronisation réussie.' : ''
@@ -1039,15 +1057,22 @@ function Inbox() {
     removeEmails(email.messageId);
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
-      await emailService.snooze(email.messageId, choice);
+      const { data } = await emailService.snooze(email.messageId, choice);
       plan.settle(email.messageId);
+      // Over IMAP the mail had already left the inbox (reported a moment ago,
+      // or moved by another mail program): nothing was reported, so the
+      // screen does not say it was.
+      if (data?.status === 'already') {
+        toast.info("Ce mail n'est plus dans votre boîte de réception.");
+        return;
+      }
       // `custom` rather than the instant itself: an exact wake time is personal
       // data and product analytics only needs to know the affordance was used.
       track('snooze', { preset: choice.preset || 'custom' });
       bumpGamify(1);
       toast.success('Email reporté, il reviendra au bon moment');
     } catch (err) {
-      toast.error(apiError(err, 'Report impossible. Réessayez.'));
+      showMailboxError(err, 'Report impossible. Réessayez.');
       fetchData({ forceRefresh: true, sync: false });
     }
   };
@@ -1839,8 +1864,9 @@ function Inbox() {
                     </button>
                     {/* The actions over a selection go through the batch
                         route, which an IMAP mailbox cannot use yet: there, the
-                        selection is for "Trier un par un" and the AI only. */}
-                    {fullFeatures && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
+                        selection is for "Trier un par un", the AI and
+                        "Reporter", which has a route of its own. */}
+                    {known && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
                   {fullFeatures && BULK_ACTIONS.map((key) => {
                     const meta = actionMeta(key);
                     return (
@@ -1860,8 +1886,10 @@ function Inbox() {
                     );
                   })}
                   {/* Snooze is the one bulk action that needs a "until when",
-                      so it carries its own menu instead of a flat button. */}
-                  {fullFeatures && (
+                      so it carries its own menu instead of a flat button. It
+                      works on both transports (over IMAP the mails wait in
+                      the folder « Plus tard »), once the mailbox is known. */}
+                  {known && (
                   <SnoozeButton
                     onSnooze={runBulkSnooze}
                     disabled={bulkBusy}

@@ -712,3 +712,79 @@ func TestAcceptance_ApplyingAProposalOfAReplacedMailboxIsRefused(t *testing.T) {
 	moi.expectOnServer(serverInbox, otherBoxMails[1].Subject)
 	moi.expectOnServer(serverArchive, otherBoxMails[0].Subject)
 }
+
+// A report carries the mailbox it was made on. Once another mailbox is
+// connected in its place: the old one's reports end and leave the list, its
+// "Réactiver" is refused (410), and the sweep ends, without moving anything,
+// a report of the old mailbox it still meets (one its session wrote late,
+// naming a mail by a number the new mailbox gives to its own), while it
+// brings back the new mailbox's own.
+func TestAcceptance_AReportOfAReplacedMailboxMovesNothingInTheNewOne(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, oldUIDs := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	if got := moi.snoozeAnswer(oldUIDs[1]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » sur la première boîte de %s a répondu %s", moi.email, got)
+	}
+	oldRow, ok := moi.reportedRow(shopOrder.Subject)
+	if !ok {
+		app.fatalf("le report de la première boîte de %s ne s'affiche pas : le test ne prouve rien", moi.email)
+	}
+	old := moi.storedReport(shopOrder.Subject)
+
+	moi.disconnectMailbox()
+	moi.connectOtherMailbox(otherMailbox)
+	newUIDs := moi.receive(otherBoxMails...)
+	moi.expectNumbered(newUIDs[1], oldUIDs[1])
+	moi.sync()
+
+	if rows := moi.reported(); len(rows) != 0 {
+		app.failf("les reports de la première boîte de %s ne devraient plus s'afficher, la liste montre %s", moi.email, describeReported(rows))
+	}
+	if s := moi.storedReport(shopOrder.Subject); s.Status != "cancelled" {
+		app.failf("le report de la première boîte de %s devrait finir au débranchement (cancelled), il est %q", moi.email, s.Status)
+	}
+	if got := moi.wakeNowAnswer(oldRow); got.code != http.StatusGone {
+		app.failf("« Réactiver » un report de la première boîte de %s devrait être refusé (410), il a répondu %s", moi.email, got)
+	} else if msg, _ := got.body["error"].(string); msg != reportGoneMessage {
+		app.failf("le refus devrait dire %q, il dit %q", reportGoneMessage, msg)
+	}
+
+	// One of the old mailbox its session wrote after the change, naming mail
+	// no. 1 of "Plus tard" with no Message-ID to check it by, met first by
+	// the sweep; and the new mailbox's own report, whose mail becomes that
+	// no. 1. Both due.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := app.h.db.Snoozes().InsertOne(ctx, models.Snooze{
+		UserID: moi.email, MessageID: newUIDs[1], From: shopOrder.From, Subject: "Report écrit en retard par la première boîte",
+		WakeAt: time.Now().Add(-time.Minute), Status: "scheduled", Folder: snoozeFolderName, FolderUID: "1",
+		Generation: old.Generation, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		app.fatalf("report de la première boîte écrit en retard : %v", err)
+	}
+	if got := moi.snoozeAnswer(newUIDs[2]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » sur la deuxième boîte de %s a répondu %s", moi.email, got)
+	}
+	if own := moi.storedReport(otherBoxMails[2].Subject); own.Folder != snoozeFolderName || own.FolderUID != "1" {
+		app.fatalf("le mail reporté de la deuxième boîte de %s attend dans %q sous le n°%s, pas dans %q sous le n°1 : le test ne prouve rien", moi.email, own.Folder, own.FolderUID, snoozeFolderName)
+	}
+	moi.reportDue()
+	app.h.wakeDueSnoozes()
+
+	var late models.Snooze
+	if err := app.h.db.Snoozes().FindOne(ctx, bson.M{"_id": res.InsertedID}).Decode(&late); err != nil {
+		app.fatalf("relecture du report écrit en retard : %v", err)
+	}
+	if late.Status != "cancelled" {
+		app.failf("le passage devrait finir sans rien déplacer le report de la première boîte (cancelled), il est %q", late.Status)
+	}
+	if s := moi.storedReport(otherBoxMails[2].Subject); s.Status != "done" {
+		app.failf("le report de la deuxième boîte devrait revenir à son heure (done), il est %q", s.Status)
+	}
+	moi.expectOnServer(serverInbox, otherBoxMails[1].Subject)
+	moi.expectOnServer(serverInbox, otherBoxMails[2].Subject)
+	if n := moi.returnsJournaled(newUIDs[1]); n != 0 {
+		app.failf("aucun retour ne devrait être noté pour le mail n°%s de la deuxième boîte, il y en a %d", newUIDs[1], n)
+	}
+}

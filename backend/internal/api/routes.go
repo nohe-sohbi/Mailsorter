@@ -78,6 +78,9 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// internal/provider, so a caller cannot name the host the server connects to.
 	r.HandleFunc("/api/mailbox", h.GetMailbox).Methods("GET")
 	r.HandleFunc("/api/mailbox/connect", h.ConnectMailbox).Methods("POST")
+	// A new app password for the mailbox already connected, proved against
+	// the server it was connected on: nothing else of the mailbox changes.
+	r.HandleFunc("/api/mailbox/password", h.ChangeMailboxPassword).Methods("PUT")
 	r.HandleFunc("/api/mailbox", h.DisconnectMailbox).Methods("DELETE")
 
 	r.HandleFunc("/api/account/export", h.ExportAccount).Methods("GET")
