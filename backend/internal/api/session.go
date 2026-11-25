@@ -1165,6 +1165,89 @@ func (m mirroredIMAP) putBackOnce(ctx context.Context, ref mailbox.Ref, row move
 	return nil
 }
 
+// bringBack is the return of a reported mail: the message Mailsorter moved
+// out of the inbox as inboxUID, and recorded since as uid in folder (with its
+// Message-ID header), moved back into the inbox and marked unread there. It
+// is the snooze's own record that says where the mail waits, not the stored
+// copy, which forgets a move after undoWindow: a report may last a year.
+//
+// The stored copy, when it still holds the move, takes the new number, as
+// after "Annuler": the list shows the mail at once, unread, and a sync finds
+// it known rather than new. A mail no longer there (another mail program took
+// it out) answers errNotWhereLeft, and nothing moves; the stored copy then
+// forgets the move, so the history stops offering "Annuler" for it and the
+// next sync drops the row.
+func (m mirroredIMAP) bringBack(ctx context.Context, inboxUID, folder, uid, headerMessageID string) error {
+	inbox := string(mailbox.FolderInbox)
+	ref := mailbox.InFolder(inbox, inboxUID)
+	recorded := movedRow{}
+	recorded.MovedTo.Folder, recorded.MovedTo.UID = folder, uid
+	if folder == "" {
+		return errNotWhereLeft
+	}
+	if uid == "" {
+		// The server did not say where it landed when it left: look for it
+		// there by its Message-ID header now. A failed lookup is not "gone".
+		if headerMessageID == "" {
+			return errNotWhereLeft
+		}
+		found, err := m.client.FindByMessageID(folder, headerMessageID)
+		if err != nil {
+			return err
+		}
+		if found == "" {
+			m.forgetDestination(ctx, ref, recorded)
+			return errNotWhereLeft
+		}
+		uid = found
+	}
+	landed, err := m.client.MoveRecorded(ctx, folder, uid, inbox, headerMessageID)
+	if errors.Is(err, imap.ErrMessageGone) {
+		m.forgetDestination(ctx, ref, recorded)
+		return errNotWhereLeft
+	}
+	if err != nil {
+		return err
+	}
+
+	// Only the row that still says the mail went there: one "Annuler" brought
+	// back and another action moved since is not this mail's any more.
+	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": inboxUID, "movedTo.folder": folder}
+	if landed.ID == "" {
+		// Back on the server, its number there unknown, so it cannot be
+		// marked unread: the next sync lists it under its new number and
+		// drops this row (no destination left).
+		log.Printf("imap: reported message %s of %s back in the inbox, its number there unknown: not marked unread", inboxUID, m.userEmail)
+		if _, err := m.h.db.Emails().UpdateOne(ctx, filter, bson.M{
+			"$set":   bson.M{"restoredFrom": inboxUID},
+			"$unset": bson.M{"movedTo": "", "restoringAt": ""},
+		}); err != nil {
+			log.Printf("imap: reported message back in the inbox of %s, copy not updated: %v", m.userEmail, err)
+		}
+		return nil
+	}
+	set := bson.M{"messageId": landed.ID, "restoredFrom": inboxUID}
+	if err := m.client.Apply(ctx, landed, mailbox.Mutation{Action: mailbox.ActionMarkUnread}); err != nil {
+		// It is back all the same, which is what the report promised first;
+		// trying the whole return again would find it gone from where it
+		// waited. The next sync reads its read state from the server.
+		log.Printf("imap: reported message %s of %s back in the inbox, not marked unread: %v", inboxUID, m.userEmail, err)
+	} else {
+		set["isRead"] = false
+		set["flagsAt"] = time.Now()
+	}
+	if _, err := m.h.db.Emails().UpdateOne(ctx, filter, bson.M{
+		"$set":   set,
+		"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": "", "restoringAt": ""},
+		// Written now, like a row a sync stores: a sync whose UID search ran
+		// before the return must not judge it gone.
+		"$currentDate": bson.M{"syncedAt": true},
+	}); err != nil {
+		log.Printf("imap: reported message back in the inbox of %s, copy not updated: %v", m.userEmail, err)
+	}
+	return nil
+}
+
 // errMessagesNotStored is a sync that read the mailbox but could not mirror all
 // of it. Its text is what the user is told, so it names no datastore detail.
 var errMessagesNotStored = errors.New("des messages de la boîte n'ont pas pu être enregistrés")

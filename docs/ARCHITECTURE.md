@@ -107,7 +107,7 @@ Quatre boucles, lancées par `NewHandler` : des goroutines avec des tickers, rel
 | Boucle | Cadence | Rôle |
 | --- | --- | --- |
 | Workers d'analyse | 3 workers, file de 256 jobs | Exécutent `analyze-async` ; une file pleine lance le job à part |
-| Réveil des reports | toutes les minutes | Ramène en boîte les emails reportés arrivés à échéance ; après 5 échecs, le report passe en échec |
+| Réveil des reports | toutes les minutes | Ramène en boîte, non lus, les emails reportés arrivés à échéance, compte par compte : une session par compte (sur IMAP, une connexion pour tous ses mails, bornée à 30 s, depuis le dossier "Plus tard" où ils attendaient) ; un échec est retenté au passage suivant, et après 5 échecs le report passe en échec ; un mail qu'un autre logiciel a sorti de "Plus tard" reste où il est, et son report est annulé |
 | Récap quotidien | toutes les 15 minutes, au plus un envoi par jour et par compte | Envoie le récap des 7 derniers jours à l'heure choisie (UTC, 0 = minuit ; sans choix, `DIGEST_HOUR_UTC`), de la boîte du compte à elle-même : par l'API Gmail, ou par le serveur d'envoi d'une boîte IMAP (`internal/smtpsend`, avec son mot de passe d'application) ; une semaine vide n'envoie rien ; quatre comptes à la fois, chacun avec ses 30 s, pour qu'un serveur d'envoi qui ne répond pas ne retienne que le sien |
 | Synchronisation de fond | passage toutes les 5 minutes, 30 minutes au moins entre deux synchronisations d'un compte | Synchronise les comptes qui l'ont activée |
 

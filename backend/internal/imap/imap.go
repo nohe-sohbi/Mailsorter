@@ -172,6 +172,17 @@ func (c *Client) Close() error {
 	return c.c.Close()
 }
 
+// Abort drops the connection at once, without the LOGOUT Close sends first:
+// for a caller whose time is up, when the server itself may be what does not
+// answer (go-imap waits for an answer with no time limit). A command waiting
+// on the connection returns an error, and Close afterwards returns at once.
+// Unlike every other method, it may be called from another goroutine.
+func (c *Client) Abort() {
+	if c.c != nil {
+		_ = c.c.Close()
+	}
+}
+
 // Closed says whether the connection is gone: closed here, or by go-imap
 // on an answer it could not read. Nothing more can be asked on it.
 func (c *Client) Closed() bool {

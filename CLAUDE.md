@@ -200,7 +200,7 @@ in its package doc:
 |---|---|---|
 | `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset | `Matches`, `Validate`, `Preview`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
 | `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted, nor, on IMAP where a label is a folder, auto-filed | `Allowed`, `AllowedOnFolders`, `ActionArchive/Trash/Delete/Label` |
-| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
+| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one; what an attempt at bringing a report back leaves on it (done, cancelled when the mail is gone from where it waited, retried and counted, given up at the limit, or left uncounted), and the due reports grouped by account, one session each | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants, `Settle`, `Outcome` (`Woken`, `Gone`, `Failed`, `Untried`), `ByAccount`, `Status*` |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
 | `mirror` | What the local copy of an IMAP inbox should hold, given every UID the inbox holds now: what goes, what Mailsorter keeps hidden for "Annuler", what is back, and what a sync must leave alone (a move in flight, a row flagged after the listing started) | `Judge`, `Row`, `Rules`, `Verdict` |
@@ -220,7 +220,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation. A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). Folder names go through the namespace read at connect (`namespace.go`, NAMESPACE when announced): the user reads them without the personal prefix and with `/` between levels ("INBOX.Projets.Maison" on Courier reads "Projets/Maison"), a folder Mailsorter makes goes under the prefix with the server's delimiter, the special ones are known by name under the prefix too, and a folder under another user's or a shared prefix is never the user's. A folder is made only under a name `cleanName` and `newFolderName` accept (no control character, `*` or `%`, no empty, `.` or `..` level, 100 characters a level and 200 in all, the server's delimiter inside a level turned into `-`, a first level that is the user's), and at most `maxNewFolders` (10) per connection (`ErrTooManyNewFolders`). `FilingName` is what the analysis stores on a label proposal: the user's folder named alike (`mailbox.MatchLabel`), or the cleaned new name; the model is told no folder. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
+| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, apply a mutation, and `Abort` a connection whose caller's time is up (go-imap waits for an answer with no time limit). A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). Folder names go through the namespace read at connect (`namespace.go`, NAMESPACE when announced): the user reads them without the personal prefix and with `/` between levels ("INBOX.Projets.Maison" on Courier reads "Projets/Maison"), a folder Mailsorter makes goes under the prefix with the server's delimiter, the special ones are known by name under the prefix too, and a folder under another user's or a shared prefix is never the user's. A folder is made only under a name `cleanName` and `newFolderName` accept (no control character, `*` or `%`, no empty, `.` or `..` level, 100 characters a level and 200 in all, the server's delimiter inside a level turned into `-`, a first level that is the user's), and at most `maxNewFolders` (10) per connection (`ErrTooManyNewFolders`). `FilingName` is what the analysis stores on a label proposal: the user's folder named alike (`mailbox.MatchLabel`), or the cleaned new name; the model is told no folder. `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`) |
 | `smtpsend` | Hands one message to the sending server of an IMAP mailbox: the daily recap on that transport. Implicit TLS (465) or STARTTLS (587), never cleartext (a STARTTLS route whose server does not offer it is refused before the password is sent), certificate verified against the system roots, AUTH PLAIN, 30 s bound. `ErrAuth` (credentials refused: 535, or 534 5.7.9), `ErrBlocked` (sign-in blocked for where it came from, the password being right: 534 5.7.14) and `ErrUnreachable` are typed; any other 534 is none of them |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
@@ -246,7 +246,7 @@ The outbound clients and primitives:
 | `tokens.go` | Stored credentials: `sealToken` / `openToken` for Google's (with the legacy-plaintext migration), `sealSecret` / `openSecret` for IMAP passwords, all AES-256-GCM behind the `enc:v1:` prefix, and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
-| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
+| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, "Réactiver", plus the 1 min wake sweeper, on both transports. Over IMAP (`snoozeIMAP`) a reported mail is moved into the folder "Plus tard" (`snoozeFolderName`, made like a filing folder, by `Destination`) through `mirroredIMAP`, like an archive, and the snooze records where it landed (`folder`, `folderUid`, `headerMessageId`); its pending AI proposal is set moot. The sweep goes account by account (`snooze.ByAccount`), one session each, an IMAP one bounded by `snoozeAccountBound` (30 s, then `Abort`); an IMAP wake claims the snooze (`wakingAt`) so the sweep and "Réactiver" move the mail once, and `settleWake` writes the outcome (`snooze.Settle`) and the ledger entry |
 | `attachment.go` | Attachment download: the one route that streams bytes rather than JSON |
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
@@ -262,7 +262,7 @@ The outbound clients and primitives:
 | `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap to the mailbox's sending server: the only two readers of the sealed app password |
 | `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
-| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `storeStarredOutsideList`, `refreshInboxState` and `completeInboxStructure` keep the read state, the star, the size and the attachments of every stored row right, old favorites included, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`) |
+| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `storeStarredOutsideList`, `refreshInboxState` and `completeInboxStructure` keep the read state, the star, the size and the attachments of every stored row right, old favorites included, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`). `bringBack` is a reported mail's return: moved back from where the snooze recorded it (`MoveRecorded`), marked unread, and the stored row takes its new number as after "Annuler"; gone from there, `errNotWhereLeft` and nothing moves |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest from the user's own mailbox (`deliverDigest`: the Gmail API, or the IMAP mailbox's sending server through `sendThroughBox`; `digestMessage` gives it its `Message-ID`), paced by `dailyDigestPace` (4 accounts at once, 30 s each, the stamp under its own 10 s), `digestHourOf` (a stored hour, 0 = midnight, or `DIGEST_HOUR_UTC` when none was picked; the settings screen and the scheduler both read it), `POST /api/account/digest/test` (one per account per minute, `digestTestLimiter`, a 429 in words beyond; `writeDigestSendError` says why a test did not leave, never with the Gmail sentence on IMAP, never with a 401), and `digestStyle()`, the UI theme as a digest style |
 | `auto_sync.go` | 30 min per-user background inbox sync |
@@ -323,7 +323,7 @@ not cron; a redeploy restarts them.
 | Loop | Cadence | File |
 |---|---|---|
 | Analysis worker pool (3 workers) | drains `jobQueue` (cap 256) | `jobs.go` |
-| Snooze wake sweep | 1 min | `snooze.go` |
+| Snooze wake sweep | 1 min, account by account: one session each, an IMAP one bounded to 30 s | `snooze.go` |
 | Daily digest | 15 min tick, at most one send per user per day, through the Gmail API or the IMAP mailbox's sending server (SMTP); 4 accounts at once, each with its own 30 s, so a sending server that does not answer holds only its own | `digest_scheduler.go` |
 | Auto-sync | 5 min tick, but min 30 min between two syncs of the same user | `auto_sync.go` |
 
@@ -550,9 +550,12 @@ as a side effect of another change.
 - A test that needs the same harness but proves wiring rather than a sentence
   (what a sync does with an answer a real server gives, what a handler reads in a
   real database) is a `TestAcceptance_*` under the same tag, in a file of its own
-  (`wiring_imap_test.go`, and `wiring_filing_test.go` for filing into folders over
+  (`wiring_imap_test.go`, `wiring_filing_test.go` for filing into folders over
   IMAP: what the model is told, the shield at analysis, "unlabel" right after
-  "Appliquer", the direct "label" without a folder): not in the report, run by
+  "Appliquer", the direct "label" without a folder, and `wiring_snooze_test.go`
+  for the report's wake over IMAP: one connection per mailbox, a mailbox out of
+  reach, a failed return tried again, "Réactiver" while the sweep holds it): not
+  in the report, run by
   `scripts/scenarios.sh -run '^TestAcceptance'` and by its own CI step.
 
 ### React
@@ -888,9 +891,13 @@ Do not duplicate these into this file. Point at them.
   like an archive, undone like one (`activity.InverseOnFolders`, and "unlabel" on
   the single-message action right after), shielded like one for a protected
   sender at analysis and in a batch (`allowsOn`), and `GetLabels` lists the
-  user's own folders. Everything else (rules apply and preview, snooze and its wake
-  sweeper, unsubscribe, attachments, smart labels, batch action, bulk by sender)
-  refuses: 11 call sites of `gmailClientFor`. Three more are the Gmail branch of a
+  user's own folders. Snooze too (`Snooze`, `BatchSnooze`, `WakeSnooze` and the wake
+  sweeper): over IMAP the mail waits in the folder "Plus tard" (`snooze.go`), made if
+  missing, shielded like an archive for a protected sender in a selection, and
+  comes back unread at its hour or on "Réactiver"; a mail another mail program took
+  out of "Plus tard" is left where it is and its snooze is `cancelled`. Everything
+  else (rules apply and preview, unsubscribe, attachments, smart labels, batch
+  action, bulk by sender) refuses: 7 call sites of `gmailClientFor`. Three more are the Gmail branch of a
   ported handler (`GetLabels`, `UndoAction`, `BatchUndo`), and one, in
   `deliverDigest`, is the recap's Gmail API branch, which an IMAP mailbox never
   reaches: its recap leaves through the mailbox's sending server (`sendThroughBox`,
@@ -902,7 +909,7 @@ Do not duplicate these into this file. Point at them.
   Hotel landing reads it to decide what it may promise, and keeps promising
   nothing it cannot deliver. So porting a promised feature to IMAP also means
   deleting its line there, as `label` was once the AI's proposal could file into
-  a folder. Classifying a selection by hand (`LabelPicker` in `Inbox.js`) and the
+  a folder, and `snooze` once a reported mail could wait in "Plus tard". Classifying a selection by hand (`LabelPicker` in `Inbox.js`) and the
   rules' "Étiqueter" still go through the Gmail API: those screens stay closed
   on `fullFeatures`, not on that list. On IMAP the screens word a label verdict
   as a folder ("Classer dans « Factures »"): `actionMeta(action, { folders })`

@@ -615,9 +615,31 @@ meanwhile, the others still come back, and the answer says why those did not:
 
 Pull a message out of the inbox until a chosen time, then have it return on its
 own (marked unread). Wake time is resolved from a friendly preset server-side.
-The snoozed message is archived and labelled `Mailsorter/Reporté`, so snoozing
-and waking are Gmail API only: `501` over IMAP. Listing snoozes reads the
-datastore and works on both.
+Works on both transports, the same requests and answers:
+
+- over the Gmail API the snoozed message is archived and labelled
+  `Mailsorter/Reporté`, and comes back with the same id;
+- over IMAP a mail is in one folder, so it is moved into the folder `Plus tard`
+  of the mailbox, made (and subscribed) the first time under the personal
+  prefix the server announces, like a folder filing makes. It leaves the
+  stored inbox like an archived mail (hidden at once, kept for "Annuler"), and
+  the snooze records where it landed (that folder, its number there, its
+  `Message-ID`), which is where its wake fetches it from. It comes back with a
+  new number, which the stored inbox takes, so it is listed once, unread. A
+  pending AI proposal about it is set aside (`moot`) when it leaves. The `id`
+  and `messageId` of a snooze stay what the list showed: the number it had in
+  the inbox.
+
+The background sweep (every minute) wakes the due snoozes account by account,
+through one session per account: one Gmail client, or one IMAP connection for
+all of that mailbox's due mails, bounded to 30 s (the connection is dropped
+past it, and what was not reached waits for the next pass). A failed wake
+stays `scheduled` and is tried again at the next pass; the fifth failure parks
+it as `failed`. A mailbox that cannot be reached is tried again without
+counting, except a password the server refuses, which counts. Over IMAP a mail
+no longer in `Plus tard` when its hour comes (another mail program took it
+out) is left where it is, and its snooze becomes `cancelled`, logged, out of
+every list. Listing snoozes reads the datastore.
 
 ### Snooze an email
 
@@ -638,10 +660,15 @@ time but a date picker can. It must be in the future and within one year
 { "status": "snoozed", "wakeAt": "2026-06-22T08:00:00Z" }
 ```
 
+Over IMAP, a mail already out of the inbox (snoozed a moment ago, or moved
+by another mail client) answers `200 { "status": "already", "wakeAt": ... }`:
+nothing moved, nothing is recorded.
+
 **Error Responses:**
 - `400 Bad Request`: Unknown preset, or a wake time in the past or beyond one year
 - `401 Unauthorized`: Missing or expired session
-- `502 Bad Gateway`: Gmail refused the label or the move
+- `404 Not Found`: Over IMAP, a mail the stored inbox does not hold ("Ce mail n'est plus dans votre boîte de réception.")
+- `502 Bad Gateway`: The mailbox refused the label, the folder or the move
 
 ### Snooze a whole selection
 
@@ -657,7 +684,9 @@ wake time covers every message in it.
 At most 200 ids per request. Protected senders are shielded exactly as in
 `/batch-action`: a bulk snooze takes mail out of the inbox, which is what the VIP
 list exists to veto, and a sender that could not be established is treated as
-possibly protected rather than assumed harmless.
+possibly protected rather than assumed harmless. Over IMAP the sender is the
+one the stored inbox holds, and a mail already out of the inbox is neither in
+`snoozed` nor counted as `failed`.
 
 **Response:** `200 OK`
 ```json
@@ -673,19 +702,30 @@ possibly protected rather than assumed harmless.
 **Error Responses:**
 - `400 Bad Request`: Empty selection, over 200 ids, or an invalid deadline
 - `401 Unauthorized`: Missing or expired session
-- `502 Bad Gateway`: The snooze label could not be prepared
+- `502 Bad Gateway`: The snooze label could not be prepared (Gmail API)
 
 ### List snoozes
 
 #### GET /api/snoozes?status=scheduled
 
-Returns `{ "snoozes": [ ... ] }`, soonest wake first (`status` defaults to `scheduled`).
+Returns `{ "snoozes": [ ... ] }`, soonest wake first (`status` defaults to
+`scheduled`; the others are `done`, `failed` and `cancelled`).
 
 ### Wake a snooze now
 
 #### POST /api/snoozes/{id}/wake
 
-Brings the email back to the inbox immediately, marked unread.
+Brings the email back to the inbox immediately, marked unread. Answers
+`{ "status": "woken" }`.
+
+Over IMAP, a snooze `scheduled` or `failed` is claimed first, so that this
+route and the sweep reaching it at once move the mail once: a snooze already
+back answers `200` again, without moving or recording anything.
+
+**Error Responses:**
+- `404 Not Found`: No such snooze; or, over IMAP, the mail is no longer in `Plus tard` ("Ce mail n'est plus là où Mailsorter l'avait rangé."), and the snooze is `cancelled`
+- `423 Locked`: Over IMAP, the sweep is bringing it back at that moment ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
+- `502 Bad Gateway`: The mailbox refused the return; nothing is counted, try again
 
 ---
 
@@ -831,7 +871,8 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
 | `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
 | `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep, and label, which files the mail in the folder of that name) | |
-| Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
+| Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | |
+| `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` and the wake sweep (the mail waits in the folder `Plus tard`, see Snooze Endpoints) | |
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
 | `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `POST /api/smart-labels` |
 | `GET /api/labels` (the user's own folders) | |
