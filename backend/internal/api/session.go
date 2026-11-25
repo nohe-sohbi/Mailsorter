@@ -878,17 +878,23 @@ type moveOutcome struct {
 }
 
 // MoveOutMany moves the inbox messages numbered uids out of the inbox, the
-// way mut says (archive, trash), as Apply does one at a time but in ONE UID
-// MOVE: the stored rows are read in one query and claimed one by one (a fast
-// write each, which keeps two requests from moving the same message), the
-// claimed numbers move together (imap.Client.MoveMany), and where each one
-// landed is written in one BulkWrite. A message that is not a stored inbox
-// row, or one Mailsorter already moved out, takes Apply's own path.
+// way mut says (archive, trash, or file into a folder of the user's), as
+// Apply does one at a time but in ONE UID MOVE: where they go is settled
+// first (Destination, which makes a missing folder, once, before anything is
+// claimed), the stored rows are read in one query and claimed one by one (a
+// fast write each, which keeps two requests from moving the same message),
+// the claimed numbers move together (imap.Client.MoveMany), and where each
+// one landed is written in one BulkWrite. A message that is not a stored
+// inbox row, or one Mailsorter already moved out, takes Apply's own path.
 func (m mirroredIMAP) MoveOutMany(ctx context.Context, uids []string, mut mailbox.Mutation) moveOutcome {
 	out := moveOutcome{Failed: map[string]error{}}
 	op, err := mailbox.IMAPOpFor(mut)
 	if err == nil && (op.Kind != mailbox.IMAPMove || op.To == mailbox.FolderInbox) {
 		err = fmt.Errorf("api: %s does not move a message out of the inbox", mut.Action)
+	}
+	var dest string
+	if err == nil {
+		dest, err = m.client.Destination(op)
 	}
 	if err != nil {
 		for _, uid := range uids {
@@ -946,7 +952,7 @@ func (m mirroredIMAP) MoveOutMany(ctx context.Context, uids []string, mut mailbo
 		return out
 	}
 
-	moved, moveErr := m.client.MoveMany(ctx, inbox, claimed, op.To, messageIDs)
+	moved, moveErr := m.client.MoveMany(ctx, inbox, claimed, dest, messageIDs)
 	if moveErr == nil {
 		// Only read if MoveMany left one out without saying why.
 		moveErr = errors.New("imap: the server did not move it")

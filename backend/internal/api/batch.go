@@ -45,6 +45,9 @@ type batchActionResult struct {
 	LabelName   string   `json:"labelName,omitempty"`
 	Reversible  bool     `json:"reversible"`
 	InverseName string   `json:"inverse,omitempty"`
+	// Message says why some were not done, when the user can act on it (a
+	// folder Mailsorter does not file into, see filingRefusal).
+	Message string `json:"message,omitempty"`
 }
 
 // batchInverse maps a batch action to the action that undoes it.
@@ -119,13 +122,22 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	imapBox := session.Transport == provider.TransportIMAP
 
 	var labelID string
-	if req.Action == "label" {
-		if imapBox {
-			// A message sits in one folder over IMAP: there is no label to
-			// add, and filing into a folder is not this route's yet.
-			writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
+	if req.Action == "label" && imapBox {
+		// Over IMAP a label is the folder of that name: settled once for the
+		// whole selection, as the AI's proposal is (FilingName: one of the
+		// user's folders named alike, or the name a new one gets), and made
+		// when the selection moves. A special folder, or a name no folder is
+		// made under, is refused before anything moves.
+		labelID, err = session.imapc.FilingName(req.LabelName)
+		if why, ok := filingRefusal(err); ok {
+			writeError(w, http.StatusUnprocessableEntity, why)
 			return
 		}
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "Classement impossible : "+err.Error())
+			return
+		}
+	} else if req.Action == "label" {
 		labelID, err = h.ensureLabel(ctx, session.gmail, userEmail, req.LabelName)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "Création du libellé impossible : "+err.Error())
@@ -147,7 +159,12 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	// a message it does not hold stays unknown, which the shield refuses below.
 	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
 	protectedList := h.protectedValues(ctx, userEmail)
+	// Over IMAP filing a mail takes it out of the inbox, as archiving does:
+	// the shield reads it as destructive there (allowsOn).
 	destructive := protect.IsDestructive(req.Action)
+	if imapBox {
+		destructive = protect.IsDestructiveOnFolders(req.Action)
+	}
 	if !imapBox && (len(protectedList) > 0 || len(identities) < len(req.MessageIDs)) {
 		h.fillMissingIdentities(ctx, session.gmail, req.MessageIDs, identities)
 	}
@@ -158,6 +175,11 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 		Total:       len(req.MessageIDs),
 		LabelName:   req.LabelName,
 		InverseName: batchInverse[req.Action],
+	}
+	if req.Action == "label" && imapBox {
+		// The folder it went into, which can differ from the name typed
+		// ("Facture" into "Factures"): the screen says this one.
+		res.LabelName = labelID
 	}
 	res.Reversible = res.InverseName != "" && batchUndoReaches(session.Transport)
 
@@ -176,27 +198,34 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 			res.Protected++
 			continue
 		}
-		if !allows(req.Action, meta.From, protectedList) {
+		if !allowsOn(session.Transport, req.Action, meta.From, protectedList) {
 			res.Protected++
 			continue
 		}
 		eligible = append(eligible, id)
 	}
 
+	filed := ""
+	if req.Action == "label" {
+		filed = res.LabelName
+	}
 	done := func(id string) {
 		meta := identities[id]
 		res.Applied = append(res.Applied, id)
-		h.logActionMeta(ctx, userEmail, id, req.Action, SourceDirect, meta.Subject, meta.From)
+		h.logActionFiled(ctx, userEmail, id, req.Action, SourceDirect, meta.Subject, meta.From, filed)
 	}
 	failed := func(id string, err error) {
 		log.Printf("batch-action: %s on message %s of %s: %v", req.Action, id, userEmail, err)
 		res.Failed++
+		if why, ok := filingRefusal(err); ok && res.Message == "" {
+			res.Message = why
+		}
 	}
 
 	mb := session.Mailbox()
-	if imapMove, mut := movesOutOfIMAPInbox(mb, req.Action); imapMove != nil {
-		// Archiving or deleting a selection over IMAP: one UID MOVE for the
-		// whole of it, not one search and one move per message.
+	if imapMove, mut := movesOutOfIMAPInbox(mb, req.Action, labelID); imapMove != nil {
+		// Archiving, deleting or filing a selection over IMAP: one UID MOVE
+		// for the whole of it, not one search and one move per message.
 		outcome := imapMove.MoveOutMany(ctx, eligible, mut)
 		moved := make(map[string]bool, len(outcome.Moved))
 		for _, id := range outcome.Moved {
@@ -248,9 +277,10 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 }
 
 // movesOutOfIMAPInbox is the IMAP mailbox and the mutation when verb moves a
-// message out of an IMAP inbox (archive, delete): the batch then moves the
-// whole selection at once. nil on the Gmail API, and for a flag.
-func movesOutOfIMAPInbox(mb mailbox.Mailbox, verb string) (*mirroredIMAP, mailbox.Mutation) {
+// message out of an IMAP inbox (archive, delete, or label, which files into
+// the folder named labelID): the batch then moves the whole selection at
+// once. nil on the Gmail API, and for a flag.
+func movesOutOfIMAPInbox(mb mailbox.Mailbox, verb, labelID string) (*mirroredIMAP, mailbox.Mutation) {
 	box, ok := mb.(mirroredIMAP)
 	if !ok {
 		return nil, mailbox.Mutation{}
@@ -259,7 +289,7 @@ func movesOutOfIMAPInbox(mb mailbox.Mailbox, verb string) (*mirroredIMAP, mailbo
 	if err != nil {
 		return nil, mailbox.Mutation{}
 	}
-	mut := mailbox.Mutation{Action: action}
+	mut := mailbox.Mutation{Action: action, LabelID: labelID}
 	op, err := mailbox.IMAPOpFor(mut)
 	if err != nil || op.Kind != mailbox.IMAPMove || op.To == mailbox.FolderInbox {
 		return nil, mailbox.Mutation{}
@@ -305,19 +335,19 @@ func (h *Handler) BatchUndo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Trop d'emails à restaurer en une fois")
 		return
 	}
-	// Un-labelling is the one reversal that takes an argument: which label to
-	// take off. Checked here with the rest of the payload, before any Gmail or
-	// Mongo call, so a malformed request costs nothing.
-	if inverse == "unlabel" && req.LabelName == "" {
-		writeError(w, http.StatusBadRequest, "Nom du libellé requis")
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	if transport, _, err := h.transportFor(ctx, userEmail); err == nil && transport == provider.TransportIMAP {
+		// Over IMAP a filed mail comes back from the folder Mailsorter
+		// recorded, like an archived one: no label name is needed.
 		h.batchUndoIMAP(ctx, w, userEmail, req, inverse)
+		return
+	}
+	// Un-labelling a Gmail message is the one reversal that takes an
+	// argument: which label to take off.
+	if inverse == "unlabel" && req.LabelName == "" {
+		writeError(w, http.StatusBadRequest, "Nom du libellé requis")
 		return
 	}
 

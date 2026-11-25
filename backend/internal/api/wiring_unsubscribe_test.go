@@ -406,3 +406,109 @@ func TestAcceptance_UnsubscribeMailIsSentOnceForTwoListsSharingAnAddress(t *test
 		app.failf("une réponse devrait dire que c'est fait et l'autre que la demande est déjà partie, elles disent : %v et %v", got[0].body, got[1].body)
 	}
 }
+
+// Undoing a labelled selection: over the Gmail API the label name says which
+// label to take off, and without it nothing can be removed (400, rather than
+// a reversal that removed nothing). Over IMAP the mail comes back from the
+// folder Mailsorter recorded, with or without the name.
+func TestAcceptance_BatchUndoOfALabelNeedsItsNameOnlyOnGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(shopOrder)
+	if code, out := app.call(http.MethodPost, "/api/emails/batch-undo",
+		map[string]interface{}{"messageIds": ids, "action": "label"}); code != http.StatusBadRequest {
+		app.failf("« Annuler » d'un classement sur Gmail sans nom d'étiquette devrait répondre 400, il a répondu %d : %v", code, out)
+	}
+
+	moi, uids := syncedIMAPInbox(app, travelOffer)
+	if got := moi.fileSelectionInto("Voyages", uids...); got.code != http.StatusOK || app.number(got.body, "failed") != 0 {
+		app.fatalf("« Classer » la sélection dans Voyages a répondu %s", got)
+	}
+	moi.requireOnServer("Voyages", travelOffer.Subject, "tu viens de classer la sélection dans Voyages")
+	if got := moi.undoSelection("label", uids...); got.code != http.StatusOK || app.number(got.body, "restored") != 1 {
+		app.failf("« Annuler » d'un classement sur IMAP sans nom d'étiquette devrait remettre le mail, il a répondu %s", got)
+	}
+	moi.expectOnServer(serverInbox, travelOffer.Subject)
+}
+
+// Filing a selection over IMAP: into the user's folder named alike (the
+// plural set aside), one move, a protected sender's mail left in the inbox,
+// and the folder named in the answer.
+func TestAcceptance_SelectionIsFiledIntoTheFolderNamedAlike(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, shopInvoice)
+	moi.newFolderElsewhere("Factures")
+	moi.protect(bankStatement.From)
+
+	got := moi.fileSelectionInto("facture", uids...)
+	if got.code != http.StatusOK {
+		app.fatalf("« Classer » la sélection a répondu %s", got)
+	}
+	moi.expectDoneInSelection(got.body, "le classement de la sélection", uids[1], uids[2])
+	if name, _ := got.body["labelName"].(string); name != "Factures" {
+		app.failf("la réponse devrait nommer le dossier Factures, elle nomme %q", name)
+	}
+	if n := app.number(got.body, "protectedSkipped"); n != 1 {
+		app.failf("le classement devrait épargner 1 mail protégé, il en épargne %d", n)
+	}
+	for _, m := range []incoming{shopOrder, shopInvoice} {
+		moi.expectOnServer("Factures", m.Subject)
+		moi.expectDoesNotShow(m.Subject, "tu viens de le classer dans Factures")
+	}
+	moi.expectOnServer(serverInbox, bankStatement.Subject)
+	moi.expectShows(uids[0], bankStatement.Subject)
+	for _, uid := range uids[1:] {
+		lines := moi.historyLinesOf(uid)
+		if len(lines) == 0 || lines[0].Action != "label" {
+			app.failf("l'historique devrait montrer le classement du mail n°%s, il montre : %s", uid, describeHistory(lines))
+		}
+	}
+}
+
+// A special folder is not one Mailsorter files into: the whole selection is
+// refused, in the sentence the AI's proposal gets, and nothing moves.
+func TestAcceptance_SelectionIsNotFiledIntoASpecialFolder(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, shopOrder)
+
+	got := moi.fileSelectionInto("Trash", uids...)
+	if got.code != http.StatusUnprocessableEntity || got.said() != notOwnFolderMessage {
+		app.failf("« Classer » dans Trash devrait être refusé (422, %q), il a répondu %s", notOwnFolderMessage, got)
+	}
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+}
+
+// "Tout classer" for a sender over IMAP (apply-bulk with a label): all of his
+// mails in one folder, made for it.
+func TestAcceptance_SenderIsFiledIntoAFolder(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, shopOrder, bankStatement, shopInvoice)
+	card := moi.requireSenderCard("info@boutique.com")
+
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/ai/apply-bulk",
+		map[string]string{"senderEmail": card.SenderEmail, "action": "label", "labelName": "Boutique"})
+	if code != http.StatusOK || app.number(out, "applied") != 2 {
+		app.fatalf("classer tous les mails de info@boutique.com a répondu %d : %v", code, out)
+	}
+	for _, m := range []incoming{shopOrder, shopInvoice} {
+		moi.expectOnServer("Boutique", m.Subject)
+	}
+	moi.expectOnServer(serverInbox, bankStatement.Subject)
+}
+
+// The auto-pilot of a sender whose default is a label files his mails at the
+// analysis, without the model; a protected sender's stays.
+func TestAcceptance_AutopilotFilesIntoAFolder(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	moi.protect(bankStatement.From)
+	app.ai.willSay("keep", 0.95)
+	moi.autopilotFiling("info@boutique.com", "Courrier")
+	moi.autopilotFiling("info@banque.fr", "Courrier")
+
+	moi.analyze(uids...)
+
+	moi.requireOnServer("Courrier", shopOrder.Subject, "le pilote automatique de info@boutique.com le classe dans Courrier")
+	moi.expectDoesNotShow(shopOrder.Subject, "le pilote automatique l'a classé")
+	moi.expectOnServer(serverInbox, bankStatement.Subject)
+	moi.expectShows(uids[0], bankStatement.Subject)
+}

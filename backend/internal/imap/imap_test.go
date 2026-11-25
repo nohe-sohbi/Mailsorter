@@ -1091,7 +1091,7 @@ func TestMoveManyMovesTheSelectionAndSaysWhereEachLanded(t *testing.T) {
 	}
 	kept := appendWithMessageID(t, c, "INBOX", "<kept@example.com>")
 
-	moved, err := c.MoveMany(context.Background(), "INBOX", uids, mailbox.FolderArchive, nil)
+	moved, err := c.MoveMany(context.Background(), "INBOX", uids, "Archive", nil)
 	if err != nil {
 		t.Fatalf("MoveMany: %v", err)
 	}
@@ -1110,13 +1110,40 @@ func TestMoveManyMovesTheSelectionAndSaysWhereEachLanded(t *testing.T) {
 	}
 }
 
+// Filing a selection: the folder named like the label is made once
+// (Destination), and the whole selection moves into it in one MOVE.
+func TestMoveManyFilesTheSelectionIntoAFolderOfTheUser(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	var uids []string
+	for _, id := range []string{"<file-1@example.com>", "<file-2@example.com>"} {
+		uids = append(uids, appendWithMessageID(t, c, "INBOX", id))
+	}
+	dest, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "Factures"})
+	if err != nil {
+		t.Fatalf("Destination(Factures): %v", err)
+	}
+	moved, err := c.MoveMany(context.Background(), "INBOX", uids, dest, nil)
+	if err != nil {
+		t.Fatalf("MoveMany: %v", err)
+	}
+	if moved.Folder != dest || len(moved.To) != 2 {
+		t.Fatalf("MoveMany = %+v, want both in %q", moved, dest)
+	}
+	if n := countIn(t, c, dest); n != 2 {
+		t.Errorf("%s holds %d message(s), want 2", dest, n)
+	}
+	if n := countIn(t, c, "INBOX"); n != 0 {
+		t.Errorf("INBOX holds %d message(s), want 0", n)
+	}
+}
+
 // A number the folder no longer holds is reported as gone and left out of the
 // MOVE; the others move all the same.
 func TestMoveManyReportsTheMessagesThatAreGone(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	here := appendWithMessageID(t, c, "INBOX", "<here@example.com>")
 
-	moved, err := c.MoveMany(context.Background(), "INBOX", []string{"999", here}, mailbox.FolderTrash, nil)
+	moved, err := c.MoveMany(context.Background(), "INBOX", []string{"999", here}, "Trash", nil)
 	if err != nil {
 		t.Fatalf("MoveMany: %v", err)
 	}
@@ -1135,7 +1162,7 @@ func TestMoveManyReportsTheMessagesThatAreGone(t *testing.T) {
 func TestMoveManyRefusesWhatIsNotAUID(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendWithMessageID(t, c, "INBOX", "<stay@example.com>")
-	if _, err := c.MoveMany(context.Background(), "INBOX", []string{uid, "18c8c1f2a3b4d5e6"}, mailbox.FolderArchive, nil); err == nil {
+	if _, err := c.MoveMany(context.Background(), "INBOX", []string{uid, "18c8c1f2a3b4d5e6"}, "Archive", nil); err == nil {
 		t.Fatal("MoveMany with a Gmail id among the UIDs moved on, want an error")
 	}
 	if n := countIn(t, c, "INBOX"); n != 1 {

@@ -531,9 +531,10 @@ type Moved struct {
 	Gone   []string
 }
 
-// MoveMany moves the messages numbered uids in folder into the special folder
-// `to` in ONE UID MOVE: a selection of 200 mails is one search and one move,
-// not 200 of each.
+// MoveMany moves the messages numbered uids in folder into the folder the
+// server calls dest (Destination says which: a special folder, or one of the
+// user's own, made if missing) in ONE UID MOVE: a selection of 200 mails is
+// one search and one move, not 200 of each.
 //
 // Where each one landed comes from the server's answer (COPYUID, which
 // UIDPLUS and IMAP4rev2 servers send: the source and destination UIDs, in
@@ -545,10 +546,9 @@ type Moved struct {
 // come back in Gone. When the MOVE itself fails, the ones gone since are added
 // to Gone and the error comes back: any UID neither in To nor in Gone was not
 // moved.
-func (c *Client) MoveMany(ctx context.Context, folder string, uids []string, to mailbox.Folder, messageIDs map[string]string) (Moved, error) {
-	dest, ok := c.folders[to]
-	if !ok {
-		return Moved{}, fmt.Errorf("%w: %s", ErrNoSuchFolder, to)
+func (c *Client) MoveMany(ctx context.Context, folder string, uids []string, dest string, messageIDs map[string]string) (Moved, error) {
+	if dest == "" {
+		return Moved{}, fmt.Errorf("%w: no destination", ErrNoSuchFolder)
 	}
 	out := Moved{Folder: dest, To: make(map[string]string, len(uids))}
 	if len(uids) == 0 {

@@ -72,8 +72,11 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 // autoApplySender applies a sender's saved default action to an email directly,
 // over whichever transport the session is on, recording it as an
 // already-applied suggestion. Returns true on success so the caller can skip
-// the AI analysis for that email. A default this mailbox cannot apply (a label
-// over IMAP) returns false: the email goes to the analysis like any other.
+// the AI analysis for that email. Over IMAP a label files the mail into the
+// folder of that name, settled and made as for the AI's proposal
+// (applySessionVerdict); a filing refused there (a special folder, one new
+// folder too many) returns false, and the email goes to the analysis like any
+// other.
 func (h *Handler) autoApplySender(ctx context.Context, session *mailSession, userEmail string, email models.Email, pref models.SenderPreference) bool {
 	suggestion := models.AISuggestion{
 		UserID:     userEmail,
@@ -89,15 +92,21 @@ func (h *Handler) autoApplySender(ctx context.Context, session *mailSession, use
 
 	labelID, err := h.applySessionVerdict(ctx, session, userEmail, email.MessageID, pref.DefaultAction, pref.DefaultLabel, "")
 	if err != nil {
-		if !errors.Is(err, errNoLabelsOnIMAP) && !errors.Is(err, errAlreadyOut) {
+		if !errors.Is(err, errAlreadyOut) {
 			log.Printf("auto-pilot: %s on message %s of %s not applied, left to the analysis: %v", pref.DefaultAction, email.MessageID, userEmail, err)
 		}
 		return false
 	}
 	suggestion.LabelID = labelID
+	// Over IMAP the folder it went into, which the history and the plan
+	// name (appliedFields does the same for a proposal).
+	filed := filedUnder(suggestion, session.Transport)
+	if filed != "" {
+		suggestion.LabelName = filed
+	}
 
 	h.db.AISuggestions().InsertOne(ctx, suggestion)
-	h.logActionMeta(ctx, userEmail, email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From)
+	h.logActionFiled(ctx, userEmail, email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From, filed)
 	return true
 }
 
@@ -409,8 +418,9 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // ApplyBulk applies an action to all emails from a sender, over whichever
-// transport the mailbox uses. Labelling stays Gmail's: over IMAP it answers
-// 501, as a single "label" verdict does.
+// transport the mailbox uses. Over IMAP a label files them into the folder of
+// that name, settled once (FilingName) and made if missing, all in one move
+// (MoveOutMany), as a selection is; archiving and deleting move at once too.
 func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -432,10 +442,7 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer session.Close()
-	if req.Action == "label" && session.Transport == provider.TransportIMAP {
-		writeError(w, http.StatusNotImplemented, noLabelsOnIMAPMessage)
-		return
-	}
+	imapBox := session.Transport == provider.TransportIMAP
 
 	// The sender is the key of an Expediteurs card: a stored From header, as
 	// GetSenders groups them. The sweep reaches exactly that group, by equality,
@@ -460,46 +467,109 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prepare label if needed
+	// Prepare label if needed: resolved once before the loop, a bulk apply
+	// must not create the same label per message.
 	var labelID string
-	if req.Action == "label" && req.LabelName != "" {
+	switch {
+	case req.Action == "label" && imapBox:
+		labelID, err = session.imapc.FilingName(req.LabelName)
+		if why, ok := filingRefusal(err); ok {
+			writeError(w, http.StatusUnprocessableEntity, why)
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "Classement impossible : "+err.Error())
+			return
+		}
+	case req.Action == "label" && req.LabelName != "":
 		labelID, err = h.ensureLabel(ctx, session.gmail, userEmail, req.LabelName)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to create label: "+err.Error())
 			return
 		}
 	}
+	filed := ""
+	if req.Action == "label" {
+		filed = req.LabelName
+		if imapBox {
+			filed = labelID
+		}
+	}
 
-	// Apply action to each email, shielding protected senders from destructive
-	// sweeps (a protected sender can still be labelled in bulk).
+	// Apply action to each email, shielding protected senders from what takes
+	// their mail out of the inbox: archive and trash, and over IMAP filing
+	// into a folder (allowsOn). A protected sender can still be labelled in
+	// bulk over the Gmail API, where a label leaves the mail where it is.
 	protectedList := h.protectedValues(ctx, userEmail)
 	appliedCount := 0
 	protectedSkipped := 0
+	message := ""
+	eligible := make([]models.Email, 0, len(emails))
 	for _, email := range emails {
-		if !allows(req.Action, email.From, protectedList) {
+		if !allowsOn(session.Transport, req.Action, email.From, protectedList) {
 			protectedSkipped++
 			continue
 		}
-		// labelID is resolved once before the loop: a bulk apply must not create
-		// the same label per message.
-		_, applyErr := h.applySessionVerdict(ctx, session, userEmail, email.MessageID, req.Action, "", labelID)
-		if errors.Is(applyErr, errAlreadyOut) {
-			// Already out of the inbox: nothing happened, nothing to count.
-			continue
-		}
-		if applyErr != nil {
-			log.Printf("apply-bulk: %s on message %s of %s: %v", req.Action, email.MessageID, userEmail, applyErr)
-			continue
-		}
+		eligible = append(eligible, email)
+	}
+	applied := func(email models.Email) {
 		appliedCount++
-		h.logActionMeta(ctx, userEmail, email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
+		h.logActionFiled(ctx, userEmail, email.MessageID, req.Action, SourceBulk, email.Subject, email.From, filed)
+	}
+	notApplied := func(email models.Email, err error) {
+		log.Printf("apply-bulk: %s on message %s of %s: %v", req.Action, email.MessageID, userEmail, err)
+		if why, ok := filingRefusal(err); ok && message == "" {
+			message = why
+		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	if imapMove, mut := movesOutOfIMAPInbox(session.Mailbox(), req.Action, labelID); imapMove != nil {
+		ids := make([]string, 0, len(eligible))
+		for _, email := range eligible {
+			ids = append(ids, email.MessageID)
+		}
+		outcome := imapMove.MoveOutMany(ctx, ids, mut)
+		moved := make(map[string]bool, len(outcome.Moved))
+		for _, id := range outcome.Moved {
+			moved[id] = true
+		}
+		for _, email := range eligible {
+			switch {
+			case moved[email.MessageID]:
+				applied(email)
+			case outcome.Failed[email.MessageID] != nil:
+				notApplied(email, outcome.Failed[email.MessageID])
+			}
+			// Otherwise it had already left the inbox: nothing happened,
+			// nothing to count.
+		}
+	} else {
+		for _, email := range eligible {
+			_, applyErr := h.applySessionVerdict(ctx, session, userEmail, email.MessageID, req.Action, "", labelID)
+			if errors.Is(applyErr, errAlreadyOut) {
+				// Already out of the inbox: nothing happened, nothing to count.
+				continue
+			}
+			if applyErr != nil {
+				notApplied(email, applyErr)
+				continue
+			}
+			applied(email)
+		}
+	}
+
+	answer := map[string]interface{}{
 		"applied":          appliedCount,
 		"total":            len(emails),
 		"protectedSkipped": protectedSkipped,
-	})
+	}
+	if filed != "" {
+		answer["labelName"] = filed
+	}
+	if message != "" {
+		answer["message"] = message
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // GetSuggestions returns pending AI suggestions

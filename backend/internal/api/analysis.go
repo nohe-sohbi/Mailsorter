@@ -175,7 +175,10 @@ func (h *Handler) runAnalysis(
 				"senderEmail": email.From,
 				"autoApply":   true,
 			}).Decode(&pref)
-			if err == nil && pref.DefaultAction != "" && allows(pref.DefaultAction, email.From, protectedList) &&
+			// Over IMAP a label files the mail out of the inbox, as an
+			// archive does: a protected sender's auto-pilot does not do it
+			// either (allowsOn).
+			if err == nil && pref.DefaultAction != "" && allowsOn(session.Transport, pref.DefaultAction, email.From, protectedList) &&
 				h.autoApplySender(ctx, session, userEmail, email, pref) {
 				p.AutoApplied++
 				p.Processed++
