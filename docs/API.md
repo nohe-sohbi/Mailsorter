@@ -387,8 +387,13 @@ character).
   (a Cyrillic `ѕ`) shows `<U+FFFD>upport@paypal.com`, and so does a hidden or
   reordering character or an `@` of another width (`＠`, `﹫`).
 - **On screen**: the local part may be truncated, the domain never is; a
-  domain too long for its line wraps (`AddressLine` in the frontend, on the
-  Expéditeurs and Abonnements cards and in the reader).
+  domain too long for its line wraps (`AddressLine` in the frontend): the
+  address lines of the Expéditeurs and Abonnements cards and of the reader,
+  and every label that is an address, which the server flags
+  (`senderLabelIsAddress` on the listing, the reader, the suggestions, the
+  history and "Plus tard"; `senderNameIsAddress` on the cards), so the screen
+  never guesses: the list row (both themes), the name line of the cards and
+  of the reader, the plan, the history, "Plus tard".
 
 The forms: `senderLabel` and `senderAddressShown`
 (listing, reader, plan, history, "Plus tard"), `senderEmailShown` (Expéditeurs,

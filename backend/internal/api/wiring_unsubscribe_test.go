@@ -896,8 +896,8 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
 	if code != http.StatusOK {
 		app.fatalf("GET /api/emails/%s a répondu %d : %v", ids[2], code, out)
 	}
-	if out["senderLabel"] != "evil@evil.io" {
-		app.failf("le lecteur devrait montrer evil@evil.io pour %s, il montre %v", tricky, out["senderLabel"])
+	if out["senderLabel"] != "evil@evil.io" || out["senderLabelIsAddress"] != true {
+		app.failf("le lecteur devrait montrer evil@evil.io pour %s, une adresse, il montre %v (adresse : %v)", tricky, out["senderLabel"], out["senderLabelIsAddress"])
 	}
 
 	app.ai.willSay("archive", 0.95)
@@ -912,8 +912,8 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
 		app.fatalf("aucune proposition lisible après l'analyse (%v) : %s", err, raw)
 	}
 	for _, sg := range suggestions {
-		if sg["senderLabel"] != "evil@evil.io" {
-			app.failf("le plan de tri devrait montrer evil@evil.io pour %s, il montre %v", tricky, sg["senderLabel"])
+		if sg["senderLabel"] != "evil@evil.io" || sg["senderLabelIsAddress"] != true {
+			app.failf("le plan de tri devrait montrer evil@evil.io pour %s, une adresse, il montre %v (adresse : %v)", tricky, sg["senderLabel"], sg["senderLabelIsAddress"])
 		}
 	}
 
@@ -924,7 +924,7 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
 	list, _ := out["emails"].([]interface{})
 	for _, raw := range list {
 		m, _ := raw.(map[string]interface{})
-		if label, _ := m["senderLabel"].(string); label != "evil@evil.io" {
+		if label, _ := m["senderLabel"].(string); label != "evil@evil.io" || m["senderLabelIsAddress"] != true {
 			app.failf("la liste devrait montrer evil@evil.io pour %s, elle montre %q", tricky, label)
 		}
 	}
@@ -938,8 +938,8 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
 	if len(entries) == 0 {
 		app.fatalf("l'historique est vide après un archivage")
 	}
-	if e, _ := entries[0].(map[string]interface{}); e["senderLabel"] != "evil@evil.io" {
-		app.failf("l'historique devrait montrer evil@evil.io pour %s, il montre %v", tricky, e["senderLabel"])
+	if e, _ := entries[0].(map[string]interface{}); e["senderLabel"] != "evil@evil.io" || e["senderLabelIsAddress"] != true {
+		app.failf("l'historique devrait montrer evil@evil.io pour %s, une adresse, il montre %v", tricky, e)
 	}
 
 	app.snooze(ids[1])
@@ -951,8 +951,8 @@ func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
 	if len(snoozes) == 0 {
 		app.fatalf("« Plus tard » est vide après un report")
 	}
-	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" {
-		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, il montre %v", tricky, s["senderLabel"])
+	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" || s["senderLabelIsAddress"] != true {
+		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, une adresse, il montre %v", tricky, s)
 	}
 }
 
@@ -1262,6 +1262,13 @@ func TestAcceptance_SenderCardsNeverNameTheAddressOfTheNameGmail(t *testing.T) {
 	const tricky = `"boss@corp.com" <evil@evil.io>`
 	app.receiveAndSync(incoming{From: tricky, Subject: "Le faux patron", Unsubscribe: "<https://evil.io/stop>"})
 
+	// A display name is not flagged as an address, in the reader either.
+	named := app.receiveAndSync(incoming{From: "Ma Banque <info@banque.fr>", Subject: "Relevé", Unsubscribe: "<https://banque.fr/stop>"})
+	code, one := app.call(http.MethodGet, "/api/emails/"+named[0], nil)
+	if code != http.StatusOK || one["senderLabel"] != "Ma Banque" || one["senderLabelIsAddress"] != nil {
+		app.failf("le lecteur devrait montrer « Ma Banque », un nom, il répond %d : %v (adresse : %v)", code, one["senderLabel"], one["senderLabelIsAddress"])
+	}
+
 	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
 		code, out := app.call(http.MethodGet, path, nil)
 		if code != http.StatusOK {
@@ -1273,7 +1280,13 @@ func TestAcceptance_SenderCardsNeverNameTheAddressOfTheNameGmail(t *testing.T) {
 			app.fatalf("GET %s ne donne aucune carte lisible (%v) : %s", path, err, raw)
 		}
 		for _, c := range cards {
-			if c["senderName"] != "evil@evil.io" {
+			if c["senderName"] == "Ma Banque" {
+				if c["senderNameIsAddress"] != nil {
+					app.failf("GET %s marque « Ma Banque » comme une adresse", path)
+				}
+				continue
+			}
+			if c["senderName"] != "evil@evil.io" || c["senderNameIsAddress"] != true {
 				app.failf("GET %s devrait nommer evil@evil.io pour %s, il nomme %v", path, tricky, c["senderName"])
 			}
 		}

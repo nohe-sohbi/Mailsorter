@@ -10,6 +10,7 @@ import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
 import { hotelTone, initials } from '../components/hotel/avatar';
+import AddressLine from '../ui/AddressLine';
 
 const AVATAR_GRADIENTS = [
   'bg-brand-fill', 'bg-info-fill',
@@ -405,9 +406,18 @@ function Snoozed() {
 
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-semibold text-ink-900">{s.subject || '(Sans sujet)'}</div>
-                    <div className="flex items-center gap-1.5 truncate text-xs text-muted">
-                      <Mail size={12} /> {senderName(s) || 'Expéditeur inconnu'}
-                    </div>
+                    {s.senderLabelIsAddress ? (
+                      // The label is the sender's address (the server says
+                      // so): its domain is never cut (AddressLine).
+                      <div className="flex items-start gap-1.5 text-xs text-muted">
+                        <Mail size={12} className="mt-0.5 shrink-0" />
+                        <AddressLine value={senderName(s)} className="min-w-0 flex-1" />
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 truncate text-xs text-muted">
+                        <Mail size={12} /> {senderName(s) || 'Expéditeur inconnu'}
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex flex-col items-end gap-1">

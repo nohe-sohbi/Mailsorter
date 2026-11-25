@@ -518,14 +518,15 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 	for _, res := range results {
 		addr := extractSenderAddress(res.ID)
 		subscriptions = append(subscriptions, models.Subscription{
-			SenderEmail:      addr,
-			SenderEmailShown: shownSenderAddress(res.ID),
-			SenderName:       extractSenderName(res.ID),
-			EmailCount:       res.EmailCount,
-			LastReceived:     res.LastReceived,
-			SampleMessageID:  res.SampleMsgID,
-			OneClick:         res.OneClick,
-			Unsubscribed:     done[addr],
+			SenderEmail:         addr,
+			SenderEmailShown:    shownSenderAddress(res.ID),
+			SenderName:          extractSenderName(res.ID),
+			SenderNameIsAddress: labelIsAddress(res.ID),
+			EmailCount:          res.EmailCount,
+			LastReceived:        res.LastReceived,
+			SampleMessageID:     res.SampleMsgID,
+			OneClick:            res.OneClick,
+			Unsubscribed:        done[addr],
 		})
 	}
 

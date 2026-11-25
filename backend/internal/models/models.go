@@ -117,6 +117,10 @@ type Email struct {
 	// SenderLabel is what the list shows for the sender (protect.Label).
 	// Set with SenderAddress; never stored.
 	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderLabelIsAddress says SenderLabel is the sender's address, not a
+	// name (protect.LabelOf): the screen lays it out so its domain is never
+	// cut. Set with it; never stored.
+	SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty" bson:"-"`
 	// SenderAddressShown is SenderAddress as the reader shows it under the
 	// name (protect.ShownAddress: what would not show, or would move what
 	// follows, made visible). Set with SenderAddress; never stored.
@@ -333,6 +337,10 @@ type Snooze struct {
 	// SenderLabel is what "Plus tard" shows for the sender (protect.Label),
 	// set on the way out; never stored.
 	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderLabelIsAddress says SenderLabel is the sender's address, not a
+	// name (protect.LabelOf): the screen lays it out so its domain is never
+	// cut. Set with it; never stored.
+	SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty" bson:"-"`
 }
 
 // MailAccount is the mailbox a user connected, and how to reach it again.
@@ -459,6 +467,10 @@ type ActionLog struct {
 	// SenderLabel is what the history shows for the sender (protect.Label),
 	// set on the way out; never stored.
 	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderLabelIsAddress says SenderLabel is the sender's address, not a
+	// name (protect.LabelOf): the screen lays it out so its domain is never
+	// cut. Set with it; never stored.
+	SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty" bson:"-"`
 	// SenderAddressShown is the sender's address as the history shows it in
 	// its tooltip (protect.ShownAddress); set on the way out, never stored.
 	SenderAddressShown string `json:"senderAddressShown,omitempty" bson:"-"`
@@ -622,13 +634,16 @@ type Subscription struct {
 	// SenderEmailShown is the sender's address as the card shows it
 	// (protect.ShownAddress), or the From's text when it names no sender:
 	// SenderEmail stays the key the screen sends back.
-	SenderEmailShown string    `json:"senderEmailShown"`
-	SenderName       string    `json:"senderName"`
-	EmailCount       int       `json:"emailCount"`
-	LastReceived     time.Time `json:"lastReceived"`
-	SampleMessageID  string    `json:"sampleMessageId"`
-	OneClick         bool      `json:"oneClick"`
-	Unsubscribed     bool      `json:"unsubscribed"`
+	SenderEmailShown string `json:"senderEmailShown"`
+	SenderName       string `json:"senderName"`
+	// SenderNameIsAddress says SenderName is the sender's address, not a
+	// name (protect.LabelOf): the card lays it out so its domain is never cut.
+	SenderNameIsAddress bool      `json:"senderNameIsAddress,omitempty"`
+	EmailCount          int       `json:"emailCount"`
+	LastReceived        time.Time `json:"lastReceived"`
+	SampleMessageID     string    `json:"sampleMessageId"`
+	OneClick            bool      `json:"oneClick"`
+	Unsubscribed        bool      `json:"unsubscribed"`
 }
 
 // SenderStats represents aggregated info about a sender
@@ -638,11 +653,14 @@ type SenderStats struct {
 	SenderEmail string `json:"senderEmail"`
 	// SenderEmailShown is what the card shows as the sender's address
 	// (protect.ShownAddress), or the From's text when it names no sender.
-	SenderEmailShown string            `json:"senderEmailShown"`
-	SenderDomain     string            `json:"senderDomain"`
-	SenderName       string            `json:"senderName"`
-	EmailCount       int               `json:"emailCount"`
-	Preference       *SenderPreference `json:"preference,omitempty"`
+	SenderEmailShown string `json:"senderEmailShown"`
+	SenderDomain     string `json:"senderDomain"`
+	// SenderNameIsAddress says SenderName is the sender's address, not a
+	// name (protect.LabelOf): the card lays it out so its domain is never cut.
+	SenderNameIsAddress bool              `json:"senderNameIsAddress,omitempty"`
+	SenderName          string            `json:"senderName"`
+	EmailCount          int               `json:"emailCount"`
+	Preference          *SenderPreference `json:"preference,omitempty"`
 }
 
 // ============================================

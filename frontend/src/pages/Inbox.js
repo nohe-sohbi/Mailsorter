@@ -786,6 +786,7 @@ function Inbox() {
         // What the reader shows until it has fetched the mail: the server's
         // forms, never the From as written.
         senderLabel: suggestion.senderLabel,
+        senderLabelIsAddress: suggestion.senderLabelIsAddress,
         senderAddressShown: suggestion.senderAddressShown,
         snippet: suggestion.snippet,
       }
@@ -2136,10 +2137,18 @@ function Inbox() {
                       </span>
                       <button onClick={openRow} className="min-w-0 flex-1 text-left">
                         <span className="flex items-baseline justify-between gap-2">
-                          <span className={cn('truncate text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
-                            {name}
-                            {!email.isRead && <span className="sr-only"> (non lu)</span>}
-                          </span>
+                          {/* A label that is the sender's address (the server says
+                              so) keeps its domain whole: AddressLine. */}
+                          {email.senderLabelIsAddress ? (
+                            <AddressLine value={name} className={cn('text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
+                              {!email.isRead && <span className="sr-only"> (non lu)</span>}
+                            </AddressLine>
+                          ) : (
+                            <span className={cn('truncate text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
+                              {name}
+                              {!email.isRead && <span className="sr-only"> (non lu)</span>}
+                            </span>
+                          )}
                           <span className="flex shrink-0 items-center gap-1.5">
                             {triageMode && isActive && (
                               <span className="chip bg-brand-100 text-brand-800 text-[10px] font-bold">
@@ -2232,7 +2241,11 @@ function Inbox() {
                       {/* The server's shown forms (`senderName`, `senderEmailShown`):
                           `senderEmail` is the card's key, the raw From, and is
                           sent back, never shown. */}
-                      <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmailShown}</div>
+                      {sender.senderNameIsAddress || !sender.senderName ? (
+                        <AddressLine value={sender.senderName || sender.senderEmailShown} className="font-semibold text-ink-900" />
+                      ) : (
+                        <div className="truncate font-semibold text-ink-900">{sender.senderName}</div>
+                      )}
                       <AddressLine value={sender.senderEmailShown} className="text-xs text-muted" />
                     </div>
                     <span className="chip bg-ink-100 text-ink-700">{sender.emailCount} emails</span>
@@ -2340,7 +2353,11 @@ function Inbox() {
                         {avatarText(sub.senderName || sub.senderEmailShown)}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmailShown}</div>
+                        {sub.senderNameIsAddress || !sub.senderName ? (
+                          <AddressLine value={sub.senderName || sub.senderEmailShown} className="font-semibold text-ink-900" />
+                        ) : (
+                          <div className="truncate font-semibold text-ink-900">{sub.senderName}</div>
+                        )}
                         <AddressLine value={sub.senderEmailShown} className="text-xs text-muted" />
                       </div>
                       <span className="chip bg-ink-100 text-ink-700">{sub.emailCount} email{sub.emailCount > 1 ? 's' : ''}</span>

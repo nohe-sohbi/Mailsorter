@@ -557,7 +557,11 @@ function EmailReader({
             {hotel ? initials(name) : name[0]?.toUpperCase() || '?'}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate font-semibold text-ink-900">{name}</div>
+            {merged.senderLabelIsAddress ? (
+              <AddressLine value={name} className="font-semibold text-ink-900" />
+            ) : (
+              <div className="truncate font-semibold text-ink-900">{name}</div>
+            )}
             {/* The address as the server shows it (`senderAddressShown`):
                 a character that would hide or reorder what follows is made
                 visible, never dropped, so it never reads as another address.

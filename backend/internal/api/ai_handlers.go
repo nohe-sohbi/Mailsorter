@@ -641,6 +641,9 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		SenderAddress string `json:"senderAddress,omitempty"`
 		// SenderLabel is what the plan shows for the sender (protect.Label).
 		SenderLabel string `json:"senderLabel,omitempty"`
+		// SenderLabelIsAddress says SenderLabel is the sender's address
+		// (protect.LabelOf): the plan lays it out so its domain is never cut.
+		SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty"`
 		// SenderAddressShown is SenderAddress as the reader shows it while
 		// it opens a mail of the plan (protect.ShownAddress).
 		SenderAddressShown string `json:"senderAddressShown,omitempty"`
@@ -651,7 +654,7 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		if e, ok := identities[s.EmailID]; ok {
 			v.Subject, v.From, v.Snippet = e.Subject, e.From, e.Snippet
 			v.SenderAddress = protect.Address(e.From)
-			v.SenderLabel = protect.Label(e.From)
+			v.SenderLabel, v.SenderLabelIsAddress = protect.LabelOf(e.From)
 			v.SenderAddressShown = protect.ShownAddress(v.SenderAddress)
 		}
 		views = append(views, v)
@@ -808,11 +811,12 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 	var senders []models.SenderStats
 	for _, r := range results {
 		sender := models.SenderStats{
-			SenderEmail:      r.ID,
-			SenderEmailShown: shownSenderAddress(r.ID),
-			SenderDomain:     extractDomain(r.ID),
-			SenderName:       extractSenderName(r.ID),
-			EmailCount:       r.EmailCount,
+			SenderEmail:         r.ID,
+			SenderEmailShown:    shownSenderAddress(r.ID),
+			SenderDomain:        extractDomain(r.ID),
+			SenderName:          extractSenderName(r.ID),
+			SenderNameIsAddress: labelIsAddress(r.ID),
+			EmailCount:          r.EmailCount,
 		}
 
 		// Check for existing preference
@@ -1194,4 +1198,11 @@ func extractSenderAddress(from string) string {
 // display name writes: "boss@corp.com" <evil@evil.io> is evil@evil.io.
 func extractSenderName(from string) string {
 	return protect.Label(from)
+}
+
+// labelIsAddress says whether extractSenderName of from is the sender's
+// address rather than a name (protect.LabelOf).
+func labelIsAddress(from string) bool {
+	_, isAddress := protect.LabelOf(from)
+	return isAddress
 }

@@ -131,7 +131,7 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if l.From != "" {
-			l.SenderLabel = protect.Label(l.From)
+			l.SenderLabel, l.SenderLabelIsAddress = protect.LabelOf(l.From)
 			l.SenderAddressShown = protect.ShownAddress(protect.Address(l.From))
 		}
 		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone})

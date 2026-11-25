@@ -59,7 +59,7 @@ func (h *Handler) protectedValues(ctx context.Context, userEmail string) (protec
 func readSender(e *models.Email) {
 	e.SenderAddress = protect.Address(e.From)
 	e.SenderAddressShown = protect.ShownAddress(e.SenderAddress)
-	e.SenderLabel = protect.Label(e.From)
+	e.SenderLabel, e.SenderLabelIsAddress = protect.LabelOf(e.From)
 }
 
 // shownSenderAddress is what a sender card shows as the address of a From:

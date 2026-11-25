@@ -192,15 +192,24 @@ func FromText(raw string) string {
 // isolates, marks, zero-width spaces: shown, they reordered or hid what
 // follows) but the joiners letters and emoji need: shownText.
 func Label(from string) string {
+	label, _ := LabelOf(from)
+	return label
+}
+
+// LabelOf is Label, and whether that label is the sender's address (shown
+// in its one form, ShownAddress) rather than a display name or the text of
+// a From that names no sender: a screen lays an address out so its domain
+// is never cut, and needs not guess which it was given.
+func LabelOf(from string) (label string, isAddress bool) {
 	name, address := Sender(from)
 	if address == "" {
-		return unquoted(strings.TrimSpace(markedText(strings.ToValidUTF8(from, "\uFFFD"))))
+		return unquoted(strings.TrimSpace(markedText(strings.ToValidUTF8(from, "\uFFFD")))), false
 	}
 	name = shownText(name)
 	if !visible(name) || strings.Contains(norm.NFKC.String(name), "@") {
-		return ShownAddress(address)
+		return ShownAddress(address), true
 	}
-	return name
+	return name, false
 }
 
 // ShownAddress is the one form a screen shows an address in, whatever screen:

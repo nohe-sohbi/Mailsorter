@@ -73,6 +73,9 @@ export function groupSuggestions(suggestions = []) {
         labelName: action === 'label' ? (s.labelName || '').trim() : '',
         address,
         name: senderName(s),
+        // The name is the sender's address (the server says so): laid out
+        // so its domain is never cut (AddressLine).
+        nameIsAddress: Boolean(s.senderLabelIsAddress),
         from: s.from || '',
         items: [],
         reasoning: '',

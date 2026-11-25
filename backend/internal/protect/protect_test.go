@@ -294,6 +294,25 @@ func TestShieldAnswersLikeTheEntries(t *testing.T) {
 	}
 }
 
+// LabelOf says when the label is the address, and only then.
+func TestLabelOfSaysWhenTheLabelIsTheAddress(t *testing.T) {
+	cases := map[string]bool{
+		"x@paypal.com.verification-centre-securite-compte-client.evil.io": true,
+		"<x@evil.io>":                                   true,
+		`"boss@corp.com" <evil@evil.io>`:                true,
+		"\"\u200B\" <evil@evil.io>":                     true,
+		"Ma Banque <info@banque.fr>":                    false,
+		"patron@victime.fr, Lettre <lettre@journal.fr>": false,
+		"": false,
+	}
+	for from, want := range cases {
+		label, isAddress := LabelOf(from)
+		if isAddress != want || label != Label(from) {
+			t.Errorf("LabelOf(%q) = (%q, %v), want (%q, %v)", from, label, isAddress, Label(from), want)
+		}
+	}
+}
+
 // What a screen shows for a sender: never an address of the display name
 // that is not the sender's, in any width, no control or format character,
 // and the address when the name shows nothing.

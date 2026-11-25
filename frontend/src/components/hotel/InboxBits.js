@@ -3,6 +3,7 @@ import { actionMeta } from '../../ui/actions';
 import { cn } from '../../ui/cn';
 import { Archive, Check, Search, Star, Trash, X } from '../../ui/icons';
 import { hotelTone, initials } from './avatar';
+import AddressLine from '../../ui/AddressLine';
 
 // The inbox, drawn by the Grand Hotel. Inbox.js keeps every handler, every
 // piece of state and the classic markup; these components only draw what it
@@ -117,10 +118,18 @@ export function HotelRow({
       </span>
       <button onClick={onOpen} className="hd-row__open">
         <span className="hd-row__top">
-          <span className="hd-row__who">
-            {name}
-            {!email.isRead && <span className="sr-only"> (non lu)</span>}
-          </span>
+          {/* A label that is the sender's address (the server says so)
+              keeps its domain whole: AddressLine. */}
+          {email.senderLabelIsAddress ? (
+            <AddressLine value={name} className="hd-row__who">
+              {!email.isRead && <span className="sr-only"> (non lu)</span>}
+            </AddressLine>
+          ) : (
+            <span className="hd-row__who">
+              {name}
+              {!email.isRead && <span className="sr-only"> (non lu)</span>}
+            </span>
+          )}
           <span className="hd-row__when">
             {current && <span className="ht-tag is-gold" style={{ height: 20, fontSize: 10, paddingRight: 18 }}>En cours</span>}
             {starred && <Star size={13} className="fill-current text-caution-500" aria-label="Favori" />}
