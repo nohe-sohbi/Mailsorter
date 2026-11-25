@@ -20,7 +20,9 @@ const gradientFor = (seed = '') => {
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
   return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
 };
-const senderName = (from = '') => from.split('<')[0].replace(/"/g, '').trim() || from;
+// The label the server read out of From (protect.Label), never a cut of the
+// header here; the header as it is without it.
+const senderName = (s) => s?.senderLabel || s?.from || '';
 
 // Le backend connaît trois états (`scheduled`, `done`, `failed`) et la page n'en
 // montrait qu'un. Un report en échec (message introuvable côté Gmail, cinq
@@ -396,13 +398,13 @@ function Snoozed() {
                       hotel ? hotelTone(s.from) : gradientFor(s.from)
                     )}
                   >
-                    {hotel ? initials(senderName(s.from)) : senderName(s.from)[0]?.toUpperCase() || '?'}
+                    {hotel ? initials(senderName(s)) : senderName(s)[0]?.toUpperCase() || '?'}
                   </span>
 
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-semibold text-ink-900">{s.subject || '(Sans sujet)'}</div>
                     <div className="flex items-center gap-1.5 truncate text-xs text-muted">
-                      <Mail size={12} /> {senderName(s.from) || 'Expéditeur inconnu'}
+                      <Mail size={12} /> {senderName(s) || 'Expéditeur inconnu'}
                     </div>
                   </div>
 

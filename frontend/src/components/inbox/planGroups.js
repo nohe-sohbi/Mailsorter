@@ -73,7 +73,7 @@ export function groupSuggestions(suggestions = []) {
         action,
         labelName: action === 'label' ? (s.labelName || '').trim() : '',
         address,
-        name: senderName(s.from || ''),
+        name: s.senderLabel || senderName(s.from || ''),
         from: s.from || '',
         items: [],
         reasoning: '',

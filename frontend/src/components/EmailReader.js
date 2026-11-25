@@ -360,7 +360,7 @@ function EmailReader({
     });
   };
 
-  const name = extractName(merged.from) || 'Expéditeur inconnu';
+  const name = merged.senderLabel || extractName(merged.from) || 'Expéditeur inconnu';
   const rendered = full?.bodyHtml
     ? renderHtml(full.bodyHtml, drawn, new Set(Object.keys(full.inlineImages || {})))
     : null;

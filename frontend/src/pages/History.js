@@ -42,7 +42,6 @@ const SOURCE_FILTERS = [
   { value: 'undo', label: 'Annulations' },
 ];
 
-const senderName = (from = '') => from.split('<')[0].replace(/"/g, '').trim() || from;
 
 function formatWhen(dateStr) {
   if (!dateStr) return '';
@@ -179,7 +178,9 @@ function identityOf(entry) {
   return {
     known: Boolean(subject || from),
     title: subject || (from ? '(Sans sujet)' : 'Email non identifié'),
-    sender: from ? senderName(from) : '',
+    // The label the server read out of From (protect.Label), never a cut
+    // of the header here; the header as it is without it.
+    sender: from ? entry.senderLabel || from : '',
     from,
   };
 }

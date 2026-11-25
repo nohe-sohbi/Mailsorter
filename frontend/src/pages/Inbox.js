@@ -160,16 +160,14 @@ function SaveSearchDialog({ query, onCancel, onSave }) {
   );
 }
 
-// The display name out of a From header.
-//
-// The quotes are the part that is easy to forget: RFC 5322 wraps a display name
-// in them as soon as it contains anything special, and the IMAP listing writes
-// that form for every named sender, so "Acme News" rendered with its quotes and
-// the avatar letter was a quotation mark. EmailReader, Snoozed and History each
-// strip them already; this file was the one that did not.
-function senderLabel(from) {
-  if (!from) return '';
-  return from.split('<')[0].replace(/"/g, '').trim() || from;
+// What a row shows for the sender: the label the server read out of From
+// (`senderLabel`, protect.Label: the display name, or the address read when
+// the name holds another address, or the From's text when it names no
+// sender). Cutting the header at its first "<" here showed boss@corp.com for
+// "boss@corp.com" <evil@evil.io>. Without it, the From as it is: never an
+// address read here.
+function senderLabel(email) {
+  return email?.senderLabel || email?.from || '';
 }
 
 // The levers of the first-run dialog, in both themes. Each one is promised
@@ -2026,7 +2024,7 @@ function Inbox() {
                   ? triageIds.map((id) => emails.find((e) => e.messageId === id) || { messageId: id, subject: 'Chargement...' })
                   : emails
                 ).map((email, idx) => {
-                  const name = senderLabel(email.from) || '?';
+                  const name = senderLabel(email) || '?';
                   const isActive = selectedEmail?.messageId === email.messageId;
                   const isChecked = selectedEmails.includes(email.messageId);
                   const isFocused = idx === focusedIndex;
