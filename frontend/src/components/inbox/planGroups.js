@@ -37,11 +37,10 @@ export function senderAddress(s = {}) {
 }
 
 // What the plan shows for the sender: the server's reading (`senderLabel`,
-// protect.Label), or the From as it is when a suggestion kept from before has
-// none. Never a cut of the From: its display name is the sender's to write,
-// and may hold another address.
+// protect.Label), never the From as written nor a cut of it: its display name
+// is the sender's to write, and may hold another address.
 function senderName(s = {}) {
-  return s.senderLabel || (s.from || '').trim() || 'Expéditeur inconnu';
+  return s.senderLabel || 'Expéditeur inconnu';
 }
 
 export function isSure(confidence) {

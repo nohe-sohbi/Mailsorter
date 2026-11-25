@@ -21,8 +21,8 @@ const gradientFor = (seed = '') => {
   return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
 };
 // The label the server read out of From (protect.Label), never a cut of the
-// header here; the header as it is without it.
-const senderName = (s) => s?.senderLabel || s?.from || '';
+// header here, and never the header as written: the screen shows no From.
+const senderName = (s) => s?.senderLabel || '';
 
 // Le backend connaît trois états à montrer (`scheduled`, `done`, `failed`) et la
 // page n'en montrait qu'un. Un report en échec (message introuvable dans la

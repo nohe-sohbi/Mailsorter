@@ -350,11 +350,11 @@ function EmailReader({
     });
   };
 
-  // What the server read for the sender (`senderLabel`, protect.Label), or
-  // the From as it is when a mail kept from before has none: never a cut of
-  // it, since the display name is the sender's to write and may hold another
-  // address. The address shown under it is the server's (`senderAddressShown`).
-  const name = merged.senderLabel || merged.from || 'Expéditeur inconnu';
+  // What the server read for the sender (`senderLabel`, protect.Label), never
+  // the From as written nor a cut of it: the display name is the sender's to
+  // write and may hold another address. The address shown under it is the
+  // server's too (`senderAddressShown`).
+  const name = merged.senderLabel || 'Expéditeur inconnu';
   const rendered = full?.bodyHtml
     ? renderHtml(full.bodyHtml, drawn, new Set(Object.keys(full.inlineImages || {})))
     : null;

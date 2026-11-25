@@ -367,7 +367,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           {rule.conditions.map((c, i) => (
             <span key={i}>
               {i > 0 && <span className="text-subtle"> · </span>}
-              {fieldLabel(c.field)} {operatorLabel(c.operator)} «{c.value}»
+              {fieldLabel(c.field)} {operatorLabel(c.operator)} «{c.valueShown ?? c.value}»
             </span>
           ))}
           <span className="text-subtle"> → </span>
@@ -793,7 +793,7 @@ function Rules() {
                     {effectiveActions(s).map((a, j) => (
                       <span key={j} className={cn('chip shrink-0', actionMeta(a.type).chip)}>{actionMeta(a.type).label}</span>
                     ))}
-                    <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> · {s.from}</span>
+                    <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> · {s.senderLabel}</span>
                   </li>
                 ))}
               </ul>

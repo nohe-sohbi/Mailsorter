@@ -148,7 +148,7 @@ function HotelRegister({ entries, undoing, onUndo, undoOk, folders }) {
                     {timeOf(e.createdAt)}
                   </time>
                   <div className="hd-reg__what">
-                    <span className={identity.known ? undefined : 'italic text-muted'} title={identity.known ? identity.from : UNKNOWN_HINT}>
+                    <span className={identity.known ? undefined : 'italic text-muted'} title={identity.known ? identity.address : UNKNOWN_HINT}>
                       {who}
                     </span>{' '}
                     <em>{pastInSentence(e, folders)}</em>
@@ -184,10 +184,10 @@ function identityOf(entry) {
   return {
     known: Boolean(subject || from),
     title: subject || (from ? '(Sans sujet)' : 'Email non identifié'),
-    // The label the server read out of From (protect.Label), never a cut
-    // of the header here; the header as it is without it.
-    sender: from ? entry.senderLabel || from : '',
-    from,
+    // The server's forms (protect.Label, protect.ShownAddress), never the
+    // From as written: the label in the row, the address in its tooltip.
+    sender: from ? entry.senderLabel || '' : '',
+    address: entry.senderAddressShown || entry.senderLabel || '',
   };
 }
 
@@ -499,7 +499,7 @@ function History() {
                         {identity.sender && (
                           <>
                             <span aria-hidden="true" className="text-subtle">·</span>
-                            <span className="max-w-[16rem] truncate" title={identity.from}>
+                            <span className="max-w-[16rem] truncate" title={identity.address}>
                               {identity.sender}
                             </span>
                           </>

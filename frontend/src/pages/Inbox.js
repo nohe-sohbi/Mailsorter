@@ -165,10 +165,10 @@ function SaveSearchDialog({ query, onCancel, onSave }) {
 // (`senderLabel`, protect.Label: the display name, or the address read when
 // the name holds another address, or the From's text when it names no
 // sender). Cutting the header at its first "<" here showed boss@corp.com for
-// "boss@corp.com" <evil@evil.io>. Without it, the From as it is: never an
-// address read here.
+// "boss@corp.com" <evil@evil.io>. The screen never shows a From or an
+// address as written: every one comes in the server's shown form.
 function senderLabel(email) {
-  return email?.senderLabel || email?.from || '';
+  return email?.senderLabel || '';
 }
 
 // The levers of the first-run dialog, in both themes. Each one is promised
@@ -782,6 +782,10 @@ function Inbox() {
         messageId: suggestion.emailId,
         subject: suggestion.subject,
         from: suggestion.from,
+        // What the reader shows until it has fetched the mail: the server's
+        // forms, never the From as written.
+        senderLabel: suggestion.senderLabel,
+        senderAddressShown: suggestion.senderAddressShown,
         snippet: suggestion.snippet,
       }
     );
@@ -1239,7 +1243,7 @@ function Inbox() {
   const handleProtect = async (email) => {
     try {
       const { data } = await protectService.add(email.from, '', { fromMail: true });
-      toast.action(`${data.value} est désormais protégé.`, 'Gérer', () => navigate('/settings'));
+      toast.action(`${data.valueShown} est désormais protégé.`, 'Gérer', () => navigate('/settings'));
     } catch (err) {
       toast.error(apiError(err, 'Protection impossible.'));
     }
@@ -1256,7 +1260,7 @@ function Inbox() {
         // mailbox: the request has left, the list has not answered yet. The
         // address is named: the person sees who was written to in their name.
         track('unsubscribe', { mode: 'sent' });
-        toast.success(`Demande de désabonnement envoyée à ${data.sentTo}${archivedNote}`);
+        toast.success(`Demande de désabonnement envoyée à ${data.sentToShown}${archivedNote}`);
       } else if (data.done) {
         track('unsubscribe', { mode: 'oneclick' });
         toast.success(`Désabonné en un clic${archivedNote}`);
@@ -1293,7 +1297,7 @@ function Inbox() {
       await aiService.analyzeSender(sender.senderEmail);
       const sendersRes = await senderService.getSenders();
       setLocalSenders(sendersRes.data || []);
-      toast.success(`${sender.senderName || sender.senderEmail} analysé`);
+      toast.success(`${sender.senderName || sender.senderEmailShown} analysé`);
     } catch (err) {
       toast.error("Analyse de l'expéditeur impossible");
     } finally {
@@ -1321,7 +1325,7 @@ function Inbox() {
   };
 
   const handleApplyBulk = async (sender, action) => {
-    const who = sender.senderName || sender.senderEmail;
+    const who = sender.senderName || sender.senderEmailShown;
     const meta = actionMeta(action);
     const ok = await confirm({
       title: `${meta.label} tous les emails de ${who} ?`,
@@ -1351,7 +1355,7 @@ function Inbox() {
       await senderService.createRule(sender.senderEmail, 'archive');
       track('rule_created', { source: 'sender' });
       toast.action(
-        `Règle créée : les emails de ${sender.senderName || sender.senderEmail} seront archivés.`,
+        `Règle créée : les emails de ${sender.senderName || sender.senderEmailShown} seront archivés.`,
         'Voir les règles',
         () => navigate('/rules')
       );
@@ -2221,11 +2225,14 @@ function Inbox() {
                 return (
                   <div key={sender.senderEmail} className="card flex flex-wrap items-center gap-3 p-4">
                     <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sender.senderEmail))} aria-hidden>
-                      {avatarText(sender.senderName || sender.senderEmail)}
+                      {avatarText(sender.senderName || sender.senderEmailShown)}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmail.split('@')[0]}</div>
-                      <div className="truncate text-xs text-muted">{sender.senderEmail}</div>
+                      {/* The server's shown forms (`senderName`, `senderEmailShown`):
+                          `senderEmail` is the card's key, the raw From, and is
+                          sent back, never shown. */}
+                      <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmailShown}</div>
+                      <div className="truncate text-xs text-muted">{sender.senderEmailShown}</div>
                     </div>
                     <span className="chip bg-ink-100 text-ink-700">{sender.emailCount} emails</span>
                     {pref ? (
@@ -2267,7 +2274,7 @@ function Inbox() {
                       <button
                         onClick={() => handleCreateSenderRule(sender)}
                         className="btn-ghost btn-sm btn-icon text-brand-600 hover:bg-brand-50"
-                        aria-label={`Créer une règle pour ${sender.senderEmail}`}
+                        aria-label={`Créer une règle pour ${sender.senderEmailShown}`}
                         title="Créer une règle : toujours archiver les futurs emails de cet expéditeur"
                       >
                         <Bolt size={17} />
@@ -2276,7 +2283,7 @@ function Inbox() {
                       <button
                         onClick={() => handleApplyBulk(sender, 'archive')}
                         className="btn-ghost btn-sm btn-icon"
-                        aria-label={`Tout archiver de ${sender.senderEmail}`}
+                        aria-label={`Tout archiver de ${sender.senderEmailShown}`}
                         title="Tout archiver (emails existants)"
                       >
                         <Archive size={17} />
@@ -2284,7 +2291,7 @@ function Inbox() {
                       <button
                         onClick={() => handleApplyBulk(sender, 'delete')}
                         className="btn-ghost btn-sm btn-icon text-danger-600 hover:bg-danger-50"
-                        aria-label={`Tout supprimer de ${sender.senderEmail}`}
+                        aria-label={`Tout supprimer de ${sender.senderEmailShown}`}
                         title="Tout supprimer (emails existants)"
                       >
                         <Trash size={17} />
@@ -2329,11 +2336,11 @@ function Inbox() {
                   return (
                     <div key={subKey} className={cn('card flex flex-wrap items-center gap-3 p-4', sub.unsubscribed && 'opacity-60')}>
                       <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sub.senderEmail))} aria-hidden>
-                        {avatarText(sub.senderName || sub.senderEmail)}
+                        {avatarText(sub.senderName || sub.senderEmailShown)}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmail.split('@')[0]}</div>
-                        <div className="truncate text-xs text-muted">{sub.senderEmail}</div>
+                        <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmailShown}</div>
+                        <div className="truncate text-xs text-muted">{sub.senderEmailShown}</div>
                       </div>
                       <span className="chip bg-ink-100 text-ink-700">{sub.emailCount} email{sub.emailCount > 1 ? 's' : ''}</span>
                       {sub.oneClick && !sub.unsubscribed && (
@@ -2358,7 +2365,7 @@ function Inbox() {
                             onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, alsoArchive: true, key: subKey })}
                             disabled={busy}
                             className="btn-ghost btn-sm btn-icon"
-                            aria-label={`Se désabonner et archiver tous les emails de ${sub.senderEmail}`}
+                            aria-label={`Se désabonner et archiver tous les emails de ${sub.senderEmailShown}`}
                             title="Se désabonner et archiver tous les emails de cet expéditeur"
                           >
                             <Archive size={17} />

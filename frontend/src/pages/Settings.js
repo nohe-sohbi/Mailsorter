@@ -451,7 +451,7 @@ function ProtectedSenders() {
       setValue('');
       // A successful add also proves the list is reachable again.
       setError(null);
-      toast.success(`${data.value} protégé`);
+      toast.success(`${data.valueShown} protégé`);
     } catch (err) {
       toast.error(errText(err, 'Ajout impossible.'));
     } finally {
@@ -521,11 +521,13 @@ function ProtectedSenders() {
               title={item.kind === 'domain' ? 'Domaine entier' : 'Adresse'}
             >
               <Shield size={13} />
-              <span className="font-mono text-xs">{item.value}</span>
+              {/* The server's shown form (`valueShown`, protect.ShownEntry),
+                  never the entry as stored. */}
+              <span className="font-mono text-xs">{item.valueShown}</span>
               <button
                 onClick={() => handleRemove(item)}
                 className="ml-0.5 rounded-full p-0.5 text-positive-600 transition-colors hover:bg-positive-100 hover:text-positive-700"
-                aria-label={`Retirer ${item.value} des expéditeurs protégés`}
+                aria-label={`Retirer ${item.valueShown} des expéditeurs protégés`}
               >
                 <X size={13} />
               </button>
