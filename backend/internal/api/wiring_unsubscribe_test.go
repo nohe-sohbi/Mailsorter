@@ -1086,6 +1086,8 @@ func TestAcceptance_UnreadableProtectedListMovesNothingIMAP(t *testing.T) {
 
 	got := moi.onSelection("archive", uids...)
 	expectNothingMoved(app, "« Archiver » sur la sélection", got.code, got.body)
+	code, out = app.callAs(moi.token, http.MethodPost, "/api/emails/batch-snooze", map[string]interface{}{"messageIds": uids, "preset": "tomorrow"})
+	expectNothingMoved(app, "« Reporter la sélection »", code, out)
 	code, out = app.callAs(moi.token, http.MethodPost, "/api/ai/apply-bulk", map[string]string{"senderEmail": card.SenderEmail, "action": "archive"})
 	expectNothingMoved(app, "« Tout archiver »", code, out)
 	code, out = app.callAs(moi.token, http.MethodPost, "/api/unsubscribe", map[string]interface{}{"messageId": uids[0], "alsoArchive": true})
@@ -1132,5 +1134,27 @@ func TestAcceptance_UnsubscribeMailToAnAccentedMailboxIsHandedToTheScreen(t *tes
 	}
 	if done, _ := got["done"].(bool); done {
 		app.failf("la réponse ne devrait pas dire que c'est fait : %v", got)
+	}
+}
+
+// "Plus tard" on an IMAP mailbox shows the sender the server read, as on
+// Gmail: never the address a display name writes.
+func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameOnPlusTardIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const tricky = `"boss@corp.com" <evil@evil.io>`
+	moi, uids := syncedIMAPInbox(app, incoming{From: tricky, Subject: "Le faux patron"})
+	if got := moi.snoozeAnswer(uids[0]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » a répondu %s", got)
+	}
+	code, out := app.callAs(moi.token, http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/snoozes a répondu %d : %v", code, out)
+	}
+	snoozes, _ := out["snoozes"].([]interface{})
+	if len(snoozes) != 1 {
+		app.fatalf("« Plus tard » devrait montrer le mail reporté, il montre : %v", out)
+	}
+	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" {
+		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, il montre %v", tricky, s["senderLabel"])
 	}
 }

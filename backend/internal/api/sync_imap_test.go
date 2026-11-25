@@ -155,3 +155,27 @@ func TestRecentUndo(t *testing.T) {
 		}
 	}
 }
+
+// "Synchroniser" never answers in English: a failure the user is meant to
+// read is its own sentence, capitalized and ended; anything else, a general
+// French sentence (the detail is logged).
+func TestSyncFailureMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"messages not stored", fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, 3, 100), "Des messages de la boîte n'ont pas pu être enregistrés (3 sur 100)."},
+		{"connection lost", errMailboxLost, "La connexion à votre boîte a été perdue pendant la synchronisation."},
+		{"stopped answering", errMailboxUnavailable, "Votre boîte n'a pas répondu jusqu'au bout de la synchronisation, réessayez dans un instant."},
+		{"copy not reconciled", errMirrorNotReconciled, "La liste n'a pas pu être remise à jour avec votre boîte."},
+		{"anything else", errors.New("googleapi: Error 500: backendError"), "La synchronisation a échoué, réessayez dans un instant."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := syncFailureMessage("u@example.com", tc.err); got != tc.want {
+				t.Errorf("syncFailureMessage(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}

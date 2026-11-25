@@ -118,10 +118,16 @@ const finalHint = (e, folders) =>
 // What a line says was done: the verb in the past, and for a label where it
 // filed the mail ("Classé dans « Factures »" over IMAP, where it is a folder).
 const placeOf = (e, folders) => (e.action === 'label' ? labelPlace(e.labelName, { folders }) : '');
-const pastOf = (e, folders) => `${actionMeta(e.action, { folders }).past}${placeOf(e, folders)}`;
+// A report leaves the inbox and comes back to it: the ledger records it as an
+// archive and an unarchive, which is what it does on the mailbox, but the
+// person reads what they did: « Reporté », then « Revenu dans la boîte ».
+const SNOOZE_PAST = { archive: 'Reporté', unarchive: 'Revenu dans la boîte' };
+const verbOf = (e, folders) =>
+  (e.source === 'snooze' && SNOOZE_PAST[e.action]) || actionMeta(e.action, { folders }).past;
+const pastOf = (e, folders) => `${verbOf(e, folders)}${placeOf(e, folders)}`;
 // Inside a sentence: the verb in lower case, the folder or label as the user
 // named it (« classé dans « Livraisons » », not « livraisons »).
-const pastInSentence = (e, folders) => `${actionMeta(e.action, { folders }).past.toLowerCase()}${placeOf(e, folders)}`;
+const pastInSentence = (e, folders) => `${verbOf(e, folders).toLowerCase()}${placeOf(e, folders)}`;
 
 // What the right-hand side of a row says. `undoOk` waits for the mailbox to be
 // known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
@@ -298,12 +304,15 @@ function History() {
       // 409 = déjà annulée ailleurs (autre onglet, autre session) : la ligne
       // affichée est périmée, on la remet d'aplomb au lieu de laisser un bouton
       // qui échouera à chaque clic.
-      if (err.response?.status === 409) {
+      // Sauf le 409 « plusieurs copies » (severalCopies) : rien n'a été annulé,
+      // la ligne cesse seulement de proposer « Annuler », comme pour un 404.
+      const severalCopies = Boolean(err.response?.data?.severalCopies);
+      if (err.response?.status === 409 && !severalCopies) {
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true, undoable: false } : e)));
       }
       // 404 = le mail n'est plus là où Mailsorter l'avait mis, ou l'action est
       // trop ancienne : le serveur ne la propose plus, la ligne non plus.
-      if (err.response?.status === 404) {
+      if (err.response?.status === 404 || severalCopies) {
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undoable: false } : e)));
       }
       toast.error(apiError(err, 'Annulation impossible.'));
@@ -458,7 +467,9 @@ function History() {
           ) : (
             <ul className="space-y-2.5">
               {entries.map((e) => {
-                const meta = actionMeta(e.action, { folders });
+                // A report and its return wear the report's icon, as they
+                // read « Reporté » and « Revenu dans la boîte » (verbOf).
+                const meta = e.source === 'snooze' ? actionMeta('snooze') : actionMeta(e.action, { folders });
                 const Icon = meta.Icon;
                 const identity = identityOf(e);
                 return (

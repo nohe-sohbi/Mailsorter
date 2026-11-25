@@ -30,7 +30,9 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && !error.config?.optional) {
+    // mailboxRejected: the mail provider refused the password just typed
+    // (connect, new password), which is not a dead Mailsorter session.
+    if (error.response?.status === 401 && !error.config?.optional && !error.response?.data?.mailboxRejected) {
       signOut();
       if (window.location.pathname !== '/') {
         window.location.assign('/');
@@ -39,6 +41,16 @@ apiClient.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// Where a 428 leads, the mailbox to connect again: the new password form when
+// the provider refuses the one on file (passwordRefused), the connect screen
+// when no mailbox is connected. null for any other failure.
+export function reconnectAction(err) {
+  if (err?.response?.status !== 428) return null;
+  return err.response.data?.passwordRefused
+    ? { label: 'Mettre à jour', to: '/connect?motdepasse=1' }
+    : { label: 'Brancher une boîte', to: '/connect' };
+}
 
 // The API answers errors in two shapes: writeError produces {error, status},
 // while the older handlers use http.Error and produce bare text. Reading only
@@ -274,7 +286,10 @@ export const configService = {
 // carries the password back.
 export const mailboxService = {
   get: () => apiClient.get('/api/mailbox'),
+  // A password the provider refuses answers 401 marked mailboxRejected, which
+  // the interceptor above does not take for a dead session.
   connect: (address, password) => apiClient.post('/api/mailbox/connect', { address, password }),
+  changePassword: (password) => apiClient.put('/api/mailbox/password', { password }),
   disconnect: () => apiClient.delete('/api/mailbox'),
 };
 

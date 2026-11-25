@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { snoozeService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
+import { useMailboxErrorToast } from '../ui/mailboxError';
 import { EmptyState, ErrorState, LiveAnnouncer } from '../ui/primitives';
 import { Clock, Undo, Mail, Alert, Check } from '../ui/icons';
 import Spinner from '../ui/Spinner';
@@ -9,7 +10,6 @@ import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
 import { hotelTone, initials } from '../components/hotel/avatar';
-import { useMailbox } from '../contexts/EmailContext';
 
 const AVATAR_GRADIENTS = [
   'bg-brand-fill', 'bg-info-fill',
@@ -24,10 +24,13 @@ const gradientFor = (seed = '') => {
 // header here; the header as it is without it.
 const senderName = (s) => s?.senderLabel || s?.from || '';
 
-// Le backend connaît trois états (`scheduled`, `done`, `failed`) et la page n'en
-// montrait qu'un. Un report en échec (message introuvable côté Gmail, cinq
-// tentatives épuisées) quittait donc la liste sans un mot : l'email restait
-// hors de la boîte, définitivement, sans que personne ne l'apprenne.
+// Le backend connaît trois états à montrer (`scheduled`, `done`, `failed`) et la
+// page n'en montrait qu'un. Un report en échec (message introuvable dans la
+// boîte, cinq tentatives épuisées) quittait donc la liste sans un mot : l'email
+// restait hors de la boîte, définitivement, sans que personne ne l'apprenne. Le
+// quatrième, `cancelled` (annulé par « Annuler », ou sorti de « Plus tard » par
+// un autre logiciel sur une boîte IMAP), n'a pas d'onglet : il n'y a plus rien
+// à faire revenir.
 const TABS = [
   {
     key: 'scheduled',
@@ -151,13 +154,9 @@ function countdown(dateStr, now) {
   return rtf.format(Math.round(days / 30), 'month');
 }
 
-// Over IMAP there is no "Reporter" to point at yet: the empty state says so
-// instead of sending the reader to a button that is not there.
-const IMAP_SNOOZE = "Reporter un email n'est pas encore disponible sur les boîtes IMAP.";
-
 function Snoozed() {
-  const { isImap } = useMailbox();
   const toast = useToast();
+  const showMailboxError = useMailboxErrorToast();
   const hotel = useHotel();
   const confirm = useConfirm();
   const [tab, setTab] = useState('scheduled');
@@ -266,7 +265,10 @@ function Snoozed() {
       if (tab === 'failed') setFailedCount((c) => Math.max(0, c - 1));
       toast.success('Email réactivé, de retour dans votre boîte');
     } catch (err) {
-      toast.error(apiError(err, 'Réactivation impossible. Réessayez.'));
+      // The server's sentence: the mailbox to connect again (428, with the
+      // way there), not answering (502), being brought back already (423),
+      // several copies in "Plus tard" (409).
+      showMailboxError(err, 'Réactivation impossible. Réessayez.');
     } finally {
       setWaking(null);
     }
@@ -378,10 +380,10 @@ function Snoozed() {
               Icon={meta.empty.Icon}
               tone={meta.empty.tone}
               title={meta.empty.title}
-              description={isImap ? IMAP_SNOOZE : meta.empty.description}
+              description={meta.empty.description}
               scene={meta.empty.scene}
               hotelTitle={meta.empty.hotelTitle}
-              hotelDescription={isImap ? IMAP_SNOOZE : meta.empty.hotelDescription}
+              hotelDescription={meta.empty.hotelDescription}
             />
           </div>
         ) : (
@@ -444,9 +446,9 @@ function Snoozed() {
                       <Alert size={14} className="mt-0.5 shrink-0" />
                       <span>
                         Le retour dans votre boîte a échoué {s.attempts || 5} fois, puis Mailsorter a cessé
-                        de réessayer. Le message a sans doute été supprimé ou déplacé définitivement dans
-                        Gmail. Cet email est donc toujours hors de votre boîte : « Réactiver » relance la
-                        tentative.
+                        de réessayer. Le message a sans doute été supprimé ou déplacé depuis votre messagerie,
+                        ou celle-ci n'a pas répondu. Cet email est donc toujours hors de votre boîte :
+                        « Réactiver » relance la tentative.
                       </span>
                     </p>
                   )}

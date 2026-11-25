@@ -297,10 +297,21 @@ type Snooze struct {
 	From      string    `json:"from" bson:"from"`
 	Subject   string    `json:"subject" bson:"subject"`
 	WakeAt    time.Time `json:"wakeAt" bson:"wakeAt"`
-	Status    string    `json:"status" bson:"status"` // "scheduled", "done", "cancelled", "failed"
+	Status    string    `json:"status" bson:"status"` // snooze.Status*: "scheduled", "done", "cancelled", "failed"
 	Attempts  int       `json:"attempts,omitempty" bson:"attempts,omitempty"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+	// Where the mail waits, set on the IMAP transport only (over the Gmail
+	// API a reported message keeps its id and its place): the folder it was
+	// moved into, "Plus tard", by the server's name for it; its number there;
+	// and its Message-ID header, which finds it again when that number is
+	// unknown or no longer names it. MessageID stays the number it had in the
+	// inbox, which the stored copy and the history know it by. The wake moves
+	// it back from here, whether or not the stored copy still remembers the
+	// move.
+	Folder          string    `json:"-" bson:"folder,omitempty"`
+	FolderUID       string    `json:"-" bson:"folderUid,omitempty"`
+	HeaderMessageID string    `json:"-" bson:"headerMessageId,omitempty"`
+	CreatedAt       time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt" bson:"updatedAt"`
 
 	// SenderLabel is what "Plus tard" shows for the sender (protect.Label),
 	// set on the way out; never stored.
@@ -347,6 +358,13 @@ type MailAccount struct {
 // a host of their choosing.
 type ConnectMailboxRequest struct {
 	Address  string `json:"address"`
+	Password string `json:"password"`
+}
+
+// MailboxPasswordRequest is the body for PUT /api/mailbox/password: the new
+// app password of the mailbox already connected, and nothing else (not even
+// its address: the mailbox is the one on file).
+type MailboxPasswordRequest struct {
 	Password string `json:"password"`
 }
 

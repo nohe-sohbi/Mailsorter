@@ -136,7 +136,10 @@ frontend/
                          settles) and planGroups.js (pure: one group per sender
                          and verdict, the "sure" threshold, the held order)
   src/services/api.js    every HTTP call in the app, grouped by service object
-  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak, avatar)
+  src/ui/                design-system primitives (icons, Toast, Spinner, Modal, SnoozeMenu, cn, streak, avatar),
+                         and mailboxError (useMailboxErrorToast: the server's sentence for
+                         a failed action on the mailbox, and on a 428 the way: "Mettre à jour"
+                         to the new password form, or "Brancher une boîte" to /connect)
   src/lib/analytics.js   Umami tracker injection + track()
   src/lib/waitlist.js    whether THIS browser joined the Pro waitlist (landing + pricing share it)
   nginx.conf             SPA fallback, immutable /static, no-cache index.html, /api proxy
@@ -201,7 +204,7 @@ in its package doc:
 |---|---|---|
 | `rules` | Deterministic AI-free triage engine, plus the portable form of a ruleset | `Matches`, `Validate`, `Preview`, `Reorder`, `BuildExport`, `ValidateImport`, field/operator/action constants |
 | `protect` | VIP safety net: which senders can never be auto-archived, trashed or deleted, nor, on IMAP where a label is a folder, auto-filed. Also the ONE reading of a sender's address out of a From header (`Address` and `Sender`, through `net/mail`, a name decoded with go-message's charset tables, one in a charset nobody knows kept as bytes; a header refused only for a display name nobody quoted, "Doe, John <j@x.com>", "LinkedIn [Jobs] <jobs@linkedin.com>", is read again with it in quotes, when it holds no `<`, `>` or quote: `withQuotedName`): never an address in the display name, which the sender writes, written back with its local part quoted when it is not a dot-atom (`"<boss@corp.com>"@evil.io`), and "" for a header that does not read as one address, never a guess: a From naming several authors (`patron@victime.fr, Lettre <lettre@journal.fr>`) or in group syntax (`Undisclosed: a@x.fr;`, `groupSyntax`) names no sender, on both transports, and so does a mail with two From headers (`gmail.ParseEmailHeaders` counts them; the IMAP listing too). On IMAP the sender comes from the From header as written, never from the server's ENVELOPE: the listing and the reader fetch it with the unsubscribe headers and read the block with a tolerant hand-written reader (`imap.readHeaders`: unfolds, checks no byte, skips a bad line rather than stop), and `imap.senderFrom` stores `protect.Sender`'s decoded name and address (`QuotedText` name, then `<address>`), the header as written when it names none (its control bytes turned into spaces, or quoted when that would give it a sender: `protect.NoSenderText`, which the Gmail path uses too), one quoted text for two From headers, and a mail with no sender is logged once, when its row is made (`logSenderlessMail`, both transports). `imap`'s `TestTheSameFromNamesTheSameSenderOnBothTransports` drops every row of `protect/protecttest` in a real IMAP server and through `gmail.ParseEmailHeaders`, and requires the row's reading on both. "Protéger" has two ways in: from a mail (`fromMail`, sent by the reader only), `EntryFromMail` stores the address exactly as read (400 when there is none); typed in the settings, `NormalizeEntry` takes an address that reads or a well-formed domain (letters, digits and hyphens, no final dot), apostrophes around it dropped, its domain stored readable, and refuses anything else, what IDNA refuses included. Every comparison of senders (`Match`, `SameAddress`, `unsubscribe.SameRegistrableDomain`, the 24 hours of an unsubscribe mail) is made in one form (`addressForm`, `domainForm`): the domain goes as written to IDNA's Lookup profile (`ASCIIDomain`, UTS 46 with its own case mapping; Go's `strings.ToLower` never comes first, it read `lİnkedin.com` as linkedin.com and `STRAẞE.de` as straße.de), only the local part is lowercased: `café.fr` and `xn--caf-dma.fr` are one domain. An entry stores its domain the browsers' way (`entryDomain`: Unicode only when each label is in one script that does not imitate Latin and, in Latin, holds no combining mark; punycode otherwise). The Expéditeurs and Abonnements cards name a sender with `Label` too (`extractSenderName`). An unsubscribe mail goes to an accented domain in ASCII, and never to a local part that is not ASCII (`unsubscribe.ForSender`). The handlers read many mails with a `Shield` (`NewShield`, built once per call by `protectedValues`, each entry put in its comparison form once). A protected list that cannot be read is an error, never an empty shield: the selection, the plan, the rules, the analysis and its auto-pilot, the sender sweeps and "Se désabonner et archiver" answer 503 and move nothing (`writeProtectedUnreadable`); a sync applies no rule. `Label` is what the screens show for a sender (never a display name holding an `@` of any width, read through NFKC; no control or format character; the address when the name shows nothing), `FromText` how one From is stored (no control byte). Two `List-Unsubscribe` headers offer no way out (`unsubscribe.ParseHeaders`), on both transports. `extractSenderAddress`, `extractDomain`, the unsubscribe sweep (`archiveBySender`, through `SameAddress`), sender rules and the `senderAddress` the listings, the reader and the suggestions carry for the screens all go through it. "Tout archiver" / "Tout supprimer" (`ApplyBulk`) do not: they sweep by equality on the card's raw From (`GET /api/senders` groups by it), whatever it reads as. `GET /api/subscriptions` gives `senderEmail` "" for a sender that does not read. Fail safe: a destructive action on a sender that does not read is refused while anyone is protected | `Allowed`, `AllowedOnFolders`, `Shield`, `ActionArchive/Trash/Delete/Label`, `Address`, `NormalizeAddress`, `SameAddress`, `ASCIIDomain` |
-| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants |
+| `snooze` | Preset ("ce soir", "demain", "weekend") to a concrete wake time, and the guard on a hand-picked one; what an attempt at bringing a report back leaves on it (done, cancelled when the mail is gone from where it waited or the user undid the report, retried and counted, given up at the limit, or left uncounted), and the due reports grouped by account, one session each | `Resolve`, `ValidateWake`, `MaxHorizon`, `Preset*` constants, `Settle`, `Outcome` (`Woken`, `Gone`, `Failed`, `Untried`, `Undone`), `ByAccount`, `Status*` |
 | `search` | Gmail's query language as this app uses it: what makes a saved search valid, its identity, its default name, and what a query string actually CONSTRAINS | `Normalize`, `Key`, `SuggestName`, `MaxPerUser`, `Parse`, `Criteria` |
 | `schedule` | "Is this periodic work due?" | `Due(last, now, interval)` |
 | `mirror` | What the local copy of an IMAP inbox should hold, given every UID the inbox holds now: what goes, what Mailsorter keeps hidden for "Annuler", what is back, and what a sync must leave alone (a move in flight, a row flagged after the listing started) | `Judge`, `Row`, `Rules`, `Verdict` |
@@ -222,7 +225,7 @@ The outbound clients and primitives:
 |---|---|
 | `ai` | One `Analyzer` interface over Mistral, OpenAI (and any OpenAI-compatible server), Anthropic and Ollama, and the `Registry` that tries them in ascending priority and moves to the next one on a transient error (429, 5xx, timeout, unreachable). The Mistral, OpenAI and Anthropic clients retry 429 and 5xx with exponential backoff and jitter and fail fast on other 4xx; only Mistral also honours `Retry-After`. Ollama does not retry; it is asked `think: false` and names a slow model `ollama timeout`. Batches of 8 are cut by the caller (`analysis.go`). Default models: `mistral-small-latest`, `gpt-6-luna`, `claude-haiku-5-5`, `qwen3.5:9b` |
 | `gmail` | Gmail v1 wrapper. `retry.go` wraps every call with the same backoff policy |
-| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots), resolve the server's special folders, list a page, fetch one message, read one of its files, apply a mutation. A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). Folder names go through the namespace read at connect (`namespace.go`, NAMESPACE when announced): the user reads them without the personal prefix and with `/` between levels ("INBOX.Projets.Maison" on Courier reads "Projets/Maison"), a folder Mailsorter makes goes under the prefix with the server's delimiter, the special ones are known by name under the prefix too, and a folder under another user's or a shared prefix is never the user's. A folder is made only under a name `cleanName` and `newFolderName` accept (no control character, `*` or `%`, no empty, `.` or `..` level, 100 characters a level and 200 in all, the server's delimiter inside a level turned into `-`, a first level that is the user's), and at most `maxNewFolders` (10) per connection (`ErrTooManyNewFolders`). `FilingName` is what the analysis stores on a label proposal: the user's folder named alike (`mailbox.MatchLabel`), or the cleaned new name; the model is told no folder. `MoveMany` moves many messages in one `UID MOVE` to the folder `Destination` named, where each landed read from `COPYUID` (by Message-ID without UIDPLUS). `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`). `parts.go` is how both the reader (`fetch.go`) and the download (`attachments.go`) read a message without its files: `BODYSTRUCTURE` first, then in one command each part's MIME header, the text and the HTML (bounded) and each part's decoded size (`BINARY.SIZE` where the server has BINARY or IMAP4rev2, an estimate otherwise); which parts are files is `attachment.Listed` on those headers, under their IMAP part number (the `attachmentId`), names decoded from RFC 2047 or RFC 2231 in any charset. The download then fetches its one part, as it arrives, through the cap it is given. Both close the connection when their context ends (`within`): the two methods of the client a context can stop |
+| `imap` | The IMAP transport: every mailbox of the hosted edition, and the IMAP mailboxes of a self-hosted one. Connect (TLS or STARTTLS, never cleartext, certificate verified against the system roots; the session bound to the caller's context for its whole life, its opening included, dial, TLS, greeting, LOGIN and the listing of the folders: the connection closed when the context ends, until `Close` releases it; a failed LOGIN is `ErrAuth` only for a real refusal, `refusedCredentials`, and `ErrUnreachable` otherwise: unavailable, a connection limit, BYE, a dropped line), resolve the server's special folders, list a page, fetch one message, read one of its files, apply a mutation, and `Abort` a connection whose caller's time is up (go-imap waits for an answer with no time limit). A label is a folder there: `Destination` finds the user's folder of that name or makes it (subscribed), and refuses a special one (`ErrNotOwnFolder`); `OwnFolders` lists the user's folders, special ones left out by special-use attribute or, when the server marks none, by name (`notOwn`). Folder names go through the namespace read at connect (`namespace.go`, NAMESPACE when announced): the user reads them without the personal prefix and with `/` between levels ("INBOX.Projets.Maison" on Courier reads "Projets/Maison"), a folder Mailsorter makes goes under the prefix with the server's delimiter, the special ones are known by name under the prefix too, and a folder under another user's or a shared prefix is never the user's. A folder is made only under a name `cleanName` and `newFolderName` accept (no control character, `*` or `%`, no empty, `.` or `..` level, 100 characters a level and 200 in all, the server's delimiter inside a level turned into `-`, a first level that is the user's), and at most `maxNewFolders` (10) per connection (`ErrTooManyNewFolders`). `FilingName` is what the analysis stores on a label proposal: the user's folder named alike (`mailbox.MatchLabel`), or the cleaned new name; the model is told no folder. `MoveMany` moves many messages in one `UID MOVE` to the folder `Destination` named, where each landed read from `COPYUID` (by Message-ID without UIDPLUS). `list.go` mirrors the Gmail listing's payload discipline; `state.go` is what a sync reads besides it (the flags and the size of the whole folder, the attachments of a batch, `hasAttachment` on a BODYSTRUCTURE), `halves.go` reads a batch so that one unreadable message fails only itself (`ReadInHalves`). `parts.go` is how both the reader (`fetch.go`) and the download (`attachments.go`) read a message without its files: `BODYSTRUCTURE` first, then in one command each part's MIME header, the text and the HTML (bounded) and each part's decoded size (`BINARY.SIZE` where the server has BINARY or IMAP4rev2, an estimate otherwise); which parts are files is `attachment.Listed` on those headers, under their IMAP part number (the `attachmentId`), names decoded from RFC 2047 or RFC 2231 in any charset. The download then fetches its one part, as it arrives, through the cap it is given. Every session is bound to the context it was opened under (`Connect`); `within` closes the connection when the context of one of those reads ends, for a read whose context is shorter than its session's. `FindByMessageID` finds a message again by its whole Message-ID (searched with its angle brackets, each candidate's envelope compared exactly) and answers `ErrAmbiguous` rather than choose between copies |
 | `smtpsend` | Hands one message to the sending server of an IMAP mailbox: the daily recap on that transport, and the unsubscribe mail to a list that offers only an address. Implicit TLS (465) or STARTTLS (587), never cleartext (a STARTTLS route whose server does not offer it is refused before the password is sent), certificate verified against the system roots, AUTH PLAIN, 30 s bound. `ErrAuth` (credentials refused: 535, or 534 5.7.9), `ErrBlocked` (sign-in blocked for where it came from, the password being right: 534 5.7.14) and `ErrUnreachable` are typed; any other 534 is none of them |
 | `billing` | Stripe Checkout Session creation and webhook signature verification, with a 5 min replay window |
 | `auth` | HMAC-SHA256 session tokens and OAuth `state`, keyed by distinct labels off the master secret so one cannot be replayed as the other |
@@ -235,9 +238,9 @@ The outbound clients and primitives:
 
 | File | Covers |
 |---|---|
-| `routes.go` | The single route table (79 registrations) and the middleware chain. Source of truth for the API surface |
+| `routes.go` | The single route table (80 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `securityHeadersMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `clientIP`, `publicPrefixes` |
-| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501), `errReauthRequired`, 1 MiB body cap |
+| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501, IMAP password refused -> 428 with the connect screen's sentence, mailbox that did not answer -> 502, anything else -> 500, in French), 428s marked `passwordRefused` (to the new password form) or not (no mailbox, to `/connect`), read by `reconnectAction` in `services/api.js`, `writeSeveralCopies` (409 with `severalCopies`: "Annuler" that finds several copies of the mail, `imap.ErrAmbiguous`, which the history screen must not take for "already undone"), `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
 | `message.go` | `GET /api/emails/{id}`: one message with its body and its attachment list, on both transports. `writeMailboxFailure`: what a read of the mailbox that failed answers, on both transports and for the download too: a French sentence, 404 when the mail is no longer there (`mailGone`), 502 otherwise, the error itself only in the log |
@@ -248,7 +251,7 @@ The outbound clients and primitives:
 | `tokens.go` | Stored credentials: `sealToken` / `openToken` for Google's (with the legacy-plaintext migration), `sealSecret` / `openSecret` for IMAP passwords, all AES-256-GCM behind the `enc:v1:` prefix, and `getUserToken` |
 | `jobs.go` | Async analysis job queue and worker pool |
 | `rules.go` | Rules CRUD, `apply`, `preview` (dry run reuses the apply path) |
-| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, plus the 1 min wake sweeper |
+| `snooze.go` | Snooze CRUD (preset or explicit wake time), the batch snooze, "Réactiver", plus the 1 min wake sweeper, on both transports. Over IMAP (`snoozeIMAP`) a reported mail is moved into the folder "Plus tard" (`snoozeFolderName`, made like a filing folder, by `Destination`) through `mirroredIMAP`, like an archive, and the snooze records where it landed (`folder`, `folderUid`, `headerMessageId`); its pending AI proposal is set moot. The sweep goes account by account (`snooze.ByAccount`), one session each, an IMAP one bounded by `snoozeAccountBound` (30 s, the opening of the session included: the session is bound to it; the account's loop stops as soon as the connection is gone, the rest uncounted); a mail without a Message-ID on a server that does not say where a move lands (`SaysWhereMovesLand`) is refused before anything moves (`errCannotFindAgain`, 422); the sweep, "Réactiver" (`wakeIMAP`, `wakeGmail`) and "Annuler" claim the snooze first (`claimReport`, `wakingAt`), on both transports, so two of them move the mail once and write its return once, and `settleWake` writes the outcome (`snooze.Settle`) and the ledger entry. "Annuler" that brings back a mail with a scheduled snooze (`UndoAction`, `EmailAction`) ends it (`endReportOnReturn`: `cancelled`, out of the scheduled list at once; `423` while the sweep or a "Réactiver" holds it) |
 | `attachment.go` | Attachment download, on both transports: the one route that streams bytes rather than JSON. Over IMAP the id is a part number, served only when the reader's list of that message has a file under it, or an image of `inlineImages` |
 | `searches.go` | Saved searches CRUD and their use counter |
 | `rules_portable.go` | Ruleset-wide operations: reorder, duplicate, export, import |
@@ -261,13 +264,13 @@ The outbound clients and primitives:
 | `billing.go` | Checkout, portal, Stripe webhook |
 | `waitlist.go` | Public Pro waitlist capture |
 | `providers.go` | `GET /api/providers`: the `internal/provider` catalog for the running `Edition`, shaped for the connect screen. The SPA hardcodes no provider |
-| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), read, disconnect (which also drops the Google tokens). `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap, or the unsubscribe mail to a list, to the mailbox's sending server: the only two readers of the sealed app password |
+| `mail_accounts.go` | The mailbox a user connected over IMAP: connect (proved before it is stored, route from `provider.PickIMAP`, whose sending server is stored with it as `smtpHost` / `smtpPort` / `smtpTls`, or cleared when the route has none: `mailboxRow` writes the row), a new app password (`ChangeMailboxPassword`, PUT `/api/mailbox/password`: `replacePassword` proves it against the stored server and replaces only the password, so the mailbox, its copy, its proposals and its history stay; a refused one replaces nothing), read, disconnect (which also drops the Google tokens). A password the provider refuses where it was just typed answers 401 marked `mailboxRejected`, which the SPA does not take for a dead session. `connectAndStore` is the shared half, used by the authenticated connect AND by the public sign-in, so the sealing and the upsert cannot drift. Plus `openMailbox`, the IMAP counterpart of `getUserToken`, and `sendThroughBox`, which hands the recap, or the unsubscribe mail to a list, to the mailbox's sending server: the only two readers of the sealed app password |
 | `auth_mailbox.go` | `POST /api/auth/mailbox`: signing in with a mailbox, which creates the account on first success. An API alternative the SPA does not call. The sign-in limiter's constants and the guard against taking over a Google account |
 | `mirror.go` | Serving a listing and its counters from the STORED mailbox rather than from the provider. The IMAP half of `GetEmails` and `GetMailboxStats`, plus the query-to-lookup translation |
-| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. A selection moves at once (`MoveOutMany`: rows claimed one by one, one `UID MOVE`, the destinations in one bulk write), and says which had already left (`moveOutcome.Out`, batch-action's `alreadyOut`). `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `storeStarredOutsideList`, `refreshInboxState` and `completeInboxStructure` keep the read state, the star, the size and the attachments of every stored row right, old favorites included, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`) |
+| `session.go` | WHICH transport a user is on, and a session open on it. `transportFor`, `openSession`, `mailSession.Mailbox()` / `.RefFor()`, the IMAP sync, and `errWrongTransport`. On IMAP, `mirroredIMAP` keeps the stored inbox right: a message Mailsorter moves out is flagged `leftInbox` with where it went (`movedTo`) and stays stored, hidden from every inbox read (`notLeftInbox`), for `undoWindow` (30 days), which is how long "Annuler" can bring it back. A move claims the row first (`leftInbox` set only if unset), so of two requests moving one message at once only one moves it; `errAlreadyOut` is the other one, and a message another mail client moved first. A selection moves at once (`MoveOutMany`: rows claimed one by one, one `UID MOVE`, the destinations in one bulk write), and says which had already left (`moveOutcome.Out`, batch-action's `alreadyOut`). `dropStaleInbox` judges every stored row against the inbox's full UID list at each sync (`mirror.Judge`); `storeStarredOutsideList`, `refreshInboxState` and `completeInboxStructure` keep the read state, the star, the size and the attachments of every stored row right, old favorites included, and a flag changed from Mailsorter goes into the row at once (`mirrorFlags`). `bringBack` is a reported mail's return: moved back from where the snooze recorded it (`MoveRecorded`), marked unread, and the stored row takes its new number as after "Annuler" (`landedBack`); gone from there, it is looked for in the inbox by its Message-ID first (`backAlready`: there, it is back), and only then `errNotWhereLeft`, nothing moved |
 | `mailbox.go` | `gmailMailbox`, the Gmail adapter for `mailbox.Mailbox`, plus `applyVerb` and `applyMutations`. Every mutating handler goes through these two |
 | `digest_scheduler.go` | 15 min ticker sending the daily digest from the user's own mailbox (`deliverDigest`: the Gmail API, or the IMAP mailbox's sending server through `sendThroughBox`; `digestMessage` gives it its `Message-ID`), paced by `dailyDigestPace` (4 accounts at once, 30 s each, the stamp under its own 10 s), `digestHourOf` (a stored hour, 0 = midnight, or `DIGEST_HOUR_UTC` when none was picked; the settings screen and the scheduler both read it), `POST /api/account/digest/test` (one per account per minute, `digestTestLimiter`, a 429 in words beyond; `writeDigestSendError` says why a test did not leave, never with the Gmail sentence on IMAP, never with a 401), and `digestStyle()`, the UI theme as a digest style |
-| `auto_sync.go` | 30 min per-user background inbox sync |
+| `auto_sync.go` | 30 min per-user background inbox sync, each account bounded by `autoSyncAccountBound` (1 min, its IMAP session bound to it), so a silent server holds only its own account |
 
 ### Request pipeline
 
@@ -325,9 +328,9 @@ not cron; a redeploy restarts them.
 | Loop | Cadence | File |
 |---|---|---|
 | Analysis worker pool (3 workers) | drains `jobQueue` (cap 256) | `jobs.go` |
-| Snooze wake sweep | 1 min | `snooze.go` |
+| Snooze wake sweep | 1 min, account by account: one session each, an IMAP one bounded to 30 s, its opening included | `snooze.go` |
 | Daily digest | 15 min tick, at most one send per user per day, through the Gmail API or the IMAP mailbox's sending server (SMTP); 4 accounts at once, each with its own 30 s, so a sending server that does not answer holds only its own | `digest_scheduler.go` |
-| Auto-sync | 5 min tick, but min 30 min between two syncs of the same user | `auto_sync.go` |
+| Auto-sync | 5 min tick, but min 30 min between two syncs of the same user; each account bounded to 1 min | `auto_sync.go` |
 
 ## Frontend Architecture
 
@@ -349,7 +352,7 @@ telling them to create a Google Cloud project that edition can never use.
 | `/history` | `pages/History.js` | Action ledger + undo |
 | `/pricing` | `pages/Pricing.js` | Plans, weekly recap, Stripe checkout or waitlist. Redirects away in the `self-hosted` edition, which bills nobody |
 | `/settings` | `pages/Settings.js` | Auto-apply, auto-sync, digest hour, and the way in to `/connect` |
-| `/connect` | `pages/Connect.js` | Connect a mailbox over IMAP. Detects the provider from the address against the catalog the SERVER returned, and shows that route's blockers BEFORE the attempt, because each of them otherwise surfaces as "credentials refused" |
+| `/connect` | `pages/Connect.js` | Connect a mailbox over IMAP, or give the connected one a new app password ("Changer le mot de passe d'application"; `?motdepasse=1`, where "Mettre à jour" leads after a refused password, opens that form at once). Detects the provider from the address against the catalog the SERVER returned, and shows that route's blockers BEFORE the attempt, because each of them otherwise surfaces as "credentials refused" |
 | `/account` | `pages/Account.js` | Profile, usage, GDPR export and delete |
 | `/setup` | `pages/Setup.js` | Read-only briefing on the env vars. Not a form: the OAuth app is instance config. Edition-aware: the own-project guide (6 steps, including "Publier l'application") self-hosted, the operator one (5 steps) otherwise, plus the reachable providers read from `GET /api/providers` |
 | `/auth/callback` | `pages/AuthCallback.js` | Exchanges the OAuth code for a session token. The ONLY callback: `Login` used to handle `?code=` too, in a path `GMAIL_REDIRECT_URL` could never reach |
@@ -552,9 +555,15 @@ as a side effect of another change.
 - A test that needs the same harness but proves wiring rather than a sentence
   (what a sync does with an answer a real server gives, what a handler reads in a
   real database) is a `TestAcceptance_*` under the same tag, in a file of its own
-  (`wiring_imap_test.go`, and `wiring_filing_test.go` for filing into folders over
+  (`wiring_imap_test.go`, `wiring_filing_test.go` for filing into folders over
   IMAP: what the model is told, the shield at analysis, "unlabel" right after
-  "Appliquer", the direct "label" without a folder): not in the report, run by
+  "Appliquer", the direct "label" without a folder, and `wiring_snooze_test.go`
+  for the report's wake over IMAP: one connection per mailbox, a mailbox out of
+  reach, silent at LOGIN or unavailable there, a connection dropped mid-pass, a
+  server silent after LOGIN for the request sync and the background sync, a
+  failed return tried again, a mail found back in the inbox, a mail that could
+  not be found again refused, and on both transports "Réactiver" while the
+  sweep holds a report and "Annuler" ending one): not in the report, run by
   `scripts/scenarios.sh -run '^TestAcceptance'` and by its own CI step.
 
 ### React
@@ -676,7 +685,7 @@ Do not duplicate these into this file. Point at them.
 | Doc | Holds | Trust |
 |---|---|---|
 | `README.md` | Product pitch, editions and providers, what works over IMAP, the engineering decisions worth reading, quickstart | Current |
-| `docs/API.md` | Every endpoint (all 79 registrations), payload, error, auth rule, and what each one does over IMAP | Current, English |
+| `docs/API.md` | Every endpoint (all 80 registrations), payload, error, auth rule, and what each one does over IMAP | Current, English |
 | `docs/ARCHITECTURE.md` | Overview, sign-in, sync and analysis flows, security, background loops, observability | Current, short; the detail is here |
 | `docs/ROADMAP.md` | The 13 delivered phases (0 to 12), as a history, and the deploy checklist | History; the checklist is current |
 | `BACKLOG.md` | Last audit: every finding, all closed | Historical record, useful for "why is it like this" |
@@ -762,6 +771,24 @@ Do not duplicate these into this file. Point at them.
   the upsert of a listed row writes them only on insert, `inboxUpsert`); and
   `completeInboxStructure` reads `BODYSTRUCTURE` for up to 500 rows without
   `hasAttachments`, newest first. A row without it matches no attachment filter.
+- **An IMAP session is bound to the context it was opened under, for its whole
+  life.** go-imap waits for an answer with no time limit, once the greeting is
+  read. `imap.Connect` dials under the context and closes the connection when
+  it ends, during the opening (dial, TLS, greeting, STARTTLS, LOGIN, the
+  listing of the folders: `ErrUnreachable`) and after it (the command under
+  way fails, the client is `Closed()`), until `Close` releases the binding.
+  Without it, one server that greets and then says nothing, at LOGIN or at
+  the first SELECT or FETCH, held the report sweep or the background sync, and
+  every account after it, forever. So whatever opens a session gives it the
+  time it may take: a request its own timeout (the sync: `syncRequestTimeout`,
+  30 s, then 502 "Votre boîte n'a pas répondu, réessayez dans un instant."), a loop one per account
+  (`snoozeAccountBound`, 30 s; `autoSyncAccountBound`, 1 min); never a context
+  without an end. `within` (`imap/parts.go`) is the same rule for one read of
+  the reader or the download, whose context may be shorter. And a failed
+  LOGIN is a refused password (`ErrAuth`, which the sweep counts and the
+  connect screen words as such) only when the server says so
+  (`refusedCredentials`); a server unavailable or over its connection limit is
+  `ErrUnreachable`.
 - **A FETCH of many messages is read by halves (`imap.ReadInHalves`).** go-imap
   reads an answer whole: one message whose description it cannot parse fails the
   command AND closes the connection. Read as one batch, that message would fail
@@ -835,8 +862,15 @@ Do not duplicate these into this file. Point at them.
   credentials, because a stored `mail_accounts` row wins over a Google token in
   `transportFor`, so accepting would hand the account to whoever holds the app
   password. That check fails CLOSED: a datastore error is a 500, never "no Google".
-  `POST /api/mailbox/connect` has neither guard: its caller is signed in, and it is
-  how an account deliberately switches from Google to IMAP.
+  `POST /api/mailbox/connect` has no Google check: its caller is signed in, and it is
+  how an account deliberately switches from Google to IMAP. It and `PUT
+  /api/mailbox/password` do share the sign-in limiter, before any LOGIN
+  (`allowMailboxLogin`): each attempt is a LOGIN at the provider, and without it
+  a script holding a session could try passwords there at the global rate. The
+  connect route is keyed on the account and on the address tried; the new
+  password on the account alone, as its address is the one on file and the
+  "addr:" bucket is shared with the public sign-in, where a stranger could
+  empty it and lock the owner out of "Mettre à jour".
 - **The boot gate is `isConfigured || mailboxSignIn`, never `isConfigured` alone.**
   `GET /api/config/status` reports both doors, and `mailboxSignIn` is computed
   from `provider.ForEdition(Edition)` rather than from the edition name, so the
@@ -907,12 +941,16 @@ Do not duplicate these into this file. Point at them.
   analysis, in a batch, a selection, a sweep by sender and the auto-pilot
   (`allowsOn`), and `GetLabels` lists the user's own folders. A selection or a
   sender archived, deleted or filed over IMAP moves in one `UID MOVE`
-  (`mirroredIMAP.MoveOutMany`). Everything else (rules apply and preview, snooze
-  and its wake sweeper, smart labels) refuses: 7 call sites of
-  `gmailClientFor`. Three more are the Gmail branch of a ported handler
-  (`GetLabels`, `UndoAction`, `BatchUndo`), and one, in `deliverDigest`, is the
-  recap's Gmail API branch, which an IMAP mailbox never reaches: its recap
-  leaves through the mailbox's sending server (`sendThroughBox`,
+  (`mirroredIMAP.MoveOutMany`). Snooze too (`Snooze`, `BatchSnooze`, `WakeSnooze`
+  and the wake sweeper): over IMAP the mail waits in the folder "Plus tard"
+  (`snooze.go`), made if missing, shielded like an archive for a protected sender
+  in a selection, and comes back unread at its hour or on "Réactiver"; a mail
+  another mail program took out of "Plus tard" is left where it is and its
+  snooze is `cancelled`. Everything else (rules apply and preview, smart labels)
+  refuses: 3 call sites of `gmailClientFor`. Three more are the Gmail branch of a
+  ported handler (`GetLabels`, `UndoAction`, `BatchUndo`), and one, in
+  `deliverDigest`, is the recap's Gmail API branch, which an IMAP mailbox never
+  reaches: its recap leaves through the mailbox's sending server (`sendThroughBox`,
   `internal/smtpsend`).
   When porting one, open a session instead of calling `gmailClientFor`, and delete
   nothing from the guard.
@@ -921,12 +959,13 @@ Do not duplicate these into this file. Point at them.
   Hotel landing reads it to decide what it may promise, and keeps promising
   nothing it cannot deliver. So porting a promised feature to IMAP also means
   deleting its line there, as `label` was once the AI's proposal could file into
-  a folder, and `unsubscribe` and `sender` once a selection, a whole sender and
-  unsubscribing worked there. Classifying a selection by hand ("Classer" and the
-  `L` key open `LabelPicker` in `Inbox.js`, which lists the mailbox's folders
-  from `GET /api/labels`) works on both transports once the mailbox is known;
-  the rules' "Étiqueter" still goes through the Gmail API: that screen stays
-  closed on `fullFeatures`, not on that list. On IMAP the screens word a label verdict
+  a folder, `unsubscribe` and `sender` once a selection, a whole sender and
+  unsubscribing worked there, and `snooze` once a reported mail could wait in
+  "Plus tard". Classifying a selection by hand ("Classer" and the `L` key open
+  `LabelPicker` in `Inbox.js`, which lists the mailbox's folders from `GET
+  /api/labels`) works on both transports once the mailbox is known; the rules'
+  "Étiqueter" still goes through the Gmail API: that screen stays closed on
+  `fullFeatures`, not on that list. On IMAP the screens word a label verdict
   as a folder ("Classer dans « Factures »"): `actionMeta(action, { folders })`
   and `labelPlace` in `ui/actions.js`, with `folders` from `useMailbox().isImap`.
 - **The visitor's address is `X-Real-IP`, and the backend believes it only from a

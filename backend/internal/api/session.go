@@ -315,6 +315,11 @@ func inboxUpsert(email models.Email) (bson.M, error) {
 // not open it again. Its text is what the user is told.
 var errMailboxLost = errors.New("la connexion à votre boîte a été perdue pendant la synchronisation")
 
+// errMailboxNoAnswer is a sync whose mailbox could not be opened for a reason
+// other than its password (imap.ErrUnreachable): out of reach, too slow, or
+// saying it is unavailable. Its text is what the user is told.
+var errMailboxNoAnswer = errors.New("votre boîte n'a pas répondu, réessayez dans un instant")
+
 // errMailboxUnavailable is a sync the mailbox stopped answering part of the
 // way: it refused a read ([UNAVAILABLE], [THROTTLED]), or ran out of time.
 // Nothing was concluded about any message; the next sync reads it again. Its
@@ -876,7 +881,11 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 		}
 		return err
 	}
-	if _, err := m.h.db.Emails().UpdateOne(ctx, filter,
+	// Moved: where it went is written under its own time, so a request
+	// ending right now does not lose it ("Annuler", a report's hour).
+	sctx, cancel := settleCtx(ctx)
+	defer cancel()
+	if _, err := m.h.db.Emails().UpdateOne(sctx, filter,
 		bson.M{"$set": bson.M{"movedTo": bson.M{"folder": landed.Folder, "uid": landed.ID}}},
 	); err != nil {
 		log.Printf("imap: message %s of %s moved to %s, where it went is not recorded: %v", ref.ID, m.userEmail, landed.Folder, err)
@@ -1325,6 +1334,165 @@ func (m mirroredIMAP) putBackOnce(ctx context.Context, ref mailbox.Ref, row move
 		log.Printf("imap: message put back in the inbox of %s, copy not updated: %v", m.userEmail, err)
 	}
 	return nil
+}
+
+// bringBack is the return of a reported mail: the message Mailsorter moved
+// out of the inbox as inboxUID, and recorded since as uid in folder (with its
+// Message-ID header), moved back into the inbox and marked unread there. It
+// is the snooze's own record that says where the mail waits, not the stored
+// copy, which forgets a move after undoWindow: a report may last a year.
+//
+// The stored copy, when it still holds the move, takes the new number, as
+// after "Annuler": the list shows the mail at once, unread, and a sync finds
+// it known rather than new (landedBack). A mail no longer where it waited is
+// looked for in the inbox by its Message-ID before anything is concluded: put
+// back there by another mail program, or by a return whose answer was lost
+// with the connection, it is back, and is treated as such (marked unread,
+// the copy follows). Found nowhere, it answers errNotWhereLeft and nothing
+// moves; the stored copy then forgets the move, so the history stops
+// offering "Annuler" for it and the next sync drops the row.
+func (m mirroredIMAP) bringBack(ctx context.Context, inboxUID, folder, uid, headerMessageID string) error {
+	inbox := string(mailbox.FolderInbox)
+	ref := mailbox.InFolder(inbox, inboxUID)
+	recorded := movedRow{}
+	recorded.MovedTo.Folder, recorded.MovedTo.UID = folder, uid
+	gone := func() error {
+		back, err := m.backAlready(ctx, inboxUID, folder, headerMessageID)
+		if err != nil || back {
+			return err
+		}
+		m.forgetDestination(ctx, ref, recorded)
+		return errNotWhereLeft
+	}
+	if folder == "" {
+		return gone()
+	}
+	if uid == "" {
+		// The server did not say where it landed when it left: look for it
+		// there by its Message-ID header now. A failed lookup is not "gone".
+		if headerMessageID == "" {
+			return gone()
+		}
+		found, err := m.client.FindByMessageID(folder, headerMessageID)
+		if err != nil {
+			return err
+		}
+		if found == "" {
+			return gone()
+		}
+		uid = found
+	}
+	landed, err := m.client.MoveRecorded(ctx, folder, uid, inbox, headerMessageID)
+	if errors.Is(err, imap.ErrMessageGone) {
+		return gone()
+	}
+	if err != nil {
+		return err
+	}
+	m.landedBack(ctx, inboxUID, folder, landed)
+	return nil
+}
+
+// backAlready looks in the inbox, by its Message-ID, for a reported mail no
+// longer where it waited, and when it is there settles it as back
+// (landedBack). A failed lookup is an error, never "not there".
+//
+// Several messages of the inbox with that Message-ID (a copy, a duplicate)
+// are not concluded on: which one is the mail cannot be told, so none is
+// marked unread nor written as returned. The answer is then "not back"
+// (false): the mail is not where it waited, which is certain, and the report
+// ends as gone, leaving the inbox as it is. Retrying would find the same.
+func (m mirroredIMAP) backAlready(ctx context.Context, inboxUID, folder, headerMessageID string) (bool, error) {
+	if headerMessageID == "" {
+		return false, nil
+	}
+	inbox := string(mailbox.FolderInbox)
+	found, err := m.client.FindByMessageID(inbox, headerMessageID)
+	if errors.Is(err, imap.ErrAmbiguous) {
+		log.Printf("imap: reported message %s of %s is no longer in %q, and the inbox holds several messages with its Message-ID: none is taken for it", inboxUID, m.userEmail, folder)
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if found == "" {
+		return false, nil
+	}
+	log.Printf("imap: reported message %s of %s found back in the inbox already, as %s", inboxUID, m.userEmail, found)
+	m.landedBack(ctx, inboxUID, folder, mailbox.InFolder(inbox, found))
+	return true, nil
+}
+
+// landedBack settles a reported mail back in the inbox as landed: marked
+// unread there, and the stored copy brought in line. Only the row that still
+// says the mail went to folder is taken: one "Annuler" brought back and
+// another action moved since is not this mail's any more. It takes the new
+// number, unless the copy already holds a row under that number (a sync
+// stored the mail since another program put it back), which then is the one
+// marked unread, and the old row forgets the move for the next sync to drop.
+// The mail is back either way: a failure here is only logged.
+func (m mirroredIMAP) landedBack(ctx context.Context, inboxUID, folder string, landed mailbox.Ref) {
+	inbox := string(mailbox.FolderInbox)
+	// The mail moved: the copy follows under its own time. The STORE below
+	// still goes over the connection, bound to ctx.
+	sctx, cancel := settleCtx(ctx)
+	defer cancel()
+	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": inboxUID, "movedTo.folder": folder}
+	if landed.ID == "" {
+		// Back on the server, its number there unknown, so it cannot be
+		// marked unread: the next sync lists it under its new number and
+		// drops this row (no destination left).
+		log.Printf("imap: reported message %s of %s back in the inbox, its number there unknown: not marked unread", inboxUID, m.userEmail)
+		if _, err := m.h.db.Emails().UpdateOne(sctx, filter, bson.M{
+			"$set":   bson.M{"restoredFrom": inboxUID},
+			"$unset": bson.M{"movedTo": "", "restoringAt": ""},
+		}); err != nil {
+			log.Printf("imap: reported message back in the inbox of %s, copy not updated: %v", m.userEmail, err)
+		}
+		return
+	}
+	unread := true
+	if err := m.client.Apply(ctx, landed, mailbox.Mutation{Action: mailbox.ActionMarkUnread}); err != nil {
+		// It is back all the same, which is what the report promised first;
+		// trying the whole return again would find it gone from where it
+		// waited. The next sync reads its read state from the server.
+		log.Printf("imap: reported message %s of %s back in the inbox, not marked unread: %v", inboxUID, m.userEmail, err)
+		unread = false
+	}
+
+	stored, err := m.h.db.Emails().CountDocuments(sctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": landed.ID})
+	if err != nil {
+		log.Printf("imap: reported message back in the inbox of %s, copy not read: %v", m.userEmail, err)
+		return
+	}
+	if stored > 0 {
+		if unread {
+			if _, err := m.h.db.Emails().UpdateOne(sctx,
+				bson.M{"userId": m.userEmail, "folder": inbox, "messageId": landed.ID},
+				bson.M{"$set": bson.M{"isRead": false, "flagsAt": time.Now()}},
+			); err != nil {
+				log.Printf("imap: reported message back in the inbox of %s, unread not copied: %v", m.userEmail, err)
+			}
+		}
+		if _, err := m.h.db.Emails().UpdateOne(sctx, filter, bson.M{"$unset": bson.M{"movedTo": "", "restoringAt": ""}}); err != nil {
+			log.Printf("imap: reported message back in the inbox of %s, old copy not released: %v", m.userEmail, err)
+		}
+		return
+	}
+	set := bson.M{"messageId": landed.ID, "restoredFrom": inboxUID}
+	if unread {
+		set["isRead"] = false
+		set["flagsAt"] = time.Now()
+	}
+	if _, err := m.h.db.Emails().UpdateOne(sctx, filter, bson.M{
+		"$set":   set,
+		"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": "", "restoringAt": ""},
+		// Written now, like a row a sync stores: a sync whose UID search ran
+		// before the return must not judge it gone.
+		"$currentDate": bson.M{"syncedAt": true},
+	}); err != nil {
+		log.Printf("imap: reported message back in the inbox of %s, copy not updated: %v", m.userEmail, err)
+	}
 }
 
 // errMessagesNotStored is a sync that read the mailbox but could not mirror all

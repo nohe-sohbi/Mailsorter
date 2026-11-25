@@ -742,6 +742,36 @@ func TestFindByMessageIDFindsTheMessageAgain(t *testing.T) {
 	}
 }
 
+// SEARCH HEADER matches a part of the header: a Message-ID that holds the one
+// looked for, or that the one looked for holds, is not the mail, even with a
+// higher number. Only the exact one is.
+func TestFindByMessageIDTakesOnlyTheExactID(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	want := appendWithMessageID(t, c, "Archive", "<abc@example.com>")
+	appendWithMessageID(t, c, "Archive", "<xabc@example.com>")
+	appendWithMessageID(t, c, "Archive", "<abc@example.com.fr>")
+	for _, id := range []string{"<abc@example.com>", "abc@example.com"} {
+		if got, err := c.FindByMessageID("Archive", id); err != nil || got != want {
+			t.Errorf("FindByMessageID(%q) = %q, %v, want %q", id, got, err, want)
+		}
+	}
+	if got, err := c.FindByMessageID("Archive", "<bc@example.com>"); err != nil || got != "" {
+		t.Errorf("FindByMessageID on a part of an id = %q, %v, want empty", got, err)
+	}
+}
+
+// Two messages with the same Message-ID (a copy): which one Mailsorter moved
+// cannot be told, so neither is taken.
+func TestFindByMessageIDRefusesToChooseBetweenCopies(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	appendWithMessageID(t, c, "Archive", "<twice@example.com>")
+	appendWithMessageID(t, c, "Archive", "<twice@example.com>")
+	got, err := c.FindByMessageID("Archive", "<twice@example.com>")
+	if !errors.Is(err, ErrAmbiguous) || got != "" {
+		t.Errorf("FindByMessageID on two copies = %q, %v, want \"\" and ErrAmbiguous", got, err)
+	}
+}
+
 func TestHasSaysWhetherTheMessageIsStillThere(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	uid := appendMessage(t, c, "INBOX")

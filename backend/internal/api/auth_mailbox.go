@@ -78,7 +78,7 @@ func (h *Handler) SignInWithMailbox(w http.ResponseWriter, r *http.Request) {
 	// Keyed on the address as well as the caller, so neither rotating addresses
 	// from one machine nor hammering one address from many gets a free pass.
 	limiter := h.signInLimiter()
-	if !limiter.allow("ip:"+clientIP(r)) || !limiter.allow("addr:"+address) {
+	if !limiter.allow("ip:"+clientIP(r)) || !limiter.allow(addrLoginKey(address)) {
 		w.Header().Set("Retry-After", "3")
 		writeError(w, http.StatusTooManyRequests,
 			"Trop de tentatives. Patientez quelques instants.")

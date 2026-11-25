@@ -234,6 +234,55 @@ type imapPerson struct {
 	// sending is the sending server next to the IMAP one, nil until
 	// withSendingServer (acceptance_smtp_test.go) gives the person one.
 	sending *fakeSMTP
+
+	// passwordMu guards newPassword, which the server's sessions read.
+	passwordMu sync.Mutex
+	// newPassword is the app password the provider accepts, once
+	// providerReplacesAppPassword changed it; empty while it is
+	// imapTestPassword, the one the person connected with.
+	newPassword string
+}
+
+// appPasswordOnServer is the app password this person's provider accepts
+// now: the only one their server lets in.
+func (p *imapPerson) appPasswordOnServer() string {
+	p.passwordMu.Lock()
+	defer p.passwordMu.Unlock()
+	if p.newPassword != "" {
+		return p.newPassword
+	}
+	return imapTestPassword
+}
+
+// providerReplacesAppPassword is the person making a new app password on
+// their provider's side, the old one revoked: from then on their server lets
+// in this one only, Mailsorter's stored one included. Another mail program of
+// theirs uses the new one (otherProgram).
+func (p *imapPerson) providerReplacesAppPassword(password string) {
+	p.app.t.Helper()
+	if password == "" || password == p.appPasswordOnServer() {
+		p.app.fatalf("le nouveau mot de passe d'application de %s doit être un autre que celui accepté jusque-là (à corriger dans le scénario)", p.email)
+	}
+	p.passwordMu.Lock()
+	p.newPassword = password
+	p.passwordMu.Unlock()
+}
+
+// mailboxSession is a session of a person's server: the in-memory server's own
+// (imapmemserver), built the way it builds one (a UserSession embedded, Login
+// overridden), so the server offers exactly what it did, except that the
+// password is checked against the one the provider accepts now.
+type mailboxSession struct {
+	*imapmemserver.UserSession // nil until the login
+	p                          *imapPerson
+}
+
+func (s *mailboxSession) Login(username, password string) error {
+	if username != s.p.email || password != s.p.appPasswordOnServer() {
+		return imapserver.ErrAuthFailed
+	}
+	s.UserSession = imapmemserver.NewUserSession(s.p.mailbox)
+	return nil
 }
 
 // imapPerson signs a person up the way POST /api/auth/mailbox leaves them: a
@@ -341,12 +390,9 @@ func (p *imapPerson) startServer() {
 			a.fatalf("création du dossier %q sur le serveur IMAP de %s : %v", name, p.email, err)
 		}
 	}
-	mem := imapmemserver.New()
-	mem.AddUser(p.mailbox)
-
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return mem.NewSession(), nil, nil
+			return &mailboxSession{p: p}, nil, nil
 		},
 		Caps: imapv2.CapSet{imapv2.CapIMAP4rev1: {}, imapv2.CapIMAP4rev2: {}},
 	})
@@ -724,6 +770,94 @@ func (p *imapPerson) expectNumbered(uid, want string) {
 func (p *imapPerson) syncAnswer() (int, map[string]interface{}) {
 	p.app.t.Helper()
 	return p.app.callAs(p.token, http.MethodPost, "/api/emails/sync", nil)
+}
+
+// saveAppPassword is "Enregistrer" in the form "Changer le mot de passe
+// d'application" of /connect, as this person (also where "Mettre à jour"
+// leads when the provider refuses the password on file): PUT
+// /api/mailbox/password. It returns the answer, whatever it is.
+func (p *imapPerson) saveAppPassword(password string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPut, "/api/mailbox/password", map[string]string{"password": password})
+	return answer{code: code, body: out}
+}
+
+// connectedMailbox is the mailbox the /connect screen shows as connected for
+// this person (GET /api/mailbox, loadMailbox in Connect.js), as far as the
+// sentences about keeping it look: which row it is, since when, and the two
+// servers it is reached on. Kept as the answer wrote them, so that a value
+// written again, even the same instant, compares as what it is.
+type connectedMailbox struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"createdAt"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	TLS       string `json:"tls"`
+	SMTPHost  string `json:"smtpHost"`
+	SMTPPort  int    `json:"smtpPort"`
+	SMTPTLS   string `json:"smtpTls"`
+}
+
+// connectScreenMailbox is connectedMailbox as the screen loads it now. A
+// screen that shows no mailbox stops the scenario.
+func (p *imapPerson) connectScreenMailbox() connectedMailbox {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/mailbox", nil)
+	if code != http.StatusOK || out["mailbox"] == nil {
+		a.fatalf("l'écran de connexion de %s ne montre pas de boîte branchée : GET /api/mailbox a répondu %d : %v", p.email, code, out)
+	}
+	raw, err := json.Marshal(out["mailbox"])
+	if err != nil {
+		a.fatalf("réponse de GET /api/mailbox illisible pour %s : %v", p.email, err)
+	}
+	var box connectedMailbox
+	if err := json.Unmarshal(raw, &box); err != nil {
+		a.fatalf("réponse de GET /api/mailbox illisible pour %s : %v (reçu : %s)", p.email, err, raw)
+	}
+	return box
+}
+
+// expectSameMailbox checks that the /connect screen shows the very mailbox it
+// showed before: the same row, connected at the same instant, on the same
+// IMAP server and the same sending server. when says at which moment.
+func (p *imapPerson) expectSameMailbox(before connectedMailbox, when string) {
+	a := p.app
+	a.t.Helper()
+	now := p.connectScreenMailbox()
+	for _, f := range []struct {
+		what    string
+		was, is interface{}
+	}{
+		{"son identifiant", before.ID, now.ID},
+		{"sa date de branchement", before.CreatedAt, now.CreatedAt},
+		{"son serveur IMAP", before.Host, now.Host},
+		{"le port de son serveur IMAP", before.Port, now.Port},
+		{"le chiffrement de son serveur IMAP", before.TLS, now.TLS},
+		{"son serveur d'envoi", before.SMTPHost, now.SMTPHost},
+		{"le port de son serveur d'envoi", before.SMTPPort, now.SMTPPort},
+		{"le chiffrement de son serveur d'envoi", before.SMTPTLS, now.SMTPTLS},
+	} {
+		if f.was != f.is {
+			a.failf("%s, l'écran de connexion de %s devrait montrer la même boîte qu'avant, %s a changé : %v avant, %v maintenant", when, p.email, f.what, f.was, f.is)
+		}
+	}
+}
+
+// storedAppPassword is the app password stored for this person's mailbox, as
+// the database holds it, sealed: what the app will log in with next. Two
+// readings compare equal only if nothing was stored between them, since
+// sealing the same password twice gives two different values.
+func (p *imapPerson) storedAppPassword() string {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var account models.MailAccount
+	if err := a.h.db.MailAccounts().FindOne(ctx, bson.M{"userId": p.email}).Decode(&account); err != nil {
+		a.fatalf("la boîte branchée de %s n'est pas en base : %v", p.email, err)
+	}
+	return account.Secret
 }
 
 // sync presses "Synchroniser" and expects it to succeed.
@@ -1504,7 +1638,7 @@ func (p *imapPerson) otherProgram() *imapclient.Client {
 	if err != nil {
 		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s : %v", p.email, err)
 	}
-	if err := c.Login(p.email, imapTestPassword).Wait(); err != nil {
+	if err := c.Login(p.email, p.appPasswordOnServer()).Wait(); err != nil {
 		_ = c.Close()
 		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP de %s : %v", p.email, err)
 	}
@@ -1942,6 +2076,178 @@ func (p *imapPerson) expectBackInInbox(subject, when string) {
 	case len(numbers) > 1:
 		a.failf("%s, la boîte de réception de %s devrait montrer le mail %q une fois, elle le montre %d fois (n°%s)", when, p.email, subject, len(numbers), strings.Join(numbers, ", n°"))
 	}
+}
+
+// folderOnServer returns the name under which the person's server lists the
+// folder a mail program shows as name, and whether it lists one, as another
+// mail program reads them (LIST "" "*"). For the sentences about a folder
+// Mailsorter creates: expectOnServer stops the scenario on a folder that does
+// not open, and a folder that was never created is then the very thing the
+// sentence is about.
+//
+// The name itself, at the root, or the name under a prefix the server
+// announces for personal folders (NAMESPACE, RFC 2342: "INBOX." on servers
+// that keep every folder under the inbox), where a mail program creating the
+// folder rightly puts it. The test server announces no prefix, so there the
+// name itself is the only one accepted; the prefixed one is accepted so that
+// these sentences do not forbid what such a server requires.
+func (p *imapPerson) folderOnServer(name string) (string, bool) {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	accepted := []string{name}
+	if c.Caps().Has(imapv2.CapNamespace) {
+		ns, err := c.Namespace().Wait()
+		if err != nil {
+			a.fatalf("lecture des espaces de dossiers (NAMESPACE) du serveur IMAP de %s : %v", p.email, err)
+		}
+		for _, personal := range ns.Personal {
+			if personal.Prefix != "" {
+				accepted = append(accepted, personal.Prefix+name)
+			}
+		}
+	}
+	folders, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		a.fatalf("lecture des dossiers du serveur IMAP de %s : %v", p.email, err)
+	}
+	for _, want := range accepted {
+		for _, f := range folders {
+			if f.Mailbox == want {
+				return f.Mailbox, true
+			}
+		}
+	}
+	return "", false
+}
+
+// ---------------------------------------------------------------------------
+// "Reporter", and the Reporté screen ("Plus tard" in the hotel theme)
+// ---------------------------------------------------------------------------
+
+// snoozeAnswer is "Reporter" on one mail, as this person, to tomorrow morning
+// (handleSnooze in Inbox.js, "Demain matin" in SnoozeMenu.js), on the number the
+// row holds. It returns the answer, whatever it is.
+func (p *imapPerson) snoozeAnswer(uid string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/snooze",
+		map[string]string{"messageId": uid, "preset": "tomorrow"})
+	return answer{code: code, body: out}
+}
+
+// snoozeSelectionAnswer is "Reporter" on a selection of mails, as this person,
+// to tomorrow morning (runBulkSnooze in Inbox.js). It returns the answer,
+// whatever it is.
+func (p *imapPerson) snoozeSelectionAnswer(uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-snooze",
+		map[string]interface{}{"messageIds": uids, "preset": "tomorrow"})
+	return answer{code: code, body: out}
+}
+
+// reportedMail is one row of the "Prévus" tab of the Reporté screen
+// (Snoozed.js): the subject and the sender it shows, and the id its
+// "Réactiver" sends back.
+type reportedMail struct {
+	ID        string `json:"id"`
+	MessageID string `json:"messageId"`
+	From      string `json:"from"`
+	Subject   string `json:"subject"`
+}
+
+// reported is this person's mails reported and not back yet: the "Prévus" tab
+// of the Reporté screen, as it loads it (GET /api/snoozes?status=scheduled).
+func (p *imapPerson) reported() []reportedMail {
+	p.app.t.Helper()
+	return p.app.reportedAs(p.token, p.email)
+}
+
+// reportedAs is the "Prévus" tab of the Reporté screen of the account signed
+// in with token: the Gmail person's as well as an IMAP person's. who names
+// the person in a failure.
+func (a *testApp) reportedAs(token, who string) []reportedMail {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	if code != http.StatusOK {
+		a.fatalf("les mails reportés de %s ne s'affichent pas : GET /api/snoozes a répondu %d : %v", who, code, out)
+	}
+	raw, err := json.Marshal(out["snoozes"])
+	if err != nil {
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", who, err)
+	}
+	var rows []reportedMail
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", who, err)
+	}
+	return rows
+}
+
+// reportsHourPasses is the hour of every report of this person passing,
+// whatever became of them (reportsHourPassesFor).
+func (p *imapPerson) reportsHourPasses() {
+	p.app.t.Helper()
+	p.app.reportsHourPassesFor(p.email)
+}
+
+// reportedRow returns the row of the "Prévus" tab for the mail with this
+// subject, and whether the tab shows one. By its subject, which is what the
+// row shows: the number of a reported mail is the one it had in the inbox.
+func (p *imapPerson) reportedRow(subject string) (reportedMail, bool) {
+	p.app.t.Helper()
+	for _, r := range p.reported() {
+		if r.Subject == subject {
+			return r, true
+		}
+	}
+	return reportedMail{}, false
+}
+
+// describeReported is the "Prévus" tab in a failure message.
+func describeReported(rows []reportedMail) string {
+	if len(rows) == 0 {
+		return "aucun mail"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, fmt.Sprintf("%q de %q", r.Subject, r.From))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// wakeNowAnswer is "Réactiver" on a row of the "Prévus" tab, once its
+// confirmation "Ramener maintenant" is accepted (handleWake in Snoozed.js). It
+// returns the answer, whatever it is.
+func (p *imapPerson) wakeNowAnswer(row reportedMail) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/snoozes/"+url.PathEscape(row.ID)+"/wake", nil)
+	return answer{code: code, body: out}
+}
+
+// timeComesForSnoozes is the hour of this person's reports coming: every wake
+// time of theirs still scheduled moved into the past, then the background
+// sweep run once, as its 1 minute loop does (wakeDueSnoozes, snooze.go). The
+// app reads no clock a scenario can turn, so the wake time is moved in the
+// database, as timeComesForSnoozes does for the Gmail user; the harness builds
+// the Handler without NewHandler, so no loop runs on its own.
+//
+// A person with no report scheduled stops the scenario: a sweep with nothing
+// due proves nothing about what it brings back.
+func (p *imapPerson) timeComesForSnoozes() {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := a.h.db.Snoozes().UpdateMany(ctx,
+		bson.M{"userId": p.email, "status": "scheduled"},
+		bson.M{"$set": bson.M{"wakeAt": time.Now().Add(-time.Minute)}})
+	if err != nil {
+		a.fatalf("avance de l'heure des reports de %s : %v", p.email, err)
+	}
+	if res.MatchedCount == 0 {
+		a.fatalf("aucun report de %s n'est prévu dans la base au moment de l'heure du réveil : le scénario ne prouve rien", p.email)
+	}
+	a.h.wakeDueSnoozes()
 }
 
 // ---------------------------------------------------------------------------
