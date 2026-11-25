@@ -443,12 +443,14 @@ function errorMessage(err, { sync = false } = {}) {
 
 // The server's own sentence about a failed sync, to be shown alone, or "": a
 // sentence of SyncEmails (marked syncMessage, whatever its status), or the
-// one of a 4xx the user can act on (428: the mailbox to connect again).
+// one of a 4xx the user can act on (428: the mailbox to connect again; 409
+// marked mailboxChanged: the mailbox changed since the page was loaded, which
+// is being loaded again).
 export function syncSentence(err) {
   const status = err?.response?.status;
   const raw = err?.response?.data;
   if (!raw || typeof raw !== 'object' || typeof raw.error !== 'string' || !raw.error.trim()) return '';
-  if (raw.syncMessage || status === 428) return raw.error.trim();
+  if (raw.syncMessage || status === 428 || (status === 409 && raw.mailboxChanged)) return raw.error.trim();
   return '';
 }
 
