@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -14,10 +15,49 @@ import (
 // clears the session and restarts OAuth instead of looping on opaque 500s.
 var errReauthRequired = errors.New("gmail authorization expired; re-authentication required")
 
+// mailboxRejectedMessage is what the user reads when their mail provider
+// refuses the address and the app password Mailsorter holds: on the connect
+// screen as everywhere else.
+const mailboxRejectedMessage = "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application."
+
+// mailboxNoAnswerMessage is what the user reads when their mailbox could not
+// be opened for another reason: out of reach, too slow, or unavailable.
+const mailboxNoAnswerMessage = "Votre boîte n'a pas répondu, réessayez dans un instant."
+
+// noMailboxMessage is what the user reads when no mailbox is connected.
+const noMailboxMessage = "Aucune boîte mail n'est branchée à ce compte."
+
+// severalCopiesMessage is what the user reads when "Annuler" would bring back
+// a mail whose Message-ID several messages carry where Mailsorter put it
+// (imap.ErrAmbiguous): which one to put back cannot be told.
+const severalCopiesMessage = "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie."
+
+// severalCopiesWakeMessage is severalCopiesMessage for "Réactiver", which
+// brings a mail back rather than putting it back.
+const severalCopiesWakeMessage = "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie."
+
+// writeSeveralCopies answers an "Annuler" refused for severalCopiesMessage:
+// 409, and severalCopies so that a screen can tell it from the 409 of an
+// action already undone, which it treats as such.
+func writeSeveralCopies(w http.ResponseWriter) {
+	writeSeveralCopiesAs(w, severalCopiesMessage)
+}
+
+// writeSeveralCopiesAs is writeSeveralCopies with the sentence of its action.
+func writeSeveralCopiesAs(w http.ResponseWriter, sentence string) {
+	writeJSON(w, http.StatusConflict, map[string]interface{}{
+		"error": sentence, "status": http.StatusConflict, "severalCopies": true,
+	})
+}
+
 // writeAuthError maps a getUserToken / gmailClientFor / openSession failure to
-// the right status: 401 when the grant is dead (SPA re-runs OAuth), 404 when the
-// account row is gone, 501 when the path has not been ported to the caller's
-// transport, 500 for anything else.
+// the right status: 401 when the Google grant is dead (SPA re-runs OAuth), 428
+// when no mailbox is connected or when the provider refuses the IMAP password
+// on file (to be connected again on /connect: a 401 would sign the person out
+// of Mailsorter, whose session is fine), 502 when the mailbox did not answer,
+// 404 when the account row is gone, 501 when the path has not been ported to
+// the caller's transport, 500 for anything else. In French, as the screens
+// show them.
 //
 // The 501 branch is the visible half of the guard in gmailClientFor. Every
 // handler already routes its credential failures through here, so adding the
@@ -26,15 +66,23 @@ var errReauthRequired = errors.New("gmail authorization expired; re-authenticati
 func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errNoMailboxConnected):
-		writeError(w, http.StatusPreconditionRequired, "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.")
+		writeError(w, http.StatusPreconditionRequired, noMailboxMessage)
 	case errors.Is(err, errReauthRequired):
-		writeError(w, http.StatusUnauthorized, "Gmail authorization expired. Please reconnect your account.")
+		writeError(w, http.StatusUnauthorized, "L'autorisation Google a expiré. Reconnectez votre compte Google.")
+	case errors.Is(err, imap.ErrAuth):
+		// passwordRefused tells a screen to lead to the new password form
+		// (/connect?motdepasse=1) rather than to connecting a mailbox.
+		writeJSON(w, http.StatusPreconditionRequired, map[string]interface{}{
+			"error": mailboxRejectedMessage, "status": http.StatusPreconditionRequired, "passwordRefused": true,
+		})
+	case errors.Is(err, imap.ErrUnreachable):
+		writeError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
 	case errors.Is(err, errWrongTransport):
 		writeTransportError(w)
 	case errors.Is(err, mongo.ErrNoDocuments):
 		writeError(w, http.StatusNotFound, "User not found")
 	default:
-		writeError(w, http.StatusInternalServerError, "Failed to get user credentials")
+		writeError(w, http.StatusInternalServerError, "Impossible d'ouvrir votre boîte pour le moment, réessayez dans un instant.")
 	}
 }
 
@@ -67,10 +115,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "Request body too large")
+			writeError(w, http.StatusRequestEntityTooLarge, "Requête trop volumineuse.")
 			return false
 		}
-		writeError(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, http.StatusBadRequest, "Requête illisible.")
 		return false
 	}
 	return true

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
@@ -18,6 +20,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -474,20 +477,30 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		writeError(w, http.StatusUnauthorized, "User email required")
+		writeError(w, http.StatusUnauthorized, "Connexion requise.")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), syncRequestTimeout)
 	defer cancel()
 
 	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
-		if errors.Is(err, errReauthRequired) {
+		// Every answer here is a French sentence the inbox shows as is
+		// (errorMessage in EmailContext.js): what failed is logged.
+		switch {
+		case errors.Is(err, errReauthRequired), errors.Is(err, imap.ErrAuth):
+			// A dead Google grant, and an IMAP password the provider
+			// refuses, in the words of the connect screen.
 			writeAuthError(w, err)
-			return
+		case errors.Is(err, errMailboxNoAnswer):
+			writeSyncError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
+		case errors.Is(err, errNoMailboxConnected):
+			// The mailbox to connect: the inbox says so, with the way there.
+			writeSyncError(w, http.StatusPreconditionRequired, noMailboxMessage)
+		default:
+			writeSyncError(w, http.StatusInternalServerError, syncFailureMessage(userEmail, err))
 		}
-		writeError(w, http.StatusInternalServerError, "Failed to sync emails: "+err.Error())
 		return
 	}
 
@@ -497,6 +510,48 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		"rulesApplied": rulesApplied,
 	})
 }
+
+// writeSyncError answers a failed "Synchroniser" with a sentence written for
+// the user, marked syncMessage: the inbox shows a 5xx sentence only when it
+// carries the mark, so the "Internal server error" of a panic (or anything
+// else a 5xx may say) never reaches the screen.
+func writeSyncError(w http.ResponseWriter, status int, sentence string) {
+	writeJSON(w, status, map[string]interface{}{"error": sentence, "status": status, "syncMessage": true})
+}
+
+// syncFailureMessage is what "Synchroniser" says of a failure: the sentence of
+// one the user is meant to read (errMailboxUnavailable, errMailboxLost,
+// errMirrorNotReconciled, errMessagesNotStored), or else a general one, the
+// detail logged rather than shown (it may be the English of a library).
+func syncFailureMessage(userEmail string, err error) string {
+	for _, said := range []error{errMailboxUnavailable, errMailboxLost, errMirrorNotReconciled, errMessagesNotStored} {
+		if errors.Is(err, said) {
+			return asSentence(err.Error())
+		}
+	}
+	log.Printf("sync: %s: %v", userEmail, err)
+	return "La synchronisation a échoué, réessayez dans un instant."
+}
+
+// asSentence starts s with a capital letter and ends it with a period: the
+// errors of a sync are written to follow another sentence.
+func asSentence(s string) string {
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError {
+		return s
+	}
+	s = string(unicode.ToUpper(r)) + s[size:]
+	if !strings.HasSuffix(s, ".") {
+		s += "."
+	}
+	return s
+}
+
+// syncRequestTimeout is how long "Synchroniser" waits for the mailbox. An
+// IMAP session is bound to it (imap.Connect): past it, the connection is
+// dropped and the sync answers errMailboxNoAnswer. A variable, so a test can
+// shorten it.
+var syncRequestTimeout = 30 * time.Second
 
 // syncInbox pulls the user's inbox into MongoDB and, when the user opted into
 // rule autopilot, applies their deterministic rules to each freshly synced email
@@ -512,6 +567,12 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 // knows there are two ways to perform it.
 func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
 	session, err := h.openSession(ctx, userEmail)
+	if errors.Is(err, imap.ErrUnreachable) {
+		// Not a password refused: the mailbox did not answer, or not in
+		// time. Logged with what it was; the user is told to try again.
+		log.Printf("sync: the mailbox of %s could not be opened: %v", userEmail, err)
+		return 0, 0, 0, errMailboxNoAnswer
+	}
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -521,6 +582,12 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 		// Rules do not run on this half yet, so the count is zero rather than a
 		// number the user cannot trust. See syncInboxIMAP.
 		synced, total, err = h.syncInboxIMAP(ctx, userEmail, session)
+		if err != nil && ctx.Err() != nil {
+			// Its time ran out (the session is bound to ctx): the mailbox
+			// did not answer in time, whatever the command it stopped in.
+			log.Printf("sync: the mailbox of %s did not answer in time: %v", userEmail, err)
+			return synced, total, 0, errMailboxNoAnswer
+		}
 		return synced, total, 0, err
 	}
 	return h.syncInboxGmail(ctx, userEmail, session.gmail)
@@ -646,7 +713,24 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	// The reference is built by the session rather than here, because what a
 	// message id MEANS depends on the transport and this handler has no opinion
 	// about that: it holds a string the client sent.
-	err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
+	back := func() error {
+		return h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
+	}
+	if returnsToInbox(req.Action, session.Transport) {
+		// "Annuler" right after a move out: on a reported mail, it ends the
+		// report (endReportOnReturn).
+		err = h.endReportOnReturn(ctx, userEmail, req.MessageID, back)
+	} else {
+		err = back()
+	}
+	if errors.Is(err, errWakeBusy) {
+		writeError(w, http.StatusLocked, wakeBusyMessage)
+		return
+	}
+	if errors.Is(err, imap.ErrAmbiguous) {
+		writeSeveralCopies(w)
+		return
+	}
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return

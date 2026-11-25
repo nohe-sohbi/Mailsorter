@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { emailService, aiService, senderService, subscriptionService, mailboxService } from '../services/api';
+import { emailService, aiService, senderService, subscriptionService, mailboxService, reconnectAction } from '../services/api';
 
 const EmailContext = createContext(null);
 
@@ -82,7 +82,12 @@ export function EmailProvider({ children }) {
       // still worth showing, so it does not stop the listing below, but it is
       // handed back to the caller: the "Synchroniser" button used to announce
       // "Boîte synchronisée" after a sync that had failed.
+      // syncSaid: the server's own sentence about it, which the inbox shows
+      // alone (syncSentence); syncReconnect: a 428, the way to connect the
+      // mailbox again (reconnectAction).
       let syncError = '';
+      let syncSaid = false;
+      let syncReconnect = null;
       try {
         const now = Date.now();
         if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
@@ -92,6 +97,8 @@ export function EmailProvider({ children }) {
           } catch (syncErr) {
             console.warn('Sync failed:', syncErr);
             syncError = errorMessage(syncErr, { sync: true });
+            syncSaid = Boolean(syncSentence(syncErr));
+            syncReconnect = reconnectAction(syncErr);
           }
         }
 
@@ -114,7 +121,7 @@ export function EmailProvider({ children }) {
           subscriptionService.getSubscriptions(),
         ]);
 
-        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError };
+        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect };
 
         // The listing is the one call whose failure the user must see: without
         // it the screen falls back to an empty list, which the inbox used to
@@ -122,7 +129,7 @@ export function EmailProvider({ children }) {
         if (emailsRes.status === 'rejected') {
           reportError(emailsRes.reason);
           setLoading(false);
-          return { emails, senders, suggestions, stats: newStats, syncError, listError: true };
+          return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect, listError: true };
         }
 
         let newEmails = [];
@@ -151,10 +158,10 @@ export function EmailProvider({ children }) {
         setSubscriptions(newSubscriptions);
         lastFetchRef.current = Date.now();
 
-        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats, syncError };
+        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats, syncError, syncSaid, syncReconnect };
       } catch (err) {
         if (!isStale()) reportError(err);
-        return { emails, senders, suggestions, stats, syncError, listError: true };
+        return { emails, senders, suggestions, stats, syncError, syncSaid, syncReconnect, listError: true };
       } finally {
         if (!isStale()) setLoading(false);
       }
@@ -320,12 +327,12 @@ export function EmailProvider({ children }) {
 // The API returns plain-text errors for most failures; surface something a
 // French-speaking user can act on rather than a raw googleapi string.
 //
-// Only the listing, the sync and the counters come through here, and the
-// server never answers them 502, 503 or 504: a mail provider that does not
-// answer fails them with a 500 (handlers.go). So a gateway status on these
-// routes is the proxy in front of Mailsorter, with Mailsorter itself down or
-// too slow, and naming the mail provider for it sent people to check the wrong
-// service. Neither message names the provider.
+// Only the listing, the sync and the counters come through here. The listing
+// and the counters never answer 502, 503 or 504, so a gateway status there is
+// the proxy in front of Mailsorter, with Mailsorter itself down or too slow,
+// and naming the mail provider for it sent people to check the wrong service.
+// The sync does answer 502, when the mailbox did not answer, but with its own
+// sentence, marked (syncSentence), which is shown instead.
 //
 // `sync` words the failure of a sync, which the inbox says after "La
 // synchronisation a échoué." while the list stays on screen: "Votre boîte n'a
@@ -346,6 +353,11 @@ function errorMessage(err, { sync = false } = {}) {
   if (status === 501) {
     return serverSaid || "Cette action n'est pas encore disponible sur cette boîte.";
   }
+  // "Synchroniser" answers its failures with a French sentence for the user
+  // (SyncEmails), marked syncMessage, "Votre boîte n'a pas répondu" included:
+  // shown as is. Any other 5xx body (a crash, the proxy, a backend that is
+  // down) stays generic below.
+  if (sync && syncSentence(err)) return syncSentence(err);
   if (status === 502 || status === 503 || status === 504) {
     return "Le serveur ne répond pas pour le moment. Réessayez dans un instant.";
   }
@@ -355,6 +367,17 @@ function errorMessage(err, { sync = false } = {}) {
   // axios's own message is English and technical ("Request failed with status
   // code 400"): never shown as is.
   return 'Une erreur inattendue est survenue.';
+}
+
+// The server's own sentence about a failed sync, to be shown alone, or "": a
+// sentence of SyncEmails (marked syncMessage, whatever its status), or the
+// one of a 4xx the user can act on (428: the mailbox to connect again).
+export function syncSentence(err) {
+  const status = err?.response?.status;
+  const raw = err?.response?.data;
+  if (!raw || typeof raw !== 'object' || typeof raw.error !== 'string' || !raw.error.trim()) return '';
+  if (raw.syncMessage || status === 428) return raw.error.trim();
+  return '';
 }
 
 export function useEmails() {

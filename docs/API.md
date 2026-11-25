@@ -273,7 +273,11 @@ free pass. Over it: `429` with `Retry-After: 3`.
 - `401 Unauthorized`: the provider refused the credentials. An unknown address
   and a wrong password answer identically: the provider is what refused, and it
   does not say which. Distinguishing them would make this route an address
-  oracle
+  oracle. Only a real refusal counts as one: a `NO [AUTHENTICATIONFAILED]` to
+  LOGIN, or a `NO` with no code saying the server is unavailable. A `NO
+  [UNAVAILABLE]` (or `[SERVERBUG]`, `[LIMIT]`, `[INUSE]`, `[TOOMANY]`, or a
+  text speaking of too many connections), a `BYE`, a dropped connection or a
+  server that does not answer in time is the `502` below
 - `409 Conflict`: this address already holds Google credentials. A stored
   mailbox row takes precedence over a Google token (see "Transports and what
   works on each"), so accepting here would move the account to IMAP for whoever
@@ -377,10 +381,27 @@ with PEEK, so syncing never marks them read.
 }
 ```
 
+Every error is a French sentence the inbox shows as is, alone; what failed
+is logged. The 5xx ones carry `"syncMessage": true`, which is what the inbox
+checks before showing a 5xx sentence: any other 5xx body (a crash, which the
+recover middleware answers "Une erreur inattendue est survenue, réessayez
+dans un instant.", or the proxy) is worded by the inbox itself.
+
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
-- `500 Internal Server Error`: Failed to sync emails. This includes an account
-  with no mailbox connected, which this route does not map to `428`
+  ("L'autorisation Google a expiré. Reconnectez votre compte Google.")
+- `428 Precondition Required`: the mail provider refuses the IMAP password on
+  file: "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
+  d'application.", as on the connect screen (`passwordRefused`: the inbox
+  offers "Mettre à jour", to the new password form); or no mailbox is
+  connected: "Aucune boîte mail n'est branchée à ce compte." (marked
+  `syncMessage`: the inbox offers "Brancher une boîte", to `/connect`)
+- `502 Bad Gateway`: the IMAP mailbox did not answer (out of reach, too slow
+  for the request's 30 s, or unavailable): "Votre boîte n'a pas répondu,
+  réessayez dans un instant."
+- `500 Internal Server Error`: a sync that read the mailbox only in part (its
+  own sentence, see below); anything else, "La synchronisation a échoué,
+  réessayez dans un instant."
 
 ### Direct action on a message
 
@@ -428,6 +449,10 @@ mail client moved or deleted since answers `404` "Ce mail n'est plus là où
 Mailsorter l'avait rangé.". The vocabulary matches `/api/emails/batch-action`, so the reader
 and the shortcuts can express the same things one message at a time.
 
+A verb that brings a mail back to the inbox (`unarchive`, `untrash`, and over
+IMAP `unlabel`) on a mail with a scheduled snooze ends that snooze: it becomes
+`cancelled` and leaves the scheduled list at once (see Snooze Endpoints).
+
 **Response:** `200 OK`
 ```json
 { "status": "ok", "action": "archive" }
@@ -436,6 +461,8 @@ and the shortcuts can express the same things one message at a time.
 **Error Responses:**
 - `400 Bad Request`: Missing `messageId`, unsupported `action`, or `label` (and over the Gmail API `unlabel`), which need a name this route does not carry
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `409 Conflict`: over IMAP, the verb that undoes a move finds several copies of the mail where Mailsorter put it: "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie." (`severalCopies: true`); nothing moved
+- `423 Locked`: the mail has a snooze the wake sweep or a "Réactiver" is bringing back at that moment; nothing moved ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
 - `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: the mailbox refused the action
 
@@ -703,6 +730,12 @@ meanwhile, the others still come back, and the answer says why those did not:
 { "restored": 2, "total": 3, "notWhereLeft": 1, "message": "Ce mail n'est plus là où Mailsorter l'avait rangé." }
 ```
 
+A message no longer under the number Mailsorter recorded, whose `Message-ID`
+several messages carry where it was put (copies), is not put back either:
+`severalCopies` counts them, and `message` adds "Plusieurs copies de ce mail
+sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le
+depuis votre messagerie.".
+
 **Error Responses:**
 - `400 Bad Request`: Non-reversible action, empty list, missing label name, or over 200 ids
 - `401 Unauthorized`: Missing or expired session
@@ -713,9 +746,45 @@ meanwhile, the others still come back, and the answer says why those did not:
 
 Pull a message out of the inbox until a chosen time, then have it return on its
 own (marked unread). Wake time is resolved from a friendly preset server-side.
-The snoozed message is archived and labelled `Mailsorter/Reporté`, so snoozing
-and waking are Gmail API only: `501` over IMAP. Listing snoozes reads the
-datastore and works on both.
+Works on both transports, the same requests and answers:
+
+- over the Gmail API the snoozed message is archived and labelled
+  `Mailsorter/Reporté`, and comes back with the same id;
+- over IMAP a mail is in one folder, so it is moved into the folder `Plus tard`
+  of the mailbox, made (and subscribed) the first time under the personal
+  prefix the server announces, like a folder filing makes. It leaves the
+  stored inbox like an archived mail (hidden at once, kept for "Annuler"), and
+  the snooze records where it landed (that folder, its number there, its
+  `Message-ID`), which is where its wake fetches it from. It comes back with a
+  new number, which the stored inbox takes, so it is listed once, unread. A
+  pending AI proposal about it is set aside (`moot`) when it leaves. The `id`
+  and `messageId` of a snooze stay what the list showed: the number it had in
+  the inbox.
+
+The background sweep (every minute) wakes the due snoozes account by account,
+through one session per account: one Gmail client, or one IMAP connection for
+all of that mailbox's due mails, bounded to 30 s, the opening of the session
+included (the connection is dropped past it, and what was not reached waits
+for the next pass): a server that greets and then says nothing at LOGIN holds
+its own account for 30 s, never the others. A failed wake stays `scheduled`
+and is tried again at the next pass; the fifth failure parks it as `failed`.
+A mailbox that cannot be reached, or whose connection drops during the pass,
+is tried again without counting (the rest of its due mails wait for the next
+pass, untouched), except a password the server refuses, which counts. Over
+IMAP a mail no longer in `Plus tard` when its hour comes is looked for in the
+inbox by its whole `Message-ID` (searched with its angle brackets, each
+candidate's header compared exactly): put back there by another mail program
+(or by a return whose answer the connection lost), it is back, marked unread,
+and its return is written. Several messages of the inbox with that
+`Message-ID` (a copy) are not concluded on: none is marked unread nor written
+as returned, and the snooze ends `cancelled`, the inbox left as it is. Found nowhere (another mail program took it elsewhere), it
+is left where it is, and its snooze becomes `cancelled`, logged, out of every
+list. "Annuler" on a snooze (its line in the history, or the verb that
+undoes the move, see `POST /api/activity/undo` and `POST /api/emails/action`)
+brings the mail back and ends the snooze the same way, on both transports.
+The sweep, "Annuler" and `POST /api/snoozes/{id}/wake` claim the snooze
+before moving its mail, on both transports, so two of them reaching it at
+once move it once and write its return once. Listing snoozes reads the datastore.
 
 ### Snooze an email
 
@@ -736,10 +805,20 @@ time but a date picker can. It must be in the future and within one year
 { "status": "snoozed", "wakeAt": "2026-06-22T08:00:00Z" }
 ```
 
+Over IMAP, a mail already out of the inbox (snoozed a moment ago, or moved
+by another mail client) answers `200 { "status": "already", "wakeAt": ... }`:
+nothing moved, nothing is recorded (the inbox then says "Ce mail n'est plus
+dans votre boîte de réception."). A mail without a `Message-ID` header, on a
+server that does not say where a move lands (no UIDPLUS, which IMAP4rev2
+includes), could not be found again at its hour: it is refused before
+anything moves or is made, `422`.
+
 **Error Responses:**
 - `400 Bad Request`: Unknown preset, or a wake time in the past or beyond one year
 - `401 Unauthorized`: Missing or expired session
-- `502 Bad Gateway`: Gmail refused the label or the move
+- `404 Not Found`: Over IMAP, a mail the stored inbox does not hold ("Ce mail n'est plus dans votre boîte de réception.")
+- `422 Unprocessable Entity`: Over IMAP, a mail that could not be found again at its hour ("Ce mail ne peut pas être reporté sur cette boîte : Mailsorter ne pourrait pas le retrouver à l'heure prévue.")
+- `502 Bad Gateway`: The mailbox refused the label, the folder or the move
 
 ### Snooze a whole selection
 
@@ -755,7 +834,10 @@ wake time covers every message in it.
 At most 200 ids per request. Protected senders are shielded exactly as in
 `/batch-action`: a bulk snooze takes mail out of the inbox, which is what the VIP
 list exists to veto, and a sender that could not be established is treated as
-possibly protected rather than assumed harmless.
+possibly protected rather than assumed harmless. Over IMAP the sender is the
+one the stored inbox holds, and a mail already out of the inbox is neither in
+`snoozed` nor counted as `failed`; one that could not be found again at its
+hour (see above) is counted as `failed`.
 
 **Response:** `200 OK`
 ```json
@@ -771,19 +853,32 @@ possibly protected rather than assumed harmless.
 **Error Responses:**
 - `400 Bad Request`: Empty selection, over 200 ids, or an invalid deadline
 - `401 Unauthorized`: Missing or expired session
-- `502 Bad Gateway`: The snooze label could not be prepared
+- `502 Bad Gateway`: The snooze label could not be prepared (Gmail API)
 
 ### List snoozes
 
 #### GET /api/snoozes?status=scheduled
 
-Returns `{ "snoozes": [ ... ] }`, soonest wake first (`status` defaults to `scheduled`).
+Returns `{ "snoozes": [ ... ] }`, soonest wake first (`status` defaults to
+`scheduled`; the others are `done`, `failed` and `cancelled`).
 
 ### Wake a snooze now
 
 #### POST /api/snoozes/{id}/wake
 
-Brings the email back to the inbox immediately, marked unread.
+Brings the email back to the inbox immediately, marked unread. Answers
+`{ "status": "woken" }`.
+
+A snooze `scheduled` or `failed` is claimed first, on both transports, so
+that this route and the sweep reaching it at once move the mail once and
+write its return once: a snooze already back answers `200` again, without
+moving or recording anything.
+
+**Error Responses:**
+- `404 Not Found`: No such snooze; or a snooze `cancelled` ("Ce mail n'est plus là où Mailsorter l'avait rangé."): brought back by "Annuler", or, over IMAP, taken out of `Plus tard` by another mail program
+- `409 Conflict`: Over IMAP, several messages of `Plus tard` carry the mail's `Message-ID` and its number there no longer names it: "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie." (`severalCopies: true`); nothing moved, nothing counted. The sweep does count those attempts: after five passes the snooze is `failed` ("En échec"), where this route still answers this `409`
+- `423 Locked`: The sweep or an "Annuler" is bringing it back at that moment ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
+- `502 Bad Gateway`: The mailbox refused the return: "Ce mail n'a pas pu être ramené, réessayez dans un instant." (what failed is logged); nothing is counted
 
 ---
 
@@ -929,7 +1024,8 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
 | `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
 | `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep, and label, which files the mail in the folder of that name) | |
-| Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` |
+| Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | |
+| `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` and the wake sweep (the mail waits in the folder `Plus tard`, see Snooze Endpoints) | |
 | `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
 | `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `POST /api/smart-labels` |
 | `GET /api/labels` (the user's own folders) | |
@@ -993,9 +1089,20 @@ Two consequences worth knowing:
   next sync. Only an answer that cannot be parsed says something about a
   message: a server that refuses a read (`NO`, `[UNAVAILABLE]`,
   `[THROTTLED]`) or runs out of time concludes nothing, and the sync answers
-  `500` "votre boîte n'a pas répondu jusqu'au bout de la synchronisation,
-  réessayez dans un instant"; a connection that cannot be opened again,
-  `500` "la connexion à votre boîte a été perdue pendant la synchronisation".
+  `500` "Votre boîte n'a pas répondu jusqu'au bout de la synchronisation,
+  réessayez dans un instant."; a connection that cannot be opened again,
+  `500` "La connexion à votre boîte a été perdue pendant la synchronisation.".
+  A mailbox that cannot be opened at all for a reason other than its password
+  (out of reach, too slow for the request's 30 s, or answering LOGIN that it is
+  unavailable, see `POST /api/auth/mailbox`) answers `502` "Votre boîte n'a pas
+  répondu, réessayez dans un instant.", never a refused password. An IMAP session
+  is bound to its request for its whole life, its opening included (the dial,
+  TLS, the greeting, LOGIN, the listing of the folders): a server that greets
+  and then says nothing, at LOGIN or later (a SELECT, a FETCH), holds no
+  request past its time, and the sync answers that same `502` "Votre boîte
+  n'a pas répondu, réessayez dans un instant." once its 30 s run out. The
+  background sync gives each account one minute the same way, so a silent
+  server holds only its own account.
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 The filters the inbox offers are all answered: `is:unread`, `is:read`,
@@ -1100,21 +1207,70 @@ and AOL, Zoho, OVH, and any domain the catalog does not know, Google Workspace
 included), Outlook.com (Microsoft Graph only, not implemented), and Proton in
 `hosted`.
 
-Unlike `POST /api/auth/mailbox`, this route has no throttle of its own (only the
-global limiter) and no Google check: the caller is already signed in, so
-connecting an IMAP mailbox to an account that holds Google tokens is how that
-account switches to IMAP.
+Unlike `POST /api/auth/mailbox`, this route has no Google check: the caller is
+already signed in, so connecting an IMAP mailbox to an account that holds Google
+tokens is how that account switches to IMAP. It does share that route's
+throttle, checked before any LOGIN at the provider: roughly one attempt every 3
+seconds, burst 5, keyed on the account and on the address tried; over it, `429`
+"Trop de tentatives. Patientez quelques instants." with `Retry-After: 3`, and
+the provider is not asked.
 
 **Response:** `200 OK`, the stored mailbox, in the shape `GET /api/mailbox`
 returns under `mailbox`.
 
 **Error Responses:**
 - `400 Bad Request`: missing address or password, or a password over 1024 bytes
-- `401 Unauthorized`: no session, or the provider rejected the credentials
+- `401 Unauthorized`: no session, or the provider rejected the credentials:
+  "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
+  d'application.", the sentence every screen shows for it, marked
+  `"mailboxRejected": true`. The SPA does not take a marked 401 for a dead
+  session; any other 401 (a session expired) signs out as everywhere
 - `422 Unprocessable Entity`: this address has no IMAP route with a known
   server in the running edition (see above)
+- `429 Too Many Requests`: throttled before any LOGIN, see above
 - `500 Internal Server Error`: the connection worked but could not be stored
-- `502 Bad Gateway`: the mail server could not be reached
+- `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
+  répondu, réessayez dans un instant.")
+
+### Change the app password
+
+#### PUT /api/mailbox/password
+
+A new app password for the mailbox already connected over IMAP: "Changer le
+mot de passe d'application" on `/connect`, and where "Mettre à jour" leads when
+the provider refuses the one on file (a `428` with `passwordRefused: true`, see
+the error table). The password is proved against the server the mailbox was
+connected on (its stored host, never one from the request, nor the catalog's
+again, which would make it a new connection), then only it is replaced: the
+mailbox row (its creation included), its server, its sending server, the
+stored copy of its inbox, the proposals and the history, with what "Annuler"
+can still bring back, all stay. A password the provider refuses replaces
+nothing. The body names no address, so no other mailbox can be reached.
+
+**Body:** `{ "password": "xxxx xxxx xxxx xxxx" }`
+
+**Response:** `200 OK`, the mailbox, in the shape `GET /api/mailbox` returns
+under `mailbox`.
+
+**Error Responses:**
+- `400 Bad Request`: no password, or one over 1024 bytes
+- `401 Unauthorized`: no session, or the provider refused the password:
+  "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
+  d'application.", marked `"mailboxRejected": true`, which the SPA does not
+  take for a dead session
+- `422 Unprocessable Entity`: a mailbox reached through the Gmail API: "Cette
+  boîte est branchée par Google : son mot de passe ne se change pas ici."
+- `428 Precondition Required`: no mailbox connected over IMAP, or the mailbox
+  was disconnected (or replaced) while the password was being tried: nothing
+  is stored, never "Mot de passe mis à jour."
+- `429 Too Many Requests`: the throttle of `POST /api/mailbox/connect`,
+  before any LOGIN at the provider, keyed on the account alone here (the
+  address is the one on file, and its bucket is shared with the public
+  sign-in, where a stranger could empty it): "Trop de tentatives. Patientez
+  quelques instants.", `Retry-After: 3`
+- `500 Internal Server Error`: the password worked but could not be stored
+- `502 Bad Gateway`: the mail server could not be reached ("Votre boîte n'a pas
+  répondu, réessayez dans un instant.")
 
 ### Disconnect
 
@@ -1281,7 +1437,12 @@ Reverses one recorded action by replaying its inverse Gmail mutation
 and over IMAP `label` -> `unlabel`, which brings the mail back to the inbox
 from the folder it was filed in). The entry is marked `undone` and the reversal
 is itself appended to the ledger (source `undo`). Only these actions are
-reversible; others return `400`.
+reversible; others return `400`. Undoing the line of a snooze (an `archive`
+from source `snooze`), or any reversal that brings back to the inbox a mail
+with a scheduled snooze, ends that snooze: it becomes `cancelled` and leaves
+the scheduled list at once, and its hour moves nothing. While the wake sweep
+or a "Réactiver" is bringing that mail back, nothing moves and the answer is
+`423`.
 
 **Request Body:** `{ "id": "665..." }`
 
@@ -1291,7 +1452,14 @@ où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
 entry stays not undone); `409` already undone, except that a request within
 2 minutes of another one that undid it, with nothing done to the mail since,
 answers `200` like it (two clicks, two tabs): once the mail was archived again,
-a screen left open on the old line gets `409`; `500` "Annulation impossible à
+a screen left open on the old line gets `409`; over IMAP, `409` with
+`severalCopies: true` "Plusieurs copies de ce mail sont dans votre boîte :
+Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie."
+when the mail is no longer under the number Mailsorter recorded and several
+messages carry its `Message-ID` there (nothing moves; the entry stays not
+undone); `423` "Ce mail est déjà en train
+de revenir dans votre boîte, réessayez dans un instant." while the wake sweep
+or a "Réactiver" brings back the mail of a snooze; `500` "Annulation impossible à
 vérifier, réessayez." when the actions since cannot be read; `502` the provider
 refused the reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette
@@ -2534,23 +2702,24 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 
 | Status | Means | Typical body |
 |---|---|---|
-| `400` | The request is malformed or rejected on its merits | `{ "error": "Invalid request body", "status": 400 }` |
-| `401` | No session, an expired one, a dead Google grant, wrong sign-in credentials, or credentials the mail provider refused | `{ "error": "Authentication required", "status": 401 }` |
+| `400` | The request is malformed or rejected on its merits | `{ "error": "Requête illisible.", "status": 400 }` |
+| `401` | No session, an expired one, a dead Google grant, wrong sign-in credentials, or credentials the mail provider refused (on the routes where they were just typed, marked `mailboxRejected: true`) | `{ "error": "Authentication required", "status": 401 }` |
 | `402` | The hosted service's free monthly AI quota is spent (`analyze` and `analyze-async` only) | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
 | `404` | No such resource for this caller, or no such route | `{ "error": "Rule not found", "status": 404 }` |
 | `405` | The route exists, not with this method | `{ "error": "Method not allowed on this route", "status": 405 }` |
-| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro | `{ "error": "Action déjà annulée", "status": 409 }` |
-| `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Request body too large", "status": 413 }` |
+| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro; or, over IMAP, an "Annuler" that finds several copies of the mail where Mailsorter put it (`severalCopies: true`, nothing moved) | `{ "error": "Action déjà annulée", "status": 409 }`, `{ "error": "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie.", "status": 409, "severalCopies": true }` |
+| `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Requête trop volumineuse.", "status": 413 }` |
 | `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
-| `428` | No mailbox is connected to this account yet | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }` |
-| `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter is far lower | `{ "error": "Too many requests", "status": 429 }` |
+| `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est branchée à ce compte.", "status": 428 }` (the screens then offer "Brancher une boîte", to `/connect`), `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428, "passwordRefused": true }` (the screens then lead to the new password form, `/connect?motdepasse=1`) |
+| `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter, which also throttles connecting a mailbox and a new app password, is far lower | `{ "error": "Too many requests", "status": 429 }` |
 | `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
 | `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a label on IMAP, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
-| `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe | `{ "error": "Report impossible : ...", "status": 502 }` |
+| `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe; or the IMAP mailbox could not be opened (out of reach, too slow, unavailable) | `{ "error": "Report impossible : ...", "status": 502 }`, `{ "error": "Votre boîte n'a pas répondu, réessayez dans un instant.", "status": 502 }` |
 | `503` | A dependency is not configured (AI, billing), or the datastore is unreachable (`/health`) | `{ "error": "Aucune IA n'est configurée sur cette instance.", "status": 503 }` |
 
 A `401` on a route the SPA considers non-optional clears the session and returns
-the user to the login screen.
+the user to the login screen, unless it is marked `mailboxRejected` (the mail
+provider refused a password just typed, which says nothing of the session).
 
 ## CORS
 

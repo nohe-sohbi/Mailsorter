@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
@@ -285,7 +287,7 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 	}
 	defer session.Close()
 
-	restored, gone := 0, 0
+	restored, gone, copies := 0, 0, 0
 	for _, id := range req.MessageIDs {
 		if id == "" {
 			continue
@@ -301,6 +303,8 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 			}
 			if errors.Is(err, errNotWhereLeft) || errors.Is(err, errUndoExpired) {
 				gone++
+			} else if errors.Is(err, imap.ErrAmbiguous) {
+				copies++
 			} else {
 				log.Printf("batch-undo: message %s of %s not put back: %v", id, userEmail, err)
 			}
@@ -310,11 +314,19 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 		h.recordUndo(ctx, userEmail, id, req.Action, inverse)
 	}
 	answer := map[string]interface{}{"restored": restored, "total": len(req.MessageIDs)}
+	// The others came back; say why these did not, rather than let the
+	// screen announce a full undo.
+	var why []string
 	if gone > 0 {
-		// The others came back; say why these did not, rather than let the
-		// screen announce a full undo.
-		answer["message"] = notWhereLeftMessage
+		why = append(why, notWhereLeftMessage)
 		answer["notWhereLeft"] = gone
+	}
+	if copies > 0 {
+		why = append(why, severalCopiesMessage)
+		answer["severalCopies"] = copies
+	}
+	if len(why) > 0 {
+		answer["message"] = strings.Join(why, " ")
 	}
 	writeJSON(w, http.StatusOK, answer)
 }

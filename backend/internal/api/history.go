@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -353,8 +354,22 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer session.Close()
-		err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, entry.MessageID), inverse, "")
+		back := func() error {
+			return h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, entry.MessageID), inverse, "")
+		}
+		if returnsToInbox(inverse, provider.TransportIMAP) {
+			// Undoing a report ends it (endReportOnReturn).
+			err = h.endReportOnReturn(ctx, userEmail, entry.MessageID, back)
+		} else {
+			err = back()
+		}
 		switch {
+		case errors.Is(err, errWakeBusy):
+			writeError(w, http.StatusLocked, wakeBusyMessage)
+			return
+		case errors.Is(err, imap.ErrAmbiguous):
+			writeSeveralCopies(w)
+			return
 		case errors.Is(err, errNotWhereLeft):
 			writeError(w, http.StatusNotFound, notWhereLeftMessage)
 			return
@@ -382,7 +397,18 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 			writeAuthError(w, err)
 			return
 		}
-		if err := h.applyInverseAction(gmailClient, entry.MessageID, inverse); err != nil {
+		back := func() error { return h.applyInverseAction(gmailClient, entry.MessageID, inverse) }
+		if returnsToInbox(inverse, provider.TransportGmailAPI) {
+			// Undoing a report ends it (endReportOnReturn).
+			err = h.endReportOnReturn(ctx, userEmail, entry.MessageID, back)
+		} else {
+			err = back()
+		}
+		if errors.Is(err, errWakeBusy) {
+			writeError(w, http.StatusLocked, wakeBusyMessage)
+			return
+		}
+		if err != nil {
 			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
 			return
 		}
