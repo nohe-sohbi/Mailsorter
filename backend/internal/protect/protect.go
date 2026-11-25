@@ -206,20 +206,37 @@ func Label(from string) string {
 // ShownAddress is the one form a screen shows an address in, whatever screen:
 // never cleaned into another address, never one that reads as another.
 //
-// The local part as written, each character that would not show or would
-// move what follows, and each "@" of another width, made visible as U+FFFD
-// (markedText): x@pay<U+202E>pal.com read "x@paypal.com" with its override
-// dropped. The domain as browsers show it when IDNA takes it (ShownDomain:
-// y@pаypal.com, with a Cyrillic "а", is y@xn--pypal-4ve.com), each non-ASCII
-// character made visible when IDNA refuses it (x@paypal<U+2024>com, a one
-// dot leader drawn like a dot, is x@paypal<U+FFFD>com). Either way the domain shown
-// is the one the app compares, or visibly not a name.
+// The local part as written when each character is in a closed list,
+// U+FFFD for any other one (shownLocalPart): x@pay<U+202E>pal.com read
+// "x@paypal.com" with its override dropped, and a Cyrillic "ѕ" in
+// "ѕupport" is no "s". The domain in Unicode only for labels in the same
+// closed list when IDNA takes it (ShownDomain: y@pаypal.com, with a Cyrillic
+// "а", is y@xn--pypal-4ve.com), each non-ASCII character made visible when
+// IDNA refuses it (x@paypal<U+2024>com, a one dot leader drawn like a dot, is
+// x@paypal<U+FFFD>com). The domain never reads as another one: it is the one
+// the app compares, or visibly not a name.
 func ShownAddress(address string) string {
 	at := strings.LastIndex(address, "@")
 	if at < 0 {
 		return markedText(address)
 	}
-	return markedText(address[:at]) + "@" + ShownDomain(address[at+1:])
+	return shownLocalPart(address[:at]) + "@" + ShownDomain(address[at+1:])
+}
+
+// shownLocalPart is the local part of an address as a screen shows it: each
+// character as written when it is printable ASCII (the dots, the quotes, the
+// "+" and the space of a quoted local part) or in the closed list of the
+// domains (listedRune: "jürgen" reads as it is), U+FFFD for any other one,
+// a U+FFFD already there included: ѕupport@paypal.com, with a Cyrillic "ѕ",
+// reads "<U+FFFD>upport@paypal.com", and so does a hidden or reordering
+// character, or an "@" of another width.
+func shownLocalPart(local string) string {
+	return strings.Map(func(r rune) rune {
+		if (0x20 <= r && r <= 0x7E) || listedRune(r) {
+			return r
+		}
+		return '\uFFFD'
+	}, local)
 }
 
 // ShownDomain is a domain as a screen shows it: entryDomain of its ASCII form
@@ -560,80 +577,68 @@ func typedDomain(d string) (string, bool) {
 	return entryDomain(ascii), true
 }
 
-// entryDomain is how an entry shows a domain, the browsers' rule: its Unicode
-// form ("café.fr", "日本.jp") only when each label is written in one script
-// and that script does not imitate Latin; its ASCII form (punycode) otherwise.
-// "xn--80ak6aa92e.com" is Cyrillic drawn like "apple" and is shown so; a
-// label that mixes scripts ("pаypal" with a Cyrillic "а") too, and so does a
-// Latin label holding a combining mark ("li̇nkedin", an "i" with a dot
-// above it, drawn like "linkedin"): IDNA composes every Latin letter that has
-// an accented form of its own, so a mark left over sits where no letter
-// carries it. ascii is an ASCIIDomain; Match reads either form back as that
-// domain.
+// entryDomain is how a domain is shown, in the settings and on every screen
+// (ShownDomain): each label in Unicode only when every character of it is in
+// a closed list (listedRune: ASCII letters, digits and the hyphen, the
+// letters of Latin-1 Supplement and Latin Extended-A but those drawn like an
+// ASCII letter) and it is stable in NFC; in its ASCII form (punycode)
+// otherwise. "café", "crème-brûlée" and "straße" read as they are; "ɡoogle"
+// (an IPA "ɡ"), "gıthub" (a dotless "ı"), "yahᴏᴏ" (small capitals),
+// "pаypal" (a Cyrillic "а"), "paypal·com" (a dot in disguise), Greek, CJK, a
+// combining mark left over: all in punycode, so a domain never reads as
+// another one. A label the sender wrote in punycode stays so unless it
+// decodes into the list. ascii is an ASCIIDomain; Match reads either form
+// back as that domain.
 func entryDomain(ascii string) string {
-	readable, err := idna.Lookup.ToUnicode(ascii)
-	if err != nil {
-		return ascii
-	}
-	for _, label := range strings.Split(readable, ".") {
-		if !shownInUnicode(label) {
-			return ascii
-		}
-	}
-	return readable
-}
-
-// latinLookalikes are the scripts whose letters are drawn like Latin ones,
-// enough to spell a Latin name with: a label in one of them is shown in
-// punycode.
-var latinLookalikes = []*unicode.RangeTable{
-	unicode.Armenian, unicode.Canadian_Aboriginal, unicode.Cherokee,
-	unicode.Coptic, unicode.Cyrillic, unicode.Ethiopic, unicode.Georgian,
-	unicode.Greek, unicode.Lisu, unicode.Tifinagh,
-}
-
-// shownInUnicode says whether a label may be shown in Unicode: all its
-// letters in one script (digits, hyphens and marks belong to none), not one
-// of latinLookalikes, and no combining mark when that script is Latin (or
-// when there is no script at all).
-func shownInUnicode(label string) bool {
-	var script *unicode.RangeTable
-	mark := false
-	for _, r := range label {
-		if unicode.In(r, unicode.Mn, unicode.Me) {
-			mark = true
-		}
-		if unicode.Is(unicode.Common, r) || unicode.Is(unicode.Inherited, r) {
+	labels := strings.Split(ascii, ".")
+	for i, label := range labels {
+		if !strings.HasPrefix(label, "xn--") {
 			continue
 		}
-		s := scriptOf(r)
-		if s == nil || (script != nil && s != script) {
-			return false
+		readable, err := idna.Lookup.ToUnicode(label)
+		if err == nil && listedLabel(readable) {
+			labels[i] = readable
 		}
-		script = s
 	}
-	if mark && (script == nil || script == unicode.Latin) {
+	return strings.Join(labels, ".")
+}
+
+// listedLabel says whether a domain label may be shown in Unicode: every
+// character in the closed list (listedRune), and the label stable in NFC.
+func listedLabel(label string) bool {
+	if label == "" || !norm.NFC.IsNormalString(label) {
 		return false
 	}
-	if script == nil {
-		return true
-	}
-	for _, t := range latinLookalikes {
-		if script == t {
+	for _, r := range label {
+		if !listedRune(r) {
 			return false
 		}
 	}
 	return true
 }
 
-// scriptOf is the Unicode script of r, nil for none known.
-func scriptOf(r rune) *unicode.RangeTable {
-	for _, t := range unicode.Scripts {
-		if unicode.Is(t, r) {
-			return t
-		}
+// listedRune is the closed list of characters an address is shown with
+// as they are: the ASCII letters and digits, the hyphen, and the letters of
+// Latin-1 Supplement (U+00C0-U+00FF but × and ÷) and Latin Extended-A
+// (U+0100-U+017F) but those drawn like an ASCII letter (drawnLikeASCII).
+func listedRune(r rune) bool {
+	switch {
+	case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', '0' <= r && r <= '9', r == '-':
+		return true
+	case 0x00C0 <= r && r <= 0x00FF:
+		return r != 0x00D7 && r != 0x00F7
+	case 0x0100 <= r && r <= 0x017F:
+		return !drawnLikeASCII[r]
 	}
-	return nil
+	return false
+}
+
+// drawnLikeASCII are the letters of Latin Extended-A a reader takes for an
+// ASCII letter or a dot: ı (a dotless i, "gıthub"), ĸ (a small capital K),
+// ŀ (an l with a middle dot), ŉ (an apostrophe and n), ſ (a long s, drawn
+// like an f). Out of the list.
+var drawnLikeASCII = map[rune]bool{
+	'\u0131': true, '\u0138': true, '\u0140': true, '\u0149': true, '\u017F': true,
 }
 
 // DomainForms is the forms a domain may be written in, in a header or in a

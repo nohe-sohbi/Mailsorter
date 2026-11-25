@@ -187,24 +187,28 @@ func TestAnEntryProtectsAFromWrittenTheSameWay(t *testing.T) {
 	}
 }
 
-// How an entry shows a domain, the browsers' rule: Unicode only when each
-// label is in one script that does not imitate Latin, punycode otherwise.
-func TestEntryShowsADomainTheBrowsersWay(t *testing.T) {
+// How a domain is shown, in the settings and on every screen: each label in
+// Unicode only when all its characters are in the closed list (ASCII letters,
+// digits, hyphen, Latin-1 Supplement and Latin Extended-A letters but those
+// drawn like ASCII) and it is stable in NFC; in punycode otherwise.
+func TestADomainIsShownFromAClosedList(t *testing.T) {
 	cases := map[string]string{
 		"café.fr":            "café.fr",
 		"xn--caf-dma.fr":     "café.fr",
-		"日本.jp":              "日本.jp",
+		"crème-brûlée.fr":    "crème-brûlée.fr",
+		"straße.de":          "straße.de",
+		"cafe\u0301.fr":      "café.fr",
+		"example.com":        "example.com",
+		"日本.jp":              "xn--wgv71a.jp",
 		"xn--80ak6aa92e.com": "xn--80ak6aa92e.com",
 		"аррӏе.com":          "xn--80ak6aa92e.com",
 		"пример.рф":          "xn--e1afmkfd.xn--p1ai",
 		"αβγ.gr":             "xn--mxacd.gr",
 		"pаypal.com":         "xn--pypal-4ve.com",
 		"ドメイン名例.jp":          "xn--eckwd4c7cu47r2wf.jp",
-		"example.com":        "example.com",
 		"lİnkedin.com":       "xn--linkedin-p0e.com",
-		"cafe\u0301.fr":      "café.fr",
-		"tiếng.vn":           "tiếng.vn",
-		"हिन्दी.in":          "हिन्दी.in",
+		"tiếng.vn":           "xn--ting-hv5a.vn",
+		"हिन्दी.in":          "xn--j2bd4cyah0f.in",
 	}
 	for typed, want := range cases {
 		if got, _ := NormalizeEntry(typed); got != want {
@@ -216,6 +220,46 @@ func TestEntryShowsADomainTheBrowsersWay(t *testing.T) {
 	}
 	if got := EntryFromMail("Apple <id@xn--80ak6aa92e.com>"); got != "id@xn--80ak6aa92e.com" {
 		t.Errorf("EntryFromMail(Apple <id@xn--80ak6aa92e.com>) = %q, want id@xn--80ak6aa92e.com", got)
+	}
+}
+
+// The homographs of the twelfth review: a label with one character out of
+// the closed list never shows in Unicode. Taken by IDNA, it shows in
+// punycode, the form the app compares; refused, its non-ASCII characters
+// show as U+FFFD. Either way the look-alike character is gone from the
+// screen, and so is the domain it imitated.
+func TestALookAlikeDomainNeverShowsAsAnother(t *testing.T) {
+	cases := map[string]string{
+		"\u0261oogle.com":     "google.com", // ɡ, IPA
+		"xn--oogle-qmc.com":   "google.com", // the same, written in punycode
+		"\u0261mail.com":      "gmail.com",
+		"\u0261ithub.com":     "github.com",
+		"payp\u0251l.com":     "paypal.com", // ɑ, IPA
+		"g\u0131thub.com":     "github.com", // ı, dotless, Latin Extended-A
+		"yah\u1D0F\u1D0F.com": "yahoo.com",  // ᴏ, small capital
+		"app\u029Fe.com":      "apple.com",  // ʟ, small capital
+		"paypal\u00B7com":     "paypal.com", // middle dot
+		"paypal\u2E31com":     "paypal.com", // word separator middle dot
+		"paypal\u16EBcom":     "paypal.com", // runic single punctuation
+		"paypal\u02D1com":     "paypal.com", // half triangular colon
+		"paypal\u30FBcom":     "paypal.com", // katakana middle dot
+		"k\u0138.com":         "kk.com",     // ĸ, kra
+	}
+	for written, imitated := range cases {
+		shown := ShownDomain(written)
+		if ascii, ok := ASCIIDomain(written); ok {
+			if shown != ascii {
+				t.Errorf("ShownDomain(%q) = %q, want its punycode %q", written, shown, ascii)
+			}
+		} else if !strings.ContainsRune(shown, '\uFFFD') {
+			t.Errorf("ShownDomain(%q) = %q, which IDNA refuses: want its non-ASCII characters shown as U+FFFD", written, shown)
+		}
+		if shown == imitated || strings.ContainsFunc(shown, func(r rune) bool { return r >= 0x80 && r != '\uFFFD' }) {
+			t.Errorf("ShownDomain(%q) = %q, which reads as %q or keeps the look-alike", written, shown, imitated)
+		}
+		if got := ShownAddress("x@" + written); got != "x@"+shown {
+			t.Errorf("ShownAddress(x@%q) = %q, want x@%q", written, got, shown)
+		}
 	}
 }
 
@@ -273,7 +317,11 @@ func TestLabel(t *testing.T) {
 		"\"\u200B\" <x@paypa\uFE0Fl.com>":                  "x@paypal.com",
 		"y@p\u0430ypal.com":                                "y@xn--pypal-4ve.com",
 		"x@paypal\u2024com":                                "x@paypal\uFFFDcom",
-		"pay\u2024pal@x.com":                               "pay\u2024pal@x.com",
+		"pay\u2024pal@x.com":                               "pay\uFFFDpal@x.com",
+		"\u0455upport@paypal.com":                          "\uFFFDupport@paypal.com",
+		"j\u00FCrgen@x.de":                                 "j\u00FCrgen@x.de",
+		"\"jean dupont\"@exemple.fr":                       "\"jean dupont\"@exemple.fr",
+		"x\uFFFD@x.fr":                                     "x\uFFFD@x.fr",
 		"boss\uFF20corp.com@evil.io":                       "boss\uFFFDcorp.com@evil.io",
 		"boss\uFE6Bcorp.com@evil.io":                       "boss\uFFFDcorp.com@evil.io",
 		"x@EVIL.io":                                        "x@evil.io",

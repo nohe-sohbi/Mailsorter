@@ -1290,7 +1290,7 @@ func TestAcceptance_EveryAddressShownIsTheServersFormGmail(t *testing.T) {
 	const shown = "x@pay\uFFFDpal.com"
 	ids := app.receiveAndSync(
 		incoming{From: hidden, Subject: "Soldes", Unsubscribe: "<https://pay.example/stop>"},
-		incoming{From: "y@p\u0430ypal.com", Subject: "Votre compte"},
+		incoming{From: "y@p\u0430ypal.com", Subject: "Votre compte", Unsubscribe: "<https://compte.example/stop>"},
 	)
 
 	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
@@ -1303,10 +1303,15 @@ func TestAcceptance_EveryAddressShownIsTheServersFormGmail(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &cards); err != nil {
 			app.fatalf("GET %s illisible (%v) : %s", path, err, raw)
 		}
-		found := false
+		found, lookAlike := false, false
 		for _, c := range cards {
 			if c["senderEmailShown"] == shown {
 				found = true
+			}
+			// The Cyrillic "а" of y@pаypal.com: the domain in punycode,
+			// never read as paypal.com.
+			if c["senderEmailShown"] == "y@xn--pypal-4ve.com" {
+				lookAlike = true
 			}
 			if s, _ := c["senderEmailShown"].(string); strings.ContainsRune(s, '\u202E') || s == "x@paypal.com" {
 				app.failf("GET %s montre %q : l'adresse telle qu'écrite", path, s)
@@ -1314,6 +1319,9 @@ func TestAcceptance_EveryAddressShownIsTheServersFormGmail(t *testing.T) {
 		}
 		if !found {
 			app.failf("GET %s devrait montrer %q pour %q, il montre : %s", path, shown, hidden, raw)
+		}
+		if !lookAlike {
+			app.failf("GET %s devrait montrer y@xn--pypal-4ve.com pour y@p\u0430ypal.com, il montre : %s", path, raw)
 		}
 	}
 
@@ -1370,6 +1378,34 @@ func TestAcceptance_EveryAddressShownIsTheServersFormGmail(t *testing.T) {
 	}
 	if e, _ := entries[0].(map[string]interface{}); e["senderAddressShown"] != "y@xn--pypal-4ve.com" {
 		app.failf("l'infobulle de l'historique devrait montrer y@xn--pypal-4ve.com, elle montre %v", e["senderAddressShown"])
+	}
+
+	// A rule saved before names were written in their shown form: its name
+	// holds the address as written, and the screen gets nameShown.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	legacy := models.SortingRule{
+		UserID: scenarioUser, Name: "Expéditeur : x@pay\u202Epal.com", Enabled: true, MatchAll: true,
+		Conditions: []models.RuleCondition{{Field: "from", Operator: "contains", Value: "x@pay\u202Epal.com"}},
+		Action:     "archive", Priority: 5,
+	}
+	if _, err := app.h.db.SortingRules().InsertOne(ctx, legacy); err != nil {
+		app.fatalf("enregistrement d'une ancienne règle : %v", err)
+	}
+	code, out = app.call(http.MethodGet, "/api/rules", nil)
+	rulesList, _ = out["rules"].([]interface{})
+	seen := false
+	for _, raw := range rulesList {
+		r, _ := raw.(map[string]interface{})
+		if r["name"] == legacy.Name {
+			seen = true
+			if r["nameShown"] != "Expéditeur : "+shown {
+				app.failf("l'ancienne règle devrait se montrer « Expéditeur : %s », elle montre %v", shown, r["nameShown"])
+			}
+		}
+	}
+	if code != http.StatusOK || !seen {
+		app.fatalf("GET /api/rules ne rend pas l'ancienne règle (%d) : %v", code, out)
 	}
 }
 

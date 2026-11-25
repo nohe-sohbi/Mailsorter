@@ -225,9 +225,14 @@ type RuleAction struct {
 // multi-action (and the one-click sender rules) populate it instead, and it
 // always mirrors the primary (first) action so older readers still work.
 type SortingRule struct {
-	ID           string          `json:"id" bson:"_id,omitempty"`
-	UserID       string          `json:"userId" bson:"userId"`
-	Name         string          `json:"name" bson:"name"`
+	ID     string `json:"id" bson:"_id,omitempty"`
+	UserID string `json:"userId" bson:"userId"`
+	Name   string `json:"name" bson:"name"`
+	// NameShown is Name as the rules screen shows it (protect.ShownText): a
+	// rule made from a sender before the name was written in its shown
+	// form holds the sender's address as written. Set on the way out of
+	// GET /api/rules, never stored.
+	NameShown    string          `json:"nameShown,omitempty" bson:"-"`
 	Enabled      bool            `json:"enabled" bson:"enabled"`
 	MatchAll     bool            `json:"matchAll" bson:"matchAll"` // true = AND all conditions, false = OR any
 	Conditions   []RuleCondition `json:"conditions" bson:"conditions"`

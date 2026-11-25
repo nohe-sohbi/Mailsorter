@@ -69,6 +69,7 @@ func (h *Handler) GetRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range ruleset {
+		ruleset[i].NameShown = protect.ShownText(ruleset[i].Name)
 		for j := range ruleset[i].Conditions {
 			ruleset[i].Conditions[j].ValueShown = shownConditionValue(ruleset[i].Conditions[j].Value)
 		}
