@@ -530,9 +530,11 @@ function Inbox() {
     // announced as done; a failed listing is already on screen as an error.
     // The list of an IMAP mailbox is the stored copy, so it is the last sync's.
     // Over the Gmail API the list is read live, and saying so would be false.
-    if (result?.syncNeedsMailbox) {
-      // The mailbox to connect again: the server's sentence, and the way.
-      toast.action(result.syncError, 'Mettre à jour', () => navigate('/connect'), { variant: 'error' });
+    if (result?.syncReconnect) {
+      // The mailbox to connect again: the server's sentence, and the way
+      // (the new password form, or the connect screen).
+      const { label, to } = result.syncReconnect;
+      toast.action(result.syncError, label, () => navigate(to), { variant: 'error' });
     } else if (result?.syncSaid) {
       // The server's own sentence says it all: alone, one sentence.
       toast.error(result.syncError);

@@ -466,7 +466,9 @@ function History() {
           ) : (
             <ul className="space-y-2.5">
               {entries.map((e) => {
-                const meta = actionMeta(e.action, { folders });
+                // A report and its return wear the report's icon, as they
+                // read « Reporté » and « Revenu dans la boîte » (verbOf).
+                const meta = e.source === 'snooze' ? actionMeta('snooze') : actionMeta(e.action, { folders });
                 const Icon = meta.Icon;
                 const identity = identityOf(e);
                 return (

@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { emailService, aiService, senderService, subscriptionService, mailboxService } from '../services/api';
+import { emailService, aiService, senderService, subscriptionService, mailboxService, reconnectAction } from '../services/api';
 
 const EmailContext = createContext(null);
 
@@ -83,11 +83,11 @@ export function EmailProvider({ children }) {
       // handed back to the caller: the "Synchroniser" button used to announce
       // "Boîte synchronisée" after a sync that had failed.
       // syncSaid: the server's own sentence about it, which the inbox shows
-      // alone (syncSentence); syncNeedsMailbox: a 428, the mailbox to be
-      // connected again.
+      // alone (syncSentence); syncReconnect: a 428, the way to connect the
+      // mailbox again (reconnectAction).
       let syncError = '';
       let syncSaid = false;
-      let syncNeedsMailbox = false;
+      let syncReconnect = null;
       try {
         const now = Date.now();
         if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
@@ -98,7 +98,7 @@ export function EmailProvider({ children }) {
             console.warn('Sync failed:', syncErr);
             syncError = errorMessage(syncErr, { sync: true });
             syncSaid = Boolean(syncSentence(syncErr));
-            syncNeedsMailbox = syncErr?.response?.status === 428;
+            syncReconnect = reconnectAction(syncErr);
           }
         }
 
@@ -121,7 +121,7 @@ export function EmailProvider({ children }) {
           subscriptionService.getSubscriptions(),
         ]);
 
-        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncNeedsMailbox };
+        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect };
 
         // The listing is the one call whose failure the user must see: without
         // it the screen falls back to an empty list, which the inbox used to
@@ -129,7 +129,7 @@ export function EmailProvider({ children }) {
         if (emailsRes.status === 'rejected') {
           reportError(emailsRes.reason);
           setLoading(false);
-          return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncNeedsMailbox, listError: true };
+          return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect, listError: true };
         }
 
         let newEmails = [];
@@ -158,10 +158,10 @@ export function EmailProvider({ children }) {
         setSubscriptions(newSubscriptions);
         lastFetchRef.current = Date.now();
 
-        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats, syncError, syncSaid, syncNeedsMailbox };
+        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats, syncError, syncSaid, syncReconnect };
       } catch (err) {
         if (!isStale()) reportError(err);
-        return { emails, senders, suggestions, stats, syncError, syncSaid, syncNeedsMailbox, listError: true };
+        return { emails, senders, suggestions, stats, syncError, syncSaid, syncReconnect, listError: true };
       } finally {
         if (!isStale()) setLoading(false);
       }

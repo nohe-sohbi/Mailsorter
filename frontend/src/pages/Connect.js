@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { mailboxService, configService, authService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
@@ -51,7 +51,98 @@ function HotelKeyBoard({ providers }) {
   );
 }
 
-function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
+// What the connect screen says when connecting, or saving a new password,
+// failed: the server's sentence, the same one every screen shows for the case
+// (a password refused, a mailbox that did not answer, an address with no IMAP
+// route), written once, server-side. A body too large (413, which a proxy may
+// answer in HTML) and a malformed one (400) get a French sentence of their
+// own if the server's is missing.
+function connectFailure(err, fallback) {
+  const status = err?.response?.status;
+  if (status === 413) return 'Mot de passe trop long.';
+  if (status === 400) return apiError(err, "Saisissez l'adresse de la boîte et son mot de passe d'application.");
+  return apiError(err, fallback);
+}
+
+// "Changer le mot de passe d'application": the mailbox stays as it is, only
+// its password changes, proved by the server before it is stored (PUT
+// /api/mailbox/password). `refused` is the way here from "Mettre à jour",
+// after the provider refused the password on file: the form is open, and
+// says why.
+function ChangePassword({ mailbox, providers, refused, onSaved }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(refused);
+  const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const provider = useMemo(() => detectProvider(providers, mailbox.username), [providers, mailbox.username]);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!password) return;
+    setSaving(true);
+    try {
+      const { data } = await mailboxService.changePassword(password);
+      setPassword('');
+      setOpen(false);
+      track('mailbox_password_changed');
+      toast.success('Mot de passe mis à jour.');
+      onSaved(data);
+    } catch (err) {
+      toast.error(connectFailure(err, "Le mot de passe n'a pas pu être mis à jour."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="btn-secondary">
+        <Refresh size={16} /> Changer le mot de passe d'application
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-6 grid w-full gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+      <form onSubmit={handleSave} className="rounded-2xl border border-hairline/70 p-6">
+        {refused && (
+          <p className="mb-4 rounded-xl bg-caution-50 p-3 text-sm leading-relaxed text-caution-700">
+            Votre fournisseur a refusé le mot de passe d'application enregistré. Collez-en un nouveau.
+          </p>
+        )}
+        <label htmlFor="mailbox-new-password" className="block text-xs font-bold text-ink-700">
+          Nouveau mot de passe d'application
+        </label>
+        <input
+          id="mailbox-new-password"
+          type="password"
+          required
+          autoComplete="new-password"
+          className="input mt-1.5 w-full text-sm"
+          placeholder="xxxx xxxx xxxx xxxx"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={saving}
+        />
+        <p className="mt-2 text-xs leading-relaxed text-muted">
+          Mailsorter l'essaie sur votre boîte avant de l'enregistrer. La boîte, son historique et ce qu'on peut encore
+          annuler restent tels quels.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button type="submit" disabled={saving || !password} className="btn-primary">
+            {saving ? <Spinner size={16} /> : <Check size={16} />} Enregistrer
+          </button>
+          <button type="button" onClick={() => setOpen(false)} disabled={saving} className="btn-ghost">
+            Annuler
+          </button>
+        </div>
+      </form>
+      {provider && <ProviderBriefing provider={provider} />}
+    </div>
+  );
+}
+
+function ConnectedMailbox({ mailbox, providers, refused, onPasswordSaved, onDisconnect, disconnecting }) {
   const isGmail = mailbox.transport === 'gmail' || mailbox.provider === 'google';
   const isImap = mailbox.transport === 'imap';
 
@@ -67,7 +158,7 @@ function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
               {isGmail ? 'Boîte Gmail connectée' : 'Boîte mail connectée (IMAP)'}
             </h2>
             <p className="text-xs text-muted">
-              {isGmail ? 'Authentifiée via Google OAuth sécurisé' : 'Reconnue et joignable'}
+              {isGmail ? 'Authentifiée via Google OAuth sécurisé' : 'Branchée en IMAP'}
             </p>
           </div>
         </div>
@@ -93,10 +184,17 @@ function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
         <Link to="/inbox" className="btn-primary">
           <Inbox size={16} /> Accéder à ma boîte
         </Link>
+        {isImap && !refused && (
+          <ChangePassword mailbox={mailbox} providers={providers} refused={false} onSaved={onPasswordSaved} />
+        )}
         <button onClick={onDisconnect} disabled={disconnecting} className="btn-danger">
           {disconnecting ? <Spinner size={16} /> : <Trash size={16} />} Déconnecter cette boîte
         </button>
       </div>
+
+      {isImap && refused && (
+        <ChangePassword mailbox={mailbox} providers={providers} refused onSaved={onPasswordSaved} />
+      )}
 
       <p className="mt-3 text-xs leading-relaxed text-muted">
         Déconnecter efface l'accès de Mailsorter à cette boîte sans toucher à vos emails ni à votre compte Mailsorter.
@@ -110,6 +208,10 @@ function Connect() {
   const hotel = useHotel();
   const confirm = useConfirm();
   const navigate = useNavigate();
+  // ?motdepasse=1: "Mettre à jour" after the provider refused the password on
+  // file, which opens the new password form at once.
+  const [params, setParams] = useSearchParams();
+  const passwordRefused = params.get('motdepasse') === '1';
   const { isConfigured } = useInstance();
   // The shared answer to "which mailbox is this", refreshed after a connect or
   // a disconnect so every screen hides or shows the Gmail-only controls again.
@@ -183,10 +285,7 @@ function Connect() {
     } catch (err) {
       const status = err.response?.status;
       track('mailbox_connect_failed', { status: status || 0 });
-      // The server's sentence, the same one every screen shows for the case
-      // (a password refused, a mailbox that did not answer, an address with
-      // no IMAP route): written once, server-side.
-      toast.error(apiError(err, "La connexion n'a pas pu être enregistrée."));
+      toast.error(connectFailure(err, "La connexion n'a pas pu être enregistrée."));
     } finally {
       setConnecting(false);
     }
@@ -251,6 +350,13 @@ function Connect() {
       {mailbox ? (
         <ConnectedMailbox
           mailbox={mailbox}
+          providers={providers}
+          refused={passwordRefused}
+          onPasswordSaved={(data) => {
+            setMailbox(data);
+            loadMailbox({ force: true });
+            if (passwordRefused) setParams({}, { replace: true });
+          }}
           onDisconnect={handleDisconnect}
           disconnecting={disconnecting}
         />
