@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
@@ -475,7 +477,7 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		writeError(w, http.StatusUnauthorized, "User email required")
+		writeError(w, http.StatusUnauthorized, "Connexion requise.")
 		return
 	}
 
@@ -484,13 +486,21 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 
 	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
-		// A dead Google grant, and an IMAP password the provider refuses,
-		// say so in the words of the connect screen (writeAuthError).
-		if errors.Is(err, errReauthRequired) || errors.Is(err, imap.ErrAuth) {
+		// Every answer here is a French sentence the inbox shows as is
+		// (errorMessage in EmailContext.js): what failed is logged.
+		switch {
+		case errors.Is(err, errReauthRequired), errors.Is(err, imap.ErrAuth):
+			// A dead Google grant, and an IMAP password the provider
+			// refuses, in the words of the connect screen.
 			writeAuthError(w, err)
-			return
+		case errors.Is(err, errMailboxNoAnswer):
+			writeError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
+		case errors.Is(err, errNoMailboxConnected):
+			// A 500 here, as this route always answered it.
+			writeError(w, http.StatusInternalServerError, noMailboxMessage)
+		default:
+			writeError(w, http.StatusInternalServerError, syncFailureMessage(userEmail, err))
 		}
-		writeError(w, http.StatusInternalServerError, "Failed to sync emails: "+err.Error())
 		return
 	}
 
@@ -513,6 +523,34 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 // This is the fork the whole edition split was for. Everything above it (the
 // handler, the auto-sync loop) asks for a sync and gets one; only this function
 // knows there are two ways to perform it.
+// syncFailureMessage is what "Synchroniser" says of a failure: the sentence of
+// one the user is meant to read (errMailboxUnavailable, errMailboxLost,
+// errMirrorNotReconciled, errMessagesNotStored), or else a general one, the
+// detail logged rather than shown (it may be the English of a library).
+func syncFailureMessage(userEmail string, err error) string {
+	for _, said := range []error{errMailboxUnavailable, errMailboxLost, errMirrorNotReconciled, errMessagesNotStored} {
+		if errors.Is(err, said) {
+			return asSentence(err.Error())
+		}
+	}
+	log.Printf("sync: %s: %v", userEmail, err)
+	return "La synchronisation a échoué, réessayez dans un instant."
+}
+
+// asSentence starts s with a capital letter and ends it with a period: the
+// errors of a sync are written to follow another sentence.
+func asSentence(s string) string {
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError {
+		return s
+	}
+	s = string(unicode.ToUpper(r)) + s[size:]
+	if !strings.HasSuffix(s, ".") {
+		s += "."
+	}
+	return s
+}
+
 // syncRequestTimeout is how long "Synchroniser" waits for the mailbox. An
 // IMAP session is bound to it (imap.Connect): past it, the connection is
 // dropped and the sync answers errMailboxNoAnswer. A variable, so a test can
@@ -679,6 +717,10 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, errWakeBusy) {
 		writeError(w, http.StatusLocked, wakeBusyMessage)
+		return
+	}
+	if errors.Is(err, imap.ErrAmbiguous) {
+		writeSeveralCopies(w)
 		return
 	}
 	if errors.Is(err, mailbox.ErrUnknownAction) {

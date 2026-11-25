@@ -381,15 +381,23 @@ with PEEK, so syncing never marks them read.
 }
 ```
 
+Every error is a French sentence the inbox shows as is; what failed is
+logged.
+
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
+  ("L'autorisation Google a expiré. Reconnectez votre compte Google.")
 - `428 Precondition Required`: the mail provider refuses the IMAP password on
   file: "Identifiants refusés par le fournisseur. Vérifiez le mot de passe
   d'application.", as on the connect screen
-- `500 Internal Server Error`: Failed to sync emails. This includes an account
-  with no mailbox connected, which this route does not map to `428`, and a
-  mailbox that did not answer ("votre boîte n'a pas répondu, réessayez dans un
-  instant", see below)
+- `502 Bad Gateway`: the IMAP mailbox did not answer (out of reach, too slow
+  for the request's 30 s, or unavailable): "Votre boîte n'a pas répondu,
+  réessayez dans un instant."
+- `500 Internal Server Error`: no mailbox connected ("Aucune boîte mail n'est
+  connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", a
+  `500` on this route, not a `428`); a sync that read the mailbox only in part
+  (its own sentence, see below); anything else, "La synchronisation a échoué,
+  réessayez dans un instant."
 
 ### Direct action on a message
 
@@ -449,6 +457,7 @@ IMAP `unlabel`) on a mail with a scheduled snooze ends that snooze: it becomes
 **Error Responses:**
 - `400 Bad Request`: Missing `messageId`, unsupported `action`, or `label` (and over the Gmail API `unlabel`), which need a name this route does not carry
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `409 Conflict`: over IMAP, the verb that undoes a move finds several copies of the mail where Mailsorter put it: "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie." (`severalCopies: true`); nothing moved
 - `423 Locked`: the mail has a snooze the wake sweep or a "Réactiver" is bringing back at that moment; nothing moved ("Ce mail est déjà en train de revenir dans votre boîte, réessayez dans un instant.")
 - `428 Precondition Required`: no mailbox is connected to this account yet
 - `500 Internal Server Error`: the mailbox refused the action
@@ -716,6 +725,12 @@ meanwhile, the others still come back, and the answer says why those did not:
 ```json
 { "restored": 2, "total": 3, "notWhereLeft": 1, "message": "Ce mail n'est plus là où Mailsorter l'avait rangé." }
 ```
+
+A message no longer under the number Mailsorter recorded, whose `Message-ID`
+several messages carry where it was put (copies), is not put back either:
+`severalCopies` counts them, and `message` adds "Plusieurs copies de ce mail
+sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le
+depuis votre messagerie.".
 
 **Error Responses:**
 - `400 Bad Request`: Non-reversible action, empty list, missing label name, or over 200 ids
@@ -1069,18 +1084,18 @@ Two consequences worth knowing:
   next sync. Only an answer that cannot be parsed says something about a
   message: a server that refuses a read (`NO`, `[UNAVAILABLE]`,
   `[THROTTLED]`) or runs out of time concludes nothing, and the sync answers
-  `500` "votre boîte n'a pas répondu jusqu'au bout de la synchronisation,
-  réessayez dans un instant"; a connection that cannot be opened again,
-  `500` "la connexion à votre boîte a été perdue pendant la synchronisation".
+  `500` "Votre boîte n'a pas répondu jusqu'au bout de la synchronisation,
+  réessayez dans un instant."; a connection that cannot be opened again,
+  `500` "La connexion à votre boîte a été perdue pendant la synchronisation.".
   A mailbox that cannot be opened at all for a reason other than its password
   (out of reach, too slow for the request's 30 s, or answering LOGIN that it is
-  unavailable, see `POST /api/auth/mailbox`) answers `500` "votre boîte n'a pas
-  répondu, réessayez dans un instant", never a refused password. An IMAP session
+  unavailable, see `POST /api/auth/mailbox`) answers `502` "Votre boîte n'a pas
+  répondu, réessayez dans un instant.", never a refused password. An IMAP session
   is bound to its request for its whole life, its opening included (the dial,
   TLS, the greeting, LOGIN, the listing of the folders): a server that greets
   and then says nothing, at LOGIN or later (a SELECT, a FETCH), holds no
-  request past its time, and the sync answers that same `500` "votre boîte
-  n'a pas répondu, réessayez dans un instant" once its 30 s run out. The
+  request past its time, and the sync answers that same `502` "Votre boîte
+  n'a pas répondu, réessayez dans un instant." once its 30 s run out. The
   background sync gives each account one minute the same way, so a silent
   server holds only its own account.
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
@@ -1383,7 +1398,12 @@ où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
 entry stays not undone); `409` already undone, except that a request within
 2 minutes of another one that undid it, with nothing done to the mail since,
 answers `200` like it (two clicks, two tabs): once the mail was archived again,
-a screen left open on the old line gets `409`; `423` "Ce mail est déjà en train
+a screen left open on the old line gets `409`; over IMAP, `409` with
+`severalCopies: true` "Plusieurs copies de ce mail sont dans votre boîte :
+Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie."
+when the mail is no longer under the number Mailsorter recorded and several
+messages carry its `Message-ID` there (nothing moves; the entry stays not
+undone); `423` "Ce mail est déjà en train
 de revenir dans votre boîte, réessayez dans un instant." while the wake sweep
 or a "Réactiver" brings back the mail of a snooze; `500` "Annulation impossible à
 vérifier, réessayez." when the actions since cannot be read; `502` the provider
@@ -2633,7 +2653,7 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `402` | The hosted service's free monthly AI quota is spent (`analyze` and `analyze-async` only) | `{ "error": "Quota mensuel atteint. Passez à Pro pour continuer.", "status": 402 }` |
 | `404` | No such resource for this caller, or no such route | `{ "error": "Rule not found", "status": 404 }` |
 | `405` | The route exists, not with this method | `{ "error": "Method not allowed on this route", "status": 405 }` |
-| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro | `{ "error": "Action déjà annulée", "status": 409 }` |
+| `409` | Already done or already taken: an action undone twice, an existing account, an address already linked to Google, a user already on Pro; or, over IMAP, an "Annuler" that finds several copies of the mail where Mailsorter put it (`severalCopies: true`, nothing moved) | `{ "error": "Action déjà annulée", "status": 409 }`, `{ "error": "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie.", "status": 409, "severalCopies": true }` |
 | `413` | Body over 1 MiB, or an attachment over 30 MiB | `{ "error": "Request body too large", "status": 413 }` |
 | `422` | Valid request the target cannot serve: an address with no IMAP route in this edition, a sender with no unsubscribe link | `{ "error": "Cette boîte ne se connecte pas par IMAP sur cette instance.", "status": 422 }` |
 | `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.", "status": 428 }`, `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428 }` |

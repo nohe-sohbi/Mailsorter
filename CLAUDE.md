@@ -236,7 +236,7 @@ The outbound clients and primitives:
 |---|---|
 | `routes.go` | The single route table (79 registrations) and the middleware chain. Source of truth for the API surface |
 | `middleware.go` | `authMiddleware`, `securityHeadersMiddleware`, `recoverMiddleware`, `requestIDMiddleware`, `loggingMiddleware`, token-bucket rate limiter, `clientIP`, `publicPrefixes` |
-| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501, IMAP password refused -> 428 with the connect screen's sentence, mailbox that did not answer -> 502, anything else -> 500, in French), `errReauthRequired`, 1 MiB body cap |
+| `respond.go` | `writeJSON`, `writeError`, `decodeJSON`, `writeAuthError` (no mailbox -> 428, dead grant -> 401, wrong transport -> 501, IMAP password refused -> 428 with the connect screen's sentence, mailbox that did not answer -> 502, anything else -> 500, in French), `writeSeveralCopies` (409 with `severalCopies`: "Annuler" that finds several copies of the mail, `imap.ErrAmbiguous`, which the history screen must not take for "already undone"), `errReauthRequired`, 1 MiB body cap |
 | `handlers.go` | `Handler` struct + constructor (which starts the background loops), `gmailClientFor`, health, metrics, Google auth URL and callback, emails listing, stats, sync, direct action, labels, config status |
 | `auth_account.go` | `POST /api/auth/register` and `/login`: the account by address and password (bcrypt, 8 characters to 72 bytes), behind the sign-in limiter |
 | `message.go` | `GET /api/emails/{id}`: one message with its body and its attachment list, on both transports. `writeMailboxFailure`: what a read of the mailbox that failed answers, on both transports and for the download too: a French sentence, 404 when the mail is no longer there (`mailGone`), 502 otherwise, the error itself only in the log |
@@ -777,7 +777,7 @@ Do not duplicate these into this file. Point at them.
   the first SELECT or FETCH, held the report sweep or the background sync, and
   every account after it, forever. So whatever opens a session gives it the
   time it may take: a request its own timeout (the sync: `syncRequestTimeout`,
-  30 s, then "votre boîte n'a pas répondu"), a loop one per account
+  30 s, then 502 "Votre boîte n'a pas répondu, réessayez dans un instant."), a loop one per account
   (`snoozeAccountBound`, 30 s; `autoSyncAccountBound`, 1 min); never a context
   without an end. `within` (`imap/parts.go`) is the same rule for one read of
   the reader or the download, whose context may be shorter. And a failed

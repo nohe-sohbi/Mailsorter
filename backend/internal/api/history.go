@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/activity"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
@@ -365,6 +366,9 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, errWakeBusy):
 			writeError(w, http.StatusLocked, wakeBusyMessage)
+			return
+		case errors.Is(err, imap.ErrAmbiguous):
+			writeSeveralCopies(w)
 			return
 		case errors.Is(err, errNotWhereLeft):
 			writeError(w, http.StatusNotFound, notWhereLeftMessage)

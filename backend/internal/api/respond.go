@@ -24,6 +24,23 @@ const mailboxRejectedMessage = "Identifiants refusés par le fournisseur. Vérif
 // be opened for another reason: out of reach, too slow, or unavailable.
 const mailboxNoAnswerMessage = "Votre boîte n'a pas répondu, réessayez dans un instant."
 
+// noMailboxMessage is what the user reads when no mailbox is connected.
+const noMailboxMessage = "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une."
+
+// severalCopiesMessage is what the user reads when "Annuler" would bring back
+// a mail whose Message-ID several messages carry where Mailsorter put it
+// (imap.ErrAmbiguous): which one to put back cannot be told.
+const severalCopiesMessage = "Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie."
+
+// writeSeveralCopies answers an "Annuler" refused for severalCopiesMessage:
+// 409, and severalCopies so that a screen can tell it from the 409 of an
+// action already undone, which it treats as such.
+func writeSeveralCopies(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]interface{}{
+		"error": severalCopiesMessage, "status": http.StatusConflict, "severalCopies": true,
+	})
+}
+
 // writeAuthError maps a getUserToken / gmailClientFor / openSession failure to
 // the right status: 401 when the Google grant is dead (SPA re-runs OAuth), 428
 // when no mailbox is connected or when the provider refuses the IMAP password
@@ -40,9 +57,9 @@ const mailboxNoAnswerMessage = "Votre boîte n'a pas répondu, réessayez dans u
 func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errNoMailboxConnected):
-		writeError(w, http.StatusPreconditionRequired, "Aucune boîte mail n'est connectée à ce compte. Rendez-vous sur /connect pour en brancher une.")
+		writeError(w, http.StatusPreconditionRequired, noMailboxMessage)
 	case errors.Is(err, errReauthRequired):
-		writeError(w, http.StatusUnauthorized, "Gmail authorization expired. Please reconnect your account.")
+		writeError(w, http.StatusUnauthorized, "L'autorisation Google a expiré. Reconnectez votre compte Google.")
 	case errors.Is(err, imap.ErrAuth):
 		writeError(w, http.StatusPreconditionRequired, mailboxRejectedMessage)
 	case errors.Is(err, imap.ErrUnreachable):

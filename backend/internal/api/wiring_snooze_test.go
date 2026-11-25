@@ -660,8 +660,8 @@ func TestAcceptance_IMAPUnavailableAtLoginIsNotARefusedPassword(t *testing.T) {
 
 	code, out := moi.syncAnswer()
 	msg, _ := out["error"].(string)
-	if code == http.StatusOK || !strings.Contains(msg, "votre boîte n'a pas répondu") || strings.Contains(strings.ToLower(msg), "authentication") {
-		app.failf("« Synchroniser » sur une boîte indisponible au LOGIN devrait dire que la boîte n'a pas répondu, il a répondu %d : %q", code, msg)
+	if code != http.StatusBadGateway || msg != mailboxNoAnswerMessage {
+		app.failf("« Synchroniser » sur une boîte indisponible au LOGIN devrait répondre 502 %q, il a répondu %d : %q", mailboxNoAnswerMessage, code, msg)
 	}
 
 	if got := moi.snoozeAnswer(uids[0]); got.code != http.StatusBadGateway || got.body["error"] != mailboxNoAnswerMessage {
@@ -988,8 +988,8 @@ func TestAcceptance_IMAPRequestSyncAnswersInItsTimeWhenTheServerGoesSilent(t *te
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	code := resp.StatusCode
 	msg, _ := out["error"].(string)
-	if code == http.StatusOK || !strings.Contains(msg, "votre boîte n'a pas répondu") {
-		app.failf("« Synchroniser » sur une boîte qui se tait après LOGIN devrait dire que la boîte n'a pas répondu, il a répondu %d : %q", code, msg)
+	if code != http.StatusBadGateway || msg != mailboxNoAnswerMessage {
+		app.failf("« Synchroniser » sur une boîte qui se tait après LOGIN devrait répondre 502 %q, il a répondu %d : %q", mailboxNoAnswerMessage, code, msg)
 	}
 }
 
@@ -1081,5 +1081,63 @@ func TestAcceptance_IMAPSnoozeTakesNoneOfTwoCopiesInTheInbox(t *testing.T) {
 	}
 	for _, subject := range []string{shopOrder.Subject, shopOrder.Subject + " (copie)"} {
 		moi.expectOnServer(serverInbox, subject)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// "Annuler" where several copies of the mail are
+// ---------------------------------------------------------------------------
+
+// "Annuler" on an archived mail that is no longer under the number Mailsorter
+// recorded, and whose Message-ID two messages of the archive carry (copies):
+// which one to put back cannot be told. Nothing moves, and each "Annuler"
+// says so in French: the history and the one right after with 409
+// (severalCopies, so the history does not take it for "already undone"), the
+// grouped one in its message.
+func TestAcceptance_IMAPUndoRefusesToChooseBetweenCopies(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	moi.act(uids[1], "archive")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var row models.Email
+	if err := app.h.db.Emails().FindOne(ctx, bson.M{"userId": moi.email, "messageId": uids[1]}).Decode(&row); err != nil || row.HeaderMessageID == "" {
+		app.fatalf("la copie du mail %q n'a pas son Message-ID (%v) : le test ne prouve rien", shopOrder.Subject, err)
+	}
+	moi.erasedFromElsewhere(serverArchive, shopOrder.Subject)
+	copies := []string{shopOrder.Subject + " (copie 1)", shopOrder.Subject + " (copie 2)"}
+	for _, subject := range copies {
+		raw := "From: " + shopOrder.From + "\r\nSubject: " + subject + "\r\nMessage-ID: <" + row.HeaderMessageID +
+			">\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nCopie.\r\n"
+		if _, err := moi.mailbox.Append(serverArchive, bytes.NewReader([]byte(raw)), &imapv2.AppendOptions{Time: time.Now()}); err != nil {
+			app.fatalf("dépôt d'une copie du mail dans l'archive : %v", err)
+		}
+	}
+
+	line := moi.historyLineFor(uids[1], "archive")
+	for name, got := range map[string]answer{
+		"« Annuler » dans l'historique": moi.undoFromHistory(line),
+		"« Annuler » juste après":       moi.undoRightAfter(uids[1], "archive"),
+	} {
+		if got.code != http.StatusConflict || got.body["error"] != severalCopiesMessage || got.body["severalCopies"] != true {
+			app.failf("%s sur un mail en deux copies devrait répondre 409 %q (severalCopies), il a répondu %s", name, severalCopiesMessage, got)
+		}
+	}
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/emails/batch-undo",
+		map[string]interface{}{"messageIds": []string{uids[1]}, "action": "archive"})
+	msg, _ := out["message"].(string)
+	if code != http.StatusOK || !strings.Contains(msg, severalCopiesMessage) || app.number(out, "severalCopies") != 1 || app.number(out, "restored") != 0 {
+		app.failf("« Annuler » groupé sur un mail en deux copies devrait le dire (%q, severalCopies 1, restored 0), il a répondu %d : %v", severalCopiesMessage, code, out)
+	}
+
+	for _, subject := range copies {
+		moi.expectOnServer(serverArchive, subject)
+		moi.expectNotOnServer(serverInbox, subject, "Mailsorter ne sait pas laquelle remettre")
+	}
+	for _, l := range moi.historyLinesOf(uids[1]) {
+		if l.ID == line.ID && l.Undone {
+			app.failf("la ligne « archive » du mail %q ne devrait pas être marquée annulée : rien n'a été remis", shopOrder.Subject)
+		}
 	}
 }
