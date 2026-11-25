@@ -343,11 +343,17 @@ is rather than read an address out of it. `GET /api/emails/{id}` carries it
 too.
 
 `senderLabel` is what the screens show for the sender (protect.Label): the
-display name, or the address read when the name holds another address
-(`"boss@corp.com" <evil@evil.io>` shows `evil@evil.io`), the address when
-there is no name, and the From's text when it names no sender. The reader, the
-suggestions, the history (`GET /api/activity/log`) and "Plus tard" (`GET
-/api/snoozes`) carry it too. A stored From holds no control byte.
+display name, or the address read when the name holds an `@` in any width
+(`"boss@corp.com" <evil@evil.io>`, `boss＠corp.com` or `boss﹫corp.com`, RFC
+2047 encoded or not, show `evil@evil.io`), the address when there is no name
+or one that shows nothing (zero-width spaces, blank Braille or Hangul
+fillers), and the From's text when it names no sender. It holds no control
+character and no format character (bidi overrides and isolates, marks,
+zero-width spaces), the zero-width joiner and non-joiner aside. The reader,
+the suggestions, the history (`GET /api/activity/log`) and "Plus tard" (`GET
+/api/snoozes`) carry it too; a screen given none (a mail kept from before)
+shows the From as it is, never a cut of it. A stored From holds no control
+byte.
 
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
@@ -863,7 +869,8 @@ Two ways in:
 
 - `fromMail: true` ("Protéger" in the reader): `value` is the mail's From
   header, and the sender's address is stored exactly as it is read out of it
-  (`protect.EntryFromMail`, the reading of `senderAddress`), lowercased and
+  (`protect.EntryFromMail`, the reading of `senderAddress`), its local part
+  lowercased, its domain shown the way the settings show one (below), and
   nothing else (`'patron@victime.fr'` keeps its apostrophes, a quoted local
   part its quotes): that is how the next mails are compared with it. A From
   that names no sender (unreadable, several authors, a group) answers `400`
@@ -876,13 +883,23 @@ Two ways in:
   final dot). Anything else answers `400`: two addresses, a space or a tab in
   an address, a stray `>`, two `@`, a name, a final dot, a domain IDNA refuses.
 
-An accented domain is one domain in any of its forms: an entry's domain is
-stored readable (`café.fr`, whether typed so or as `xn--caf-dma.fr`;
-full-width letters folded, `ｅｘａｍｐｌｅ.fr` is `example.fr`), and every
-comparison of senders is made in ASCII (IDNA's Lookup profile), so `café.fr`
-protects `contact@xn--caf-dma.fr`, the form a header carries, as well as
-`contact@café.fr`. The unsubscribe rules (same registrable domain) and the
-sweep by sender compare the same way.
+An accented domain is one domain in any of its forms. Every comparison of
+senders is made in ASCII: the domain goes as written to IDNA's Lookup profile
+(UTS 46, which does its own case mapping: Go's lowercase never comes first,
+it turned `lİnkedin.com` into `linkedin.com`), and only the local part is
+lowercased. So `café.fr` protects `contact@xn--caf-dma.fr`, the form a header
+carries, as well as `contact@café.fr`; `linkedin.com` does not protect
+`news@lİnkedin.com`; and an entry typed `lİnkedin.com` protects a From written
+`lİnkedin.com`. The unsubscribe rules (same registrable domain), the 24 hours
+of an unsubscribe mail and the sweep by sender compare the same way.
+
+An entry's domain is stored the way browsers show one: in Unicode (`café.fr`,
+whether typed so or as `xn--caf-dma.fr`; full-width letters folded,
+`ｅｘａｍｐｌｅ.fr` is `example.fr`) only when each label is written in one
+script that does not imitate Latin; otherwise, and for any mix of scripts in a
+label, in punycode (`xn--80ak6aa92e.com`, Cyrillic drawn like "apple", stays
+so). The scripts that imitate Latin are Armenian, Canadian Aboriginal,
+Cherokee, Coptic, Cyrillic, Ethiopic, Georgian, Greek, Lisu and Tifinagh.
 
 ### Remove a protected sender
 
@@ -983,7 +1000,9 @@ was written by whoever sent the newsletter, so it is written only when
   `body` is ignored: the text is always `unsubscribe`. The mail goes to the
   address as the link writes it;
 - no unsubscribe mail went to that address for this account in the last 24
-  hours, whichever list asked for it: one document per address in
+  hours, whichever list asked for it and however it writes the address
+  (`stop@café.fr` and `STOP@xn--caf-dma.fr` are one): one document per
+  address, in the form senders are compared in, in
   `unsubscribe_mails`, unique on the account and the address, so two lists
   sharing an address, or two clicks at once, write once. The sender's
   `unsubscribes` row keeps where the mail went and when (`sentTo`, `sentAt`).
