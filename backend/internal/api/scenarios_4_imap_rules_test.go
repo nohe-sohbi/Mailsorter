@@ -743,21 +743,29 @@ func TestScenarios_IMAPRules(t *testing.T) {
 				before := moi.receive(shopInvoice)
 				between := moi.arrive(shopOrder, travelOffer)
 				moi.connectMailbox()
+				// And one that comes after the mailbox is connected, before
+				// its first sync: dated after both moments, it is already in
+				// the mailbox when that sync lists it, and only the rule of
+				// the first sync, which judges no arrival, keeps the rules
+				// from ranging it.
+				beforeFirstSync := moi.arrive(shopPoints)
 
+				const there = "il était déjà dans ta boîte quand tu l'as branchée, reçu "
 				already := []struct {
 					uid    string
 					mail   incoming
 					folder string
-					when   string
+					why    string
 				}{
-					{before[0], shopInvoice, serverArchive, "avant que tu actives l'option"},
-					{between[0], shopOrder, serverArchive, "après que tu as activé l'option, mais avant que tu branches ta boîte"},
-					{between[1], travelOffer, serverTrash, "après que tu as activé l'option, mais avant que tu branches ta boîte"},
+					{before[0], shopInvoice, serverArchive, there + "avant que tu actives l'option"},
+					{between[0], shopOrder, serverArchive, there + "après que tu as activé l'option, mais avant que tu branches ta boîte"},
+					{between[1], travelOffer, serverTrash, there + "après que tu as activé l'option, mais avant que tu branches ta boîte"},
+					{beforeFirstSync[0], shopPoints, serverArchive, "il était déjà dans ta boîte à sa première synchronisation, reçu après que tu l'as branchée, mais avant cette synchronisation"},
 				}
 				stayed := func(at string) {
 					app.t.Helper()
 					for _, c := range already {
-						why := "il était déjà dans ta boîte quand tu l'as branchée, reçu " + c.when
+						why := c.why
 						moi.expectOnServer(serverInbox, c.mail.Subject)
 						moi.expectNotOnServer(c.folder, c.mail.Subject, why+", "+at)
 						moi.expectShows(c.uid, c.mail.Subject)
