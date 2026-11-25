@@ -24,14 +24,18 @@ func TestExtractDomain(t *testing.T) {
 	}
 }
 
+// The name of an Expediteurs or Abonnements card is what every screen shows
+// (protect.Label): never an address the display name writes.
 func TestExtractSenderName(t *testing.T) {
 	cases := map[string]string{
 		"Acme Inc <hello@acme.com>":                 "Acme Inc",
 		`"Acme Inc" <hello@acme.com>`:               "Acme Inc",
 		"plain@acme.com":                            "plain@acme.com",
-		`"<patron@victime.fr>" <lettre@journal.fr>`: "<patron@victime.fr>",
+		`"<patron@victime.fr>" <lettre@journal.fr>`: "lettre@journal.fr",
+		`"boss@corp.com" <evil@evil.io>`:            "evil@evil.io",
+		"\"boss\uFF20corp.com\" <evil@evil.io>":     "evil@evil.io",
 		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>":  "Réseau",
-		"Name <x@y.com> trail":                      "Name",
+		"Name <x@y.com> trail":                      "Name <x@y.com> trail",
 	}
 	for in, want := range cases {
 		if got := extractSenderName(in); got != want {

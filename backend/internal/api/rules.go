@@ -223,7 +223,11 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	protectedList := h.protectedValues(ctx, userEmail)
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
 	labelCache := map[string]string{} // labelName -> Gmail label ID
 	byRule := map[string]int{}        // rule name -> count applied
 	applied := 0

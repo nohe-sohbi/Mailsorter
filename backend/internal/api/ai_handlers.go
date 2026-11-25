@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"net/mail"
 	"regexp"
 	"strings"
 	"time"
@@ -57,6 +56,10 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	progress, suggestions, err := h.runAnalysis(ctx, userEmail, req.EmailIDs, nil)
+	if errors.Is(err, errProtectedUnreadable) {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Analysis failed: "+err.Error())
 		return
@@ -323,7 +326,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
-	protectedList := h.protectedValues(ctx, userEmail)
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
 	applied := 0
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
 	// The name each applied filing went under, settled when applying (see
@@ -444,6 +451,14 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	defer session.Close()
 	imapBox := session.Transport == provider.TransportIMAP
 
+	// The shield first: a list that cannot be read moves nothing, and no
+	// label or folder is made for a sweep that will not run.
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
+
 	// The sender is the key of an Expediteurs card: a stored From header, as
 	// GetSenders groups them. The sweep reaches exactly that group, by equality,
 	// so it acts on the mails the card counted and announced, no more. It used
@@ -500,7 +515,6 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	// their mail out of the inbox: archive and trash, and over IMAP filing
 	// into a folder (allowsOn). A protected sender can still be labelled in
 	// bulk over the Gmail API, where a label leaves the mail where it is.
-	protectedList := h.protectedValues(ctx, userEmail)
 	appliedCount := 0
 	protectedSkipped := 0
 	message := ""
@@ -1168,19 +1182,11 @@ func extractSenderAddress(from string) string {
 	return protect.Address(from)
 }
 
-// extractSenderName returns the display name of a From header, or the header
-// itself when it has none.
+// extractSenderName returns the name the Expediteurs and Abonnements cards,
+// and an unsubscribe record, show for the sender of a From header: what every
+// screen shows (protect.Label), the display name unless it holds an "@" of
+// any width or shows nothing, then the address read. Never an address the
+// display name writes: "boss@corp.com" <evil@evil.io> is evil@evil.io.
 func extractSenderName(from string) string {
-	if a, err := mail.ParseAddress(strings.TrimSpace(from)); err == nil {
-		if a.Name != "" {
-			return a.Name
-		}
-		return from
-	}
-	// Not a header net/mail reads: the name is what comes before the address,
-	// the last "<...>".
-	if idx := strings.LastIndex(from, "<"); idx > 0 {
-		return strings.Trim(strings.TrimSpace(from[:idx]), "\"")
-	}
-	return from
+	return protect.Label(from)
 }

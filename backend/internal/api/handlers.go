@@ -537,11 +537,17 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 
 	// Autopilot: when the user opted in, run their deterministic rules over each
 	// freshly synced email: instant, AI-free, quota-free triage at sync time.
+	// A protected list that cannot be read applies no rule: the mails are
+	// stored, and the next sync, which reads the inbox again, applies them.
 	var autoRules []models.SortingRule
 	var protectedList protect.Shield
 	if h.autoApplyRulesEnabled(ctx, userEmail) {
-		autoRules = h.enabledRules(ctx, userEmail)
-		protectedList = h.protectedValues(ctx, userEmail)
+		var pErr error
+		if protectedList, pErr = h.protectedValues(ctx, userEmail); pErr != nil {
+			log.Printf("sync: no rule applied for %s at this sync: %v", userEmail, pErr)
+		} else {
+			autoRules = h.enabledRules(ctx, userEmail)
+		}
 	}
 	labelCache := map[string]string{}
 	byRule := map[string]int{}

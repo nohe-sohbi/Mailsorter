@@ -56,7 +56,14 @@ func (h *Handler) runAnalysis(
 	// is matched with the user's own here, after the fact (mailbox.MatchLabel):
 	// the Gmail labels Mailsorter made, or over IMAP the user's folders
 	// (fileVerdict).
-	protectedList := h.protectedValues(ctx, userEmail)
+	//
+	// The protected list first: unread, the auto-pilot would file a
+	// protected sender's mail and the plan would propose it, so nothing is
+	// analysed (errProtectedUnreadable).
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		return p, suggestions, err
+	}
 
 	session, serr := h.openSession(ctx, userEmail)
 	if serr == nil {

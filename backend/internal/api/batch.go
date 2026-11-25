@@ -160,7 +160,11 @@ func (h *Handler) BatchAction(w http.ResponseWriter, r *http.Request) {
 	// the list IS the stored copy, and there is no one to ask (identityIn):
 	// a message it does not hold stays unknown, which the shield refuses below.
 	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
-	protectedList := h.protectedValues(ctx, userEmail)
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
 	// Over IMAP filing a mail takes it out of the inbox, as archiving does:
 	// the shield reads it as destructive there (allowsOn).
 	destructive := protect.IsDestructive(req.Action)

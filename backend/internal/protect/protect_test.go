@@ -186,6 +186,10 @@ func TestEntryShowsADomainTheBrowsersWay(t *testing.T) {
 		"pаypal.com":         "xn--pypal-4ve.com",
 		"ドメイン名例.jp":          "xn--eckwd4c7cu47r2wf.jp",
 		"example.com":        "example.com",
+		"lİnkedin.com":       "xn--linkedin-p0e.com",
+		"cafe\u0301.fr":      "café.fr",
+		"tiếng.vn":           "tiếng.vn",
+		"हिन्दी.in":          "हिन्दी.in",
 	}
 	for typed, want := range cases {
 		if got, _ := NormalizeEntry(typed); got != want {

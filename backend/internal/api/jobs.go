@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -67,6 +68,9 @@ func (h *Handler) processAnalysisJob(jobID string) {
 	if runErr != nil {
 		final["status"] = "error"
 		final["error"] = runErr.Error()
+		if errors.Is(runErr, errProtectedUnreadable) {
+			final["error"] = protectedUnreadableMessage
+		}
 		log.Printf("analysis job %s failed: %v", jobID, runErr)
 	} else {
 		final["status"] = "done"

@@ -74,10 +74,15 @@ var (
 	// 5322 reads it: who sent the mail is not known well enough to write on
 	// the person's behalf to an address of theirs.
 	ErrBadSender = errors.New("unsubscribe: the sender of the mail is not one plain address")
+	// ErrNonASCIIMailbox is a mailto: address whose local part is not ASCII
+	// (désabo@journal.fr): a sending server without SMTPUTF8 cannot take it,
+	// and no ASCII form of it exists. The person's mail program writes it.
+	ErrNonASCIIMailbox = errors.New("unsubscribe: the mailto address has a local part that is not ASCII")
 )
 
 // ForSender reads the mailto: of a mail whose From header is from into the
-// mail Mailsorter may write for it, or says why it may not.
+// mail Mailsorter may write for it, or says why it may not. Its To is
+// written so any sending server takes it (asciiRecipient).
 //
 // The sender is the address of the From header as protect.Address reads it
 // (RFC 5322, net/mail), never an address in its display name, which the
@@ -101,7 +106,46 @@ func ForSender(mailto, from string) (Request, error) {
 	if !SameRegistrableDomain(req.To, sender) {
 		return Request{}, ErrOtherDomain
 	}
+	to, err := asciiRecipient(req.To)
+	if err != nil {
+		return Request{}, err
+	}
+	req.To = to
 	return req, nil
+}
+
+// asciiRecipient is a mailto: address written so a sending server without
+// SMTPUTF8 takes it, in RCPT TO and in the To header: an ASCII address as
+// the list wrote it, an accented domain in its ASCII form (IDNA,
+// protect.ASCIIDomain: stop@café.fr is written stop@xn--caf-dma.fr). A local
+// part that is not ASCII has no such form: ErrNonASCIIMailbox.
+func asciiRecipient(address string) (string, error) {
+	at := strings.LastIndex(address, "@")
+	if at < 0 {
+		return "", ErrBadRecipient
+	}
+	local, domain := address[:at], address[at+1:]
+	if !isASCII(local) {
+		return "", ErrNonASCIIMailbox
+	}
+	if isASCII(domain) {
+		return address, nil
+	}
+	ascii, ok := protect.ASCIIDomain(domain)
+	if !ok {
+		return "", ErrBadRecipient
+	}
+	return local + "@" + ascii, nil
+}
+
+// isASCII says whether s holds ASCII only.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // SameRegistrableDomain reports whether two bare addresses are on the same

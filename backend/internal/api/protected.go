@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -14,29 +17,46 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// errProtectedUnreadable is a protected list that could not be read.
+var errProtectedUnreadable = errors.New("api: the protected senders could not be read")
+
+// protectedUnreadableMessage is what a call that would move mail in bulk or
+// on its own answers when the protected list cannot be read (503).
+const protectedUnreadableMessage = "Vos expéditeurs protégés n'ont pas pu être lus : rien n'a été rangé, réessayez dans un instant."
+
 // protectedValues returns the caller's protected entries (addresses and
 // domains) made ready to read the mails of this call with (protect.Shield:
 // each entry put in the form senders are compared in once, not once per
-// mail), consulted before any automated destructive action. Protection is a
-// safety bonus layered on top of the user's own choices, not an
-// access-control boundary, so on a query error we return an empty shield and
-// let the caller proceed rather than blocking legitimate triage.
-func (h *Handler) protectedValues(ctx context.Context, userEmail string) protect.Shield {
+// mail), consulted before any automated or grouped destructive action.
+//
+// A list that cannot be read is an error (errProtectedUnreadable), never an
+// empty shield: read as "nobody is protected", it let the selection, the AI,
+// the rules, the auto-pilot and the sweeps archive or trash a protected
+// sender's mail whenever the datastore stumbled. The caller moves nothing
+// then (writeProtectedUnreadable).
+func (h *Handler) protectedValues(ctx context.Context, userEmail string) (protect.Shield, error) {
 	cursor, err := h.db.ProtectedSenders().Find(ctx, bson.M{"userId": userEmail})
 	if err != nil {
-		return protect.Shield{}
+		return protect.Shield{}, fmt.Errorf("%w: %w", errProtectedUnreadable, err)
 	}
 	defer cursor.Close(ctx)
 
 	var rows []models.ProtectedSender
 	if err := cursor.All(ctx, &rows); err != nil {
-		return protect.Shield{}
+		return protect.Shield{}, fmt.Errorf("%w: %w", errProtectedUnreadable, err)
 	}
 	values := make([]string, 0, len(rows))
 	for _, r := range rows {
 		values = append(values, r.Value)
 	}
-	return protect.NewShield(values)
+	return protect.NewShield(values), nil
+}
+
+// writeProtectedUnreadable answers a call that would have moved mail while
+// the protected list could not be read: 503, nothing moved.
+func writeProtectedUnreadable(w http.ResponseWriter, userEmail string, err error) {
+	log.Printf("protected: nothing moved for %s: %v", userEmail, err)
+	writeError(w, http.StatusServiceUnavailable, protectedUnreadableMessage)
 }
 
 // allows reports whether action may be applied to an email from `from` given the

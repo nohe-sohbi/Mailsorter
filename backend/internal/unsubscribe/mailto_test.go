@@ -194,6 +194,18 @@ func TestForSender(t *testing.T) {
 			want:   Request{To: "patron@entreprise.fr", Subject: DefaultSubject},
 		},
 		{
+			name:   "an accented domain is written in ASCII, for any sending server",
+			mailto: "mailto:Stop@Café.fr",
+			sender: "lettre@xn--caf-dma.fr",
+			want:   Request{To: "Stop@xn--caf-dma.fr", Subject: DefaultSubject},
+		},
+		{
+			name:   "an accented local part has no ASCII form",
+			mailto: "mailto:d%C3%A9sabo@journal.fr",
+			sender: "lettre@journal.fr",
+			err:    ErrNonASCIIMailbox,
+		},
+		{
 			name:   "the list's own address",
 			mailto: "mailto:desabonnement@journal.fr?subject=unsubscribe",
 			sender: "lettre@journal.fr",

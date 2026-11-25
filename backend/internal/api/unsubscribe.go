@@ -112,7 +112,14 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		// nothing is swept in its name.
 		notDone = append(notDone, unreadableSenderMessage)
 	case req.AlsoArchive:
-		archived, notArchived = h.archiveBySender(ctx, session, userEmail, senderAddr)
+		// A protected list that cannot be read sweeps nothing, and the
+		// unsubscribe waits with it: one retry does both.
+		shield, err := h.protectedValues(ctx, userEmail)
+		if err != nil {
+			writeProtectedUnreadable(w, userEmail, err)
+			return
+		}
+		archived, notArchived = h.archiveBySender(ctx, session, userEmail, senderAddr, shield)
 		if notArchived > 0 {
 			notDone = append(notDone, notArchivedMessage(notArchived))
 		}
@@ -370,7 +377,10 @@ func (h *Handler) claimUnsubscribeMail(ctx context.Context, userEmail, to string
 //
 // The datastore query is only a narrowing: the address's domain, which every
 // mail of that sender holds as written (its local part may be quoted in the
-// header and not in the address: "<x@y>"@evil.io). protect.SameAddress is what
+// header and not in the address: "<x@y>"@evil.io), in each form it may be
+// written in (protect.DomainForms). A mail of his that writes the domain yet
+// another way (full-width letters, a capital ẞ) is not found and stays in the
+// inbox: the narrowing may miss one of his, never reach someone else's. protect.SameAddress is what
 // decides, because the same domain is also inside other senders' addresses (a
 // prefix on the local part, a longer domain), whom this sweep used to archive
 // too. A senderAddr with no local part or no domain reaches nothing.
@@ -380,7 +390,7 @@ func (h *Handler) claimUnsubscribeMail(ctx context.Context, userEmail, to string
 //
 // Best-effort past the listing: the unsubscribe itself is not tied to it, so a
 // mail that fails to move is logged and counted rather than failing the call.
-func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, userEmail, senderAddr string) (archived, notArchived int) {
+func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, userEmail, senderAddr string, protectedList protect.Shield) (archived, notArchived int) {
 	at := strings.LastIndex(senderAddr, "@")
 	if at <= 0 || at == len(senderAddr)-1 {
 		return 0, 0
@@ -408,7 +418,6 @@ func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, use
 		return 0, 0
 	}
 
-	protectedList := h.protectedValues(ctx, userEmail)
 	mb := session.Mailbox()
 	for _, e := range emails {
 		if !protect.SameAddress(e.From, senderAddr) {

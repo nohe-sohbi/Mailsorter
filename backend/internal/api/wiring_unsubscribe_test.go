@@ -25,6 +25,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // sentBodies is the text of every message this person's sending server took,
@@ -978,5 +979,158 @@ func TestAcceptance_UnsubscribeMailCountsOneAddressInAnyForm(t *testing.T) {
 	}
 	if already, _ := again["alreadySent"].(bool); !already {
 		app.failf("la seconde réponse devrait dire que la demande est déjà partie : %v", again)
+	}
+}
+
+// protectedListUnreadable makes every read of the protected list fail, the
+// way a datastore that stumbles would: protected_senders becomes a view
+// whose pipeline divides by zero on each row it reads. The entries the test
+// stored before are kept in the view's source, so the list is not empty, it
+// is unreadable.
+func protectedListUnreadable(app *testApp) {
+	app.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db := app.h.db.DB
+	source := db.Collection("protected_senders_unreadable")
+	var rows []bson.M
+	cursor, err := app.h.db.ProtectedSenders().Find(ctx, bson.M{})
+	if err == nil {
+		err = cursor.All(ctx, &rows)
+	}
+	if err != nil {
+		app.fatalf("lecture des expéditeurs protégés avant la panne : %v", err)
+	}
+	docs := []interface{}{bson.M{"userId": "personne@exemple.fr"}}
+	for _, r := range rows {
+		docs = append(docs, r)
+	}
+	if _, err := source.InsertMany(ctx, docs); err != nil {
+		app.fatalf("copie des expéditeurs protégés : %v", err)
+	}
+	if err := app.h.db.ProtectedSenders().Drop(ctx); err != nil {
+		app.fatalf("retrait de la collection des expéditeurs protégés : %v", err)
+	}
+	// userId is rewritten, so the filter on it cannot run before the
+	// division: every row read fails.
+	pipeline := mongo.Pipeline{{{Key: "$addFields", Value: bson.M{"userId": bson.M{"$divide": bson.A{1, 0}}}}}}
+	if err := db.CreateView(ctx, "protected_senders", source.Name(), pipeline); err != nil {
+		app.fatalf("création de la vue en panne : %v", err)
+	}
+	if _, err := app.h.protectedValues(ctx, scenarioUser); err == nil {
+		app.fatalf("la liste des expéditeurs protégés se lit encore : le test ne prouve rien")
+	}
+}
+
+// expectNothingMoved checks one answer of a call made while the protected
+// list cannot be read: 503 and the sentence that says nothing was filed.
+func expectNothingMoved(app *testApp, what string, code int, out map[string]interface{}) {
+	app.t.Helper()
+	if code != http.StatusServiceUnavailable || out["error"] != protectedUnreadableMessage {
+		app.failf("%s, la liste des protégés illisible, devrait répondre 503 « %s », il répond %d : %v", what, protectedUnreadableMessage, code, out)
+	}
+}
+
+// With the protected list unreadable, nothing moves on its own or in bulk:
+// the selection, "Plus tard" on a selection, the AI's plan, the rules, the
+// auto-pilot, "Tout archiver" and "Se désabonner et archiver" answer 503.
+// A sync stores the mail and applies no rule.
+func TestAcceptance_UnreadableProtectedListMovesNothingGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const shop = "Boutique <promo@boutique.fr>"
+	ids := app.receiveAndSync(
+		incoming{From: shop, Subject: "Soldes", Unsubscribe: "<https://boutique.fr/stop>"},
+		incoming{From: shop, Subject: "Soldes, encore"},
+	)
+	app.ai.willSay("archive", 0.95)
+	app.analyze(ids...)
+	suggestionIDs := []string{app.suggestionFor(ids[0]).ID, app.suggestionFor(ids[1]).ID}
+	app.rule("Soldes", 1, "from", "contains", "boutique.fr", models.RuleAction{Type: "archive"})
+	app.setAutoApplyRules(true)
+	app.autopilot(shop, "archive")
+	key := app.senderKey(shop)
+	app.protect("boutique.fr")
+	protectedListUnreadable(app)
+
+	code, out := app.call(http.MethodPost, "/api/emails/batch-action", map[string]interface{}{"messageIds": ids, "action": "archive"})
+	expectNothingMoved(app, "« Archiver » sur la sélection", code, out)
+	code, out = app.call(http.MethodPost, "/api/emails/batch-snooze", map[string]interface{}{"messageIds": ids, "preset": "tomorrow"})
+	expectNothingMoved(app, "« Plus tard » sur la sélection", code, out)
+	code, out = app.call(http.MethodPost, "/api/ai/apply-batch", map[string]interface{}{"suggestionIds": suggestionIDs})
+	expectNothingMoved(app, "« Tout ranger »", code, out)
+	code, out = app.call(http.MethodPost, "/api/rules/apply", nil)
+	expectNothingMoved(app, "« Appliquer mes règles »", code, out)
+	code, out = app.call(http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": ids})
+	expectNothingMoved(app, "L'analyse avec le pilote automatique", code, out)
+	code, out = app.call(http.MethodPost, "/api/ai/apply-bulk", map[string]string{"senderEmail": key, "action": "archive"})
+	expectNothingMoved(app, "« Tout archiver »", code, out)
+	code, out = app.call(http.MethodPost, "/api/unsubscribe", map[string]interface{}{"messageId": ids[0], "alsoArchive": true})
+	expectNothingMoved(app, "« Se désabonner et archiver »", code, out)
+	app.sync()
+
+	app.expectInInbox(ids...)
+}
+
+func TestAcceptance_UnreadableProtectedListMovesNothingIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<mailto:stop@journal.fr>"}
+	again := incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre, encore"}
+	moi, uids := syncedIMAPInbox(app, letter, again)
+	moi.withSendingServer()
+	card := moi.requireSenderCard("lettre@journal.fr")
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/protected", map[string]string{"value": "journal.fr"})
+	if code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("protéger journal.fr a répondu %d : %v", code, out)
+	}
+	protectedListUnreadable(app)
+
+	got := moi.onSelection("archive", uids...)
+	expectNothingMoved(app, "« Archiver » sur la sélection", got.code, got.body)
+	code, out = app.callAs(moi.token, http.MethodPost, "/api/ai/apply-bulk", map[string]string{"senderEmail": card.SenderEmail, "action": "archive"})
+	expectNothingMoved(app, "« Tout archiver »", code, out)
+	code, out = app.callAs(moi.token, http.MethodPost, "/api/unsubscribe", map[string]interface{}{"messageId": uids[0], "alsoArchive": true})
+	expectNothingMoved(app, "« Se désabonner et archiver »", code, out)
+
+	for _, m := range []incoming{letter, again} {
+		moi.expectOnServer(serverInbox, m.Subject)
+	}
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("« Se désabonner et archiver » refusé ne devrait rien envoyer, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+}
+
+// A list that writes its address with an accented domain gets it in ASCII,
+// in RCPT TO and in the To header, which a server without SMTPUTF8 takes.
+func TestAcceptance_UnsubscribeMailGoesToTheASCIIDomain(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Café <lettre@xn--caf-dma.fr>", Subject: "La lettre du café", Unsubscribe: "<mailto:stop@café.fr>"})
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+	sent := moi.sentThroughBox()
+	if len(sent) != 1 || len(sent[0].envelopeTo) != 1 || sent[0].envelopeTo[0] != "stop@xn--caf-dma.fr" || !onlyAddress(sent[0].to, "stop@xn--caf-dma.fr") {
+		app.failf("le mail de désabonnement vers stop@café.fr devrait partir vers stop@xn--caf-dma.fr (enveloppe et en-tête To), il est parti : %s (réponse %v)", describeSent(sent), got)
+	}
+	if to, _ := got["sentTo"].(string); to != "stop@xn--caf-dma.fr" {
+		app.failf("la réponse devrait nommer stop@xn--caf-dma.fr, elle nomme %q", to)
+	}
+}
+
+// An address whose local part is not ASCII has no form every server takes:
+// nothing leaves, and the link goes to the person's mail program.
+func TestAcceptance_UnsubscribeMailToAnAccentedMailboxIsHandedToTheScreen(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<mailto:désabo@journal.fr>"})
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("rien ne devrait partir vers désabo@journal.fr, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+	if mailto, _ := got["mailto"].(string); mailto == "" {
+		app.failf("la réponse devrait rendre le lien à l'écran, elle dit : %v", got)
+	}
+	if done, _ := got["done"].(bool); done {
+		app.failf("la réponse ne devrait pas dire que c'est fait : %v", got)
 	}
 }

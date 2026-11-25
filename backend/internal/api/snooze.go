@@ -200,6 +200,13 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The shield first: a list that cannot be read reports nothing.
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
+
 	labelID, err := h.ensureLabel(ctx, gmailClient, userEmail, snoozeLabelName)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Impossible de préparer le report")
@@ -209,7 +216,6 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 	// One lookup for the whole batch, exactly as BatchAction does: the shield
 	// needs each sender, and the snoozed list needs the subject to be readable.
 	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
-	protectedList := h.protectedValues(ctx, userEmail)
 	if !protectedList.Empty() || len(identities) < len(req.MessageIDs) {
 		h.fillMissingIdentities(ctx, gmailClient, req.MessageIDs, identities)
 	}

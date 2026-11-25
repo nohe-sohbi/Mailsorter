@@ -486,8 +486,12 @@ func typedDomain(d string) (string, bool) {
 // form ("café.fr", "日本.jp") only when each label is written in one script
 // and that script does not imitate Latin; its ASCII form (punycode) otherwise.
 // "xn--80ak6aa92e.com" is Cyrillic drawn like "apple" and is shown so; a
-// label that mixes scripts ("pаypal" with a Cyrillic "а") too. ascii is an
-// ASCIIDomain; Match reads either form back as that domain.
+// label that mixes scripts ("pаypal" with a Cyrillic "а") too, and so does a
+// Latin label holding a combining mark ("li̇nkedin", an "i" with a dot
+// above it, drawn like "linkedin"): IDNA composes every Latin letter that has
+// an accented form of its own, so a mark left over sits where no letter
+// carries it. ascii is an ASCIIDomain; Match reads either form back as that
+// domain.
 func entryDomain(ascii string) string {
 	readable, err := idna.Lookup.ToUnicode(ascii)
 	if err != nil {
@@ -511,11 +515,16 @@ var latinLookalikes = []*unicode.RangeTable{
 }
 
 // shownInUnicode says whether a label may be shown in Unicode: all its
-// letters in one script (digits, hyphens and marks belong to none), and not
-// one of latinLookalikes.
+// letters in one script (digits, hyphens and marks belong to none), not one
+// of latinLookalikes, and no combining mark when that script is Latin (or
+// when there is no script at all).
 func shownInUnicode(label string) bool {
 	var script *unicode.RangeTable
+	mark := false
 	for _, r := range label {
+		if unicode.In(r, unicode.Mn, unicode.Me) {
+			mark = true
+		}
 		if unicode.Is(unicode.Common, r) || unicode.Is(unicode.Inherited, r) {
 			continue
 		}
@@ -524,6 +533,9 @@ func shownInUnicode(label string) bool {
 			return false
 		}
 		script = s
+	}
+	if mark && (script == nil || script == unicode.Latin) {
+		return false
 	}
 	if script == nil {
 		return true
