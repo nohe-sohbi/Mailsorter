@@ -20,6 +20,9 @@ import (
 	"mime"
 	"net/mail"
 	"strings"
+	"unicode"
+
+	"github.com/emersion/go-message/charset"
 )
 
 // Destructive actions remove an email from the user's attention (out of the
@@ -73,12 +76,19 @@ const (
 )
 
 // fromParser reads a From header the way RFC 5322 says (net/mail: quoted
-// names, comments, encoded words). A name encoded in a charset net/mail does
-// not decode (windows-1252, iso-8859-15) is kept as its bytes: the name is
-// not what is read here, and refusing the whole header for it would leave a
-// French sender with no address.
+// names, comments, encoded words). A name encoded in another charset than
+// net/mail's own (windows-1252, iso-8859-15, the French mail of a bank) is
+// decoded by go-message's charset tables, the ones the IMAP client uses, so a
+// screen shows "Société Générale" on both transports. A charset nobody knows
+// is kept as its bytes: the name is not the address, and refusing the whole
+// header for it would leave the sender with no address.
 var fromParser = mail.AddressParser{WordDecoder: &mime.WordDecoder{
-	CharsetReader: func(_ string, input io.Reader) (io.Reader, error) { return input, nil },
+	CharsetReader: func(label string, input io.Reader) (io.Reader, error) {
+		if r, err := charset.Reader(label, input); err == nil {
+			return r, nil
+		}
+		return input, nil
+	},
 }}
 
 // Address is the address a From header names: the addr-spec, never the
@@ -102,28 +112,54 @@ var fromParser = mail.AddressParser{WordDecoder: &mime.WordDecoder{
 // taking one of them for the sender would let the others sweep, or
 // unprotect, the mail.
 func Address(raw string) string {
+	_, address := Sender(raw)
+	return address
+}
+
+// Sender is Address with the display name the header gives it, decoded (an
+// RFC 2047 name read, a name in a charset net/mail does not decode kept as
+// its bytes): what a screen shows next to the address. Both are "" when the
+// header names no sender.
+func Sender(raw string) (name, address string) {
 	// A header passed on in latin-1 is no valid UTF-8, which net/mail refuses
 	// whole: its bad bytes (in a name, as a rule) are replaced first, so the
 	// address is still read.
 	s := strings.ToValidUTF8(strings.TrimSpace(raw), "\uFFFD")
 	if groupSyntax(s) {
-		return ""
+		return "", ""
 	}
 	a, err := fromParser.Parse(s)
 	if err != nil {
 		if list, lErr := fromParser.ParseList(s); lErr == nil && len(list) > 1 {
-			return ""
+			return "", ""
 		}
 		quoted, ok := withQuotedName(s)
 		if !ok {
-			return ""
+			return "", ""
 		}
 		if a, err = fromParser.Parse(quoted); err != nil {
-			return ""
+			return "", ""
 		}
 	}
 	spec := (&mail.Address{Address: a.Address}).String()
-	return strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
+	return a.Name, strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
+}
+
+// QuotedText is text as an RFC 5322 quoted string: valid UTF-8, a control
+// character (but a tab) turned into a space, "\" and quotes escaped. A From
+// stored as QuotedText names no sender (Address reads ""): it is how a
+// transport keeps, for the screen, the text of a From that names none (two
+// From headers, a header that does not read), and how a display name is
+// written before its address.
+func QuotedText(text string) string {
+	text = strings.ToValidUTF8(text, "\uFFFD")
+	text = strings.Map(func(r rune) rune {
+		if r != '\t' && unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)
+	return `"` + strings.ReplaceAll(strings.ReplaceAll(text, `\`, `\\`), `"`, `\"`) + `"`
 }
 
 // groupSyntax reports whether a header uses RFC 5322's group syntax
@@ -203,9 +239,10 @@ func Domain(raw string) string {
 	return strings.Trim(addr, "@")
 }
 
-// EntryFromMail is what "Protéger" on a mail (the card, the reader, the plan)
-// stores: the sender's address exactly as NormalizeAddress reads it out of
-// the mail's From, which is what Match reads the next mails with. Nothing else
+// EntryFromMail is what "Protéger" on a mail stores (POST /api/protected with
+// fromMail, which only the reader sends): the sender's address exactly as
+// NormalizeAddress reads it out of the mail's From, which is what Match reads
+// the next mails with. Nothing else
 // is touched ('patron@victime.fr' is an address, apostrophes included). ""
 // when From names no sender: it cannot be protected from that mail.
 func EntryFromMail(from string) string {
@@ -232,36 +269,35 @@ func NormalizeEntry(raw string) (value, kind string) {
 	if addr := NormalizeAddress(s); addr != "" {
 		return addr, KindAddress
 	}
-	// A header that does not read gives nothing: no address is guessed. Nor
-	// does a typed value that does not read and holds what only a header or a
-	// list would (",", ";", ":", a quote).
-	if strings.ContainsAny(s, `<,;:"`) {
+	// Otherwise only a well-formed domain is taken ("acme.com", "@acme.com").
+	// Anything else is refused rather than stored as an entry that protects
+	// nobody: a header that does not read, two addresses, a space, a stray
+	// ">", two "@", a name ("Jean Dupont"), a final dot.
+	d := strings.ToLower(strings.TrimPrefix(s, "@"))
+	if !wellFormedDomain(d) {
 		return "", ""
 	}
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.TrimFunc(s, func(r rune) bool { return r == '"' || r == '\'' || r == ' ' })
-	if s == "" {
-		return "", ""
+	return d, KindDomain
+}
+
+// wellFormedDomain says whether d is a domain name: labels of letters,
+// digits and hyphens (no hyphen first or last), 63 characters at most each,
+// 253 in all, no empty label (so no final dot).
+func wellFormedDomain(d string) bool {
+	if d == "" || len(d) > 253 {
+		return false
 	}
-	// A leading '@' or no local part means "whole domain".
-	if strings.HasPrefix(s, "@") {
-		d := strings.TrimPrefix(s, "@")
-		if d == "" {
-			return "", ""
+	for _, label := range strings.Split(d, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
 		}
-		return d, KindDomain
+		for _, r := range label {
+			if r != '-' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+				return false
+			}
+		}
 	}
-	at := strings.Index(s, "@")
-	switch {
-	case at < 0:
-		// No '@' at all → treat as a domain (e.g. "newsletter.com").
-		return s, KindDomain
-	case at == 0:
-		return "", ""
-	default:
-		// Has a local part → full address.
-		return s, KindAddress
-	}
+	return true
 }
 
 // Match reports whether the sender of an email is covered by any protected

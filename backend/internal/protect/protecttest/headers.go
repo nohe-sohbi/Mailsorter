@@ -6,11 +6,17 @@
 package protecttest
 
 // Header is one From header, as its sender wrote it (what the Gmail API hands
-// over), and the address protect.Address reads out of it ("" for none). The
-// IMAP listing must give the same for it (imap's
+// over), and the address protect.Address reads out of it ("" for none). Both
+// transports must name that sender for a mail carrying it (imap's
 // TestTheSameFromNamesTheSameSenderOnBothTransports): no row differs.
+//
+// Before is header lines written before From in the mail (CRLF-ended), for
+// the rows about a block another header spoils. Second, when set, is a second
+// From header after the first: then Want is what the transports read for the
+// mail, which is no sender, whatever protect.Address reads of From alone.
 type Header struct {
 	Name, From, Want string
+	Before, Second   string
 }
 
 // Headers is the table.
@@ -65,5 +71,15 @@ var Headers = []Header{
 	{Name: "a group's colon in a name nobody quoted", From: "Liste: a@x.fr <b@x.fr>", Want: ""},
 	{Name: "a raw latin-1 name", From: "Caf\xe9 <cafe@b.fr>", Want: "cafe@b.fr"},
 	{Name: "an encoded name holding a line break", From: "=?utf-8?q?a=0Ab?= <a@b.fr>", Want: "a@b.fr"},
+	// A block another header spoils, and control bytes in From itself.
+	{Name: "a control byte in a List-Unsubscribe before From", Before: "List-Unsubscribe: <mailto:stop\x01@journal.fr>\r\n", From: "Lettre <lettre@journal.fr>", Want: "lettre@journal.fr"},
+	{Name: "a DEL byte in a List-Unsubscribe before From", Before: "List-Unsubscribe: <https://journal.fr/stop\x7f>\r\n", From: "Lettre <lettre@journal.fr>", Want: "lettre@journal.fr"},
+	{Name: "a folded List-Unsubscribe before From", Before: "List-Unsubscribe: <mailto:stop@journal.fr>,\r\n <https://journal.fr/stop>\r\n", From: "Lettre <lettre@journal.fr>", Want: "lettre@journal.fr"},
+	{Name: "a control byte in the name", From: "Lettre\x01 <lettre@journal.fr>", Want: ""},
+	{Name: "a DEL byte in the name", From: "Lettre\x7f <lettre@journal.fr>", Want: ""},
+	{Name: "a control byte in a quoted name", From: "\"Lettre\x01\" <lettre@journal.fr>", Want: ""},
+	// Two From headers name no single sender.
+	{Name: "two From headers", From: "Lettre <lettre@journal.fr>", Second: "Patron <patron@victime.fr>", Want: ""},
+	{Name: "two From headers, the same", From: "lettre@journal.fr", Second: "lettre@journal.fr", Want: ""},
 	{Name: "empty", From: "", Want: ""},
 }

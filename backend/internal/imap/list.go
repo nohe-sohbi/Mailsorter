@@ -1,16 +1,12 @@
 package imap
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"net/mail"
-	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -184,7 +180,6 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	if env := msg.Envelope; env != nil {
 		email.Subject = env.Subject
 		email.HeaderMessageID = env.MessageID
-		email.From = senderFrom(env.From, headerValue(msg, "From"))
 		email.To = addressList(env.To)
 		email.ReceivedDate = env.Date
 	}
@@ -195,8 +190,10 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	if !msg.InternalDate.IsZero() {
 		email.ReceivedDate = msg.InternalDate
 	}
+	email.From = senderFrom(msg, email.MessageID)
 
-	links := unsubscribe.Parse(headerValue(msg, "List-Unsubscribe"), headerValue(msg, "List-Unsubscribe-Post"))
+	headers, _ := fetchedHeaders(msg)
+	links := unsubscribe.Parse(headers.first("List-Unsubscribe"), headers.first("List-Unsubscribe-Post"))
 	email.UnsubURL = links.URL
 	email.UnsubMailto = links.Mailto
 	email.UnsubOneClick = links.OneClick
@@ -211,23 +208,6 @@ func flagNames(flags []imapv2.Flag) []string {
 		as = append(as, string(f))
 	}
 	return as
-}
-
-// senderFrom is the From the copy stores for a message: the envelope's, as
-// formatAddress writes it (readable, names decoded), unless the header as its
-// sender wrote it (raw) names another sender, or none, when read the way the
-// Gmail API's header is (protect.Address): then the header itself, made valid
-// UTF-8. So the same mail names the same sender on both transports, whatever
-// the server made of it in the envelope: one server reads a group of one as
-// its member, another an unquoted "Doe, John <j@x.com>" as no address at all.
-// Without the header (a server that did not send it), the envelope's.
-func senderFrom(env []imapv2.Address, raw string) string {
-	formatted := formatAddress(env)
-	raw = strings.ToValidUTF8(raw, "\uFFFD")
-	if raw == "" || protect.Address(formatted) == protect.Address(raw) {
-		return formatted
-	}
-	return raw
 }
 
 // formatAddress renders a sender the way the rest of the app expects to read
@@ -284,21 +264,10 @@ func formatOne(a imapv2.Address) string {
 	return quoteName(name) + ` <` + addr + `>`
 }
 
-// quoteName is a display name as a quoted string. A name that is not valid
-// UTF-8 (a latin-1 header the server passed on as it is) has its bad bytes
-// replaced, and a control character (an encoded line break) becomes a space:
-// in quotes, either would make the whole header unreadable to net/mail, and
-// the sender would have no address on IMAP while the same mail has one over
-// the Gmail API.
+// quoteName is a display name as a quoted string (protect.QuotedText: valid
+// UTF-8, a control character turned into a space).
 func quoteName(name string) string {
-	name = strings.ToValidUTF8(name, "\uFFFD")
-	name = strings.Map(func(r rune) rune {
-		if r != '\t' && unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, name)
-	return `"` + strings.ReplaceAll(strings.ReplaceAll(name, `\`, `\\`), `"`, `\"`) + `"`
+	return protect.QuotedText(name)
 }
 
 // addrSpec is the address of a, as an RFC 5322 addr-spec: the local part
@@ -320,33 +289,4 @@ func addressList(addrs []imapv2.Address) []string {
 		}
 	}
 	return out
-}
-
-// headerValue reads one header out of the fetched header block.
-//
-// The block comes back as raw bytes rather than parsed fields, so it is parsed
-// here with the standard library's MIME header reader, which handles the
-// folding a sender is free to use: a List-Unsubscribe with two endpoints
-// routinely wraps onto a second line, and a naive line split would return half
-// of it.
-func headerValue(msg *imapclient.FetchMessageBuffer, name string) string {
-	for _, section := range msg.BodySection {
-		raw := section.Bytes
-		if len(raw) == 0 {
-			continue
-		}
-		// ReadMIMEHeader needs the blank line that ends a header block, and some
-		// servers do not include it in a partial section fetch.
-		if !bytes.HasSuffix(raw, []byte("\r\n\r\n")) {
-			raw = append(append([]byte{}, raw...), "\r\n\r\n"...)
-		}
-		header, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw))).ReadMIMEHeader()
-		if err != nil && len(header) == 0 {
-			continue
-		}
-		if v := strings.TrimSpace(header.Get(name)); v != "" {
-			return v
-		}
-	}
-	return ""
 }

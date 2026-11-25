@@ -5,16 +5,22 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect/protecttest"
+	gmailv1 "google.golang.org/api/gmail/v1"
 )
 
-// appendWithFrom drops into folder a message whose From header is from, as
-// its sender wrote it (bytes and all), under this subject.
-func appendWithFrom(t *testing.T, c *Client, folder, from, subject string) {
+// appendWithHeaders drops into folder a message with these header lines
+// (CRLF-ended, bytes and all), then a From header for each of froms, under
+// this subject.
+func appendWithHeaders(t *testing.T, c *Client, folder, before string, froms []string, subject string) {
 	t.Helper()
-	raw := "From: " + from + "\r\n" +
-		"To: " + testUser + "\r\n" +
+	raw := before
+	for _, from := range froms {
+		raw += "From: " + from + "\r\n"
+	}
+	raw += "To: " + testUser + "\r\n" +
 		"Subject: " + subject + "\r\n" +
 		"Message-ID: <" + subject + "@example.com>\r\n" +
 		"\r\n" +
@@ -27,23 +33,34 @@ func appendWithFrom(t *testing.T, c *Client, folder, from, subject string) {
 		t.Fatalf("append close: %v", err)
 	}
 	if _, err := cmd.Wait(); err != nil {
-		t.Fatalf("append %q: %v", from, err)
+		t.Fatalf("append %q: %v", froms, err)
 	}
 	c.selected = ""
 }
 
-// The same From reads as the same sender on both transports. Each header of
-// the table goes into a real IMAP server and comes back through the listing
-// (the server's ENVELOPE, formatAddress, the From the copy stores), and what
-// protect.Address reads out of it is compared with what it reads out of the
-// header as the Gmail API hands it over: equal, whatever the server made of
-// the header in its ENVELOPE (senderFrom). Then, for every sender read,
-// "Protéger" from the mail
-// (protect.EntryFromMail) protects its mail on each transport.
+// gmailFrom is the From the Gmail path stores for a message whose From
+// headers are froms, as the Gmail API hands them over.
+func gmailFrom(froms []string) string {
+	headers := make([]*gmailv1.MessagePartHeader, 0, len(froms))
+	for _, from := range froms {
+		headers = append(headers, &gmailv1.MessagePartHeader{Name: "From", Value: from})
+	}
+	from, _, _, _ := gmail.ParseEmailHeaders(&gmailv1.Message{Payload: &gmailv1.MessagePart{Headers: headers}})
+	return from
+}
+
+// The same mail names the same sender on both transports. Each row of the
+// table goes into a real IMAP server, with the headers it writes before From
+// and a second From when it has one, and comes back through the listing (the
+// From header as written, read by readHeaders and senderFrom, never the
+// ENVELOPE); the same From headers go through the Gmail path
+// (gmail.ParseEmailHeaders). protect.Address must read the table's address
+// out of what each stores. Then, for every sender read, "Protéger" from the
+// mail (protect.EntryFromMail) protects its mail on each transport.
 func TestTheSameFromNamesTheSameSenderOnBothTransports(t *testing.T) {
 	c := newTestServer(t, standardMailboxes())
 	for i, h := range protecttest.Headers {
-		appendWithFrom(t, c, "INBOX", h.From, fmt.Sprintf("h%02d", i))
+		appendWithHeaders(t, c, "INBOX", h.Before, fromsOf(h), fmt.Sprintf("h%02d", i))
 	}
 	listed, err := c.List(context.Background(), "INBOX", len(protecttest.Headers)+10)
 	if err != nil {
@@ -56,17 +73,17 @@ func TestTheSameFromNamesTheSameSenderOnBothTransports(t *testing.T) {
 
 	for i, h := range protecttest.Headers {
 		t.Run(h.Name, func(t *testing.T) {
-			from, ok := stored[fmt.Sprintf("h%02d", i)]
+			imapFrom, ok := stored[fmt.Sprintf("h%02d", i)]
 			if !ok {
 				t.Fatalf("the listing does not hold the mail from %q", h.From)
 			}
-			gmail := protect.Address(h.From)
-			imap := protect.Address(from)
-			t.Logf("From %q | Gmail API %q | IMAP stores %q | IMAP %q", h.From, gmail, from, imap)
-			if imap != gmail {
-				t.Errorf("From %q: the Gmail API reads %q, IMAP stores %q and reads %q", h.From, gmail, from, imap)
+			viaGmail := gmailFrom(fromsOf(h))
+			gmailReads, imapReads := protect.Address(viaGmail), protect.Address(imapFrom)
+			t.Logf("From %q | Gmail stores %q, reads %q | IMAP stores %q, reads %q", fromsOf(h), viaGmail, gmailReads, imapFrom, imapReads)
+			if gmailReads != h.Want || imapReads != h.Want {
+				t.Errorf("From %q: the Gmail path reads %q (stores %q), IMAP reads %q (stores %q), want %q on both", fromsOf(h), gmailReads, viaGmail, imapReads, imapFrom, h.Want)
 			}
-			for transport, f := range map[string]string{"Gmail": h.From, "IMAP": from} {
+			for transport, f := range map[string]string{"Gmail": viaGmail, "IMAP": imapFrom} {
 				if protect.Address(f) == "" {
 					continue
 				}
@@ -77,4 +94,12 @@ func TestTheSameFromNamesTheSameSenderOnBothTransports(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fromsOf is the From headers of a row: one, or two.
+func fromsOf(h protecttest.Header) []string {
+	if h.Second != "" {
+		return []string{h.From, h.Second}
+	}
+	return []string{h.From}
 }

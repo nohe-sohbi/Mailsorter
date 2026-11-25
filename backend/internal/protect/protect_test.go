@@ -9,6 +9,11 @@ import (
 
 func TestAddressOfRealHeaders(t *testing.T) {
 	for _, tc := range protecttest.Headers {
+		if tc.Second != "" {
+			// Two From headers: the transports' rule (no single sender), not
+			// the reading of one header.
+			continue
+		}
 		t.Run(tc.Name, func(t *testing.T) {
 			got := Address(tc.From)
 			if got != tc.Want {
@@ -31,7 +36,7 @@ func TestAddressOfRealHeaders(t *testing.T) {
 func TestProtectingAMailShieldsItsSender(t *testing.T) {
 	froms := []string{`"a b"@x.com`, `"Ami" <"a b"@x.com>`, `"<boss@corp.com>"@evil.io`, `"jean dupont"@exemple.fr`, "'patron@victime.fr'"}
 	for _, tc := range protecttest.Headers {
-		if tc.Want != "" {
+		if tc.Want != "" && tc.Second == "" {
 			froms = append(froms, tc.From)
 		}
 	}
@@ -43,7 +48,7 @@ func TestProtectingAMailShieldsItsSender(t *testing.T) {
 	}
 	// A From that names no sender cannot be protected from its mail.
 	for _, tc := range protecttest.Headers {
-		if tc.Want == "" && EntryFromMail(tc.From) != "" {
+		if tc.Want == "" && tc.Second == "" && EntryFromMail(tc.From) != "" {
 			t.Errorf("EntryFromMail(%q) = %q, want none: it names no sender", tc.From, EntryFromMail(tc.From))
 		}
 	}
@@ -54,6 +59,54 @@ func TestATypedEntryInApostrophesProtects(t *testing.T) {
 	value, _ := NormalizeEntry("'jean@x.fr'")
 	if !Match("Jean <jean@x.fr>", []string{value}) {
 		t.Errorf("NormalizeEntry('jean@x.fr') = %q, which does not match Jean <jean@x.fr>", value)
+	}
+}
+
+// What the settings refuse: a typed value that is neither an address that
+// reads nor a well-formed domain. Stored, each of these protected nobody.
+func TestNormalizeEntryRefusesWhatProtectsNobody(t *testing.T) {
+	for _, in := range []string{
+		"jean@x.fr paul@y.fr",
+		"jean@x.fr\tpaul@y.fr",
+		"jean\t@x.fr",
+		"jean dupont@x.fr",
+		"jean@x.fr>",
+		"jean@@x.fr",
+		"Jean Dupont",
+		"x.fr.",
+		"x..fr",
+		"-x.fr",
+		"x_y.fr",
+		`"boss@corp.com"`,
+		"a@x.fr, b@x.fr",
+		"Liste: a@x.fr",
+		"@",
+		"",
+	} {
+		if v, k := NormalizeEntry(in); v != "" || k != "" {
+			t.Errorf("NormalizeEntry(%q) = (%q, %q), want it refused", in, v, k)
+		}
+	}
+}
+
+// A value the settings accept protects what it says: a mail from that
+// address, or from that domain or one under it, is matched.
+func TestATypedEntryProtectsWhatItSays(t *testing.T) {
+	cases := map[string]string{
+		"Hi@Acme.com":               "Hi@Acme.com",
+		"'jean@x.fr'":               "Jean <jean@x.fr>",
+		"Acme News <news@acme.com>": "news@acme.com",
+		`"jean dupont"@exemple.fr`:  `"jean dupont"@exemple.fr`,
+		"acme.com":                  "Promo <deals@mail.acme.com>",
+		"@acme.com":                 "deals@acme.com",
+		"café.fr":                   "contact@café.fr",
+		"bad":                       "x@bad",
+	}
+	for in, from := range cases {
+		value, kind := NormalizeEntry(in)
+		if value == "" || !Match(from, []string{value}) {
+			t.Errorf("NormalizeEntry(%q) = (%q, %q), which does not protect a mail from %q", in, value, kind, from)
+		}
 	}
 }
 

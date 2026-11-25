@@ -792,3 +792,29 @@ func TestAcceptance_ProtectingFromAMailWithNoSenderIsRefused(t *testing.T) {
 		app.failf("« Protéger » sur un mail à deux auteurs devrait être refusé (400, %q), il a répondu %s", unreadableSenderProtectMessage, got)
 	}
 }
+
+// A mail with two From headers, written the way the harness writes one: the
+// first header, then a second. It names no single sender: unsubscribing from
+// the first author with "et archiver" does not sweep it, and it cannot be
+// protected from the mail. (Over the Gmail API, imap's
+// TestTheSameFromNamesTheSameSenderOnBothTransports proves the same reading
+// through gmail.ParseEmailHeaders; the fake Gmail holds one From.)
+func TestAcceptance_TwoFromHeadersNameNoSenderIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Lettre <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<https://desabonnement.x.invalid/lettre>"}
+	twoFroms := incoming{From: "Lettre <lettre@journal.fr>\r\nFrom: Patron <patron@victime.fr>", Subject: "Deux en-têtes From"}
+	moi, uids := syncedIMAPInbox(app, letter, twoFroms)
+
+	if addr, ok := listedSenderAddress(app, moi.token, twoFroms.Subject); !ok || addr != "" {
+		app.failf("la liste ne devrait donner aucune adresse d'expéditeur au mail à deux en-têtes From, elle donne %q (listé : %v)", addr, ok)
+	}
+	row, _ := moi.shownRow(uids[1])
+	if got := protectFromMail(app, moi.token, row.From); got.code != http.StatusBadRequest {
+		app.failf("« Protéger » sur le mail à deux en-têtes From devrait être refusé (400), il a répondu %s", got)
+	}
+
+	moi.unsubscribeFrom(uids[0], true)
+	moi.expectOnServer(serverArchive, letter.Subject)
+	moi.expectOnServer(serverInbox, twoFroms.Subject)
+	moi.expectShows(uids[1], twoFroms.Subject)
+}
