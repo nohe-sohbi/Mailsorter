@@ -9,6 +9,7 @@ import { actionMeta, labelPlace } from '../ui/actions';
 import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
+import AddressLine from '../ui/AddressLine';
 import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
@@ -563,7 +564,7 @@ function EmailReader({
                 None for a From that names no sender: the name above is its
                 text. */}
             {merged.senderAddressShown && (
-              <div className="truncate text-sm text-muted">{merged.senderAddressShown}</div>
+              <AddressLine value={merged.senderAddressShown} className="text-sm text-muted" />
             )}
           </div>
           {merged.receivedDate && (

@@ -53,6 +53,10 @@ const emptyRule = () => ({
 });
 
 const fieldLabel = (v) => FIELDS.find((f) => f.value === v)?.label || v;
+// A rule's name as the screen shows it: the server's form (`nameShown`,
+// protect.ShownText), which a rule made from a sender needs (its name holds
+// the sender's address); the name as typed for a rule not reloaded yet.
+const nameOf = (rule) => rule.nameShown ?? rule.name;
 const operatorLabel = (v) => OPERATORS.find((o) => o.value === v)?.label || v;
 
 // A condition's value can arrive from the API as a number (day counts), so it is
@@ -254,7 +258,8 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
                   min={isTemporalOperator(c.operator) ? 0 : undefined}
                   placeholder={isTemporalOperator(c.operator) ? 'Nombre de jours... (ex. 30)' : valuePlaceholder(c)}
                   value={c.value}
-                  onChange={(e) => setCondition(i, { value: e.target.value })}
+                  // The server's shown form no longer says this value.
+                  onChange={(e) => setCondition(i, { value: e.target.value, valueShown: undefined })}
                 />
                 {rule.conditions.length > 1 && (
                   <button onClick={() => removeCondition(i)} className="btn-ghost btn-icon text-muted" aria-label="Retirer la condition">
@@ -262,6 +267,15 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
                   </button>
                 )}
               </div>
+              {/* A value holding characters that hide or imitate (a rule made
+                  from a sender keeps the address as written): what it is,
+                  in the server's shown form. */}
+              {c.valueShown !== undefined && c.valueShown !== c.value && (
+                <p className="mt-1.5 text-xs text-muted">
+                  Contient des caractères inhabituels, montrés ainsi :{' '}
+                  <span className="font-mono break-all">{c.valueShown}</span>
+                </p>
+              )}
               {/* Une regex mal comprise ne se voit pas : elle ne correspond
                   simplement à rien. L'exemple sert de garde-fou. */}
               {c.operator === 'regex' && (
@@ -359,7 +373,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', meta.chip)}>
             <meta.Icon size={16} />
           </span>
-          <h3 className="truncate font-bold text-ink-900">{rule.name}</h3>
+          <h3 className="truncate font-bold text-ink-900">{nameOf(rule)}</h3>
           {!rule.enabled && <span className="chip bg-ink-100 text-ink-500">En pause</span>}
         </div>
         <p className="mt-2 text-sm text-ink-500">
@@ -391,7 +405,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
               onClick={() => onMove(-1)}
               disabled={position === 0 || reordering}
               className="btn-ghost btn-icon h-6 w-6 rounded-md text-muted disabled:opacity-30"
-              aria-label={`Faire passer « ${rule.name} » avant`}
+              aria-label={`Faire passer « ${nameOf(rule)} » avant`}
               title="Évaluer cette règle plus tôt"
             >
               <ChevronDown size={14} className="rotate-180" />
@@ -400,7 +414,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
               onClick={() => onMove(1)}
               disabled={position === total - 1 || reordering}
               className="btn-ghost btn-icon h-6 w-6 rounded-md text-muted disabled:opacity-30"
-              aria-label={`Faire passer « ${rule.name} » après`}
+              aria-label={`Faire passer « ${nameOf(rule)} » après`}
               title="Évaluer cette règle plus tard"
             >
               <ChevronDown size={14} />
@@ -413,13 +427,13 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           onChange={onToggle}
           // Le nom du commutateur reste dans la carte : le libellé visible est le
           // titre de la règle, mais un lecteur d'écran l'entendrait hors contexte.
-          label={<span className="sr-only">{`Activer la règle « ${rule.name} »`}</span>}
+          label={<span className="sr-only">{`Activer la règle « ${nameOf(rule)} »`}</span>}
         />
         <button onClick={onEdit} className="btn-ghost btn-sm">Modifier</button>
         <button
           onClick={onDuplicate}
           className="btn-ghost btn-sm btn-icon text-muted hover:text-brand-600"
-          aria-label={`Dupliquer la règle « ${rule.name} »`}
+          aria-label={`Dupliquer la règle « ${nameOf(rule)} »`}
           title="Dupliquer (la copie arrive en pause)"
         >
           <Copy size={16} />
@@ -535,7 +549,7 @@ function Rules() {
     if (
       !(await confirm({
         title: 'Supprimer cette règle ?',
-        message: `« ${rule.name} » sera définitivement supprimée. Les emails qu'elle a déjà triés ne changent pas.`,
+        message: `« ${nameOf(rule)} » sera définitivement supprimée. Les emails qu'elle a déjà triés ne changent pas.`,
         confirmLabel: 'Supprimer la règle',
         danger: true,
       }))

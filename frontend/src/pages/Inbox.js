@@ -18,6 +18,7 @@ import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitive
 import { useScrollLock } from '../ui/scrollLock';
 import { actionMeta, labelPlace, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
+import AddressLine from '../ui/AddressLine';
 import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import Plaque from '../ui/hotel/Plaque';
@@ -2232,7 +2233,7 @@ function Inbox() {
                           `senderEmail` is the card's key, the raw From, and is
                           sent back, never shown. */}
                       <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmailShown}</div>
-                      <div className="truncate text-xs text-muted">{sender.senderEmailShown}</div>
+                      <AddressLine value={sender.senderEmailShown} className="text-xs text-muted" />
                     </div>
                     <span className="chip bg-ink-100 text-ink-700">{sender.emailCount} emails</span>
                     {pref ? (
@@ -2340,7 +2341,7 @@ function Inbox() {
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmailShown}</div>
-                        <div className="truncate text-xs text-muted">{sub.senderEmailShown}</div>
+                        <AddressLine value={sub.senderEmailShown} className="text-xs text-muted" />
                       </div>
                       <span className="chip bg-ink-100 text-ink-700">{sub.emailCount} email{sub.emailCount > 1 ? 's' : ''}</span>
                       {sub.oneClick && !sub.unsubscribed && (
