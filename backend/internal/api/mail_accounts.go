@@ -126,8 +126,15 @@ func (h *Handler) connectAndStore(ctx context.Context, userEmail, address, passw
 // the stored copy of its inbox (the rows that carry a folder), the AI's
 // pending proposals about its mails, the count of mails its rules gave up on
 // not yet told, and the mark of its first sync, so the next sync is a first
-// one. The history stays: its "Annuler" checks the Message-ID before acting.
+// one. The history stays, but its lines no longer offer "Annuler"
+// (mailboxGone): they name mails by numbers the next mailbox gives to its own
+// mails, and an "Annuler" would act on one of those.
 func (h *Handler) clearMailboxCopy(ctx context.Context, userEmail string) error {
+	if _, err := h.db.ActionLog().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "createdAt": bson.M{"$lte": time.Now()}},
+		bson.M{"$set": bson.M{"mailboxGone": true}}); err != nil {
+		return fmt.Errorf("close the history of the mailbox: %w", err)
+	}
 	if _, err := h.db.MailAccounts().UpdateOne(ctx, bson.M{"userId": userEmail},
 		bson.M{"$unset": bson.M{"firstSyncedAt": ""}}); err != nil {
 		return fmt.Errorf("unmark the first sync of the mailbox: %w", err)
@@ -330,12 +337,21 @@ func (h *Handler) DisconnectMailbox(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// What Mailsorter kept of the mailbox goes with it, first: a failure
-	// leaves it connected, and disconnecting again clears it.
-	if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
-		log.Printf("mailbox: disconnect %s: %v", userEmail, err)
+	// What Mailsorter kept of an IMAP mailbox goes with it, first: a failure
+	// leaves it connected, and disconnecting again clears it. A mailbox
+	// reached through the Gmail API keeps its listing, as before.
+	transport, _, err := h.transportFor(ctx, userEmail)
+	if err != nil && !errors.Is(err, errNoMailboxConnected) {
+		log.Printf("mailbox: disconnect %s, which transport: %v", userEmail, err)
 		writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
 		return
+	}
+	if transport == provider.TransportIMAP {
+		if err := h.clearMailboxCopy(ctx, userEmail); err != nil {
+			log.Printf("mailbox: disconnect %s: %v", userEmail, err)
+			writeError(w, http.StatusInternalServerError, "Impossible de déconnecter la boîte.")
+			return
+		}
 	}
 	res, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": userEmail})
 	if err != nil {

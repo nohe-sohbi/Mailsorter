@@ -302,14 +302,14 @@ function Inbox() {
   const showSyncNotice = (result) => {
     if (result?.syncNotice) toast.info(result.syncNotice);
   };
-  const syncAgain = () => fetchData({ forceRefresh: true, sync: true }).then(showSyncNotice);
+  const syncAgain = () => fetchData({ forceRefresh: true, sync: true, notice: true }).then(showSyncNotice);
 
   useEffect(() => {
     if (!localStorage.getItem('userEmail')) {
       navigate('/');
       return;
     }
-    fetchData().then(showSyncNotice);
+    fetchData({ notice: true }).then(showSyncNotice);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
@@ -522,7 +522,7 @@ function Inbox() {
     // sync: true forces the round-trip to the mailbox. Previously this button
     // reused the five-minute sync throttle, so pressing it twice in a row
     // reported "Boîte synchronisée" without having synchronised anything.
-    const result = await fetchData({ forceRefresh: true, sync: true });
+    const result = await fetchData({ forceRefresh: true, sync: true, notice: true });
     setSyncing(false);
     track('inbox_sync');
     // Success only on success. A failed sync used to be swallowed and

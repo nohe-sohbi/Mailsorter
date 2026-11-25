@@ -357,7 +357,14 @@ that have left the inbox since the last sync, however old: it asks the server
 for the UID of every message in the inbox (one `UID SEARCH`), not only the
 ones it listed. The background sync (`autoSyncEnabled`) runs the same code.
 Over IMAP, `500` when the mirror could not be brought in line with the inbox
-(the listing itself is stored).
+(the listing itself is stored), and `500` "la boîte a été débranchée pendant la
+synchronisation" for a sync of a mailbox disconnected, or replaced by another,
+while it ran: it writes nothing, the copy being the next mailbox's.
+
+**Query parameters:** `notice=1` (optional) asks for the count of messages the
+rules gave up on, kept on the account until a sync asks for it, then cleared
+(see `rulesMessage` below). The screen sends it only where it shows the answer:
+the "Synchroniser" button and the page load.
 
 When `autoApplyRules` is on, the deterministic rules run at the sync
 (protected senders shielded, each action journaled with source `rule`), and
@@ -398,9 +405,11 @@ read then unread again by its owner stays unread. Not tried again: a message
 whose text cannot be parsed, and one whose text was not read in full (see
 "Sorting Rules Endpoints"): left aside, logged. After 3 syncs a message is
 given up (logged, left in the inbox). A marked message that left the inbox
-meanwhile is not judged, nor counted. A sync holds the messages it judges for
-10 minutes, longer than any sync runs, so two syncs, or a sync and
-`POST /api/rules/apply`, never act on one message at once.
+meanwhile is not judged, nor counted. A sync holds the messages it judges, and
+`POST /api/rules/apply` the ones it judges, for at most 10 minutes (longer
+than any sync runs), each leaving alone a message the other holds; so two
+syncs, or a sync and `POST /api/rules/apply`, do not act on one message at
+once.
 
 The sync still answers `200` when its rules could not judge every message,
 since the messages were read and listed. `rulesApplied` counts the messages
@@ -410,9 +419,9 @@ messages left for the next sync: a message is in one or the other.
 "Vos règles n'ont pas pu être appliquées à 2 nouveaux mails : la prochaine
 synchronisation réessaiera." for this sync's pending messages, and "1 mail n'a
 pas pu être rangé par vos règles : laissé dans la boîte." for the messages
-given up since a sync from the screen last told it, whichever sync gave them
-up, the background one included: the account keeps the count until a call of
-this route answers it, once. `rulesMessage` is absent when there is nothing to
+given up since it was last told, whichever sync gave them up, the background
+one included: the account keeps the count until a call of this route with
+`notice=1` answers it, once. `rulesMessage` is absent when there is nothing to
 tell. A rule on
 `body` or `snippet` reads the text of those messages from the server first.
 The listing, and that text, are read with PEEK, so syncing never marks a
@@ -741,7 +750,10 @@ folder of that name, and undoing it brings the mail back to the inbox from the
 folder it was filed in. Marking as read stays one-way on purpose.
 
 The matching ledger entries are marked undone so the history does not offer a
-second "Annuler" on the same work. Note that on the Gmail API the per-entry
+second "Annuler" on the same work. Over IMAP a message whose latest entry for
+this action is of a mailbox since disconnected (`mailboxGone`) is not touched,
+and not counted as restored: its number names a mail of the mailbox connected
+now. Note that on the Gmail API the per-entry
 history undo (`POST /api/activity/undo`) still cannot reverse a labelling: most
 action log lines name no label, so it would have nothing to remove. Over IMAP
 it can (see there).
@@ -1183,12 +1195,14 @@ returns under `mailbox`.
 
 #### DELETE /api/mailbox
 
-Forgets the connection: clears what Mailsorter kept of the mailbox (the stored
-copy of an IMAP inbox, the AI's pending proposals, the count of mails the rules
-gave up on not yet told), then deletes the stored mailbox row (app password
-included) and removes the Google tokens from the account. The history stays:
-its "Annuler" checks a message's Message-ID before acting, so it never acts on
-a mail of another mailbox. This is also how a user revokes Mailsorter's access
+Forgets the connection. For a mailbox connected over IMAP it first clears what
+Mailsorter kept of it: the stored copy of its inbox, the AI's pending
+proposals, the count of mails the rules gave up on not yet told; and the
+history stays, but its lines no longer offer "Annuler" (`mailboxGone`): they
+name messages by numbers the next mailbox gives to its own, and an "Annuler"
+would act on one of those. A mailbox reached through the Gmail API keeps its
+listing. Then it deletes the stored mailbox row (app password included) and
+removes the Google tokens from the account. This is also how a user revokes Mailsorter's access
 without going through their provider. The mailbox itself is never touched, and
 the account remains: its mailbox routes answer `428` until a mailbox is
 connected again, whose inbox then shows its own mails only.
@@ -1288,7 +1302,10 @@ flagged `undoable` (it has a clean inverse and has not been undone yet). On
 IMAP an archive, a delete or a label (a filing into a folder) is `undoable`
 only while Mailsorter knows where it put the message (30 days, and never for a
 move made before it recorded that), and a read change only while the message
-is still in the inbox.
+is still in the inbox. An entry of an IMAP mailbox since disconnected, or
+replaced by another, carries `mailboxGone: true` and is never `undoable`: the
+screen shows it "Définitif", "Cette action concerne une boîte débranchée
+depuis."
 
 **Query parameters:**
 - `source` (optional): filter on (`direct`, `rule`, `ai`, `ai-auto`, `bulk`,
@@ -1360,7 +1377,9 @@ où Mailsorter l'avait rangé." when another mail client moved it meanwhile (the
 entry stays not undone); `409` already undone, except that a request within
 2 minutes of another one that undid it, with nothing done to the mail since,
 answers `200` like it (two clicks, two tabs): once the mail was archived again,
-a screen left open on the old line gets `409`; `500` "Annulation impossible à
+a screen left open on the old line gets `409`; `410` "Cette action concerne une
+boîte débranchée depuis." for an entry of a mailbox since disconnected
+(`mailboxGone`), nothing moving; `500` "Annulation impossible à
 vérifier, réessayez." when the actions since cannot be read; `502` the provider
 refused the reversal. On IMAP a moved message stays recorded for 30 days after it left the
 inbox, which is how long the history can bring it back; past that, `404` "Cette
@@ -2247,11 +2266,12 @@ it: it runs the same matching function as `POST /api/rules/apply`.
 ```
 `samples` is capped server-side. When the user has no rules, `willApply` is `0`
 and the arrays are empty. It does not model the protected senders: `willApply`
-is what `apply` would at most act on. Over IMAP it leaves out the `label`
-actions, and does not count a message whose rule would only label it (that
-rule still wins it: it does not fall through to the next one); and it opens
-the mailbox only when a rule reads the text, the rest being in the stored
-copy. Errors as for `POST /api/rules/apply`.
+is what `apply` would at most act on. Over IMAP it counts the messages a rule
+would file in a folder, as the ones it would archive or delete, and shows for
+each what applying the rule does there: the flags, then the one move (the
+trash, else the folder, else the archive); and it opens the mailbox only when
+a rule reads the text, the rest being in the stored copy. Errors as for
+`POST /api/rules/apply`.
 
 ### Reorder the ruleset
 

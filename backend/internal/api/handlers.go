@@ -499,10 +499,16 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		// worked all the same, so this is information, not an error.
 		"rulesPending": ruled.pending,
 	}
-	// The mails the rules gave up on are told by a sync from the screen
-	// (this route: the button and the page load), whichever sync gave them
-	// up, the background one included.
-	if msg := rulesMessage(ruled.pending, h.takeGivenUp(ctx, userEmail)); msg != "" {
+	// The mails the rules gave up on, whichever sync gave them up (the
+	// background one included), are told once, to a sync that asks for it
+	// (?notice=1): the screen sends it from where it shows the answer, the
+	// "Synchroniser" button and the page load. A sync whose answer nobody
+	// shows (a refresh after "Annuler", a search) leaves the count for later.
+	givenUp := 0
+	if r.URL.Query().Get("notice") == "1" {
+		givenUp = h.takeGivenUp(ctx, userEmail)
+	}
+	if msg := rulesMessage(ruled.pending, givenUp); msg != "" {
 		out["rulesMessage"] = msg
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -416,9 +416,14 @@ type ActionLog struct {
 	LabelName string `json:"labelName,omitempty" bson:"labelName,omitempty"`
 	// Undone is set when the user reverses this entry from the action history
 	// (e.g. un-archiving a mail a rule archived). UndoneAt stamps when.
-	Undone    bool      `json:"undone,omitempty" bson:"undone,omitempty"`
-	UndoneAt  time.Time `json:"undoneAt,omitempty" bson:"undoneAt,omitempty"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	Undone   bool      `json:"undone,omitempty" bson:"undone,omitempty"`
+	UndoneAt time.Time `json:"undoneAt,omitempty" bson:"undoneAt,omitempty"`
+	// MailboxGone is set on every entry of an IMAP mailbox once its copy is
+	// cleared: it was disconnected, or another mailbox connected in its
+	// place. The entry no longer offers "Annuler": its message number names,
+	// from then on, a mail of the next mailbox.
+	MailboxGone bool      `json:"mailboxGone,omitempty" bson:"mailboxGone,omitempty"`
+	CreatedAt   time.Time `json:"createdAt" bson:"createdAt"`
 }
 
 // ============================================

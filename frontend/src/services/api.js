@@ -109,7 +109,10 @@ export const emailService = {
       `/api/emails/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
       { responseType: 'blob', ...options }
     ),
-  syncEmails: () => apiClient.post('/api/emails/sync'),
+  // `notice` asks for the mails the rules gave up on, which the server tells
+  // once and then forgets: only a caller that shows the answer sends it.
+  syncEmails: (notice = false) =>
+    apiClient.post('/api/emails/sync', null, notice ? { params: { notice: 1 } } : undefined),
   action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
   // One action over a whole selection, server-side: N Gmail mutations behind a
   // single request, with the protected-sender shield applied per message.

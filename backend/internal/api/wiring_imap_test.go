@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // corruptingTLSProxy sits between Mailsorter and a person's IMAP server, both
@@ -265,14 +267,22 @@ func archiveFolderGone(moi *imapPerson) {
 	}
 }
 
-// expectRulesPending checks what a sync answered about the rules: 200, as
-// any sync that read and listed the mails, with the mails left for the next
-// sync (rulesPending) and the sentence the screen shows as information
-// (rulesMessage, absent when there is nothing to tell). when names the sync.
+// syncAsked is "Synchroniser" as the button and the page load send it: asking
+// for what the rules gave up on (?notice=1), which the screen shows.
+func syncAsked(moi *imapPerson) (int, map[string]interface{}) {
+	moi.app.t.Helper()
+	return moi.app.callAs(moi.token, http.MethodPost, "/api/emails/sync?notice=1", nil)
+}
+
+// expectRulesPending checks what a sync from the button answered about the
+// rules: 200, as any sync that read and listed the mails, with the mails left
+// for the next sync (rulesPending) and the sentence the screen shows as
+// information (rulesMessage, absent when there is nothing to tell). when
+// names the sync.
 func expectRulesPending(moi *imapPerson, when string, pending int, message string) {
 	a := moi.app
 	a.t.Helper()
-	code, out := moi.syncAnswer()
+	code, out := syncAsked(moi)
 	if code != http.StatusOK {
 		a.fatalf("%s de %s devrait répondre 200 (les mails sont relevés et listés), elle a répondu %d : %v", when, moi.email, code, out)
 	}
@@ -658,6 +668,13 @@ func TestAcceptance_GivenUpInTheBackgroundIsToldByTheScreen(t *testing.T) {
 		}
 	}
 
+	// A sync whose answer nobody shows (a refresh after "Annuler", a search)
+	// does not ask for it, and leaves it to the one that does.
+	if code, out := moi.syncAnswer(); code != http.StatusOK {
+		app.fatalf("une synchronisation sans avis de %s a répondu %d : %v", moi.email, code, out)
+	} else if msg, has := out["rulesMessage"]; has {
+		app.failf("une synchronisation qui ne demande pas l'avis ne devrait pas le rendre (il serait perdu, personne ne le montre), elle rend %v", msg)
+	}
 	expectRulesPending(moi, "la synchronisation depuis l'écran, après trois essais en arrière-plan,", 0,
 		"1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte.")
 	expectRulesPending(moi, "la synchronisation depuis l'écran d'après", 0, "")
@@ -751,5 +768,154 @@ func TestAcceptance_DisconnectClearsTheCopyOfTheMailbox(t *testing.T) {
 	}
 	if n, err := app.h.db.ActionLog().CountDocuments(ctx, bson.M{"userId": moi.email}); err != nil || n == 0 {
 		app.failf("l'historique de %s devrait rester au débranchement, il tient %d ligne(s) (%v)", moi.email, n, err)
+	}
+}
+
+// After a mailbox is disconnected and another connected, a line of the old
+// one's history names its mail by a number the new mailbox gives to one of
+// its own: it no longer offers "Annuler", and an "Annuler" sent anyway is
+// refused, nothing moving on the new server.
+func TestAcceptance_UndoOfADisconnectedMailboxIsRefused(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, oldUIDs := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	moi.act(oldUIDs[1], "archive")
+	line := moi.historyLineFor(oldUIDs[1], "archive")
+	if !line.Undoable {
+		app.fatalf("l'archivage du mail n°%s de l'ancienne boîte de %s devrait d'abord proposer « Annuler » : le test ne prouve rien", oldUIDs[1], moi.email)
+	}
+
+	moi.disconnectMailbox()
+	moi.connectOtherMailbox(otherMailbox)
+	newUIDs := moi.receive(otherBoxMails...)
+	moi.expectNumbered(newUIDs[1], oldUIDs[1])
+	moi.sync()
+
+	if line := moi.historyLineFor(oldUIDs[1], "archive"); line.Undoable {
+		app.failf("la ligne d'archivage du mail n°%s de l'ancienne boîte de %s ne devrait plus proposer « Annuler » : ce numéro est celui d'un mail de la nouvelle boîte", oldUIDs[1], moi.email)
+	}
+	rows := moi.history(oldUIDs[1])
+	if len(rows) == 0 || !rows[0].MailboxGone {
+		app.failf("la ligne d'archivage de l'ancienne boîte de %s devrait être marquée d'une boîte débranchée (mailboxGone), elle ne l'est pas : %+v", moi.email, rows)
+	}
+	if got := moi.undoFromHistory(line); got.code == http.StatusOK {
+		app.failf("« Annuler » sur la ligne de l'ancienne boîte de %s devrait être refusé, il a répondu 200 : %v", moi.email, got.body)
+	}
+	moi.expectOnServer(serverInbox, otherBoxMails[1].Subject)
+	if in := moi.onServer(serverArchive); len(in) != 0 {
+		app.failf("rien ne devrait bouger sur le serveur de la nouvelle boîte de %s, son archive contient %s", moi.email, quotedList(in))
+	}
+	moi.expectShows(newUIDs[1], otherBoxMails[1].Subject)
+}
+
+// A sync of a mailbox still running when another is connected in its place
+// writes nothing: the copy is the new mailbox's, and the new one's first sync
+// is not stamped by the old one's.
+func TestAcceptance_SyncOfAReplacedMailboxWritesNothing(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi := app.imapPerson(imapInboxOwner)
+	moi.receive(shopOrder, travelOffer)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	session, err := app.h.openSession(ctx, moi.email)
+	if err != nil {
+		app.fatalf("ouverture de la boîte de %s : %v", moi.email, err)
+	}
+	defer session.Close()
+
+	moi.disconnectMailbox()
+	moi.connectOtherMailbox(otherMailbox)
+
+	if _, _, _, err := app.h.syncInboxIMAP(ctx, moi.email, session); !errors.Is(err, errMailboxReplaced) {
+		app.failf("la synchronisation de l'ancienne boîte de %s, encore en cours, devrait s'arrêter (errMailboxReplaced), elle a répondu %v", moi.email, err)
+	}
+	if n, err := app.h.db.Emails().CountDocuments(ctx, bson.M{"userId": moi.email}); err != nil || n != 0 {
+		app.failf("la copie de %s devrait rester vide, celle de la nouvelle boîte : elle tient %d mail(s) de l'ancienne (%v)", moi.email, n, err)
+	}
+	var account models.MailAccount
+	if err := app.h.db.MailAccounts().FindOne(ctx, bson.M{"userId": moi.email}).Decode(&account); err != nil {
+		app.fatalf("lecture de la boîte de %s : %v", moi.email, err)
+	}
+	if !account.FirstSyncedAt.IsZero() {
+		app.failf("la nouvelle boîte de %s ne devrait pas être marquée comme déjà synchronisée par la synchronisation de l'ancienne", moi.email)
+	}
+}
+
+// "Appliquer mes règles" holds the mails it judges as a sync does: while it
+// holds one, a sync does not take it, and once it is done it holds nothing.
+func TestAcceptance_ApplyRulesHoldsWhatItJudges(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, shopOrder)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.Emails().UpdateOne(ctx, bson.M{"userId": moi.email, "messageId": uids[0]},
+		bson.M{"$set": bson.M{"rulesDue": true}}); err != nil {
+		app.fatalf("marque du mail n°%s de %s : %v", uids[0], moi.email, err)
+	}
+	rows, _, err := app.h.storedInboxCandidates(ctx, moi.email, true)
+	if err != nil {
+		app.fatalf("lecture de la copie de %s : %v", moi.email, err)
+	}
+	held, claim, err := app.h.holdRows(ctx, moi.email, rows)
+	if err != nil || len(held) != 1 {
+		app.fatalf("« Appliquer mes règles » devrait tenir le mail n°%s de %s, il en tient %d (%v)", uids[0], moi.email, len(held), err)
+	}
+	if due, _, _, err := app.h.claimRulesDue(ctx, moi.email, time.Time{}); err != nil || len(due) != 0 {
+		app.failf("une synchronisation ne devrait pas prendre le mail que « Appliquer mes règles » tient, elle en prend %d (%v)", len(due), err)
+	}
+	app.h.releaseHold(ctx, moi.email, claim)
+	if due, _, _, err := app.h.claimRulesDue(ctx, moi.email, time.Time{}); err != nil || len(due) != 1 {
+		app.failf("une fois relâché, le mail marqué de %s devrait revenir à la synchronisation, elle en prend %d (%v)", moi.email, len(due), err)
+	}
+
+	moi.rule("Archiver la boutique", 1, rules.FieldFrom, rules.OpContains, "boutique.com", models.RuleAction{Type: rules.ActionArchive})
+	if _, err := app.h.db.Emails().UpdateMany(ctx, bson.M{"userId": moi.email}, bson.M{"$unset": bson.M{"rulesClaim": "", "rulesClaimAt": ""}}); err != nil {
+		app.fatalf("%v", err)
+	}
+	if got := moi.applyRules(); got.code != http.StatusOK {
+		app.fatalf("« Appliquer mes règles » de %s a répondu %s", moi.email, got)
+	}
+	if n, err := app.h.db.Emails().CountDocuments(ctx, bson.M{"userId": moi.email, "rulesClaim": bson.M{"$exists": true}}); err != nil || n != 0 {
+		app.failf("« Appliquer mes règles » devrait relâcher les mails qu'il tenait, il en tient encore %d (%v)", n, err)
+	}
+}
+
+// Disconnecting a mailbox reached through the Gmail API keeps what an IMAP
+// mailbox loses: its listing, the AI's pending proposals, and the history's
+// "Annuler" (Gmail ids name a message on the account, not by a number another
+// mailbox reuses).
+func TestAcceptance_DisconnectKeepsWhatGmailHas(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(
+		incoming{From: "Boutique <info@boutique.com>", Subject: "Soldes"},
+		incoming{From: "Garage <rdv@garage.fr>", Subject: "Rendez-vous"},
+	)
+	app.act(ids[0], "archive")
+	app.ai.willSay("archive", 0.95)
+	app.analyze(ids[1])
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	count := func(c *mongo.Collection, filter bson.M) int64 {
+		n, err := c.CountDocuments(ctx, filter)
+		if err != nil {
+			app.fatalf("%v", err)
+		}
+		return n
+	}
+	listed := count(app.h.db.Emails(), bson.M{"userId": scenarioUser})
+	pending := count(app.h.db.AISuggestions(), bson.M{"userId": scenarioUser, "status": "pending"})
+	if listed == 0 || pending == 0 {
+		app.fatalf("avant le débranchement, %s devrait avoir sa liste et une proposition en attente : %d, %d", scenarioUser, listed, pending)
+	}
+
+	app.mustCall(http.MethodDelete, "/api/mailbox", nil, http.StatusOK)
+
+	if n := count(app.h.db.Emails(), bson.M{"userId": scenarioUser}); n != listed {
+		app.failf("débrancher une boîte Gmail devrait garder sa liste (%d mail(s)), il en reste %d", listed, n)
+	}
+	if n := count(app.h.db.AISuggestions(), bson.M{"userId": scenarioUser, "status": "pending"}); n != pending {
+		app.failf("débrancher une boîte Gmail devrait garder ses propositions en attente (%d), il en reste %d", pending, n)
+	}
+	if n := count(app.h.db.ActionLog(), bson.M{"userId": scenarioUser, "mailboxGone": true}); n != 0 {
+		app.failf("débrancher une boîte Gmail ne devrait pas fermer son historique, %d ligne(s) marquée(s) d'une boîte débranchée", n)
 	}
 }

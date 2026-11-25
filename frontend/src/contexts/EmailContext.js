@@ -59,6 +59,10 @@ export function EmailProvider({ children }) {
         // "Boîte synchronisée" when nothing was fetched is a lie the UI told
         // every time the button was used twice within five minutes.
         sync = forceRefresh,
+        // Whether the caller shows what the sync has to say (syncNotice): only
+        // then does it ask for the mails the rules gave up on, which the
+        // server tells once.
+        notice = false,
       } = options;
 
       // Return cached data if valid, same query, and not forcing refresh.
@@ -90,7 +94,7 @@ export function EmailProvider({ children }) {
         const now = Date.now();
         if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
           try {
-            const syncRes = await emailService.syncEmails();
+            const syncRes = await emailService.syncEmails(notice);
             syncNotice = syncRes?.data?.rulesMessage || '';
             lastSyncRef.current = now;
           } catch (syncErr) {

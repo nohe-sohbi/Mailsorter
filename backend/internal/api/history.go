@@ -128,7 +128,9 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 				reversible = imapState.inInbox[l.MessageID]
 			}
 		}
-		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone})
+		// An entry of a mailbox since disconnected (mailboxGone) names a
+		// message by a number the mailbox connected now gives to another.
+		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone && !l.MailboxGone})
 	}
 
 	// A full page means there is probably more; hand back the cursor to ask for
@@ -310,6 +312,12 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Action introuvable")
 		return
 	}
+	if entry.MailboxGone {
+		// Its message number names, now, a mail of the mailbox connected
+		// since: acting on it would touch that one.
+		writeError(w, http.StatusGone, mailboxGoneMessage)
+		return
+	}
 	if entry.Undone {
 		// Undone a moment ago by another "Annuler" (two tabs, two clicks),
 		// with nothing done to the mail since: that one did what this one
@@ -399,6 +407,10 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
 }
+
+// mailboxGoneMessage is what the user reads for "Annuler" on an entry of a
+// mailbox since disconnected (models.ActionLog.MailboxGone).
+const mailboxGoneMessage = "Cette action concerne une boîte débranchée depuis."
 
 // sameUndoWindow is how long after an "Annuler" another "Annuler" of the
 // same entry may be the same click seen twice (two tabs, a double click, a

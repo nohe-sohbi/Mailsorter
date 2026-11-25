@@ -240,6 +240,12 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	// Messages that left the inbox since the last sync (moved by Mailsorter,
 	// by the user's phone, by a filter on the server) must leave the copy the
 	// list is served from, or they show forever.
+	// The first write of the copy: only for the mailbox still connected. One
+	// disconnected, or replaced by another, while this sync read it has had
+	// its copy cleared, and the copy is the next one's now.
+	if err := h.stillConnected(ctx, userEmail, session.account); err != nil {
+		return 0, 0, syncRulesDone{}, err
+	}
 	dropErr := h.dropStaleInbox(ctx, userEmail, present, listedAt)
 
 	// A message that cannot be stored is not on the user's screen, and nothing
@@ -262,10 +268,14 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 		synced++
 	}
 	if first {
-		h.markFirstSync(ctx, userEmail)
+		h.markFirstSync(ctx, userEmail, session.account)
 	}
 	// Right after they are stored, before the phases that may lose the
-	// connection.
+	// connection. Not for a mailbox replaced meanwhile: its history lines
+	// would name the next one's mails.
+	if err := h.stillConnected(ctx, userEmail, session.account); err != nil {
+		return synced, len(emails), syncRulesDone{}, err
+	}
 	ruled = h.rulesOnArrivals(ctx, userEmail, session, auto)
 
 	// Each phase that reads by halves may open the connection again a few
@@ -373,12 +383,45 @@ func (h *Handler) firstSync(ctx context.Context, userEmail string, account model
 	return n == 0, nil
 }
 
-// markFirstSync stamps the mailbox as synced once (firstSyncedAt): its next
-// syncs judge the mails that arrive. A failure is logged: the next sync is
-// then a first one again only if the copy is still empty.
-func (h *Handler) markFirstSync(ctx context.Context, userEmail string) {
-	if _, err := h.db.MailAccounts().UpdateOne(ctx,
-		bson.M{"userId": userEmail, "firstSyncedAt": bson.M{"$exists": false}},
+// errMailboxReplaced is a sync of a mailbox disconnected, or replaced by
+// another, while it ran: it stops without writing the copy, which is the
+// next mailbox's. Its text is what the user is told.
+var errMailboxReplaced = errors.New("la boîte a été débranchée pendant la synchronisation")
+
+// connectedFilter is the mail_accounts row of this mailbox exactly: the row
+// the sync opened (its _id) at the moment it was connected (createdAt), which
+// another mailbox connected in its place does not match.
+func connectedFilter(userEmail string, account models.MailAccount) bson.M {
+	filter := bson.M{"userId": userEmail, "createdAt": account.CreatedAt}
+	if oid, err := primitive.ObjectIDFromHex(account.ID); err == nil {
+		filter["_id"] = oid
+	}
+	return filter
+}
+
+// stillConnected answers nil while the mailbox this sync opened is the one
+// connected, errMailboxReplaced once it is not, and the datastore's error
+// when it cannot tell (nothing is written then either).
+func (h *Handler) stillConnected(ctx context.Context, userEmail string, account models.MailAccount) error {
+	n, err := h.db.MailAccounts().CountDocuments(ctx, connectedFilter(userEmail, account), options.Count().SetLimit(1))
+	if err != nil {
+		return fmt.Errorf("read which mailbox is connected: %w", err)
+	}
+	if n == 0 {
+		log.Printf("imap sync: the mailbox of %s this sync opened is no longer the one connected, nothing written", userEmail)
+		return errMailboxReplaced
+	}
+	return nil
+}
+
+// markFirstSync stamps the mailbox this sync opened as synced once
+// (firstSyncedAt), and no other: its next syncs judge the mails that arrive.
+// A failure is logged: the next sync is then a first one again only if the
+// copy is still empty.
+func (h *Handler) markFirstSync(ctx context.Context, userEmail string, account models.MailAccount) {
+	filter := connectedFilter(userEmail, account)
+	filter["firstSyncedAt"] = bson.M{"$exists": false}
+	if _, err := h.db.MailAccounts().UpdateOne(ctx, filter,
 		bson.M{"$set": bson.M{"firstSyncedAt": time.Now()}},
 	); err != nil {
 		log.Printf("imap sync: the first sync of the mailbox of %s is not recorded: %v", userEmail, err)
@@ -598,9 +641,9 @@ func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, 
 	givenUp = int(res.ModifiedCount)
 	if givenUp > 0 {
 		log.Printf("imap sync: the rules gave up on %d mails of %s after %d tries (among %v)", givenUp, userEmail, maxRuleTries, ids)
-		// Kept until a sync from the screen tells it: a background sync, or
-		// one whose answer nobody shows, must not use up the three tries
-		// without the user ever knowing.
+		// Kept until a sync from the screen that shows it asks for it
+		// (takeGivenUp): a background sync, or one whose answer nobody
+		// shows, must not use up the three tries without the user knowing.
 		if _, err := h.db.Users().UpdateOne(ctx, bson.M{"email": userEmail},
 			bson.M{"$inc": bson.M{"rulesGivenUp": givenUp}}); err != nil {
 			log.Printf("imap sync: the %d mails of %s the rules gave up on will not be told: %v", givenUp, userEmail, err)
@@ -610,9 +653,10 @@ func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, claim string, 
 }
 
 // takeGivenUp answers how many mails the rules gave up on since the screen was
-// last told (rulesGivenUp on the user row), and clears it: a sync from the
-// screen tells it once. A datastore that cannot answer is logged, and the
-// count is told at a later sync.
+// last told (rulesGivenUp on the user row), and clears it: only a sync that
+// asks for it (SyncEmails with ?notice=1, sent where the screen shows the
+// answer) calls it, so it is told once, and shown. A datastore that cannot
+// answer is logged, and the count is told at a later sync.
 func (h *Handler) takeGivenUp(ctx context.Context, userEmail string) int {
 	var before struct {
 		RulesGivenUp int `bson:"rulesGivenUp"`

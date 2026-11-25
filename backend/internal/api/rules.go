@@ -221,11 +221,16 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
-	// A mail a sync is judging right now (rulesClaim) is left to it.
-	emails, already, err := h.ruleCandidates(ctx, session, userEmail, enabled, true)
+	// Over IMAP the run holds the mails it judges (rulesClaim), as a sync
+	// does: a mail a sync is judging right now is left to it, and a sync
+	// leaves alone the ones held here.
+	emails, already, hold, err := h.ruleCandidates(ctx, session, userEmail, enabled, true)
 	if err != nil {
 		writeCandidatesError(w, err)
 		return
+	}
+	if hold != "" {
+		defer h.releaseHold(ctx, userEmail, hold)
 	}
 
 	done := h.runRules(ctx, session, userEmail, emails, enabled, h.protectedValues(ctx, userEmail), already)
@@ -253,8 +258,8 @@ const previewSampleCap = 12
 // autopilot) and build trust before any irreversible archive/trash happens.
 // It reads the same messages as ApplyRules (ruleCandidates). Over IMAP it
 // opens the mailbox only when a rule reads the text: the rest is in the copy.
-// It leaves out what a rule cannot do there (label), and a mail whose rule
-// would only do that.
+// There it counts the mails a rule would file in a folder, and shows what
+// applying the rule does (rules.PreviewOnFolders: the flags, then one move).
 func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -288,7 +293,7 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer session.Close()
-		emails, _, err = h.ruleCandidates(ctx, session, userEmail, enabled, false)
+		emails, _, _, err = h.ruleCandidates(ctx, session, userEmail, enabled, false)
 	}
 	if err != nil {
 		writeCandidatesError(w, err)
@@ -343,13 +348,15 @@ func writeCandidatesError(w http.ResponseWriter, err error) {
 // the last sync not yet. The copy keeps no text, so when a rule reads it
 // (rules.ReadsText) it is read from the server (withTexts), and only then.
 // already is, by message, the actions its rule did at a sync that failed on
-// another one (IMAP only): they are not done again. skipClaimed leaves out a
-// mail a sync is judging right now.
-func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, userEmail string, ruleset []models.SortingRule, skipClaimed bool) (emails []models.Email, already map[string][]string, err error) {
+// another one (IMAP only): they are not done again. With hold, over IMAP, the
+// mails are held (rulesClaim, the claim returned, which the caller releases,
+// releaseHold) for as long as a sync would hold them: a mail a sync holds is
+// left out, and a sync leaves alone the ones held here.
+func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, userEmail string, ruleset []models.SortingRule, hold bool) (emails []models.Email, already map[string][]string, claim string, err error) {
 	if session.Transport != provider.TransportIMAP {
 		messages, err := h.gmailService.ListMessages(session.gmail, "in:inbox", rulesScanLimit)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		emails := make([]models.Email, 0, len(messages))
 		for _, msg := range messages {
@@ -364,15 +371,93 @@ func (h *Handler) ruleCandidates(ctx context.Context, session *mailSession, user
 				ReceivedDate: date,
 			})
 		}
-		return emails, nil, nil
+		return emails, nil, "", nil
 	}
 
-	emails, already, err = h.storedInboxCandidates(ctx, userEmail, skipClaimed)
-	if err != nil || !rules.ReadsText(ruleset) {
-		return emails, already, err
+	emails, already, err = h.storedInboxCandidates(ctx, userEmail, hold)
+	if err != nil {
+		return nil, nil, "", err
 	}
-	emails, err = h.withTexts(ctx, userEmail, session, emails)
-	return emails, already, err
+	if hold {
+		if emails, claim, err = h.holdRows(ctx, userEmail, emails); err != nil {
+			return nil, nil, "", err
+		}
+	}
+	if rules.ReadsText(ruleset) {
+		if emails, err = h.withTexts(ctx, userEmail, session, emails); err != nil {
+			h.releaseHold(ctx, userEmail, claim)
+			return nil, nil, "", err
+		}
+	}
+	return emails, already, claim, nil
+}
+
+// holdRows holds these stored IMAP inbox messages for a run of the rules on
+// demand (rulesClaim, rulesClaimAt), as claimRulesDue does for a sync, and
+// answers the ones it could hold: not those another run or a sync holds now.
+// A store that cannot hold them fails the run (errInboxCopyUnread): the rules
+// do not act on mails a sync may be acting on.
+func (h *Handler) holdRows(ctx context.Context, userEmail string, emails []models.Email) ([]models.Email, string, error) {
+	if len(emails) == 0 {
+		return emails, "", nil
+	}
+	folder := string(mailbox.FolderInbox)
+	claim := primitive.NewObjectID().Hex()
+	now := time.Now()
+	ids := make([]string, 0, len(emails))
+	for _, e := range emails {
+		ids = append(ids, e.MessageID)
+	}
+	if _, err := h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": ids}, "rulesClaimAt": notClaimedSince(now)},
+		bson.M{"$set": bson.M{"rulesClaim": claim, "rulesClaimAt": now}},
+	); err != nil {
+		log.Printf("rules: hold the inbox copy of %s: %v", userEmail, err)
+		return nil, "", errInboxCopyUnread
+	}
+	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder, "rulesClaim": claim},
+		options.Find().SetProjection(bson.M{"messageId": 1}))
+	if err != nil {
+		log.Printf("rules: read what was held of the inbox copy of %s: %v", userEmail, err)
+		h.releaseHold(ctx, userEmail, claim)
+		return nil, "", errInboxCopyUnread
+	}
+	var rows []struct {
+		MessageID string `bson:"messageId"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		log.Printf("rules: read what was held of the inbox copy of %s: %v", userEmail, err)
+		h.releaseHold(ctx, userEmail, claim)
+		return nil, "", errInboxCopyUnread
+	}
+	held := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		held[r.MessageID] = true
+	}
+	out := make([]models.Email, 0, len(held))
+	for _, e := range emails {
+		if held[e.MessageID] {
+			out = append(out, e)
+		}
+	}
+	return out, claim, nil
+}
+
+// releaseHold ends a hold of holdRows, on a context of its own: the run's may
+// have ended, and a hold left behind would keep the syncs off these mails for
+// rulesClaimFor. A failure is logged: the hold then expires.
+func (h *Handler) releaseHold(ctx context.Context, userEmail, claim string) {
+	if claim == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if _, err := h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "rulesClaim": claim},
+		bson.M{"$unset": bson.M{"rulesClaim": "", "rulesClaimAt": ""}},
+	); err != nil {
+		log.Printf("rules: release the hold on the inbox copy of %s: %v", userEmail, err)
+	}
 }
 
 // ruleRow is a stored IMAP inbox message as a run of the rules reads it: the

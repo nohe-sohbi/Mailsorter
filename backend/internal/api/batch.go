@@ -14,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
@@ -293,6 +294,12 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 		if ctx.Err() != nil {
 			break
 		}
+		if h.ofMailboxGone(ctx, userEmail, id, req.Action) {
+			// The action was on a mailbox since disconnected: this number
+			// names a mail of the one connected now.
+			gone++
+			continue
+		}
 		if err := h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, id), inverse, ""); err != nil {
 			if errors.Is(err, errAlreadyBack) {
 				// Another "Annuler" brought it back a moment ago and recorded it.
@@ -317,6 +324,26 @@ func (h *Handler) batchUndoIMAP(ctx context.Context, w http.ResponseWriter, user
 		answer["notWhereLeft"] = gone
 	}
 	writeJSON(w, http.StatusOK, answer)
+}
+
+// ofMailboxGone says whether the latest entry of this action on this message,
+// not undone, is of a mailbox since disconnected (MailboxGone). A store that
+// cannot answer is logged, and the entry taken as gone: acting on the wrong
+// mail is worse than not bringing one back.
+func (h *Handler) ofMailboxGone(ctx context.Context, userEmail, messageID, action string) bool {
+	var entry models.ActionLog
+	err := h.db.ActionLog().FindOne(ctx,
+		bson.M{"userId": userEmail, "messageId": messageID, "action": action, "undone": bson.M{"$ne": true}},
+		options.FindOne().SetSort(bson.M{"createdAt": -1}).SetProjection(bson.M{"mailboxGone": 1}),
+	).Decode(&entry)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return false
+	}
+	if err != nil {
+		log.Printf("batch-undo: read the entry of message %s of %s: %v", messageID, userEmail, err)
+		return true
+	}
+	return entry.MailboxGone
 }
 
 // recordUndo marks the forward entry undone, so the history does not

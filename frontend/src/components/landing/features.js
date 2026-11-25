@@ -7,9 +7,9 @@
 // badges, the key-board legend, the hall, the demo and the "Outlook" answer
 // all follow. Classifying left it: over IMAP the AI's proposal files the mail
 // in the folder of that name (internal/mailbox/imap.go). So did the rules,
-// which run on IMAP mailboxes too. Classifying a selection by hand, and the
-// rules' "Étiqueter", still go through the Gmail API: the screens keep those
-// closed on `fullFeatures`, not on this list.
+// which run on IMAP mailboxes too, their "Étiqueter" filing in a folder there.
+// Classifying a selection by hand still goes through the Gmail API: that
+// screen keeps it closed on `fullFeatures`, not on this list.
 // Each label carries its article, because it is used inside sentences.
 // `sender` is acting on a whole sender at once: archiving or deleting all of
 // its emails, and its auto-pilot (the AI's verdict applied by itself at each
