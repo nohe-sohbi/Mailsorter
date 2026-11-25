@@ -899,7 +899,22 @@ whether typed so or as `xn--caf-dma.fr`; full-width letters folded,
 script that does not imitate Latin; otherwise, and for any mix of scripts in a
 label, in punycode (`xn--80ak6aa92e.com`, Cyrillic drawn like "apple", stays
 so). The scripts that imitate Latin are Armenian, Canadian Aboriginal,
-Cherokee, Coptic, Cyrillic, Ethiopic, Georgian, Greek, Lisu and Tifinagh.
+Cherokee, Coptic, Cyrillic, Ethiopic, Georgian, Greek, Lisu and Tifinagh. A
+Latin label holding a combining mark (`li̇nkedin.com`, an `i` with a dot above
+it) is shown in punycode too: IDNA composes every accented Latin letter that
+has a form of its own, so a mark left over sits where no letter carries it.
+
+When the protected list cannot be read, nothing moves on its own or in bulk:
+the selection (`POST /api/emails/batch-action`, `POST
+/api/emails/batch-snooze`), the plan (`POST /api/ai/apply-batch`), the rules
+(`POST /api/rules/apply`), the analysis with its auto-pilot (`POST
+/api/ai/analyze`; an `analyze-async` job ends in `error` with the same
+sentence), "Tout archiver" / "Tout supprimer" (`POST /api/ai/apply-bulk`) and
+"Se désabonner et archiver" answer `503` "Vos expéditeurs protégés n'ont pas
+pu être lus : rien n'a été rangé, réessayez dans un instant." before anything
+is done. A sync stores the mail and applies no rule (the next one does). The
+list was read as empty before, which let all of them move a protected
+sender's mail.
 
 ### Remove a protected sender
 
@@ -998,7 +1013,11 @@ was written by whoever sent the newsletter, so it is written only when
   at most (`unsubscribe` when it gives none). A sentence ("Je démissionne avec
   effet immédiat", "unsubscribe I quit") is not written for the person. Its
   `body` is ignored: the text is always `unsubscribe`. The mail goes to the
-  address as the link writes it;
+  address as the link writes it, an accented domain in its ASCII form
+  (`stop@café.fr` is written `stop@xn--caf-dma.fr`, in `RCPT TO` and in the
+  `To` header) so a sending server without SMTPUTF8 takes it; an address
+  whose local part is not ASCII (`désabo@journal.fr`) has no such form, and
+  is handed to the screen;
 - no unsubscribe mail went to that address for this account in the last 24
   hours, whichever list asked for it and however it writes the address
   (`stop@café.fr` and `STOP@xn--caf-dma.fr` are one): one document per
@@ -1019,6 +1038,16 @@ count it.
 
 `message`, when present, says in French what was not done (the mail already
 sent, the mail that did not leave, mails not archived).
+
+With `alsoArchive`, the sweep reaches the stored inbox mails whose sender is
+the same address, found by their domain in the forms it may be written in (as
+in the clicked mail, in ASCII, in Unicode). A mail of the same sender that
+writes its domain yet another way (full-width letters, a capital ẞ, another
+case of an accented letter) is not found and stays in the inbox: the sweep can
+miss a mail of the sender, never reach another sender's. When the protected
+list cannot be read, nothing is done, the unsubscribe included: `503` "Vos
+expéditeurs protégés n'ont pas pu être lus : rien n'a été rangé, réessayez
+dans un instant.".
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -1063,6 +1092,8 @@ Over IMAP, after a mail written by the server, with a mail left in the inbox:
 - `422 Unprocessable Entity`: Sender exposes no unsubscribe link
 - `428 Precondition Required`: No mailbox connected
 - `500 Internal Server Error`: The stored inbox could not be read (IMAP)
+- `503 Service Unavailable`: With `alsoArchive`, the protected list could not
+  be read; nothing was done
 
 ---
 

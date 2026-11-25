@@ -46,7 +46,8 @@ syncInbox(compte)
   -> API Gmail : les 100 messages les plus récents de la boîte de réception, corps compris
        -> upsert dans emails, clé (userId, messageId)
        -> si autoApplyRules : première règle qui correspond, expéditeurs protégés épargnés,
-          action par internal/mailbox, entrée au journal (source "rule")
+          action par internal/mailbox, entrée au journal (source "rule") ; aucune règle
+          quand la liste des protégés ne se lit pas
   -> IMAP : les 100 messages les plus récents de INBOX, lus en PEEK (aucun \Seen posé)
        -> un FETCH des drapeaux et de la taille de toute la boîte : le numéro de chaque
           mail qui y est encore, lu ou non, en favori ou non, et sa taille
@@ -78,6 +79,7 @@ Sur IMAP, la liste (`GET /api/emails`), ses filtres (non lus, aujourd'hui, favor
 POST /api/ai/analyze (200 ids au plus) ou POST /api/ai/analyze-async (500, file de 3 workers)
   -> 503 si aucun fournisseur d'IA ; 402 si le quota gratuit du service géré est épuisé
   -> runAnalysis
+       -> la liste des protégés d'abord : illisible, rien n'est analysé (503)
        -> chaque message est lu dans le miroir, ou récupéré par la session s'il y manque
        -> pilote automatique par expéditeur -> action appliquée tout de suite par la session (source "ai-auto"),
           sauf sur un expéditeur protégé ; sur IMAP, une étiquette range le mail dans le dossier de ce nom
