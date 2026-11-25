@@ -336,7 +336,7 @@ reader fetches the one it opens (`GET /api/emails/{id}`).
 (RFC 5322, never an address in the display name, a local part quoted when it
 is not a dot-atom; a display name nobody quoted, `Doe, John <j@x.com>`, is read
 again in quotes when it holds no `<`, `>` or quote), the one the screens show
-and act on; it is absent when
+and act on; it is absent when `from` names several authors, and when
 `from` does not read as one address, and the screens then show `from` as it
 is rather than read an address out of it. `GET /api/emails/{id}` carries it
 too.
