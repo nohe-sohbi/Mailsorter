@@ -355,16 +355,28 @@ fillers), and the From's text when it names no sender. A name shows without
 control or format characters (bidi overrides and isolates, marks, zero-width
 spaces), the zero-width joiner and non-joiner aside. An address is never
 cleaned into another one: each control or format character in it, joiners
-included, and each character drawn as nothing, is shown as `�` (U+FFFD), so
-`x@pay<U+202E>pal.com` shows `x@pay�pal.com`, never `x@paypal.com`, a domain
+included, and each character drawn as nothing, is shown as U+FFFD (the replacement character), so
+`x@pay<U+202E>pal.com` shows `x@pay<U+FFFD>pal.com`, never `x@paypal.com`, a domain
 the app does not compare; the text of a From that names no sender is shown
 the same way. The reader, the suggestions, the history (`GET
 /api/activity/log`) and "Plus tard" (`GET /api/snoozes`) carry it too; a
 screen given none (a mail kept from before) shows the From as it is, never a
 cut of it. A stored From holds no control byte.
 
-`senderAddressShown` is `senderAddress` as the reader shows it under the name,
-by the same rule (`protect.ShownAddress`); none when From names no sender.
+`senderAddressShown` is `senderAddress` as the reader shows it under the name
+(`protect.ShownAddress`); none when From names no sender.
+
+The screens never show a From or an address as written: every one comes in a
+form the server computed, `protect.ShownAddress` for an address. Its local
+part as written, each control or format character (joiners included), each
+character drawn as nothing and each `@` of another width (`＠`, `﹫`) shown as
+U+FFFD; its domain the browsers' way when IDNA takes it (`y@pаypal.com`, a
+Cyrillic `а`, shows `y@xn--pypal-4ve.com`), each non-ASCII character shown as
+U+FFFD when IDNA refuses it (`x@paypal<U+2024>com`, a one dot leader, shows
+`x@paypal<U+FFFD>com`). The forms: `senderLabel` and `senderAddressShown`
+(listing, reader, plan, history, "Plus tard"), `senderEmailShown` (Expéditeurs,
+Abonnements), `valueShown` (protected senders, a rule's conditions),
+`sentToShown` (an unsubscribe mail), `senderLabel` on the rules preview.
 
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
@@ -958,7 +970,11 @@ mail in the inbox (a Gmail label, star, mark read) are unaffected.
 
 #### GET /api/protected
 
-Returns `{ "protected": [ { "id", "value", "kind", "note", "createdAt" } ] }`.
+Returns `{ "protected": [ { "id", "value", "valueShown", "kind", "note", "createdAt" } ] }`.
+`valueShown` is what the settings show (`protect.ShownEntry`: an address in
+the one form addresses are shown in, a domain the browsers' way); `value` is
+the entry as stored, never shown. The answer of `POST /api/protected` carries
+it too.
 
 ### Add a protected sender
 
@@ -978,7 +994,12 @@ Two ways in:
   part its quotes): that is how the next mails are compared with it. A From
   that names no sender (unreadable, several authors, a group) answers `400`
   "L'adresse de cet expéditeur est illisible : il ne peut pas être protégé
-  depuis ce mail.".
+  depuis ce mail.". One whose domain IDNA refuses (`x@pay<U+202E>pal.com`,
+  `'patron@victime.fr'`, whose domain ends with the apostrophe) answers
+  `400` "Le domaine de cet expéditeur n'est pas un nom de domaine valide : il
+  ne peut pas être protégé depuis ce mail.": stored as written, it showed in
+  the settings as what it is not. `'patron'@victime.fr` keeps its
+  apostrophes.
 - Otherwise (typed in the settings): the value is normalized and classified
   (`kind`: `address` or `domain`), apostrophes around it dropped: an address
   that reads (a raw `Name <addr>` header is accepted and its address stored), or
@@ -1047,7 +1068,9 @@ both transports. Senders are grouped by their raw From header; `senderEmail` is
 the address read out of it as for `senderAddress` (see `GET /api/emails`), and
 "" for a From that does not read as one address: such a row can still be
 unsubscribed through its `sampleMessageId`, but nothing is archived or recorded
-for it.
+for it. `senderEmailShown` is what the card shows (the address in the one form
+addresses are shown in, or the From's text, made visible, when it names no
+sender); `senderEmail` is never shown.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -1133,7 +1156,8 @@ was written by whoever sent the newsletter, so it is written only when
   `unsubscribes` row keeps where the mail went and when (`sentTo`, `sentAt`).
 
 Sent, the answer is `done: true`, `method: "mailto"`, an empty `mailto` (the
-client opens nothing) and `sentTo`, the address written to. Within the 24
+client opens nothing) and `sentTo`, the address written to (`sentToShown`, what
+the screen says of it, in the one form addresses are shown in). Within the 24
 hours, nothing is sent: `done: false`, `alreadySent: true`, `sentTo`, an empty
 `mailto`, and a `message`. Off the sender's domain, or with a link refused
 above, nothing is sent either and the answer is the one the Gmail API gives:
@@ -2340,13 +2364,16 @@ and any learned preference. Reads the datastore only.
 ```json
 [
   {
-    "senderEmail": "news@acme.com", "senderDomain": "acme.com",
-    "senderName": "Acme", "emailCount": 12,
+    "senderEmail": "Acme <news@acme.com>", "senderEmailShown": "news@acme.com",
+    "senderDomain": "acme.com", "senderName": "Acme", "emailCount": 12,
     "preference": { "autoApply": true, "defaultAction": "archive", "defaultLabel": "" }
   }
 ]
 ```
-`preference` is omitted when the sender has none.
+`preference` is omitted when the sender has none. `senderEmail` is the card's
+key, the raw From the mails were grouped by, sent back for a sender-wide
+action and never shown; `senderEmailShown` is what the card shows, as on the
+Abonnements tab.
 
 ### Create a rule from a sender
 
@@ -2419,6 +2446,11 @@ A rule has the shape:
 ```
 
 - **`matchAll`** : `true` ANDs every condition, `false` ORs them.
+- **Condition `valueShown`** (`GET /api/rules` only, never stored): the value
+  as the screen shows it, an address in the one form addresses are shown in
+  (a rule made from a sender holds the sender's address as written), other
+  text with what would hide or reorder made visible. A rule made from a sender
+  is named `Expéditeur : ` and that shown address.
 - **Condition `field`** : `from`, `subject`, `snippet`, `to`, `body`.
 - **Condition `operator`** : text: `contains`, `notContains`, `equals`,
   `notEquals`, `startsWith`, `endsWith`, `regex` (all case-insensitive except
