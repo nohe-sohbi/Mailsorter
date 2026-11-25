@@ -14,16 +14,6 @@ import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
 import { proposalText } from './hotel/InboxBits';
 
-// The display name of a From header: what comes before its last "<...>". The
-// address shown under it is the one the server read (`senderAddress`), never
-// one read here: the display name is the sender's to write, and may hold
-// another address.
-function extractName(from) {
-  const open = from ? from.lastIndexOf('<') : -1;
-  if (open <= 0) return from;
-  return from.slice(0, open).replace(/"/g, '').trim();
-}
-
 // Gmail's own labels are noise in a reader: the user knows the message is in
 // their inbox and whether they have read it.
 const SYSTEM_LABELS = new Set([
@@ -360,7 +350,11 @@ function EmailReader({
     });
   };
 
-  const name = merged.senderLabel || extractName(merged.from) || 'Expéditeur inconnu';
+  // What the server read for the sender (`senderLabel`, protect.Label), or
+  // the From as it is when a mail kept from before has none: never a cut of
+  // it, since the display name is the sender's to write and may hold another
+  // address. The address shown under it is the server's (`senderAddress`).
+  const name = merged.senderLabel || merged.from || 'Expéditeur inconnu';
   const rendered = full?.bodyHtml
     ? renderHtml(full.bodyHtml, drawn, new Set(Object.keys(full.inlineImages || {})))
     : null;

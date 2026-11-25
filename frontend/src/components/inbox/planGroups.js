@@ -36,12 +36,12 @@ export function senderAddress(s = {}) {
   return (s.senderAddress || '').trim().toLowerCase();
 }
 
-// The display name out of a From header, without the quotes RFC 5322 wraps it
-// in, falling back to the header as it is: shown, never read as an address.
-export function senderName(from = '') {
-  const open = from.lastIndexOf('<');
-  const name = (open < 0 ? from : from.slice(0, open)).replace(/"/g, '').trim();
-  return name || from.trim() || 'Expéditeur inconnu';
+// What the plan shows for the sender: the server's reading (`senderLabel`,
+// protect.Label), or the From as it is when a suggestion kept from before has
+// none. Never a cut of the From: its display name is the sender's to write,
+// and may hold another address.
+function senderName(s = {}) {
+  return s.senderLabel || (s.from || '').trim() || 'Expéditeur inconnu';
 }
 
 export function isSure(confidence) {
@@ -73,7 +73,7 @@ export function groupSuggestions(suggestions = []) {
         action,
         labelName: action === 'label' ? (s.labelName || '').trim() : '',
         address,
-        name: s.senderLabel || senderName(s.from || ''),
+        name: senderName(s),
         from: s.from || '',
         items: [],
         reasoning: '',
