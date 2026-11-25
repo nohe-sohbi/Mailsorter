@@ -479,7 +479,7 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), syncRequestTimeout)
 	defer cancel()
 
 	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
@@ -511,6 +511,12 @@ func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 // This is the fork the whole edition split was for. Everything above it (the
 // handler, the auto-sync loop) asks for a sync and gets one; only this function
 // knows there are two ways to perform it.
+// syncRequestTimeout is how long "Synchroniser" waits for the mailbox. An
+// IMAP session is bound to it (imap.Connect): past it, the connection is
+// dropped and the sync answers errMailboxNoAnswer. A variable, so a test can
+// shorten it.
+var syncRequestTimeout = 30 * time.Second
+
 func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
 	session, err := h.openSession(ctx, userEmail)
 	if errors.Is(err, imap.ErrUnreachable) {
@@ -528,6 +534,12 @@ func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, tota
 		// Rules do not run on this half yet, so the count is zero rather than a
 		// number the user cannot trust. See syncInboxIMAP.
 		synced, total, err = h.syncInboxIMAP(ctx, userEmail, session)
+		if err != nil && ctx.Err() != nil {
+			// Its time ran out (the session is bound to ctx): the mailbox
+			// did not answer in time, whatever the command it stopped in.
+			log.Printf("sync: the mailbox of %s did not answer in time: %v", userEmail, err)
+			return synced, total, 0, errMailboxNoAnswer
+		}
 		return synced, total, 0, err
 	}
 	return h.syncInboxGmail(ctx, userEmail, session.gmail)

@@ -45,10 +45,10 @@ const maxSnoozeWakeAttempts = 5
 
 // snoozeAccountBound is how long the sweep gives one mailbox to bring its due
 // reports back, through its one session, the opening of that session
-// included (imap.Connect stops with its context). Past it the connection is
-// dropped (imap.Client.Abort): a server that stops answering, at LOGIN or
-// later, would otherwise hold the sweep, and every other account's reports,
-// with it. What it did not reach waits for the next pass, untouched and not
+// included: an IMAP session is bound to the context it was opened under
+// (imap.Connect), so past it the connection is dropped. A server that stops
+// answering, at LOGIN or later, would otherwise hold the sweep, and every
+// other account's reports, with it. What it did not reach waits for the next pass, untouched and not
 // counted. A variable, so a test can shorten it.
 var snoozeAccountBound = 30 * time.Second
 
@@ -801,8 +801,8 @@ func (h *Handler) wakeAccount(ctx context.Context, due []models.Snooze) {
 	defer session.Close()
 
 	if session.Transport == provider.TransportIMAP {
-		stop := context.AfterFunc(bounded, session.imapc.Abort)
-		defer stop()
+		// The session is bound to bounded (imap.Connect): past it, the
+		// connection is dropped and the command under way fails.
 		for _, s := range due {
 			if bounded.Err() != nil || session.imapc.Closed() {
 				// Out of time, or the connection is gone (the server

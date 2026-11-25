@@ -613,16 +613,7 @@ func loginServer(a *testApp, answer func(tag string, conn net.Conn)) int {
 // for anyone.
 func sweepWithin(a *testApp, limit time.Duration) {
 	a.t.Helper()
-	done := make(chan struct{})
-	go func() {
-		a.h.wakeDueSnoozes()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(limit):
-		a.fatalf("le réveil des reports n'a pas fini après %v : plus aucun report ne revient, pour aucun compte", limit)
-	}
+	finishesWithin(a, limit, "le réveil des reports (plus aucun report ne revient, pour aucun compte)", a.h.wakeDueSnoozes)
 }
 
 // A server that greets and then says nothing at LOGIN holds the sweep only for
@@ -859,5 +850,135 @@ func TestAcceptance_IMAPSnoozeFindsTheMailBackInTheInbox(t *testing.T) {
 	moi.sync()
 	for _, m := range []incoming{shopOrder, travelOffer} {
 		moi.expectBackInInbox(m.Subject, "à son heure, puis une synchronisation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A server that goes silent after LOGIN, for the syncs
+// ---------------------------------------------------------------------------
+
+// stallingTLSProxy sits between Mailsorter and a person's IMAP server, both
+// sides over TLS, and from the first command of Mailsorter that holds word on
+// stops passing on what the server answers, while still taking the commands:
+// a server that goes silent after LOGIN. It returns its port.
+func stallingTLSProxy(a *testApp, serverPort int, word string) int {
+	a.t.Helper()
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", imapServerTLS)
+	if err != nil {
+		a.fatalf("démarrage du relais vers le serveur IMAP : %v", err)
+	}
+	a.t.Cleanup(func() { _ = ln.Close() })
+	upstream := fmt.Sprintf("127.0.0.1:%d", serverPort)
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer client.Close()
+				server, err := tls.Dial("tcp", upstream, &tls.Config{ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
+				if err != nil {
+					return
+				}
+				defer server.Close()
+				var stalled atomic.Bool
+				go func() {
+					buf := make([]byte, 4096)
+					for {
+						n, err := server.Read(buf)
+						if n > 0 && !stalled.Load() {
+							if _, werr := client.Write(buf[:n]); werr != nil {
+								return
+							}
+						}
+						if err != nil {
+							return
+						}
+					}
+				}()
+				buf := make([]byte, 4096)
+				for {
+					n, err := client.Read(buf)
+					if n > 0 {
+						if bytes.Contains(bytes.ToUpper(buf[:n]), []byte(word)) {
+							stalled.Store(true)
+						}
+						if _, werr := server.Write(buf[:n]); werr != nil {
+							return
+						}
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// finishesWithin runs work and stops the test when it has not returned after
+// limit. what names the work in the failure.
+func finishesWithin(a *testApp, limit time.Duration, what string, work func()) {
+	a.t.Helper()
+	done := make(chan struct{})
+	go func() {
+		work()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(limit):
+		a.fatalf("%s n'a pas fini après %v", what, limit)
+	}
+}
+
+// "Synchroniser" on a mailbox whose server goes silent after LOGIN (at the
+// first FETCH) answers in its own time, saying the mailbox did not answer:
+// the session is bound to the request.
+func TestAcceptance_IMAPRequestSyncAnswersInItsTimeWhenTheServerGoesSilent(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	before := syncRequestTimeout
+	syncRequestTimeout = time.Second
+	t.Cleanup(func() { syncRequestTimeout = before })
+	moi, _ := syncedIMAPInbox(app, bankStatement)
+	moi.reachThrough(stallingTLSProxy(app, moi.port, "FETCH"))
+
+	var code int
+	var out map[string]interface{}
+	finishesWithin(app, 20*time.Second, "« Synchroniser » sur une boîte qui se tait après LOGIN", func() {
+		code, out = moi.syncAnswer()
+	})
+	msg, _ := out["error"].(string)
+	if code == http.StatusOK || !strings.Contains(msg, "votre boîte n'a pas répondu") {
+		app.failf("« Synchroniser » sur une boîte qui se tait après LOGIN devrait dire que la boîte n'a pas répondu, il a répondu %d : %q", code, msg)
+	}
+}
+
+// The background sync, account after account: a server that goes silent
+// after LOGIN holds its own account for that account's time, and the next
+// account is synced in the same sweep.
+func TestAcceptance_IMAPBackgroundSyncGoesPastAMailboxSilentAfterLogin(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	before := autoSyncAccountBound
+	autoSyncAccountBound = time.Second
+	t.Cleanup(func() { autoSyncAccountBound = before })
+	moi, _ := syncedIMAPInbox(app, bankStatement)
+	autre := app.imapPerson("autre-boite@exemple.org")
+	autre.receive(shopOrder)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.Users().UpdateMany(ctx, bson.M{"email": bson.M{"$in": []string{moi.email, autre.email}}},
+		bson.M{"$set": bson.M{"autoSyncEnabled": true}}); err != nil {
+		app.fatalf("activation de la synchronisation de fond : %v", err)
+	}
+	moi.reachThrough(stallingTLSProxy(app, moi.port, "FETCH"))
+
+	finishesWithin(app, 20*time.Second, "la synchronisation de fond", app.h.runDueAutoSyncs)
+
+	if !autre.shows(shopOrder.Subject) {
+		app.failf("la synchronisation de fond devrait passer au compte suivant et montrer le mail %q de %s, elle ne le montre pas", shopOrder.Subject, autre.email)
 	}
 }

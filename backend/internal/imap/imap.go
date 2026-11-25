@@ -103,6 +103,9 @@ type Client struct {
 	// selected is the mailbox currently selected, so repeated actions in the
 	// same folder do not re-SELECT.
 	selected string
+	// unbind releases the binding of the connection to the context it was
+	// opened under (Connect). Nil for a client made otherwise.
+	unbind func() bool
 }
 
 // clientOptions are the connection options for a server named host.
@@ -127,13 +130,16 @@ func clientOptions(host string) *imapclient.Options {
 // There is no third branch: an unencrypted connection would send the user's app
 // password in the clear and is not offered at all.
 //
-// The whole opening (the dial, the TLS handshake, the greeting, STARTTLS,
-// LOGIN and the listing of the folders) runs under ctx: when ctx ends first,
-// the connection is closed, which interrupts whatever is waiting on it, and
-// Connect answers ErrUnreachable. go-imap itself waits for an answer with no
-// time limit, so without this a server that greets and then says nothing at
-// LOGIN would hold its caller forever: a request, a sync, or the sweep that
-// brings every account's reports back.
+// The session is bound to ctx for its whole life, its opening included (the
+// dial, the TLS handshake, the greeting, STARTTLS, LOGIN and the listing of
+// the folders): when ctx ends, the connection is closed, which interrupts
+// whatever is waiting on it. During the opening, Connect then answers
+// ErrUnreachable; afterwards, the command under way fails and the client is
+// Closed. go-imap itself waits for an answer with no time limit, so without
+// this a server that greets and then says nothing, at LOGIN or at the first
+// SELECT, would hold its caller forever: a request, the background sync of
+// every account after it, or the sweep that brings every account's reports
+// back. Close releases the binding.
 func Connect(ctx context.Context, creds Credentials) (*Client, error) {
 	addr := net.JoinHostPort(creds.Endpoint.Host, fmt.Sprint(creds.Endpoint.Port))
 	options := clientOptions(creds.Endpoint.Host)
@@ -171,15 +177,20 @@ func Connect(ctx context.Context, creds Credentials) (*Client, error) {
 		}
 		return newClient(imapclient.New(conn, options), creds.Username, creds.Password)
 	}()
-	if !stop() {
-		// ctx ended during the opening: the connection is closed, and what
-		// came of the opening says nothing about the mailbox.
-		if client != nil {
-			client.Abort()
+	if err != nil || ctx.Err() != nil {
+		if !stop() || ctx.Err() != nil {
+			// ctx ended during the opening: the connection is closed, and
+			// what came of the opening says nothing about the mailbox.
+			if client != nil {
+				client.Abort()
+			}
+			return nil, fmt.Errorf("%w: opening %s stopped: %w", ErrUnreachable, addr, ctx.Err())
 		}
-		return nil, fmt.Errorf("%w: opening %s stopped: %w", ErrUnreachable, addr, ctx.Err())
+		return nil, err
 	}
-	return client, err
+	// Open: the binding stays, until Close releases it.
+	client.unbind = stop
+	return client, nil
 }
 
 // newClient authenticates an already-connected socket and resolves its folders.
@@ -249,6 +260,9 @@ func (c *Client) SaysWhereMovesLand() bool {
 func (c *Client) Close() error {
 	if c.c == nil {
 		return nil
+	}
+	if c.unbind != nil {
+		c.unbind()
 	}
 	_ = c.c.Logout().Wait()
 	return c.c.Close()

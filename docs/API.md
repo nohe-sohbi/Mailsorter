@@ -1067,10 +1067,14 @@ Two consequences worth knowing:
   A mailbox that cannot be opened at all for a reason other than its password
   (out of reach, too slow for the request's 30 s, or answering LOGIN that it is
   unavailable, see `POST /api/auth/mailbox`) answers `500` "votre boîte n'a pas
-  répondu, réessayez dans un instant", never a refused password. Opening an
-  IMAP session (the dial, TLS, the greeting, LOGIN, the listing of the
-  folders) stops with the request: a server that greets and then says nothing
-  holds no request past its time.
+  répondu, réessayez dans un instant", never a refused password. An IMAP session
+  is bound to its request for its whole life, its opening included (the dial,
+  TLS, the greeting, LOGIN, the listing of the folders): a server that greets
+  and then says nothing, at LOGIN or later (a SELECT, a FETCH), holds no
+  request past its time, and the sync answers that same `500` "votre boîte
+  n'a pas répondu, réessayez dans un instant" once its 30 s run out. The
+  background sync gives each account one minute the same way, so a silent
+  server holds only its own account.
 - `resultSizeEstimate` counts what is mirrored, not what the mailbox holds.
 
 The filters the inbox offers are all answered: `is:unread`, `is:read`,
