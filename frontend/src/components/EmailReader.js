@@ -45,11 +45,57 @@ const formatBytes = (n) => {
   return `${(n / (1024 * 1024)).toFixed(1)} Mo`;
 };
 
+// The pictures a mail's HTML draws through cid: URLs name a part of the mail,
+// which no browser resolves. The server says which part each cid is
+// (inlineImages); the reader downloads them through the authenticated route
+// and puts object URLs in their place. cidKey keys a cid: reference the way
+// the server keys it: unescaped, without angle brackets, in lower case.
+const cidKey = (ref) => {
+  let id = ref;
+  try {
+    id = decodeURIComponent(ref);
+  } catch {
+    id = ref;
+  }
+  return id.trim().replace(/^</, '').replace(/>$/, '').trim().toLowerCase();
+};
+
+// Only pictures a browser shows without running anything, the types the
+// server serves for this: anything else is not put in the text, an SVG least
+// of all, a document that can carry script.
+const DRAWN_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/bmp']);
+
+// IMG_CID finds, in the HTML as sent, the src of an <img> that is a cid: URL,
+// the way the server reads it (attachment.ShownBy). drawnOrder ranks those
+// cids in their order in the HTML, so the top of the mail is drawn first.
+const IMG_CID = /<img\b[^>]*?\ssrc\s*=\s*(?:"\s*cid:([^"]*)"|'\s*cid:([^']*)'|cid:([^\s>]+))/gi;
+const drawnOrder = (html) => {
+  const rank = new Map();
+  Array.from(String(html || '').matchAll(IMG_CID)).forEach((m) => {
+    const key = cidKey(m[1] ?? m[2] ?? m[3] ?? '');
+    if (key && !rank.has(key)) rank.set(key, rank.size);
+  });
+  return rank;
+};
+
+// How many pictures download at once. Each one is a request, and on a mailbox
+// reached over IMAP a connection to it: a thread full of signature logos must
+// not open them all together.
+const DRAWING_AT_ONCE = 3;
+
 // Sanitising is not optional here: the body is attacker-controlled HTML. On top
 // of DOMPurify's default stripping, every surviving link is forced to open in a
 // new tab with rel="noopener" so a marketing email can never navigate the app
-// away from itself or reach back through window.opener.
-function sanitize(html) {
+// away from itself or reach back through window.opener. drawn maps a cid to
+// the object URL of the picture downloaded for it, put in place after the
+// sanitising, so nothing the sender wrote decides what URL an image gets.
+// A Map, not an object: a cid: named "constructor" or "__proto__" must find
+// nothing rather than the object's prototype. served holds the cids the
+// server serves (inlineImages): an image naming another one (past the 30 the
+// server draws, an SVG, a part the mail does not have) would only ever be a
+// broken picture, so it is taken out, and counted in hidden for the line
+// that says so.
+function renderHtml(html, drawn = new Map(), served = new Set()) {
   const clean = DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'object', 'embed'],
@@ -62,11 +108,23 @@ function sanitize(html) {
   });
   // Remote images are the classic read-receipt beacon. They still load (blocking
   // them silently breaks most newsletters) but never get to carry credentials.
+  let hidden = 0;
   doc.querySelectorAll('img').forEach((img) => {
     img.setAttribute('loading', 'lazy');
     img.setAttribute('referrerpolicy', 'no-referrer');
+    const src = (img.getAttribute('src') || '').trim();
+    if (/^cid:/i.test(src)) {
+      const key = cidKey(src.slice(4));
+      const url = drawn.get(key);
+      if (url) {
+        img.setAttribute('src', url);
+      } else if (!served.has(key)) {
+        img.remove();
+        hidden += 1;
+      }
+    }
   });
-  return doc.body.firstChild?.innerHTML || '';
+  return { html: doc.body.firstChild?.innerHTML || '', hidden };
 }
 
 function EmailReader({
@@ -108,6 +166,7 @@ function EmailReader({
   const [loadError, setLoadError] = useState('');
   const [downloading, setDownloading] = useState(null);
   const [labelsById, setLabelsById] = useState(null);
+  const [drawn, setDrawn] = useState(() => new Map());
   const loadSeqRef = useRef(0);
   // Held in a ref so loadMessage can stay a stable callback.
   const onReadRef = useRef(onRead);
@@ -160,6 +219,58 @@ function EmailReader({
       loadSeqRef.current += 1;
     };
   }, [messageId, loadMessage]);
+
+  // The pictures the HTML draws: downloaded once the message is loaded, at
+  // most DRAWING_AT_ONCE at a time and from the top of the mail down, each
+  // into an object URL that the text shows in place of its cid:. Leaving the
+  // message (or loading it again) drops the queue, aborts the downloads under
+  // way and frees the URLs. A picture that does not come stays as the mail
+  // wrote it.
+  //
+  // Tied to the message loaded, not to the one asked for: on a move from one
+  // mail to the next, full still holds the first until the second arrives,
+  // and the first one's parts must not be asked of the second.
+  const loadedId = full?.messageId;
+  const inlineImages = full?.inlineImages;
+  const bodyHtml = full?.bodyHtml;
+  useEffect(() => {
+    setDrawn(new Map());
+    if (!messageId || loadedId !== messageId) return undefined;
+    const rank = drawnOrder(bodyHtml);
+    const at = (cid) => (rank.has(cid) ? rank.get(cid) : rank.size);
+    const queue = Object.entries(inlineImages || {}).sort(([a], [b]) => at(a) - at(b));
+    if (queue.length === 0) return undefined;
+    const controller = new AbortController();
+    const urls = [];
+    let running = 0;
+    let next = () => {};
+    const start = ([cid, id]) => {
+      running += 1;
+      emailService
+        .downloadAttachment(loadedId, id, { signal: controller.signal })
+        .then(({ data }) => {
+          if (controller.signal.aborted || !DRAWN_TYPES.has(String(data?.type || '').toLowerCase())) return;
+          const url = URL.createObjectURL(data);
+          urls.push(url);
+          setDrawn((prev) => new Map(prev).set(cid, url));
+        })
+        .catch(() => {})
+        .finally(() => {
+          running -= 1;
+          next();
+        });
+    };
+    next = () => {
+      while (!controller.signal.aborted && running < DRAWING_AT_ONCE && queue.length > 0) {
+        start(queue.shift());
+      }
+    };
+    next();
+    return () => {
+      controller.abort();
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [messageId, loadedId, inlineImages, bodyHtml]);
 
   // Label names are per-account and rarely change; fetch once for the session.
   // A mailbox without labels (IMAP): nothing to ask.
@@ -216,9 +327,19 @@ function EmailReader({
       // enough without leaking the buffer for the rest of the session.
       setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
     } catch (err) {
-      // The error body is a Blob here (responseType), so the shared reader would
-      // find no message: say plainly that the download failed instead.
-      toast.error(apiError(err, 'Téléchargement impossible.'));
+      // The error body is a Blob here (responseType), so the shared reader
+      // would find no message: read it, and show what the server said (a
+      // missing attachment, a mailbox that does not answer).
+      let said = '';
+      const body = err?.response?.data;
+      if (body instanceof Blob) {
+        try {
+          said = JSON.parse(await body.text())?.error || '';
+        } catch {
+          said = '';
+        }
+      }
+      toast.error(said || apiError(err, 'Téléchargement impossible.'));
     } finally {
       setDownloading(null);
     }
@@ -239,7 +360,11 @@ function EmailReader({
   };
 
   const name = extractName(merged.from) || 'Expéditeur inconnu';
-  const html = full?.bodyHtml ? sanitize(full.bodyHtml) : null;
+  const rendered = full?.bodyHtml
+    ? renderHtml(full.bodyHtml, drawn, new Set(Object.keys(full.inlineImages || {})))
+    : null;
+  const html = rendered?.html || null;
+  const hiddenPictures = rendered?.hidden || 0;
   const text = full?.body || '';
   const visibleLabels = (merged.labelIds || []).filter((l) => !SYSTEM_LABELS.has(l));
 
@@ -667,6 +792,15 @@ function EmailReader({
                 Cet email ne contient pas de texte affichable.
               </div>
             </div>
+          )}
+          {/* Said whatever is left to show: a mail made only of pictures that
+              are not drawn still says so, under its plain text or the notice. */}
+          {!loading && !loadError && hiddenPictures > 0 && (
+            <p className="mt-3 text-xs text-muted">
+              {hiddenPictures === 1
+                ? "1 image de ce mail n'est pas affichée."
+                : `${hiddenPictures} images de ce mail ne sont pas affichées.`}
+            </p>
           )}
         </div>
 

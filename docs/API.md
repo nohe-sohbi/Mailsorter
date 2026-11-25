@@ -470,8 +470,9 @@ to display.
   "body": "version texte",
   "bodyHtml": "<p>version html</p>",
   "attachments": [
-    { "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481, "attachmentId": "ANGjdJ..." }
+    { "filename": "facture.pdf", "mimeType": "application/pdf", "size": 20481, "attachmentId": "1" }
   ],
+  "inlineImages": { "logo@acme.com": "0.2" },
   "labelIds": ["INBOX"],
   "isRead": true
 }
@@ -480,23 +481,89 @@ to display.
 renders the HTML, the deterministic rule engine matches on the text. Either may
 be absent.
 
-`attachmentId` is the handle the bytes live behind (see the download route
-below). A part without one carries its data inline in the message payload and is
-not downloadable; inline images a newsletter references are filtered out
-entirely.
+`attachments` follows one rule on both transports (`internal/attachment`,
+`Listed`): a leaf part with a file name (`filename` of `Content-Disposition`,
+else `name` of `Content-Type`) is a file; so is an unnamed part declared
+`Content-Disposition: attachment`, listed as `piece-jointe`, and an unnamed
+forwarded mail (`message/rfc822`), listed as `message.eml`. The one exception
+is an image without a name that an `<img>` of the HTML in `bodyHtml` draws
+through a `cid:` URL in its `src`, whatever its disposition: the reader draws
+it in the text (see `inlineImages`), and a newsletter's pictures do not become
+chips named after nothing. A named one is listed too, so it can be saved. A
+`cid:` anywhere else (a CSS `url()`, a `background` attribute) is not drawn
+by the screen and counts for nothing: an unnamed image only a background
+points at is listed as `piece-jointe` when it is declared an attachment, and
+is not shown at all otherwise, as before this rule. A `Content-ID`, an
+`X-Attachment-Id` or an inline disposition alone hides nothing. `filename` is cleaned before it is sent: no directory,
+no control character, no quote, no bidirectional control (U+061C, U+200E,
+U+200F, U+202A to U+202E, U+2066 to U+2069), the same name the download's
+`Content-Disposition` carries.
 
-On a mailbox reached over IMAP the fetch PEEKS: it downloads the body without
+Over the Gmail API this rule replaced the one it had, which hid
+every part with a `Content-ID`, an `X-Attachment-Id` or an inline
+disposition: the files attached from Gmail's web interface (each one carries a
+`Content-ID` and an `X-Attachment-Id`), a PDF Apple Mail sends inline and an
+image no HTML shows were missing from the list, and are now in it.
+
+`inlineImages` maps the `cid:` of each picture the HTML draws to the id the
+download route serves it under, on both transports (`attachment.InlineImage`):
+a part of a type a browser draws without running anything (PNG, JPEG, GIF,
+WebP, BMP; never SVG, a document that can carry script) whose `Content-ID` the
+`src` of an `<img>` of the HTML names with a `cid:` URL. At most 30 of them
+(`attachment.MaxDrawn`), the first ones in the order of the HTML: each is a
+download, and over IMAP a connection to the mailbox, and a thread quoting its
+signatures carries dozens of logos; the others stay as the mail wrote them.
+The key is the `Content-ID` as the URL names it: %-unescaped, without its
+angle brackets, in lower case. No browser resolves `cid:`, so the SPA
+downloads the pictures of the message it has loaded through the route below,
+at most 3 at a time and in the order of the HTML, puts an object URL in place
+of each `src="cid:..."` after the HTML is sanitized, and when the reader
+leaves the message drops the rest of the queue, aborts the downloads under way
+and frees the object URLs. An `<img>` whose `cid:` is not in `inlineImages`
+(past the 30th, an SVG, a part the mail does not have) is taken out of the
+text, and a line under it says how many: "N images de ce mail ne sont pas
+affichées."
+
+`attachmentId` is what the download route below takes back: the file's part
+number in the message, on both transports (`"1"`, `"0.2"` over the Gmail API,
+`"2"`, `"1.3"` over IMAP). Over the Gmail API it is not Gmail's own
+attachment id, which nothing promises to stay the same from one
+`messages.get` to the next; a message that is a single file, which Gmail
+gives no part number, has `"payload"`. A Gmail part whose data travels inline
+in the message payload is downloadable too: the route serves it from the
+message.
+
+On a mailbox reached over IMAP the fetch PEEKS: it reads the message without
 setting `\Seen`, so opening a message stays distinct from reading it and only
 `markRead=1` changes the flag. The star comes as `isStarred`, read off the
-server. `attachments` and `labelIds` come back empty
-there: the download route has not been ported, and a chip that answers 501 when
-clicked is worse than no chip.
+server. `labelIds` comes back empty there. It reads the
+server's description of the message first (`BODYSTRUCTURE`), then, in one
+command, the MIME header of each part, the text and the HTML (each fetched up
+to about 6.9 MiB as stored and kept up to 5 MiB decoded) and the decoded size
+of each part (`BINARY.SIZE`, on a server with BINARY or IMAP4rev2). The bytes
+of a file are never read to open a mail. The request's 20 s deadline ends the
+IMAP command too (the connection is closed). `attachments` lists the parts by
+the rule above, file names decoded from RFC 2047 or RFC 2231 (in any charset
+the mail may use, ISO-8859-1 or windows-1252 included). `attachmentId` is the
+part's IMAP number (`"2"`, `"1.3"`), `mimeType` the declared type without its
+parameters, and `size` the size of the decoded file, as on Gmail, not of its
+base64: the server's measure, or, on a server without BINARY (Gmail's IMAP
+among them), an estimate from the stored size (a few bytes off for base64,
+the stored size for quoted-printable). A file in a transfer encoding nobody
+knows is left out of the list and logged; one whose base64 is broken cannot be
+told without reading it, so it is listed and its download answers 502.
 
 **Error Responses:**
 - `400 Bad Request`: Missing id
 - `401 Unauthorized`: Missing or expired session, or a dead Google grant
+- `404 Not Found`: the message is no longer in the mailbox, moved or deleted
+  from another mail client since the list showed it (an IMAP UID its folder no
+  longer holds, a Gmail id that answers 404): `{"error": "Ce mail n'est plus
+  dans votre boîte : il a été déplacé ou supprimé entre-temps."}`
 - `428 Precondition Required`: no mailbox is connected to this account yet
-- `502 Bad Gateway`: the mailbox could not return the message
+- `502 Bad Gateway`: the mailbox could not return the message: `{"error": "Ce
+  mail n'a pas pu être chargé depuis votre boîte. Réessayez dans un
+  instant."}`. The error itself is logged, never sent
 
 ---
 
@@ -504,21 +571,43 @@ clicked is worse than no chip.
 
 #### GET /api/emails/{id}/attachments/{attachmentId}
 
-Gmail API only: `501` over IMAP.
-
 Stream one attachment of one message. Gmail never ships attachment data with the
-message, so this resolves the message first (to learn the part's real filename
-and MIME type, and to prove the message actually carries that id) and then
-fetches the bytes.
+message, so this reads the message again first (to learn the part's real
+filename and MIME type, to prove the message actually carries a file under that
+part number, and to get the attachment id Gmail gives it in this fresh copy)
+and then fetches the bytes under that fresh id. An id that is no part number,
+a Gmail attachment id sent by a screen opened before part numbers were handed
+out, is served only while the fresh copy still gives a file that id.
 
-Only a part of the named message may be served: an attachment id the message
-does not carry is a 404, never a passthrough to Gmail.
+Only a part of the named message may be served: an id the message does not
+carry is a 404, never a passthrough to Gmail. The parts served are the files
+the reader lists and the pictures its HTML draws (`inlineImages`, the 30 first
+ones), on both transports: a picture of another type, one no `<img>` of the
+HTML points at, or one past the 30th, is not served unless it is a listed
+file.
+
+Over IMAP the file is inside the message. The route reads the message the
+way the reader does (its description, the headers of its parts, its HTML and
+the parts' decoded sizes, never a file) and serves the part only when the
+reader's list has a file under `attachmentId`, or `inlineImages` a picture. A file over 30 MiB once
+decoded is a 413 before a byte of it is read: on the server's measure
+(`BINARY.SIZE`), or, without one, when its stored size cannot fit. Then it
+fetches that part alone with `BODY.PEEK[part]` (saving a file does not mark the
+mail read), reading it as it arrives rather than into memory and through the
+30 MiB cap, so no more than that of it is ever held. The request's 60 s
+deadline ends the IMAP command too (the connection is closed). Any other id,
+the text of the mail (`"1"`), a section name (`"TEXT"`), a part past the last
+one or a file of another mail, is a 404 `{"error": "Cette pièce jointe est
+introuvable dans ce mail."}` and nothing else. The bytes are the file as
+sent: the transfer encoding (base64, quoted-printable) is undone, the charset
+of a text file is left as it is.
 
 **Response:** `200 OK`, the raw file, with:
 - `Content-Type`: the part's MIME type when it parses, `application/octet-stream` otherwise
 - `Content-Disposition`: `attachment`, with the filename sanitized (no directory
-  components, no control characters) and published in both the quoted and the
-  RFC 5987 `filename*` form so accents survive
+  components, no control or bidirectional control characters, the name the
+  reader lists) and published in both the quoted and the RFC 5987 `filename*`
+  form so accents survive
 - `X-Content-Type-Options: nosniff`
 
 The route is session-authenticated, so a plain `<a href>` cannot fetch it: the
@@ -527,9 +616,18 @@ SPA downloads through the API client and hands the browser an object URL.
 **Error Responses:**
 - `400 Bad Request`: Missing message or attachment id
 - `401 Unauthorized`: Missing or expired session
-- `404 Not Found`: This message carries no such attachment
+- `404 Not Found`: This message carries no such attachment ("Cette pièce
+  jointe est introuvable dans ce mail.", on both transports), or the message
+  is no longer in the mailbox, moved or
+  deleted from another mail client since the list showed it ("Ce mail n'est
+  plus dans votre boîte : la pièce jointe ne peut plus être téléchargée.", on
+  both transports)
 - `413 Payload Too Large`: Over 30 MiB
-- `502 Bad Gateway`: Gmail could not return the message or the bytes
+- `428 Precondition Required`: no mailbox is connected to this account yet
+- `502 Bad Gateway`: the mailbox could not return the message or the bytes,
+  or, over IMAP, the file's transfer encoding does not decode: "Cette pièce
+  jointe n'a pas pu être téléchargée depuis votre boîte. Réessayez dans un
+  instant.". The error itself is logged, never sent
 
 ---
 
@@ -876,7 +974,7 @@ mailbox is on IMAP, rather than acting on the wrong message.
 |---|---|
 | `POST /api/emails/sync` (no rules applied) | `POST /api/rules/apply`, `POST /api/rules/preview` |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
-| `GET /api/emails/{id}` (body included, no attachment list) | `GET /api/emails/{id}/attachments/{attachmentId}` |
+| `GET /api/emails/{id}` (body and attachment list included), `GET /api/emails/{id}/attachments/{attachmentId}` | |
 | `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message, archived, deleted or filed in a folder, is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
 | `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
@@ -923,10 +1021,21 @@ Two consequences worth knowing:
   is in `is:starred` from the first sync.
 - And it reads the MIME structure (`BODYSTRUCTURE`, no message downloaded) of
   up to 500 stored inbox messages it has not read it for yet, newest first,
-  which the next syncs complete. A message carries a file when a part is
-  marked `Content-Disposition: attachment`, or is a named file that is neither
-  text nor a picture the HTML draws (a part with a `Content-ID`). Until it is
-  read, a message does not match `has:attachment`. A message whose structure
+  which the next syncs complete. A message carries a file when one of its
+  parts is a file by the rule the reader lists files with (see
+  `GET /api/emails/{id}`), read without the HTML, which the structure does not
+  carry: an image with a `Content-ID` that is not declared
+  `Content-Disposition: attachment` is taken for a picture the HTML draws, and
+  does not count, named or not: the paper clip a mail program shows
+  (`attachment.ListedWithoutHTML`). Two kinds of image are decided otherwise
+  than in the reader: a named image with a `Content-ID`, not declared an
+  attachment (the reader lists it, to save it, whether the HTML draws it or
+  not; the filter does not count it), and an unnamed image declared an
+  attachment that the HTML draws (the reader draws it and lists no chip; the
+  filter counts it). The count is stored with the version of that rule
+  (`hasAttachmentsRule`, `attachment.WithoutHTMLVersion`): a message counted
+  with an older one, or before the version was kept, is read again, once.
+  Until it is read, a message does not match `has:attachment`. A message whose structure
   the server describes in a way that cannot be parsed, even alone (the batch
   it is in fails, the connection is opened again and the batch read by
   halves), is logged, kept without an attachment and marked

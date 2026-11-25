@@ -98,6 +98,11 @@ type Email struct {
 	// erases what the sync stored.
 	SizeEstimate   int64 `json:"sizeEstimate,omitempty" bson:"sizeEstimate,omitempty"`
 	HasAttachments bool  `json:"hasAttachments,omitempty" bson:"hasAttachments,omitempty"`
+	// HasAttachmentsRule is the version of the rule HasAttachments was read
+	// with (attachment.WithoutHTMLVersion), stored beside it by the sync. A
+	// row without the current one is read again: the filter follows the
+	// rule, not the one it was first counted with.
+	HasAttachmentsRule int `json:"-" bson:"hasAttachmentsRule,omitempty"`
 	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.
 	UnsubURL      string    `json:"unsubUrl,omitempty" bson:"unsubUrl,omitempty"`
 	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mirror"
@@ -533,7 +534,9 @@ const structurePerSync = 500
 // completeInboxStructure reads whether the stored inbox messages carry a file
 // (their MIME structure), for the filter "Pièces jointes", which is answered
 // from the copy. A row without hasAttachments has not been read yet; once
-// read it holds true or false. A message whose structure cannot be parsed
+// read it holds true or false, and hasAttachmentsRule the version of the rule
+// it was read with (attachment.WithoutHTMLVersion): a row read with an older
+// rule, or before the version was kept, is read again, once. A message whose structure cannot be parsed
 // even alone is stored without an attachment and marked structureUnreadable:
 // it is logged, never asked again, and no longer fails the messages next to
 // it. A refusal of the server or a time limit concludes nothing: the rest is
@@ -543,7 +546,7 @@ const structurePerSync = 500
 func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, session *mailSession, present map[string]bool, reopen func() error) error {
 	folder := string(mailbox.FolderInbox)
 	cur, err := h.db.Emails().Find(ctx,
-		bson.M{"userId": userEmail, "folder": folder, "leftInbox": notLeftInbox, "hasAttachments": bson.M{"$exists": false}},
+		bson.M{"userId": userEmail, "folder": folder, "leftInbox": notLeftInbox, "hasAttachmentsRule": bson.M{"$ne": attachment.WithoutHTMLVersion}},
 		options.Find().
 			SetProjection(bson.M{"messageId": 1}).
 			SetSort(bson.D{{Key: "receivedDate", Value: -1}}).
@@ -578,13 +581,13 @@ func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, 
 	for uid, has := range got.Read {
 		writes = append(writes, mongo.NewUpdateOneModel().
 			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
-			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": has}}))
+			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": has, "hasAttachmentsRule": attachment.WithoutHTMLVersion}}))
 	}
 	for uid, rErr := range got.Unreadable {
 		log.Printf("imap sync: the structure of message uid %s of %s cannot be read, kept without an attachment: %v", uid, userEmail, rErr)
 		writes = append(writes, mongo.NewUpdateOneModel().
 			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
-			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": false, "structureUnreadable": true}}))
+			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": false, "structureUnreadable": true, "hasAttachmentsRule": attachment.WithoutHTMLVersion}}))
 	}
 	if len(got.Left) > 0 {
 		log.Printf("imap sync: the structure of %d messages of %s left for the next sync: %v", len(got.Left), userEmail, got.Stopped)
