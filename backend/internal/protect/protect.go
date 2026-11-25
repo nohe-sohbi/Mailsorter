@@ -95,11 +95,17 @@ var fromParser = mail.AddressParser{WordDecoder: &mime.WordDecoder{
 // name in quotes (withQuotedName), when nothing in it could be taken for an
 // address of its own. Any other header that does not read as exactly one
 // address gives no address at all, "": no address is guessed out of it, so
-// nothing is swept, unsubscribed or made a rule of in its name.
+// nothing is swept, unsubscribed or made a rule of in its name. That includes
+// a From naming several authors ("patron@victime.fr, Lettre
+// <lettre@journal.fr>", a group): taking one of them for the sender would
+// let the others sweep, or unprotect, the mail.
 func Address(raw string) string {
 	s := strings.TrimSpace(raw)
 	a, err := fromParser.Parse(s)
 	if err != nil {
+		if list, lErr := fromParser.ParseList(s); lErr == nil && len(list) > 1 {
+			return ""
+		}
 		quoted, ok := withQuotedName(s)
 		if !ok {
 			return ""
@@ -115,10 +121,11 @@ func Address(raw string) string {
 // withQuotedName is the header s with its display name in quotes, for a
 // header net/mail refused, and whether it is one this applies to: a name
 // before its last "<", holding no "<", ">" or quote of its own (so nothing in
-// it is an address or a quoted string the sender wrote), and after it one
-// "<...>" closing the header, with no other angle bracket inside. Anything
-// else ("<boss@corp.com> <spam@evil.io>", a quoted local part followed by
-// more) is not read at all.
+// it is an address or a quoted string the sender wrote), nor an "@" next to a
+// "," or a ";" (an address, then another author: "patron@victime.fr, Doe,
+// John <j@x.com>"), and after it one "<...>" closing the header, with no
+// other angle bracket inside. Anything else ("<boss@corp.com>
+// <spam@evil.io>", a quoted local part followed by more) is not read at all.
 func withQuotedName(s string) (string, bool) {
 	open := strings.LastIndex(s, "<")
 	if open <= 0 || !strings.HasSuffix(s, ">") {
@@ -127,6 +134,9 @@ func withQuotedName(s string) (string, bool) {
 	name := strings.TrimSpace(s[:open])
 	inner := s[open+1 : len(s)-1]
 	if name == "" || strings.ContainsAny(name, `<>"`) || strings.ContainsAny(inner, "<>") {
+		return "", false
+	}
+	if strings.Contains(name, "@") && strings.ContainsAny(name, ",;") {
 		return "", false
 	}
 	return `"` + strings.ReplaceAll(name, `\`, `\\`) + `" ` + s[open:], true
@@ -154,6 +164,11 @@ func Domain(raw string) string {
 // empty value when nothing usable remains.
 func NormalizeEntry(raw string) (value, kind string) {
 	s := strings.TrimSpace(raw)
+	// Apostrophes around what was typed ('jean@x.fr') are the typist's, not
+	// part of the address: kept, the entry matched nobody.
+	if len(s) >= 2 && strings.HasPrefix(s, "'") && strings.HasSuffix(s, "'") {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
 	// An entry that reads as an address (a raw From header "Display Name
 	// <addr@host>", a bare address) is kept exactly as NormalizeAddress reads
 	// it: that is what Match compares the senders with. Its quotes, when the

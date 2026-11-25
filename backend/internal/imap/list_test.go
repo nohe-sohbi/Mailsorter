@@ -309,7 +309,10 @@ func TestFormatAddress(t *testing.T) {
 		{[]imapv2.Address{{Name: "Réseau social", Mailbox: "notif", Host: "social.example"}}, `"Réseau social" <notif@social.example>`},
 		{[]imapv2.Address{{Name: `Boutique "Le Coin"`, Mailbox: "contact", Host: "boutique.example"}}, `"Boutique \"Le Coin\"" <contact@boutique.example>`},
 		{[]imapv2.Address{{Mailbox: "bare", Host: "acme.com"}}, "bare@acme.com"},
-		{[]imapv2.Address{{Name: "No Address"}}, "No Address"},
+		// No mailbox or no domain: the name in quotes, which reads as no
+		// address, never the name alone.
+		{[]imapv2.Address{{Name: "No Address"}}, `"No Address"`},
+		{[]imapv2.Address{{Name: "patron@victime.fr"}}, `"patron@victime.fr"`},
 		{nil, ""},
 		// A local part that is not a dot-atom goes back in its quotes: unquoted,
 		// "<boss@corp.com>"@evil.io read as boss@corp.com's address.
@@ -318,6 +321,52 @@ func TestFormatAddress(t *testing.T) {
 		{[]imapv2.Address{{Mailbox: "a b", Host: "x.com"}}, `"a b"@x.com`},
 		{[]imapv2.Address{{Mailbox: "jean.luc", Host: "x.fr"}}, "jean.luc@x.fr"},
 	}
+	// Several authors: the whole list, as net/mail writes one, never the
+	// first alone.
+	multi := []struct {
+		in   []imapv2.Address
+		want string
+		addr []string
+	}{
+		{
+			[]imapv2.Address{{Mailbox: "patron", Host: "victime.fr"}, {Name: "Lettre", Mailbox: "lettre", Host: "journal.fr"}},
+			`patron@victime.fr, "Lettre" <lettre@journal.fr>`,
+			[]string{"patron@victime.fr", "lettre@journal.fr"},
+		},
+		{
+			// A group (RFC 5322 3.4) comes as a start marker, its members and
+			// an end marker: the phrase is kept quoted, the end dropped.
+			[]imapv2.Address{{Mailbox: "Undisclosed"}, {Mailbox: "a", Host: "x.fr"}, {}, {Mailbox: "b", Host: "x.fr"}},
+			`"Undisclosed", a@x.fr, b@x.fr`,
+			nil,
+		},
+	}
+	for _, tc := range multi {
+		got := formatAddress(tc.in)
+		if got != tc.want {
+			t.Errorf("formatAddress(%+v) = %q, want %q", tc.in, got, tc.want)
+		}
+		if _, err := mail.ParseAddress(got); err == nil {
+			t.Errorf("formatAddress(%+v) = %q reads as one address, want a list", tc.in, got)
+		}
+		if tc.addr != nil {
+			list, err := mail.ParseAddressList(got)
+			if err != nil || len(list) != len(tc.addr) {
+				t.Fatalf("formatAddress(%+v) = %q reads as %v (%v), want %v", tc.in, got, list, err, tc.addr)
+			}
+			for i, a := range list {
+				if a.Address != tc.addr[i] {
+					t.Errorf("address %d of %q = %q, want %q", i, got, a.Address, tc.addr[i])
+				}
+			}
+		}
+	}
+	for _, name := range []string{"No Address", "patron@victime.fr"} {
+		if a, err := mail.ParseAddress(formatAddress([]imapv2.Address{{Name: name}})); err == nil {
+			t.Errorf("a name alone, %q, reads as the address %q", name, a.Address)
+		}
+	}
+
 	for _, tc := range cases {
 		got := formatAddress(tc.in)
 		if got != tc.want {

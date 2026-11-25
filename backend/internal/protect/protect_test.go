@@ -45,6 +45,14 @@ var realHeaders = []struct {
 	{"unterminated", "Broken <unterminated", ""},
 	{"no address", "No Address Here", ""},
 	{"two addresses", "a@x.fr, b@x.fr", ""},
+	// Several authors name no sender: none of them is taken for it.
+	{"two authors, the second with a name", "patron@victime.fr, Lettre <lettre@journal.fr>", ""},
+	{"two authors with names", "Patron <patron@victime.fr>, Lettre <lettre@journal.fr>", ""},
+	{"a group, then an author", "Undisclosed: a@x.fr; <b@x.fr>", ""},
+	{"an author, then a name nobody quoted", "patron@victime.fr, Doe, John <j@x.com>", ""},
+	{"a group in a name nobody quoted", "Liste; a@x.fr <b@x.fr>", ""},
+	{"the IMAP listing's list of two", `patron@victime.fr, "Lettre" <lettre@journal.fr>`, ""},
+	{"the IMAP listing's name without an address", `"patron@victime.fr"`, ""},
 	{"empty", "", ""},
 }
 
@@ -84,6 +92,14 @@ func TestProtectingAMailShieldsItsSender(t *testing.T) {
 	}
 }
 
+// An address typed between apostrophes protects that address.
+func TestATypedEntryInApostrophesProtects(t *testing.T) {
+	value, _ := NormalizeEntry("'jean@x.fr'")
+	if !Match("Jean <jean@x.fr>", []string{value}) {
+		t.Errorf("NormalizeEntry('jean@x.fr') = %q, which does not match Jean <jean@x.fr>", value)
+	}
+}
+
 func TestNormalizeEntry(t *testing.T) {
 	cases := []struct {
 		in        string
@@ -99,6 +115,14 @@ func TestNormalizeEntry(t *testing.T) {
 		{"", "", ""},
 		{"@", "", ""},
 		{"@bad", "bad", KindDomain},
+		// Apostrophes around what was typed are not part of the address.
+		{"'jean@x.fr'", "jean@x.fr", KindAddress},
+		{" 'Jean@X.fr' ", "jean@x.fr", KindAddress},
+		{"o'brien@x.ie", "o'brien@x.ie", KindAddress},
+		// A quoted local part keeps its quotes: that is how Match reads it.
+		{`"jean dupont"@exemple.fr`, `"jean dupont"@exemple.fr`, KindAddress},
+		// Several authors protect nobody.
+		{"patron@victime.fr, Lettre <lettre@journal.fr>", "", ""},
 	}
 	for _, tc := range cases {
 		v, k := NormalizeEntry(tc.in)

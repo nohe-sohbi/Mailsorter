@@ -218,17 +218,41 @@ func flagNames(flags []imapv2.Flag) []string {
 // "<boss@corp.com>"@evil.io came back as <boss@corp.com>@evil.io, which no
 // parser reads as evil.io's address, and a reader falling back on the last
 // "<...>" took it for boss@corp.com.
+//
+// A From of several addresses is stored whole, as net/mail writes a list
+// ("a@x.fr", "Lettre" <lettre@journal.fr>): keeping only the first one made
+// "patron@victime.fr, Lettre <lettre@journal.fr>" read as the patron's, and
+// the Gmail path, which stores the header as it is, reads such a list as no
+// sender at all (protect.Address). The same goes for an address of the
+// envelope without a mailbox or a domain (a group's marker): its name is
+// written in quotes, which reads as no address, never alone, since a name
+// "patron@victime.fr" would then be one.
 func formatAddress(addrs []imapv2.Address) string {
-	if len(addrs) == 0 {
-		return ""
+	parts := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		if part := formatOne(a); part != "" {
+			parts = append(parts, part)
+		}
 	}
-	a := addrs[0]
+	return strings.Join(parts, ", ")
+}
+
+// formatOne is one address of an envelope, as formatAddress writes it.
+func formatOne(a imapv2.Address) string {
 	addr := addrSpec(a)
-	if a.Name == "" {
-		return addr
+	name := a.Name
+	if addr == "" && name == "" {
+		// A group's marker carries its phrase in Mailbox.
+		name = a.Mailbox
 	}
 	if addr == "" {
-		return a.Name
+		if name == "" {
+			return ""
+		}
+		return quoteName(name)
+	}
+	if name == "" {
+		return addr
 	}
 	// Written out by hand, not with net/mail's Address.String: that one
 	// re-encodes any non-ASCII name as RFC 2047 ("=?utf-8?q?R=C3=A9seau?="),
@@ -236,8 +260,12 @@ func formatAddress(addrs []imapv2.Address) string {
 	// decoded the name, in any charset go-message knows (Connect's
 	// WordDecoder); it is stored readable, quoted the way the Gmail path
 	// stores it.
-	name := strings.ReplaceAll(strings.ReplaceAll(a.Name, `\`, `\\`), `"`, `\"`)
-	return `"` + name + `" <` + addr + `>`
+	return quoteName(name) + ` <` + addr + `>`
+}
+
+// quoteName is a display name as a quoted string.
+func quoteName(name string) string {
+	return `"` + strings.ReplaceAll(strings.ReplaceAll(name, `\`, `\\`), `"`, `\"`) + `"`
 }
 
 // addrSpec is the address of a, as an RFC 5322 addr-spec: the local part

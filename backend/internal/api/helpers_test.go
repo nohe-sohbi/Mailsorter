@@ -83,7 +83,11 @@ func TestSenderActsOnRealHeaders(t *testing.T) {
 		"News: daily <n@b.fr>":                     "n@b.fr",
 		`"<boss@corp.com>"@evil.io`:                `"<boss@corp.com>"@evil.io`,
 		"<patron@victime.fr> <lettre@journal.fr>":  "",
-		`"<boss@corp.com>"@evil.io,`:               "",
+		// Several authors name no sender.
+		"patron@victime.fr, Lettre <lettre@journal.fr>": "",
+		"Undisclosed: a@x.fr; <b@x.fr>":                 "",
+		"patron@victime.fr, Doe, John <j@x.com>":        "",
+		`"<boss@corp.com>"@evil.io,`:                    "",
 	}
 	for from, want := range cases {
 		if got := extractSenderAddress(from); got != want {

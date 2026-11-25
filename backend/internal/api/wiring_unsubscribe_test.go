@@ -658,3 +658,80 @@ func TestAcceptance_GmailUnquotedNameWithACommaIsItsSendersAddress(t *testing.T)
 	}
 	app.expectInInbox(next...)
 }
+
+// A From naming two authors, the first one protected. It names no sender:
+// the shield spares it while anyone is protected, and a sweep by the other
+// author's address does not reach it, on both transports.
+const twoAuthors = "patron@victime.fr, Lettre <lettre@journal.fr>"
+
+func TestAcceptance_TwoAuthorsSpareTheProtectedOneGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	app.protect("patron@victime.fr")
+	ids := app.receiveAndSync(
+		incoming{From: "Lettre <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<https://desabonnement.x.invalid/lettre>"},
+		incoming{From: twoAuthors, Subject: "Deux auteurs"},
+	)
+
+	done := app.batchAction("archive", ids[1])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("le mail dont le From nomme patron@victime.fr (protégé) devrait être épargné, la réponse en épargne %d : %v", n, done)
+	}
+	app.expectInInbox(ids[1])
+
+	app.unsubscribeAndArchive(ids[0])
+	app.expectNotInInbox(ids[0])
+	app.expectInInbox(ids[1])
+}
+
+func TestAcceptance_TwoAuthorsSpareTheProtectedOneIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Lettre <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<https://desabonnement.x.invalid/lettre>"}
+	both := incoming{From: twoAuthors, Subject: "Deux auteurs"}
+	moi, uids := syncedIMAPInbox(app, letter, both)
+	moi.protect("patron@victime.fr")
+
+	if addr, ok := listedSenderAddress(app, moi.token, both.Subject); !ok || addr != "" {
+		app.failf("la liste ne devrait donner aucune adresse d'expéditeur au mail à deux auteurs, elle donne %q (listé : %v)", addr, ok)
+	}
+	done := moi.actOnSelection("archive", uids[1])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("le mail dont le From nomme patron@victime.fr (protégé) devrait être épargné, la réponse en épargne %d : %v", n, done)
+	}
+	moi.expectOnServer(serverInbox, both.Subject)
+
+	moi.unsubscribeFrom(uids[0], true)
+	moi.expectOnServer(serverArchive, letter.Subject)
+	moi.expectOnServer(serverInbox, both.Subject)
+	moi.expectShows(uids[1], both.Subject)
+}
+
+// "Protéger" on a mail whose address has a quoted local part, through the
+// route the reader calls: the selection archived next spares it.
+func TestAcceptance_ProtectingAQuotedLocalPartSparesItGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const jean = `"jean dupont"@exemple.fr`
+	ids := app.receiveAndSync(incoming{From: jean, Subject: "De Jean"}, incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"})
+	app.protect(jean)
+
+	done := app.batchAction("archive", ids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé, il en épargne %d : %v", jean, n, done)
+	}
+	app.expectInInbox(ids[0])
+	app.expectNotInInbox(ids[1])
+}
+
+func TestAcceptance_ProtectingAQuotedLocalPartSparesItIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	jean := incoming{From: `"jean dupont"@exemple.fr`, Subject: "De Jean"}
+	other := incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"}
+	moi, uids := syncedIMAPInbox(app, jean, other)
+	moi.protect(jean.From)
+
+	done := moi.actOnSelection("archive", uids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé, il en épargne %d : %v", jean.From, n, done)
+	}
+	moi.expectOnServer(serverInbox, jean.Subject)
+	moi.expectOnServer(serverArchive, other.Subject)
+}
