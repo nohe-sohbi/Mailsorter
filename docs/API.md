@@ -337,7 +337,7 @@ reader fetches the one it opens (`GET /api/emails/{id}`).
 is not a dot-atom; a display name nobody quoted, `Doe, John <j@x.com>`, is read
 again in quotes when it holds no `<`, `>` or quote), the one the screens show
 and act on; it is absent when `from` names several authors or uses the group
-syntax (`Undisclosed: a@x.fr;`), and when
+syntax (`Undisclosed: a@x.fr;`), when the mail has two From headers, and when
 `from` does not read as one address, and the screens then show `from` as it
 is rather than read an address out of it. `GET /api/emails/{id}` carries it
 too.
@@ -863,9 +863,11 @@ Two ways in:
   "L'adresse de cet expéditeur est illisible : il ne peut pas être protégé
   depuis ce mail.".
 - Otherwise (typed in the settings): the value is normalized and classified
-  (`kind`: `address` or `domain`), apostrophes around it dropped; a raw `Name
-  <addr>` header is accepted and its address stored. A value that does not read
-  and holds `<`, `,`, `;`, `:` or a quote answers `400`.
+  (`kind`: `address` or `domain`), apostrophes around it dropped: an address
+  that reads (a raw `Name <addr>` header is accepted and its address stored), or
+  a well-formed domain (`acme.com`, `@acme.com`: letters, digits and hyphens, no
+  final dot). Anything else answers `400`: two addresses, a space or a tab in
+  an address, a stray `>`, two `@`, a name, a final dot.
 
 ### Remove a protected sender
 
