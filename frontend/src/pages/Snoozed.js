@@ -9,7 +9,6 @@ import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
 import { hotelTone, initials } from '../components/hotel/avatar';
-import { useMailbox } from '../contexts/EmailContext';
 
 const AVATAR_GRADIENTS = [
   'bg-brand-fill', 'bg-info-fill',
@@ -149,12 +148,7 @@ function countdown(dateStr, now) {
   return rtf.format(Math.round(days / 30), 'month');
 }
 
-// Over IMAP there is no "Reporter" to point at yet: the empty state says so
-// instead of sending the reader to a button that is not there.
-const IMAP_SNOOZE = "Reporter un email n'est pas encore disponible sur les boîtes IMAP.";
-
 function Snoozed() {
-  const { isImap } = useMailbox();
   const toast = useToast();
   const hotel = useHotel();
   const confirm = useConfirm();
@@ -376,10 +370,10 @@ function Snoozed() {
               Icon={meta.empty.Icon}
               tone={meta.empty.tone}
               title={meta.empty.title}
-              description={isImap ? IMAP_SNOOZE : meta.empty.description}
+              description={meta.empty.description}
               scene={meta.empty.scene}
               hotelTitle={meta.empty.hotelTitle}
-              hotelDescription={isImap ? IMAP_SNOOZE : meta.empty.hotelDescription}
+              hotelDescription={meta.empty.hotelDescription}
             />
           </div>
         ) : (

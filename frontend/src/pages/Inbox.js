@@ -241,8 +241,9 @@ function Inbox() {
   const { selfHosted } = useInstance();
   // Over IMAP reading, archiving, deleting, read and the star on one mail, the
   // quick filters, the AI's proposals (a label proposal files the mail in its
-  // folder there) and undo work today. Every control the server would answer
-  // "not available" to is hidden, not disabled: one rule everywhere.
+  // folder there), reporting (one mail or a selection) and undo work today.
+  // Every control the server would answer "not available" to is hidden, not
+  // disabled: one rule everywhere.
   // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
   // and stays false when that answer failed: a guess offers nothing the server
   // may refuse. `known` is for what works on both transports once the mailbox
@@ -1827,8 +1828,9 @@ function Inbox() {
                     </button>
                     {/* The actions over a selection go through the batch
                         route, which an IMAP mailbox cannot use yet: there, the
-                        selection is for "Trier un par un" and the AI only. */}
-                    {fullFeatures && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
+                        selection is for "Trier un par un", the AI and
+                        "Reporter", which has a route of its own. */}
+                    {known && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
                   {fullFeatures && BULK_ACTIONS.map((key) => {
                     const meta = actionMeta(key);
                     return (
@@ -1848,8 +1850,10 @@ function Inbox() {
                     );
                   })}
                   {/* Snooze is the one bulk action that needs a "until when",
-                      so it carries its own menu instead of a flat button. */}
-                  {fullFeatures && (
+                      so it carries its own menu instead of a flat button. It
+                      works on both transports (over IMAP the mails wait in
+                      the folder « Plus tard »), once the mailbox is known. */}
+                  {known && (
                   <SnoozeButton
                     onSnooze={runBulkSnooze}
                     disabled={bulkBusy}
