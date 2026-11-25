@@ -699,16 +699,32 @@ func (c *Client) Has(ref mailbox.Ref) (bool, error) {
 	return len(res.AllUIDs()) > 0, nil
 }
 
-// FindByMessageID returns the highest UID in folder whose Message-ID header
-// is id, "" when there is none, and an error when the server could not be
-// asked. It is how a message is found again after a move when the server did
-// not say where it landed.
+// ErrAmbiguous means several messages of a folder carry the Message-ID looked
+// for (a copy of the mail, a duplicate the server kept): which one Mailsorter
+// moved cannot be told, so none is taken.
+var ErrAmbiguous = errors.New("imap: several messages carry this Message-ID")
+
+// FindByMessageID returns the UID of the one message in folder whose
+// Message-ID header is id ("<a@b>" or "a@b"), "" when there is none,
+// ErrAmbiguous when there are several, and an error when the server could not
+// be asked. It is how a message is found again after a move when the server
+// did not say where it landed, or when its number no longer names it.
+//
+// SEARCH HEADER matches a part of the header, not the whole: "a@b" also finds
+// "xa@b" and "a@b.c". So the search asks for the id with its angle brackets,
+// and each message found is kept only when the Message-ID of its envelope,
+// read as the listing reads it, is id exactly. Taking the highest UID among
+// several would move a copy, or another mail, as if it were the one.
 func (c *Client) FindByMessageID(folder, id string) (string, error) {
+	id = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(id), "<"), ">")
+	if id == "" {
+		return "", nil
+	}
 	if err := c.selectFolder(folder); err != nil {
 		return "", err
 	}
 	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{
-		Header: []imapv2.SearchCriteriaHeaderField{{Key: "Message-ID", Value: id}},
+		Header: []imapv2.SearchCriteriaHeaderField{{Key: "Message-ID", Value: "<" + id + ">"}},
 	}, nil).Wait()
 	if err != nil {
 		return "", fmt.Errorf("imap: search %q by Message-ID: %w", folder, err)
@@ -717,13 +733,23 @@ func (c *Client) FindByMessageID(folder, id string) (string, error) {
 	if len(uids) == 0 {
 		return "", nil
 	}
-	best := uids[0]
-	for _, u := range uids[1:] {
-		if u > best {
-			best = u
+	msgs, err := c.c.Fetch(imapv2.UIDSetNum(uids...), &imapv2.FetchOptions{UID: true, Envelope: true}).Collect()
+	if err != nil {
+		return "", fmt.Errorf("imap: read the Message-ID of %d messages in %q: %w", len(uids), folder, err)
+	}
+	var exact []imapv2.UID
+	for _, m := range msgs {
+		if m.Envelope != nil && m.Envelope.MessageID == id {
+			exact = append(exact, m.UID)
 		}
 	}
-	return strconv.FormatUint(uint64(best), 10), nil
+	switch len(exact) {
+	case 0:
+		return "", nil
+	case 1:
+		return strconv.FormatUint(uint64(exact[0]), 10), nil
+	}
+	return "", fmt.Errorf("%w: %d messages in %q", ErrAmbiguous, len(exact), folder)
 }
 
 // storeFlags issues the add and the remove as separate STORE commands, because
