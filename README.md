@@ -4,7 +4,7 @@
 
 **L'IA lit, comprend et range votre boîte mail à votre place.**
 
-[Service géré](https://mailsorter.sohbi.dev) · `Go` · `React + Tailwind` · `MongoDB` · `Mistral AI` · MIT
+[Service géré](https://mailsorter.sohbi.dev) · `Go` · `React + Tailwind` · `MongoDB` · `IA locale (Ollama)` ou `Mistral AI` · MIT
 
 <img src="docs/assets/mailsorter.png" alt="Mailsorter : la landing et un aperçu des suggestions de tri" width="820">
 
@@ -15,6 +15,8 @@
 Une boîte qui déborde se vide de deux façons : à la main, pendant des heures, chaque semaine ; ou en déléguant la décision. Mailsorter délègue, mais sans jamais retirer la main à l'utilisateur : chaque action est proposée avec un score de confiance, réversible d'un clic, et journalisée.
 
 **Mailsorter s'installe chez vous.** Vous clonez, vous lancez, vos identifiants et vos emails ne quittent pas votre machine. C'est la façon recommandée de l'utiliser, et c'est aussi la seule qui donne accès à l'API Gmail complète et à Proton.
+
+**Et l'IA peut tourner chez vous aussi.** Branchez un modèle local avec [Ollama](https://ollama.com) et plus rien ne sort, pas même vers un fournisseur d'IA : ni coût par analyse, ni dépendance à un service extérieur. Voir [IA locale](#ia-locale).
 
 ## Deux éditions
 
@@ -27,7 +29,7 @@ Ce n'est pas une question d'emballage : l'édition décide de ce que l'instance 
 | **Prix** | Gratuit, MIT | Payant, par boîte |
 | **Gmail** | **API complète**, avec votre propre projet Google Cloud | IMAP + mot de passe d'application |
 | **Proton** | Oui, via Bridge local | Impossible |
-| **Clé IA** | La vôtre | Incluse |
+| **IA** | Un modèle local (Ollama), ou votre clé | Incluse |
 | **Vos identifiants** | Restent chez vous | Chez nous, chiffrés |
 
 Sur Gmail, l'auto-hébergée est **strictement meilleure** : un projet Google Cloud personnel vous place dans l'exemption d'usage personnel de Google, donc aucune vérification, aucun audit, aucun plafond. Le service géré ne peut pas faire ça : un client OAuth partagé est plafonné par Google à 100 autorisations pour la durée de vie du projet, et ce plafond n'est pas réinitialisable.
@@ -58,7 +60,7 @@ Sur Gmail, l'IMAP ne dégrade presque rien : les extensions `X-GM-EXT-1` conserv
 
 ## Installation
 
-Prérequis : Docker et Docker Compose. Pour l'IA, une clé [Mistral](https://console.mistral.ai/).
+Prérequis : Docker et Docker Compose. Pour l'IA, au choix : un modèle local avec Ollama (voir [IA locale](#ia-locale)), ou une clé [Mistral](https://console.mistral.ai/).
 
 ```bash
 git clone https://github.com/nohe-sohbi/Mailsorter.git
@@ -71,7 +73,11 @@ Renseignez au minimum :
 ```env
 EDITION=self-hosted
 ENCRYPTION_KEY=une-chaine-aleatoire-de-32-caracteres-minimum
-MISTRAL_API_KEY=votre_cle_mistral
+
+# L'IA, au choix : un modèle local (voir "IA locale")
+OLLAMA_MODEL=qwen3.5:9b
+# ou une clé Mistral
+# MISTRAL_API_KEY=votre_cle_mistral
 ```
 
 Générez une vraie clé de chiffrement, par exemple avec `openssl rand -base64 32`. **Le serveur refuse de démarrer sur la valeur d'exemple**, et changer cette clé plus tard déconnecte tout le monde et rend illisibles les jetons stockés.
@@ -109,6 +115,65 @@ Un écran d'avertissement Google apparaît à la connexion : c'est normal, vous 
 
 Les autres fournisseurs demandent un identifiant que vous générez chez eux, jamais le mot de passe de votre compte. L'application vous indique lequel et où le trouver, depuis le même catalogue que celui avec lequel elle se connecte.
 
+## IA locale
+
+Une boîte mail contient des factures, des relevés bancaires, des échanges privés. Avec un modèle local, Mailsorter les trie sans qu'aucun email ne sorte de votre réseau : l'analyse ne coûte rien et tourne même si un fournisseur d'IA tombe.
+
+### Lancer avec Ollama
+
+1. Installez [Ollama](https://ollama.com) et téléchargez un modèle :
+
+   ```bash
+   ollama pull qwen3.5:9b
+   ```
+
+2. Faites écouter Ollama au-delà de la boucle locale, sinon le conteneur ne le voit pas : `OLLAMA_HOST=0.0.0.0` dans l'environnement d'Ollama, puis redémarrez-le.
+
+3. Dans votre `.env`, nommez le modèle et laissez `MISTRAL_API_KEY` vide :
+
+   ```env
+   OLLAMA_MODEL=qwen3.5:9b
+   ```
+
+4. `make up`, puis vérifiez dans `make logs` que le backend annonce `AI providers initialized: ollama`.
+
+Par défaut, `make up` cherche Ollama sur la machine qui fait tourner Docker (`http://host.docker.internal:11434`, nom résolu sur Linux aussi). Si le modèle tourne sur un autre ordinateur, celui qui a la carte graphique par exemple, donnez son adresse :
+
+```env
+OLLAMA_BASE_URL=http://192.168.1.50:11434
+```
+
+Ollama n'a pas d'authentification : écouter sur `0.0.0.0` l'ouvre à tout votre réseau local. Gardez-le sur un réseau de confiance, ou restreignez le port au pare-feu.
+
+### Choisir un modèle
+
+Le modèle reçoit les emails par lots de 8 et doit répondre en JSON : une action, une étiquette, un score de confiance et une raison. Les règles déterministes et le cache passent avant lui, il ne voit donc que ce qui demande vraiment du jugement.
+
+| Mémoire de la carte graphique | Point de départ (novembre 2026) | Poids |
+| --- | --- | --- |
+| 8 Go | Qwen3.5 9B : `qwen3.5:9b` | 6,6 Go |
+| 16 Go | Qwen3.8 27B, quantifié IQ4_XS : `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS` | 14,4 Go |
+
+Sur 16 Go, prenez la quantification IQ4_XS ci-dessus : le `qwen3.8:27b` du catalogue Ollama pèse 18 Go et déborde de la carte, ce qui renvoie une partie du calcul sur le processeur. Les modèles ouverts changent tous les mois et tout modèle qui répond en JSON convient : ce tableau donne un point de départ, pas une liste fermée.
+
+Plus le modèle est gros, moins il se trompe sur les cas limites, et c'est ce qui compte avant de le laisser agir en tâche de fond. Le pilote automatique ne supprime ni n'archive jamais un expéditeur protégé, quel que soit le modèle.
+
+### llama.cpp, LM Studio, vLLM
+
+Tout serveur compatible OpenAI convient. `OPENAI_BASE_URL` est l'adresse complète de la route de chat, et la clé n'est pas lue par un serveur local mais ne doit pas être vide :
+
+```env
+OPENAI_BASE_URL=http://host.docker.internal:1234/v1/chat/completions
+OPENAI_API_KEY=local
+OPENAI_MODEL=le-nom-du-modele-charge
+```
+
+### Pourquoi dans le `.env` et pas dans les Réglages
+
+L'écran Réglages laisse chaque utilisateur brancher sa propre clé, mais il n'accepte que des adresses HTTPS publiques : une adresse saisie par un utilisateur ne doit pas pouvoir viser le réseau interne du serveur. Un modèle local est un choix de l'instance, donc il se règle dans le `.env`, par celui qui l'installe.
+
+Les variables locales (`OLLAMA_*`, `OPENAI_*`, `AI_FALLBACK_PROVIDER`) sont transmises au conteneur par `compose.local.yml`, le fichier qu'empile `make up`. Le `docker-compose.yml` du déploiement ne les lit pas.
+
 ## Ce qui est intéressant dedans
 
 Les décisions d'ingénierie qui valent le détour, avec leur point d'entrée dans le code.
@@ -135,16 +200,16 @@ flowchart LR
   B --> X{{"internal/mailbox<br/>verbes neutres"}}
   X --> G([Gmail])
   X -.->|a venir| I([IMAP / Graph])
-  B --> AI([Mistral AI])
+  B --> AI(["Modèle IA<br/>Ollama en local, ou API"])
   B -.->|tickers| S["Boucles de fond<br/>sync · snooze · digest"]
 ```
 
 | Brique | Stack | Rôle |
 | --- | --- | --- |
 | Frontend | React 18, Tailwind, Axios | Cockpit de tri, design system maison, zéro librairie d'icônes |
-| Backend | Go 1.21+, Gorilla Mux, OAuth2 | API REST, orchestration IA, accès aux boîtes, ordonnanceurs |
+| Backend | Go 1.26+, Gorilla Mux, OAuth2 | API REST, orchestration IA, accès aux boîtes, ordonnanceurs |
 | Base | MongoDB 7 | Comptes, suggestions, règles, journal d'actions |
-| IA | Mistral AI | Classification des emails |
+| IA | Ollama ou tout serveur compatible OpenAI en local ; Mistral, OpenAI, Anthropic en API ; repli automatique de l'un à l'autre | Classification des emails |
 
 Détail : [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · API complète : [`docs/API.md`](docs/API.md) · Historique des phases : [`docs/ROADMAP.md`](docs/ROADMAP.md)
 

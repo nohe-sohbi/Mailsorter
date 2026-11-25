@@ -11,18 +11,18 @@ Solo-developer project. Production is live. The 12 roadmap phases are delivered
 
 | Layer | Choice | Version pinned in |
 |---|---|---|
-| Backend | Go, `net/http` + `gorilla/mux` router | `backend/go.mod` (`go 1.21`) |
+| Backend | Go, `net/http` + `gorilla/mux` router | `backend/go.mod` (`go 1.26`), `backend/Dockerfile` (`golang:1.26-alpine`) |
 | Module path | `github.com/nohe-sohbi/mailsorter/backend` | `backend/go.mod` |
 | HTTP deps | `gorilla/mux` 1.8.1, `rs/cors` 1.10.1 | `backend/go.mod` |
 | Data | MongoDB 7, official `mongo-driver` 1.13.1 | `docker-compose.yml`, `backend/go.mod` |
-| Google | `golang.org/x/oauth2` 0.15.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
+| Google | `golang.org/x/oauth2` 0.38.0, `google.golang.org/api` 0.154.0 (Gmail v1) | `backend/go.mod` |
 | IMAP | `github.com/emersion/go-imap/v2` v2.0.0-beta.8, pinned, plus its companion `go-message` v0.18.2 (already in the graph, promoted to direct for MIME body parsing) | `backend/go.mod` |
 | AI | Mistral chat completions, hand-rolled HTTP client | `backend/internal/ai/mistral.go` |
 | Billing | Stripe REST, hand-rolled client (no SDK) | `backend/internal/billing/stripe.go` |
 | Frontend | React 18.2, react-router-dom 6.21, axios 1.6, dompurify 3.0 | `frontend/package.json` |
 | Build (front) | Create React App (`react-scripts` 5.0.1) + Tailwind 3.4 | `frontend/package.json` |
 | Serving | nginx alpine, SPA + `/api` reverse proxy | `frontend/nginx.conf` |
-| CI | GitHub Actions, Go 1.21 + Node 20 | `.github/workflows/ci.yml` |
+| CI | GitHub Actions, Go (version read from `backend/go.mod`) + Node 20 | `.github/workflows/ci.yml` |
 | Deploy | Dokploy (Compose app), auto-redeploy on push to `main` | `docker-compose.yml` |
 
 There is no Stripe SDK, no icon library, no test framework beyond the standard
@@ -153,13 +153,20 @@ All commands verified against this working copy.
 Notes that will bite you:
 
 - `go` is not on the default PATH in this environment. Use `export PATH="$HOME/go/bin:$PATH"`
-  (local toolchain is 1.24.1; `go.mod` and CI target 1.21).
+  (local toolchain is 1.24.1; `go.mod`, the Dockerfile and CI target 1.26, and with the
+  default `GOTOOLCHAIN=auto` a local 1.24 downloads 1.26 on first use).
+- **The Dockerfile's Go tag must follow `go.mod`.** The official golang images set
+  `GOTOOLCHAIN=local`, so an image older than the `go` line refuses to build while CI,
+  which downloads the newer toolchain on its own, stays green. That is how #155 broke
+  the deploy with every check passing. The `docker` CI job builds both images to catch it.
 - **There are zero frontend tests.** `npm test` exists (`react-scripts test`) but no
   `*.test.js` file does. CI does not run it. Frontend verification is a real build plus
   browser navigation, never a unit test claim.
 - CI (`.github/workflows/ci.yml`) runs, on every push to `main` and every PR: backend
-  `go mod download`, `go vet ./...`, `go build ./...`, `go test -race ./...`; frontend
-  `npm install` + `CI=false npm run build`. Nothing else. No linter, no formatter gate.
+  `go mod download`, `go vet ./...`, `go build ./...`, `go test -race ./...`; the
+  acceptance scenarios (`scripts/scenarios.sh` against a MongoDB service); frontend
+  `npm install` + `CI=false npm run build`; and `docker build` of both images, as Dokploy
+  builds them. Nothing else. No linter, no formatter gate.
 
 ## Backend Architecture
 
@@ -496,7 +503,9 @@ as a side effect of another change.
   point Mongo at a dead address on purpose so the degraded paths are exercised for real.
 - A bug fix ships with the test that fails without it. Every B-item in `BACKLOG.md` did.
 - Acceptance scenarios (build tag `acceptance`) are the one place the `api` package
-  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), and
+  runs against a REAL MongoDB and a fake Gmail (`acceptance_fakegmail_test.go`), or a
+  real in-memory IMAP server over TLS trusted through `SSL_CERT_FILE`, with the
+  database prepared as the production volume is (`acceptance_imap_test.go`), and
   the only tests that say which messages a handler actually moved. One scenario is
   one French sentence (`phrase`) Nohé can answer yes or no to: `observed` until he
   answers, `validated` on a yes, `rejected` on a no. A rejected scenario still pins
@@ -771,6 +780,16 @@ Do not duplicate these into this file. Point at them.
   (`label`) included: the Grand Hotel landing reads it to decide what it may
   promise, and keeps promising nothing it cannot deliver. So porting a promised
   feature to IMAP also means deleting its line there.
+- **The visitor's address is `X-Real-IP`, and the backend believes it only from a
+  private or loopback peer.** Every request arrives through nginx, so the TCP peer is
+  always nginx; keying the limiters on it put every visitor in one bucket, and one
+  script failing logins locked everybody out. `clientIP` (`middleware.go`) reads the
+  header, `frontend/nginx.conf` resolves the visitor through the platform proxy's
+  `X-Forwarded-For` (private hops only) and SETS the header, overwriting the
+  visitor's. Two rules come with it: any new `location` that `proxy_pass`es to the
+  backend must set `X-Real-IP` too, or the visitor's own value goes through and they
+  pick their bucket; and the sign-in limiter is keyed on that address, never on a
+  bearer, since a caller signing in has no session and any token it sends is made up.
 - **`X-User-Email` is both the identity header and the `userId`.** There is no account
   entity, which is exactly what blocks multi-account Gmail (`docs/ROADMAP.md`).
 - **`GET`/`POST /api/smart-labels` have no UI.** They work and are tested; they are

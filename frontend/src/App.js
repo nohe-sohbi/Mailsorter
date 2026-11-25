@@ -22,8 +22,9 @@ import { Logo, Alert, Inbox as InboxIcon, Mail } from './ui/icons';
 import { CONTACT_EMAIL } from './components/PublicFooter';
 import { mailboxService } from './services/api';
 import Spinner from './ui/Spinner';
-import { isAuthed } from './lib/session';
+import { isAuthed, sessionOwner } from './lib/session';
 import { effectiveUiTheme, bootUiTheme } from './lib/uiTheme';
+import BackToTop from './ui/BackToTop';
 import { HotelThemeProvider, useHotel, loadHotelStyles } from './ui/hotel/HotelTheme';
 import { useHotelFonts } from './ui/hotel/useHotelFonts';
 import Emblem from './ui/hotel/Emblem';
@@ -267,6 +268,18 @@ function RequireMailbox({ children }) {
 // The page under the header. The hotel leaves it transparent so the striped
 // wallpaper on <body> shows through, and opens the lift doors on every change
 // of floor.
+// The inbox store, scoped to whoever is signed in. EmailProvider caches a
+// mailbox for five minutes and sits above every route, so on its own it outlived
+// a sign-out: the next person to sign in on the same browser was served the
+// previous one's emails from that cache, without a single request. Keying it on
+// the session owner remounts it, empty, the moment the owner changes. Reading
+// the location is what makes this re-render on the navigation that follows a
+// sign-in or a sign-out, since localStorage itself notifies nobody.
+function SessionEmailProvider({ children }) {
+  useLocation();
+  return <EmailProvider key={sessionOwner() || 'signed-out'}>{children}</EmailProvider>;
+}
+
 function AppFrame({ children }) {
   const hotel = useHotel();
   if (!hotel) return <div className="min-h-screen bg-ink-50">{children}</div>;
@@ -362,7 +375,7 @@ function App() {
       <HotelThemeProvider fallback={<HotelBoot label="Démarrage de Mailsorter..." />}>
         <ToastProvider>
           <ConfirmProvider>
-            <EmailProvider>
+            <SessionEmailProvider>
               <AppFrame>
                 <a
                   href="#main"
@@ -371,6 +384,7 @@ function App() {
                   Aller au contenu
                 </a>
                 <Header />
+                <BackToTop />
                 <main id="main">
                   <Routes>
                     {/* /setup stays reachable by its address whatever the
@@ -412,7 +426,7 @@ function App() {
                   </Routes>
                 </main>
               </AppFrame>
-            </EmailProvider>
+            </SessionEmailProvider>
           </ConfirmProvider>
         </ToastProvider>
       </HotelThemeProvider>

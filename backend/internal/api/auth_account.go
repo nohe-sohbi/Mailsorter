@@ -58,7 +58,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limiter := h.signInLimiter()
-	if !limiter.allow(clientKey(r)) || !limiter.allow("reg:"+email) {
+	if !limiter.allow("ip:"+clientIP(r)) || !limiter.allow("reg:"+email) {
 		w.Header().Set("Retry-After", "3")
 		writeError(w, http.StatusTooManyRequests, "Trop de tentatives. Patientez quelques instants.")
 		return
@@ -123,7 +123,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limiter := h.signInLimiter()
-	if !limiter.allow(clientKey(r)) || !limiter.allow("login:"+email) {
+	if !limiter.allow("ip:"+clientIP(r)) || !limiter.allow("login:"+email) {
 		w.Header().Set("Retry-After", "3")
 		writeError(w, http.StatusTooManyRequests, "Trop de tentatives. Patientez quelques instants.")
 		return

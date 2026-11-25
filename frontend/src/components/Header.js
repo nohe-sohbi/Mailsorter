@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useInstance } from '../contexts/InstanceContext';
+import { signOut } from '../lib/session';
 import { cn } from '../ui/cn';
 import { useTheme } from '../ui/theme';
 import { useHotel } from '../ui/hotel/HotelTheme';
@@ -109,8 +110,7 @@ function Header() {
   }, [mobileOpen]);
 
   const handleLogout = () => {
-    localStorage.removeItem('userEmail');
-    localStorage.removeItem('accessToken');
+    signOut();
     navigate('/');
   };
 
