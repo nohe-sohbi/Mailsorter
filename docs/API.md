@@ -363,12 +363,15 @@ display name, or the address read when the name holds an `@` in any width
 (`"boss@corp.com" <evil@evil.io>`, `boss＠corp.com` or `boss﹫corp.com`, RFC
 2047 encoded or not, show `evil@evil.io`), the address when there is no name
 or one that shows nothing (zero-width spaces, blank Braille or Hangul
-fillers), and the From's text when it names no sender. A name shows without
-control or format characters (bidi overrides and isolates, marks, zero-width
-spaces), the zero-width joiner and non-joiner aside. An address is shown in
-the one form below (`protect.ShownAddress`); the text of a From that names no
-sender with each control, format or drawn-as-nothing character shown as
-U+FFFD. The reader, the suggestions, the history (`GET /api/activity/log`)
+fillers), and "Expéditeur illisible" when it names no sender (it does not
+read, it names several authors or a group, there is none), with nothing of
+the header: its text, shown, read `<support@pаypal.com` or
+`support@paypal.com.secure-ve...`, with no closed list and its end cut. A
+name shows without control or format characters (bidi overrides and
+isolates, marks, zero-width spaces), the zero-width joiner and non-joiner
+aside. An address is shown in the one form below (`protect.ShownAddress`);
+`senderAddressShown` and `senderEmailShown` are empty for a From that names no
+sender. The reader, the suggestions, the history (`GET /api/activity/log`)
 and "Plus tard" (`GET /api/snoozes`) carry it too; a screen given none shows
 "Expéditeur inconnu", or nothing, never the From. A stored From holds no
 control byte.
@@ -403,9 +406,11 @@ character).
   address lines of the Expéditeurs and Abonnements cards and of the reader,
   and every label that is an address, which the server flags
   (`senderLabelIsAddress` on the listing, the reader, the suggestions, the
-  history and "Plus tard"; `senderNameIsAddress` on the cards), so the screen
-  never guesses: the list row (both themes), the name line of the cards and
-  of the reader, the plan, the history, "Plus tard".
+  history, "Plus tard" and the rules preview's samples; `senderNameIsAddress`
+  on the cards), so the screen never guesses: the list row (both themes), the
+  name line of the cards and of the reader, the plan, the history, "Plus
+  tard", the rules preview (the sender on a line of its own). A rule's name
+  is never cut either: it wraps.
 
 The forms: `senderLabel` and `senderAddressShown`
 (listing, reader, plan, history, "Plus tard"), `senderEmailShown` (Expéditeurs,
@@ -1177,8 +1182,8 @@ the address read out of it as for `senderAddress` (see `GET /api/emails`), and
 "" for a From that does not read as one address: such a row can still be
 unsubscribed through its `sampleMessageId`, but nothing is archived or recorded
 for it. `senderEmailShown` is what the card shows (the address in the one form
-addresses are shown in, or the From's text, made visible, when it names no
-sender); `senderEmail` is never shown.
+addresses are shown in, empty when the From names no sender, whose card is
+named "Expéditeur illisible"); `senderEmail` is never shown.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -2713,9 +2718,10 @@ A rule has the shape:
 
 - **`matchAll`** : `true` ANDs every condition, `false` ORs them.
 - **`nameShown`** (`GET /api/rules` only, never stored): the name as the
-  screen shows it, each hidden or reordering character as U+FFFD (a sender
-  rule saved before names were written in their shown form holds the
-  sender's address as written). The editor shows a condition's `valueShown`
+  screen shows it: a sender rule's "Expéditeur : " and its address in the one
+  form addresses are shown in (a rule saved before names were written so
+  holds it as written), any other name with each hidden or reordering
+  character as U+FFFD. The editor shows a condition's `valueShown`
   under its field when it differs from `value`.
 - **Condition `valueShown`** (`GET /api/rules` only, never stored): the value
   as the screen shows it, an address in the one form addresses are shown in
