@@ -354,9 +354,9 @@ is not a dot-atom; a display name nobody quoted, `Doe, John <j@x.com>`, is read
 again in quotes when it holds no `<`, `>` or quote), the one the screens show
 and act on; it is absent when `from` names several authors or uses the group
 syntax (`Undisclosed: a@x.fr;`), when the mail has two From headers, and when
-`from` does not read as one address, and the screens then show `from` as it
-is rather than read an address out of it. `GET /api/emails/{id}` carries it
-too.
+`from` does not read as one address, and the screens then show "Expéditeur
+illisible" (`senderLabel`), never `from` or an address read out of it. `GET
+/api/emails/{id}` carries it too.
 
 `senderLabel` is what the screens show for the sender (protect.Label): the
 display name, or the address read when the name holds an `@` in any width
@@ -2444,6 +2444,14 @@ mail that already left the inbox is not counted.
 { "applied": 34, "total": 40, "protectedSkipped": 0 }
 ```
 
+A `senderEmail` that names no sender (it does not read, two authors, a group:
+the card "Expéditeur illisible", `senderUnreadable`) answers `422` "Cet
+expéditeur est illisible : aucune action ne peut viser tous ses mails.", and so
+do the other actions on all of a sender's mail: `POST /api/ai/analyze-sender`,
+`POST /api/senders/rule`, and turning the auto-pilot on (`PUT
+/api/senders/{id}/preferences`). The auto-pilot never acts for such a From,
+and the screens offer none of them on its card.
+
 ### List suggestions
 
 #### GET /api/ai/suggestions?status=pending
@@ -2607,7 +2615,10 @@ and any learned preference. Reads the datastore only.
   }
 ]
 ```
-`preference` is omitted when the sender has none. `senderEmail` is the card's
+`preference` is omitted when the sender has none. `senderUnreadable` (both
+lists) marks a From that names no sender: its card is named "Expéditeur
+illisible", shows no address and offers no action on all of its mail (see `POST
+/api/ai/apply-bulk`). `senderEmail` is the card's
 key, the raw From the mails were grouped by, sent back for a sender-wide
 action and never shown; `senderEmailShown` is what the card shows, as on the
 Abonnements tab.
@@ -2829,16 +2840,23 @@ it: it runs the same matching function as `POST /api/rules/apply`.
   "scanned": 120,
   "willApply": 18,
   "byRule": [
-    { "ruleName": "Archiver les newsletters Acme", "action": "archive", "matched": 12 }
+    {
+      "ruleName": "Expéditeur : news@acme.com", "ruleNameShown": "Expéditeur : news@acme.com",
+      "action": "archive", "matched": 12
+    }
   ],
   "samples": [
     {
       "messageId": "18c...", "from": "news@acme.com", "subject": "...",
-      "ruleName": "Archiver les newsletters Acme", "action": "archive"
+      "ruleName": "Expéditeur : news@acme.com", "action": "archive",
+      "senderLabel": "news@acme.com", "senderLabelIsAddress": true
     }
   ]
 }
 ```
+`ruleNameShown` is the rule's name as the screen shows it (as `nameShown` of
+`GET /api/rules`), `senderLabel` and `senderLabelIsAddress` the sample's sender
+as every screen shows it (see `GET /api/emails`).
 `samples` is capped server-side. When the user has no rules, `willApply` is `0`
 and the arrays are empty. It does not model the protected senders: `willApply`
 is what `apply` would at most act on. Over IMAP it counts the messages a rule
@@ -2884,7 +2902,9 @@ is named `<name> (copie)` (then `(copie 2)`, since the per-rule apply counter is
 keyed by name) and arrives **disabled**: until it is edited it would be a second
 rule acting on the same mail as the one it was cloned from.
 
-**Response:** `201 Created`, the new rule.
+**Response:** `201 Created`, the new rule, with `nameShown` and each
+condition's `valueShown` as `GET /api/rules` gives them: the screen says the
+copy's name in that form ("Expéditeur : " and its address, then " (copie)").
 
 **Error Responses:**
 - `400 Bad Request`: Invalid rule id
