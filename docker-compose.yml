@@ -48,6 +48,21 @@ services:
       BUILD_VERSION: ${BUILD_VERSION:-dev}
       DIGEST_HOUR_UTC: ${DIGEST_HOUR_UTC:-7}
       MISTRAL_MAX_RETRIES: ${MISTRAL_MAX_RETRIES:-2}
+
+      # Fournisseurs multi-IA (feature "multi-fournisseurs") :
+      # chacune de ces variables est lue par config.Load et doit être
+      # propagée depuis .env pour que la feature soit active en production.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      # URL du SERVEUR Ollama dans le réseau Compose, pas celle du poste de
+      # l'opérateur (dans le conteneur, "localhost" est le conteneur, pas la
+      # machine hôte).
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      AI_FALLBACK_PROVIDER: ${AI_FALLBACK_PROVIDER}
     depends_on:
       mongodb:
         condition: service_healthy
