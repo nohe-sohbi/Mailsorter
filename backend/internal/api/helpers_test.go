@@ -161,10 +161,14 @@ func TestRuleForSender(t *testing.T) {
 // name only has what hides made visible.
 func TestShownRuleName(t *testing.T) {
 	cases := map[string]string{
-		"Expéditeur : y@pаypal.com":  "Expéditeur : y@xn--pypal-4ve.com",
-		"Expéditeur : x@pay‮pal.com": "Expéditeur : x@pay�pal.com",
-		"Factures ‮etc":              "Factures �etc",
-		"Expéditeur : sans adresse":  "Expéditeur : sans adresse",
+		"Expéditeur : y@pаypal.com":                   "Expéditeur : y@xn--pypal-4ve.com",
+		"Expéditeur : x@pay‮pal.com":                  "Expéditeur : x@pay�pal.com",
+		"Factures ‮etc":                               "Factures �etc",
+		"Expéditeur : sans adresse":                   "Expéditeur : sans adresse",
+		"Expéditeur : jean@x.fr, règle été":           "Expéditeur : jean@x.fr, règle été",
+		"Expéditeur : x@caf\u00e9.fr (copie)":         "Expéditeur : x@caf\u00e9.fr (copie)",
+		"Expéditeur : y@p\u0430ypal.com (copie 2)":    "Expéditeur : y@xn--pypal-4ve.com (copie 2)",
+		"Expéditeur : x@pay\u202Epal.com \u202Ecopie": "Expéditeur : x@pay\uFFFDpal.com \uFFFDcopie",
 	}
 	for name, want := range cases {
 		if got := shownRuleName(name); got != want {

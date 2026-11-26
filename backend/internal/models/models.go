@@ -672,18 +672,23 @@ type UnsubscribeRequest struct {
 type Subscription struct {
 	SenderEmail string `json:"senderEmail"`
 	// SenderEmailShown is the sender's address as the card shows it
-	// (protect.ShownAddress), or the From's text when it names no sender:
+	// (protect.ShownAddress), empty when the From names no sender:
 	// SenderEmail stays the key the screen sends back.
 	SenderEmailShown string `json:"senderEmailShown"`
 	SenderName       string `json:"senderName"`
 	// SenderNameIsAddress says SenderName is the sender's address, not a
 	// name (protect.LabelOf): the card lays it out so its domain is never cut.
-	SenderNameIsAddress bool      `json:"senderNameIsAddress,omitempty"`
-	EmailCount          int       `json:"emailCount"`
-	LastReceived        time.Time `json:"lastReceived"`
-	SampleMessageID     string    `json:"sampleMessageId"`
-	OneClick            bool      `json:"oneClick"`
-	Unsubscribed        bool      `json:"unsubscribed"`
+	SenderNameIsAddress bool `json:"senderNameIsAddress,omitempty"`
+	// SenderUnreadable says the From names no sender (it does not read, two
+	// authors, a group): the card is named "Expéditeur illisible" and offers
+	// no action on all of its mail, which the server refuses (422).
+	SenderUnreadable bool `json:"senderUnreadable,omitempty"`
+
+	EmailCount      int       `json:"emailCount"`
+	LastReceived    time.Time `json:"lastReceived"`
+	SampleMessageID string    `json:"sampleMessageId"`
+	OneClick        bool      `json:"oneClick"`
+	Unsubscribed    bool      `json:"unsubscribed"`
 }
 
 // SenderStats represents aggregated info about a sender
@@ -692,7 +697,7 @@ type SenderStats struct {
 	// which the screen sends back for a sender-wide action. Never shown.
 	SenderEmail string `json:"senderEmail"`
 	// SenderEmailShown is what the card shows as the sender's address
-	// (protect.ShownAddress), or the From's text when it names no sender.
+	// (protect.ShownAddress), empty when the From names no sender.
 	SenderEmailShown string `json:"senderEmailShown"`
 	SenderDomain     string `json:"senderDomain"`
 	// SenderNameIsAddress says SenderName is the sender's address, not a
@@ -701,6 +706,10 @@ type SenderStats struct {
 	SenderName          string            `json:"senderName"`
 	EmailCount          int               `json:"emailCount"`
 	Preference          *SenderPreference `json:"preference,omitempty"`
+	// SenderUnreadable says the From names no sender (it does not read, two
+	// authors, a group): the card is named "Expéditeur illisible" and offers
+	// no action on all of its mail, which the server refuses (422).
+	SenderUnreadable bool `json:"senderUnreadable,omitempty"`
 }
 
 // ============================================

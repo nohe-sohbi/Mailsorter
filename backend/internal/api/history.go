@@ -151,10 +151,10 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 				reversible = imapState.inInbox[l.MessageID]
 			}
 		}
-		if l.From != "" {
-			l.SenderLabel, l.SenderLabelIsAddress = protect.LabelOf(l.From)
-			l.SenderAddressShown = protect.ShownAddress(protect.Address(l.From))
-		}
+		// One label for every From, an absent one included ("Expéditeur
+		// illisible", as everywhere).
+		l.SenderLabel, l.SenderLabelIsAddress = protect.LabelOf(l.From)
+		l.SenderAddressShown = protect.ShownAddress(protect.Address(l.From))
 		// An entry of another mailbox than the one connected now names a
 		// message by a number the one connected now gives to another.
 		current := ofCurrentGeneration(l, gen)

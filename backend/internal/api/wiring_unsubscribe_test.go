@@ -28,6 +28,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -1674,5 +1675,126 @@ func TestAcceptance_AFromWithNoSenderIsShownUnreadableEverywhere(t *testing.T) {
 		app.fatalf("GET /api/snoozes a répondu %d : %v", code, out)
 	} else {
 		check("« Plus tard »", snoozes[0], "senderLabel")
+	}
+
+	// An absent From says the same, in the history and in "Plus tard".
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.ActionLog().InsertOne(ctx, models.ActionLog{
+		UserID: scenarioUser, MessageID: "sans-expediteur", Action: "archive", Source: SourceDirect,
+		Subject: "Sans expéditeur", CreatedAt: time.Now().Add(time.Minute),
+	}); err != nil {
+		app.fatalf("ligne d'historique sans From : %v", err)
+	}
+	if _, err := app.h.db.Snoozes().InsertOne(ctx, models.Snooze{
+		UserID: scenarioUser, MessageID: "sans-expediteur", Subject: "Sans expéditeur",
+		WakeAt: time.Now().Add(48 * time.Hour), Status: "scheduled", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}); err != nil {
+		app.fatalf("report sans From : %v", err)
+	}
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	seen := false
+	for _, e := range listOf(out, "entries") {
+		if e["subject"] == "Sans expéditeur" {
+			seen = true
+			check("L'historique d'un mail sans From", e, "senderLabel")
+		}
+	}
+	if code != http.StatusOK || !seen {
+		app.fatalf("l'historique ne montre pas la ligne sans From (%d) : %v", code, out)
+	}
+	code, out = app.call(http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	seen = false
+	for _, sn := range listOf(out, "snoozes") {
+		if sn["subject"] == "Sans expéditeur" {
+			seen = true
+			check("« Plus tard » d'un mail sans From", sn, "senderLabel")
+		}
+	}
+	if code != http.StatusOK || !seen {
+		app.fatalf("« Plus tard » ne montre pas le report sans From (%d) : %v", code, out)
+	}
+
+	// No action on all of its mail: the cards say so, the server refuses.
+	cards := array("/api/senders", http.MethodGet, nil)
+	for _, c := range cards {
+		if c["senderUnreadable"] != true {
+			app.failf("la carte %v devrait être marquée illisible (senderUnreadable)", c["senderEmail"])
+		}
+	}
+	for _, c := range array("/api/subscriptions", http.MethodGet, nil) {
+		if c["senderUnreadable"] != true {
+			app.failf("l'abonnement %v devrait être marqué illisible (senderUnreadable)", c["sampleMessageId"])
+		}
+	}
+	key, _ := cards[0]["senderEmail"].(string)
+	for _, c := range []struct {
+		what, path string
+		body       interface{}
+	}{
+		{"« Tout archiver »", "/api/ai/apply-bulk", map[string]string{"senderEmail": key, "action": "archive"}},
+		{"« Tout supprimer »", "/api/ai/apply-bulk", map[string]string{"senderEmail": key, "action": "delete"}},
+		{"« Créer une règle »", "/api/senders/rule", map[string]string{"senderEmail": key, "action": "archive"}},
+		{"« Analyser »", "/api/ai/analyze-sender", map[string]string{"senderEmail": key}},
+	} {
+		code, out := app.call(http.MethodPost, c.path, c.body)
+		if code != http.StatusUnprocessableEntity || out["error"] != unreadableSenderActionMessage {
+			app.failf("%s pour un expéditeur illisible devrait être refusé (422, %q), il a répondu %d : %v", c.what, unreadableSenderActionMessage, code, out)
+		}
+	}
+	res, err := app.h.db.SenderPreferences().InsertOne(ctx, models.SenderPreference{
+		UserID: scenarioUser, SenderEmail: key, DefaultAction: "archive", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		app.fatalf("préférence d'un expéditeur illisible : %v", err)
+	}
+	prefID := res.InsertedID.(primitive.ObjectID).Hex()
+	code, out = app.call(http.MethodPut, "/api/senders/"+prefID+"/preferences", map[string]interface{}{"autoApply": true, "defaultAction": "archive"})
+	if code != http.StatusUnprocessableEntity || out["error"] != unreadableSenderActionMessage {
+		app.failf("l'auto-pilote d'un expéditeur illisible devrait être refusé (422), il a répondu %d : %v", code, out)
+	}
+	app.expectInInbox(ids[2])
+}
+
+// A sender rule saved before names were written in their shown form holds the
+// sender's address as written: its name shows the address in the one form
+// addresses are shown in, in GET /api/rules, the preview's counts and the
+// answer of "Dupliquer", whose toast says it.
+func TestAcceptance_ALegacySenderRuleNameIsShownEverywhere(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const address = "y@p\u0430ypal.com"
+	const shownName = "Expéditeur : y@xn--pypal-4ve.com"
+	app.receiveAndSync(incoming{From: address, Subject: "Votre compte"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := app.h.db.SortingRules().InsertOne(ctx, models.SortingRule{
+		UserID: scenarioUser, Name: "Expéditeur : " + address, Enabled: true, MatchAll: true,
+		Conditions: []models.RuleCondition{{Field: "from", Operator: "contains", Value: address}},
+		Action:     "archive", Priority: 1,
+	})
+	if err != nil {
+		app.fatalf("enregistrement de l'ancienne règle : %v", err)
+	}
+	id := res.InsertedID.(primitive.ObjectID).Hex()
+
+	code, out := app.call(http.MethodGet, "/api/rules", nil)
+	rulesList, _ := out["rules"].([]interface{})
+	if len(rulesList) != 1 {
+		app.fatalf("GET /api/rules devrait rendre l'ancienne règle (%d) : %v", code, out)
+	}
+	if r, _ := rulesList[0].(map[string]interface{}); r["nameShown"] != shownName {
+		app.failf("GET /api/rules devrait nommer la règle %q, il la nomme %v", shownName, r["nameShown"])
+	}
+	code, out = app.call(http.MethodPost, "/api/rules/preview", nil)
+	byRule, _ := out["byRule"].([]interface{})
+	if len(byRule) == 0 {
+		app.fatalf("l'aperçu ne compte pas l'ancienne règle (%d) : %v", code, out)
+	}
+	if h, _ := byRule[0].(map[string]interface{}); h["ruleNameShown"] != shownName {
+		app.failf("l'aperçu devrait nommer la règle %q, il la nomme %v", shownName, h["ruleNameShown"])
+	}
+	code, out = app.call(http.MethodPost, "/api/rules/"+id+"/duplicate", nil)
+	if code != http.StatusCreated || out["nameShown"] != shownName+" (copie)" {
+		app.failf("« Dupliquer » devrait nommer la copie %q, il répond %d : %v", shownName+" (copie)", code, out)
 	}
 }

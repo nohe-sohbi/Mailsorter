@@ -539,6 +539,7 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 			SenderEmailShown:    shownSenderAddress(res.ID),
 			SenderName:          extractSenderName(res.ID),
 			SenderNameIsAddress: labelIsAddress(res.ID),
+			SenderUnreadable:    addr == "",
 			EmailCount:          res.EmailCount,
 			LastReceived:        res.LastReceived,
 			SampleMessageID:     res.SampleMsgID,

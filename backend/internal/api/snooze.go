@@ -481,10 +481,10 @@ func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One label for every From, an absent one included ("Expéditeur
+	// illisible", as everywhere).
 	for i := range rows {
-		if rows[i].From != "" {
-			rows[i].SenderLabel, rows[i].SenderLabelIsAddress = protect.LabelOf(rows[i].From)
-		}
+		rows[i].SenderLabel, rows[i].SenderLabelIsAddress = protect.LabelOf(rows[i].From)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"snoozes": rows})
 }

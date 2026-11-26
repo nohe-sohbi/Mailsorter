@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
@@ -102,14 +103,25 @@ func shownHits(hits []rules.RuleHits) []ruleHitsView {
 }
 
 // shownRuleName is a rule's name as the screen shows it: a sender rule's
-// address in the one form addresses are shown in (a rule saved before names
-// were written so holds it as written), any other name with what would hide
-// or reorder made visible.
+// address (the first word after senderRulePrefix) in the one form addresses
+// are shown in (a rule saved before names were written so holds it as
+// written), and everything else (what follows it, " (copie)" or a word the
+// user typed; any other name) with what would hide or reorder made visible.
+// The address alone goes to ShownAddress: with what follows it, it made one
+// domain of "café.fr (copie)", which IDNA refuses.
 func shownRuleName(name string) string {
-	if address, ok := strings.CutPrefix(name, senderRulePrefix); ok && strings.Contains(address, "@") {
-		return senderRulePrefix + protect.ShownAddress(address)
+	rest, ok := strings.CutPrefix(name, senderRulePrefix)
+	if !ok {
+		return protect.ShownText(name)
 	}
-	return protect.ShownText(name)
+	address, tail := rest, ""
+	if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
+		address, tail = rest[:i], rest[i:]
+	}
+	if !strings.Contains(address, "@") {
+		return protect.ShownText(name)
+	}
+	return senderRulePrefix + protect.ShownAddress(address) + protect.ShownText(tail)
 }
 
 // shownConditionValue is a rule's condition value as the screen shows it: an
@@ -795,7 +807,7 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if extractSenderAddress(req.SenderEmail) == "" {
-		writeError(w, http.StatusBadRequest, "Adresse d'expéditeur requise")
+		writeError(w, http.StatusUnprocessableEntity, unreadableSenderActionMessage)
 		return
 	}
 

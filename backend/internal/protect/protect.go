@@ -277,8 +277,7 @@ func ShownEntry(value string) string {
 	return ShownDomain(value)
 }
 
-// ShownText is text a screen shows that may hold an address (a rule's
-// condition, the text of a From that names no sender): markedText.
+// ShownText is text a screen shows that may hold an address: markedText.
 func ShownText(text string) string {
 	return markedText(text)
 }

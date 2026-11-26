@@ -73,6 +73,21 @@ func shownSenderAddress(from string) string {
 	return ""
 }
 
+// unreadableSenderActionMessage is what an action on all of a sender's mail
+// answers (422) when the From names no sender (it does not read, two authors,
+// a group): nothing can be swept, filed or ruled in its name.
+const unreadableSenderActionMessage = "Cet expéditeur est illisible : aucune action ne peut viser tous ses mails."
+
+// refuseUnreadableSender answers 422 and true when from names no sender
+// (protect.Address): an action by sender has nobody to act for.
+func refuseUnreadableSender(w http.ResponseWriter, from string) bool {
+	if protect.Address(from) != "" {
+		return false
+	}
+	writeError(w, http.StatusUnprocessableEntity, unreadableSenderActionMessage)
+	return true
+}
+
 // writeProtectedUnreadable answers a call that would have moved mail while
 // the protected list could not be read: 503, nothing moved.
 func writeProtectedUnreadable(w http.ResponseWriter, userEmail string, err error) {

@@ -18,6 +18,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -139,6 +140,11 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 
 	var req models.AnalyzeSenderRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// Its preference would steer the auto-pilot for a From that names
+	// nobody.
+	if refuseUnreadableSender(w, req.SenderEmail) {
 		return
 	}
 
@@ -469,6 +475,10 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 
 	var req models.ApplyBulkRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// A card of a From that names no sender has no sender to sweep for.
+	if refuseUnreadableSender(w, req.SenderEmail) {
 		return
 	}
 
@@ -864,6 +874,7 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 			SenderDomain:        extractDomain(r.ID),
 			SenderName:          extractSenderName(r.ID),
 			SenderNameIsAddress: labelIsAddress(r.ID),
+			SenderUnreadable:    protect.Address(r.ID) == "",
 			EmailCount:          r.EmailCount,
 		}
 
@@ -907,6 +918,24 @@ func (h *Handler) UpdateSenderPreference(w http.ResponseWriter, r *http.Request)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
+	// The auto-pilot acts on all of a sender's mail: not for a From that
+	// names no sender (a preference made before senders were read so).
+	if req.AutoApply {
+		var pref models.SenderPreference
+		err := h.db.SenderPreferences().FindOne(ctx, bson.M{"_id": objectID, "userId": userEmail}).Decode(&pref)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			writeError(w, http.StatusNotFound, "Preference not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to update preference")
+			return
+		}
+		if refuseUnreadableSender(w, pref.SenderEmail) {
+			return
+		}
+	}
 
 	result, err := h.db.SenderPreferences().UpdateOne(ctx,
 		bson.M{"_id": objectID, "userId": userEmail},

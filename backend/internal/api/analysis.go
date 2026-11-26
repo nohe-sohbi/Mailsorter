@@ -183,7 +183,8 @@ func (h *Handler) runAnalysis(
 	// Pass 1: resolve auto-pilot + cache hits, collect the rest for batching.
 	pending := make([]models.Email, 0, len(emails))
 	for _, email := range emails {
-		if session != nil {
+		// The auto-pilot acts for a sender: never for a From that names none.
+		if session != nil && protect.Address(email.From) != "" {
 			var pref models.SenderPreference
 			err := h.db.SenderPreferences().FindOne(ctx, bson.M{
 				"userId":      userEmail,
