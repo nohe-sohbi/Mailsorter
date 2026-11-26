@@ -72,13 +72,44 @@ func (h *Handler) GetRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range ruleset {
-		ruleset[i].NameShown = protect.ShownText(ruleset[i].Name)
+		ruleset[i].NameShown = shownRuleName(ruleset[i].Name)
 		for j := range ruleset[i].Conditions {
 			ruleset[i].Conditions[j].ValueShown = shownConditionValue(ruleset[i].Conditions[j].Value)
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": ruleset})
+}
+
+// senderRulePrefix opens the name of a rule made from a sender
+// (ruleForSender), which its address follows.
+const senderRulePrefix = "Expéditeur : "
+
+// ruleHitsView is a rule's count in the preview, with its name as the screen
+// shows it (shownRuleName).
+type ruleHitsView struct {
+	rules.RuleHits
+	RuleNameShown string `json:"ruleNameShown"`
+}
+
+// shownHits is the preview's counts by rule, each name in its shown form.
+func shownHits(hits []rules.RuleHits) []ruleHitsView {
+	out := make([]ruleHitsView, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, ruleHitsView{RuleHits: h, RuleNameShown: shownRuleName(h.RuleName)})
+	}
+	return out
+}
+
+// shownRuleName is a rule's name as the screen shows it: a sender rule's
+// address in the one form addresses are shown in (a rule saved before names
+// were written so holds it as written), any other name with what would hide
+// or reorder made visible.
+func shownRuleName(name string) string {
+	if address, ok := strings.CutPrefix(name, senderRulePrefix); ok && strings.Contains(address, "@") {
+		return senderRulePrefix + protect.ShownAddress(address)
+	}
+	return protect.ShownText(name)
 }
 
 // shownConditionValue is a rule's condition value as the screen shows it: an
@@ -340,19 +371,23 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 	}
 	// What the preview shows for each sender is what every screen shows
 	// (protect.Label), never the From as written.
+	// SenderLabelIsAddress says the label is the sender's address, which the
+	// screen lays out so its domain is never cut.
 	type previewSample struct {
 		rules.PreviewItem
-		SenderLabel string `json:"senderLabel"`
+		SenderLabel          string `json:"senderLabel"`
+		SenderLabelIsAddress bool   `json:"senderLabelIsAddress,omitempty"`
 	}
 	samples := make([]previewSample, 0, len(shown))
 	for _, it := range shown {
-		samples = append(samples, previewSample{PreviewItem: it, SenderLabel: protect.Label(it.From)})
+		label, isAddress := protect.LabelOf(it.From)
+		samples = append(samples, previewSample{PreviewItem: it, SenderLabel: label, SenderLabelIsAddress: isAddress})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"scanned":   len(emails),
 		"willApply": len(items),
-		"byRule":    hits,
+		"byRule":    shownHits(hits),
 		"samples":   samples,
 	})
 }
@@ -731,7 +766,7 @@ func ruleForSender(userEmail string, req models.CreateSenderRuleRequest) models.
 		UserID: userEmail,
 		// The name is shown as it is: the address in its shown form, the
 		// condition below keeps it as written, which is what matches.
-		Name:     "Expéditeur : " + protect.ShownAddress(addr),
+		Name:     senderRulePrefix + protect.ShownAddress(addr),
 		Enabled:  true,
 		MatchAll: true,
 		Conditions: []models.RuleCondition{

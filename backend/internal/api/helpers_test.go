@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 )
 
@@ -35,7 +36,7 @@ func TestExtractSenderName(t *testing.T) {
 		`"boss@corp.com" <evil@evil.io>`:            "evil@evil.io",
 		"\"boss\uFF20corp.com\" <evil@evil.io>":     "evil@evil.io",
 		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>":  "Réseau",
-		"Name <x@y.com> trail":                      "Name <x@y.com> trail",
+		"Name <x@y.com> trail":                      protect.UnreadableSenderLabel,
 	}
 	for in, want := range cases {
 		if got := extractSenderName(in); got != want {
@@ -152,5 +153,22 @@ func TestRuleForSender(t *testing.T) {
 	})
 	if err := rules.Validate(bad); err == nil {
 		t.Error("a label rule without a label name should fail validation")
+	}
+}
+
+// A sender rule's name shows its address in the one form addresses are
+// shown in, also for a rule saved before names were written so; any other
+// name only has what hides made visible.
+func TestShownRuleName(t *testing.T) {
+	cases := map[string]string{
+		"Expéditeur : y@pаypal.com":  "Expéditeur : y@xn--pypal-4ve.com",
+		"Expéditeur : x@pay‮pal.com": "Expéditeur : x@pay�pal.com",
+		"Factures ‮etc":              "Factures �etc",
+		"Expéditeur : sans adresse":  "Expéditeur : sans adresse",
+	}
+	for name, want := range cases {
+		if got := shownRuleName(name); got != want {
+			t.Errorf("shownRuleName(%q) = %q, want %q", name, got, want)
+		}
 	}
 }

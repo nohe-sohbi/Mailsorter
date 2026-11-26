@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
 	"go.mongodb.org/mongo-driver/bson"
@@ -1109,7 +1110,24 @@ func TestAcceptance_UnreadableProtectedListMovesNothingIMAP(t *testing.T) {
 	if code != http.StatusCreated && code != http.StatusOK {
 		app.fatalf("protéger journal.fr a répondu %d : %v", code, out)
 	}
+	moi.rule("Le journal", 1, "from", "contains", "journal.fr", models.RuleAction{Type: "archive"})
+	moi.setAutoApplyRules(true)
 	protectedListUnreadable(app)
+
+	// The rules: "Appliquer mes règles" answers 503, and a sync with the
+	// rules on runs none (a mail of the protected sender that arrives stays,
+	// and no rule line is written).
+	ruled := moi.applyRules()
+	expectNothingMoved(app, "« Appliquer mes règles »", ruled.code, ruled.body)
+	evening := incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre du soir"}
+	moi.arrive(evening)
+	moi.sync()
+	moi.expectOnServer(serverInbox, evening.Subject)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if n, err := app.h.db.ActionLog().CountDocuments(ctx, bson.M{"userId": moi.email, "source": SourceRule}); err != nil || n != 0 {
+		app.failf("aucune règle ne devrait avoir tourné, l'historique en compte %d (%v)", n, err)
+	}
 
 	got := moi.onSelection("archive", uids...)
 	expectNothingMoved(app, "« Archiver » sur la sélection", got.code, got.body)
@@ -1381,6 +1399,13 @@ func TestAcceptance_EveryAddressShownIsTheServersFormGmail(t *testing.T) {
 			app.failf("l'aperçu des règles devrait nommer « Promo », il nomme %v", s["senderLabel"])
 		}
 	}
+	byRule, _ := out["byRule"].([]interface{})
+	if len(byRule) == 0 {
+		app.fatalf("l'aperçu des règles ne compte aucune règle : %v", out)
+	}
+	if h, _ := byRule[0].(map[string]interface{}); h["ruleNameShown"] != "Expéditeur : "+shown {
+		app.failf("l'aperçu devrait nommer la règle « Expéditeur : %s », il la nomme %v", shown, h["ruleNameShown"])
+	}
 
 	// The history's tooltip.
 	app.act(ids[1], "archive")
@@ -1537,4 +1562,117 @@ func TestAcceptance_SweepsAndSelectionsOfAReplacedMailboxTouchNothingOfTheNew(t 
 		app.failf("le mail n°%s de la nouvelle boîte, du patron protégé, devrait être épargné, la réponse en épargne %d : %v", newUIDs[1], n, done)
 	}
 	moi.expectOnServer(serverInbox, patron.Subject)
+}
+
+// A From that names no sender (it does not read, two authors, a group) is
+// shown "Expéditeur illisible" on every route, nothing of the header: the
+// list, the reader, the Expediteurs and Abonnements cards (no address), the
+// plan, the rules preview, the history and "Plus tard". Its text, shown,
+// read "<support@pаypal.com" or "support@paypal.com.secure-ve...".
+func TestAcceptance_AFromWithNoSenderIsShownUnreadableEverywhere(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	froms := []string{
+		"<support@p\u0430ypal.com",
+		"support@paypal.com.secure-verification.example, Lettre <lettre@journal.fr>",
+		"Service client: support@paypal.com;",
+	}
+	mails := make([]incoming, 0, len(froms))
+	for i, from := range froms {
+		mails = append(mails, incoming{From: from, Subject: fmt.Sprintf("Illisible %d", i), Unsubscribe: "<https://desabonnement.example/stop>"})
+	}
+	ids := app.receiveAndSync(mails...)
+	want := protect.UnreadableSenderLabel
+	check := func(where string, row map[string]interface{}, labelKey string) {
+		app.t.Helper()
+		if row[labelKey] != want {
+			app.failf("%s devrait montrer « %s », il montre %v", where, want, row[labelKey])
+		}
+		for _, key := range []string{"senderAddressShown", "senderEmailShown", "senderLabelIsAddress", "senderNameIsAddress"} {
+			if v, ok := row[key]; ok && v != "" {
+				app.failf("%s ne devrait rien montrer de l'en-tête, %s vaut %v", where, key, v)
+			}
+		}
+	}
+	array := func(path string, method string, body interface{}) []map[string]interface{} {
+		app.t.Helper()
+		code, out := app.call(method, path, body)
+		if code != http.StatusOK {
+			app.fatalf("%s %s a répondu %d : %v", method, path, code, out)
+		}
+		raw, _ := out["_raw"].(string)
+		var rows []map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+			app.fatalf("%s %s illisible (%v) : %s", method, path, err, raw)
+		}
+		return rows
+	}
+	listOf := func(out map[string]interface{}, key string) []map[string]interface{} {
+		list, _ := out[key].([]interface{})
+		rows := make([]map[string]interface{}, 0, len(list))
+		for _, r := range list {
+			m, _ := r.(map[string]interface{})
+			rows = append(rows, m)
+		}
+		return rows
+	}
+
+	code, out := app.call(http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	if rows := listOf(out, "emails"); len(rows) != len(froms) {
+		app.fatalf("la liste devrait montrer %d mails, elle en montre %d", len(froms), len(rows))
+	} else {
+		for _, r := range rows {
+			check("La liste", r, "senderLabel")
+		}
+	}
+	for _, id := range ids {
+		code, out := app.call(http.MethodGet, "/api/emails/"+id, nil)
+		if code != http.StatusOK {
+			app.fatalf("GET /api/emails/%s a répondu %d : %v", id, code, out)
+		}
+		check("Le lecteur", out, "senderLabel")
+	}
+	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
+		rows := array(path, http.MethodGet, nil)
+		if len(rows) == 0 {
+			app.fatalf("GET %s ne montre aucune carte", path)
+		}
+		for _, r := range rows {
+			check("La carte de "+path, r, "senderName")
+		}
+	}
+
+	app.ai.willSay("archive", 0.95)
+	app.analyze(ids...)
+	for _, r := range array("/api/ai/suggestions", http.MethodGet, nil) {
+		check("Le plan", r, "senderLabel")
+	}
+
+	app.rule("Les illisibles", 1, "subject", "contains", "Illisible", models.RuleAction{Type: "archive"})
+	code, out = app.call(http.MethodPost, "/api/rules/preview", nil)
+	if samples := listOf(out, "samples"); code != http.StatusOK || len(samples) == 0 {
+		app.fatalf("POST /api/rules/preview a répondu %d : %v", code, out)
+	} else {
+		for _, r := range samples {
+			check("L'aperçu des règles", r, "senderLabel")
+		}
+	}
+
+	app.act(ids[0], "archive")
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	if entries := listOf(out, "entries"); code != http.StatusOK || len(entries) == 0 {
+		app.fatalf("GET /api/activity/log a répondu %d : %v", code, out)
+	} else {
+		check("L'historique", entries[0], "senderLabel")
+	}
+
+	app.snooze(ids[1])
+	code, out = app.call(http.MethodGet, "/api/snoozes", nil)
+	if snoozes := listOf(out, "snoozes"); code != http.StatusOK || len(snoozes) == 0 {
+		app.fatalf("GET /api/snoozes a répondu %d : %v", code, out)
+	} else {
+		check("« Plus tard »", snoozes[0], "senderLabel")
+	}
 }

@@ -64,13 +64,13 @@ func readSender(e *models.Email) {
 
 // shownSenderAddress is what a sender card shows as the address of a From:
 // the address read in the one form addresses are shown in
-// (protect.ShownAddress), or the From's text, made visible, when it names no
-// sender (protect.Label).
+// (protect.ShownAddress), or nothing when the From names no sender (its name
+// line says protect.UnreadableSenderLabel; nothing of the header is shown).
 func shownSenderAddress(from string) string {
 	if address := protect.Address(from); address != "" {
 		return protect.ShownAddress(address)
 	}
-	return protect.Label(from)
+	return ""
 }
 
 // writeProtectedUnreadable answers a call that would have moved mail while

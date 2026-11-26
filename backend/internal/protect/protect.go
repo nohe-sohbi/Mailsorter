@@ -184,9 +184,10 @@ func FromText(raw string) string {
 // showed boss@corp.com). The address when there is no name, or none that
 // shows (a name of zero-width spaces, of blank Braille or Hangul fillers),
 // in the one form an address is shown in (ShownAddress). When the From names
-// no sender, its text, without the quotes it was stored in, each character
-// that hides or reorders made visible (markedText), since it may hold
-// addresses.
+// no sender (it does not read, it names several authors or a group, there is
+// none), UnreadableSenderLabel, and nothing of the header: its text, shown,
+// read "<support@pаypal.com" or "support@paypal.com.secure-ve..." with no
+// closed list and its end cut.
 //
 // A name shows without control or format characters (bidi overrides and
 // isolates, marks, zero-width spaces: shown, they reordered or hid what
@@ -196,14 +197,18 @@ func Label(from string) string {
 	return label
 }
 
+// UnreadableSenderLabel is what every screen shows for a From that names no
+// sender.
+const UnreadableSenderLabel = "Expéditeur illisible"
+
 // LabelOf is Label, and whether that label is the sender's address (shown
-// in its one form, ShownAddress) rather than a display name or the text of
-// a From that names no sender: a screen lays an address out so its domain
-// is never cut, and needs not guess which it was given.
+// in its one form, ShownAddress) rather than a display name or
+// UnreadableSenderLabel: a screen lays an address out so its domain is never
+// cut, and needs not guess which it was given.
 func LabelOf(from string) (label string, isAddress bool) {
 	name, address := Sender(from)
 	if address == "" {
-		return unquoted(strings.TrimSpace(markedText(strings.ToValidUTF8(from, "\uFFFD")))), false
+		return UnreadableSenderLabel, false
 	}
 	name = shownText(name)
 	if !visible(name) || strings.Contains(norm.NFKC.String(name), "@") {
@@ -340,23 +345,6 @@ func visible(text string) bool {
 		return true
 	}
 	return false
-}
-
-// unquoted is s without the quotes of a quoted string around it, its escapes
-// undone; s itself otherwise.
-func unquoted(s string) string {
-	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
-		return s
-	}
-	var b strings.Builder
-	inner := s[1 : len(s)-1]
-	for i := 0; i < len(inner); i++ {
-		if inner[i] == '\\' && i+1 < len(inner) {
-			i++
-		}
-		b.WriteByte(inner[i])
-	}
-	return b.String()
 }
 
 // withoutControls is text with each control character but a tab turned into

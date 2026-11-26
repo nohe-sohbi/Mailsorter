@@ -313,9 +313,28 @@ func TestLabelOfSaysWhenTheLabelIsTheAddress(t *testing.T) {
 	}
 }
 
+// A From that names no sender shows one fixed label, nothing of the header:
+// the three cases of the thirteenth review (it does not read, two authors, a
+// group).
+func TestAFromWithNoSenderShowsAFixedLabel(t *testing.T) {
+	for _, from := range []string{
+		"<support@p\u0430ypal.com",
+		"support@paypal.com.secure-verification.example, Lettre <lettre@journal.fr>",
+		"Service client: support@paypal.com;",
+	} {
+		if label, isAddress := LabelOf(from); label != UnreadableSenderLabel || isAddress {
+			t.Errorf("LabelOf(%q) = (%q, %v), want (%q, false)", from, label, isAddress, UnreadableSenderLabel)
+		}
+		if shown := ShownAddress(Address(from)); shown != "" {
+			t.Errorf("ShownAddress(Address(%q)) = %q, want none", from, shown)
+		}
+	}
+}
+
 // What a screen shows for a sender: never an address of the display name
 // that is not the sender's, in any width, no control or format character,
-// and the address when the name shows nothing.
+// the address when the name shows nothing, and UnreadableSenderLabel, nothing
+// of the header, when the From names no sender.
 func TestLabel(t *testing.T) {
 	cases := map[string]string{
 		`"boss@corp.com" <evil@evil.io>`:                   "evil@evil.io",
@@ -351,16 +370,16 @@ func TestLabel(t *testing.T) {
 		"\"\u202E\u2067\" <evil@evil.io>":                  "evil@evil.io",
 		"\"\u0301\" <evil@evil.io>":                        "evil@evil.io",
 		"\"Équipe \U0001F468\u200D\U0001F4BB\" <dev@x.fr>": "Équipe \U0001F468\u200D\U0001F4BB",
-		"\"Lettre\u202E\" <lettre@journal.fr>, x@y.fr":     "\"Lettre\uFFFD\" <lettre@journal.fr>, x@y.fr",
+		"\"Lettre\u202E\" <lettre@journal.fr>, x@y.fr":     UnreadableSenderLabel,
 		`"<patron@victime.fr>" <lettre@journal.fr>`:        "lettre@journal.fr",
 		"Ma Banque <info@banque.fr>":                       "Ma Banque",
 		"info@banque.fr":                                   "info@banque.fr",
 		"=?utf-8?q?R=C3=A9seau?= <news@reseau.fr>":         "Réseau",
-		`"Lettre <lettre@journal.fr>, Patron <p@v.fr>"`:    "Lettre <lettre@journal.fr>, Patron <p@v.fr>",
-		"Broken\x01 <unterminated":                         "Broken\uFFFD <unterminated",
-		"tab\tkept, a@x.fr, b@x.fr":                        "tab kept, a@x.fr, b@x.fr",
-		"patron@victime.fr, Lettre <lettre@journal.fr>":    "patron@victime.fr, Lettre <lettre@journal.fr>",
-		"": "",
+		`"Lettre <lettre@journal.fr>, Patron <p@v.fr>"`:    UnreadableSenderLabel,
+		"Broken\x01 <unterminated":                         UnreadableSenderLabel,
+		"tab\tkept, a@x.fr, b@x.fr":                        UnreadableSenderLabel,
+		"patron@victime.fr, Lettre <lettre@journal.fr>":    UnreadableSenderLabel,
+		"": UnreadableSenderLabel,
 	}
 	for from, want := range cases {
 		if got := Label(from); got != want {
