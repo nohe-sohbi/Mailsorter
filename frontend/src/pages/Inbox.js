@@ -2277,7 +2277,9 @@ function Inbox() {
                       ) : (
                         <div className="truncate font-semibold text-ink-900">{sender.senderName}</div>
                       )}
-                      <AddressLine value={sender.senderEmailShown} className="text-xs text-muted" />
+                      {/* No address for a From that names no sender: its
+                          name line says "Expéditeur illisible". */}
+                      {sender.senderEmailShown && <AddressLine value={sender.senderEmailShown} className="text-xs text-muted" />}
                     </div>
                     <span className="chip bg-ink-100 text-ink-700">{sender.emailCount} emails</span>
                     {pref ? (
@@ -2319,7 +2321,7 @@ function Inbox() {
                       <button
                         onClick={() => handleCreateSenderRule(sender)}
                         className="btn-ghost btn-sm btn-icon text-brand-600 hover:bg-brand-50"
-                        aria-label={`Créer une règle pour ${sender.senderEmailShown}`}
+                        aria-label={`Créer une règle pour ${sender.senderEmailShown || sender.senderName}`}
                         title="Créer une règle : toujours archiver les futurs emails de cet expéditeur"
                       >
                         <Bolt size={17} />
@@ -2328,7 +2330,7 @@ function Inbox() {
                       <button
                         onClick={() => handleApplyBulk(sender, 'archive')}
                         className="btn-ghost btn-sm btn-icon"
-                        aria-label={`Tout archiver de ${sender.senderEmailShown}`}
+                        aria-label={`Tout archiver de ${sender.senderEmailShown || sender.senderName}`}
                         title="Tout archiver (emails existants)"
                       >
                         <Archive size={17} />
@@ -2336,7 +2338,7 @@ function Inbox() {
                       <button
                         onClick={() => handleApplyBulk(sender, 'delete')}
                         className="btn-ghost btn-sm btn-icon text-danger-600 hover:bg-danger-50"
-                        aria-label={`Tout supprimer de ${sender.senderEmailShown}`}
+                        aria-label={`Tout supprimer de ${sender.senderEmailShown || sender.senderName}`}
                         title="Tout supprimer (emails existants)"
                       >
                         <Trash size={17} />
@@ -2389,7 +2391,7 @@ function Inbox() {
                         ) : (
                           <div className="truncate font-semibold text-ink-900">{sub.senderName}</div>
                         )}
-                        <AddressLine value={sub.senderEmailShown} className="text-xs text-muted" />
+                        {sub.senderEmailShown && <AddressLine value={sub.senderEmailShown} className="text-xs text-muted" />}
                       </div>
                       <span className="chip bg-ink-100 text-ink-700">{sub.emailCount} email{sub.emailCount > 1 ? 's' : ''}</span>
                       {sub.oneClick && !sub.unsubscribed && (
@@ -2414,7 +2416,7 @@ function Inbox() {
                             onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, alsoArchive: true, key: subKey })}
                             disabled={busy}
                             className="btn-ghost btn-sm btn-icon"
-                            aria-label={`Se désabonner et archiver tous les emails de ${sub.senderEmailShown}`}
+                            aria-label={`Se désabonner et archiver tous les emails de ${sub.senderEmailShown || sub.senderName}`}
                             title="Se désabonner et archiver tous les emails de cet expéditeur"
                           >
                             <Archive size={17} />

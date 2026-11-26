@@ -5,6 +5,7 @@ import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
 import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
+import AddressLine from '../ui/AddressLine';
 import { actionMeta, labelPlace } from '../ui/actions';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { useHotel } from '../ui/hotel/HotelTheme';
@@ -389,7 +390,10 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', meta.chip)}>
             <meta.Icon size={16} />
           </span>
-          <h3 className="truncate font-bold text-ink-900">{nameOf(rule)}</h3>
+          {/* Never cut: a rule made from a sender is named after its
+              address ("Expéditeur : x@paypal.com.verification...evil.io"),
+              whose end must show. A long name wraps. */}
+          <h3 className="min-w-0 font-bold text-ink-900 [overflow-wrap:anywhere]">{nameOf(rule)}</h3>
           {!rule.enabled && <span className="chip bg-ink-100 text-ink-500">En pause</span>}
         </div>
         <p className="mt-2 text-sm text-ink-500">
@@ -800,22 +804,34 @@ function Rules() {
                 {(preview.byRule || []).map((h) => {
                   const meta = actionMeta(h.action, { folders: isImap });
                   return (
-                    <span key={h.ruleName} className={cn('chip', meta.chip)}>
-                      <meta.Icon size={13} /> {h.ruleName} · {h.matched}
+                    // The name in the server's shown form, never cut: a rule
+                    // made from a sender is named after its address.
+                    <span key={h.ruleName} className={cn('chip max-w-full [overflow-wrap:anywhere]', meta.chip)}>
+                      <meta.Icon size={13} className="shrink-0" /> {h.ruleNameShown ?? h.ruleName}{' '}
+                      <span className="whitespace-nowrap">· {h.matched}</span>
                     </span>
                   );
                 })}
               </div>
               <ul className="mt-3 space-y-1.5 border-t border-hairline pt-3">
                 {(preview.samples || []).map((s, i) => (
-                  <li key={i} className="flex items-center gap-2 text-xs text-ink-500">
+                  <li key={i} className="flex items-start gap-2 text-xs text-ink-500">
                     {effectiveActions(s).map((a, j) => (
                       <span key={j} className={cn('chip shrink-0', actionMeta(a.type).chip)}>
                         {actionMeta(a.type, { folders: isImap }).label}
                         {a.type === 'label' ? labelPlace(a.labelName, { folders: isImap }) : ''}
                       </span>
                     ))}
-                    <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> · {s.senderLabel}</span>
+                    {/* The subject, then the sender on a line of its own: an
+                        address (the server says so) keeps its domain whole. */}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium text-ink-700">{s.subject || '(sans objet)'}</span>
+                      {s.senderLabelIsAddress ? (
+                        <AddressLine value={s.senderLabel} />
+                      ) : (
+                        <span className="block truncate">{s.senderLabel}</span>
+                      )}
+                    </span>
                   </li>
                 ))}
               </ul>

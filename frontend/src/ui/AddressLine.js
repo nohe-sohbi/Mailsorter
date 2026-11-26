@@ -7,10 +7,11 @@ import { cn } from './cn';
 // a span that does not shrink and goes to the next line when both do not
 // fit, and a domain too long for a line wraps (break-all) rather than lose
 // its end: x@paypal.com.verification-centre-securite.evil.io keeps "evil.io"
-// in sight, where a truncated line showed "x@paypal.com.verif…" (checked in
+// in sight, where a truncated line showed "x@paypal.com.verif..." (checked in
 // headless Chrome with the built CSS, at 360 px, in both themes). The text
 // is split at its last "@", which is the server's: a shown domain holds
-// none. A text with no "@" (a From that names no sender) is one truncated
+// none. A text with no "@" (a screen's fallback, never a From's text: a From
+// that names no sender is shown "Expéditeur illisible") is one truncated
 // line.
 //
 // Spans only, so it fits inside a button; `inline` keeps it in a run of
