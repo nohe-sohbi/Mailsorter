@@ -2282,7 +2282,11 @@ function Inbox() {
                       {sender.senderEmailShown && <AddressLine value={sender.senderEmailShown} className="text-xs text-muted" />}
                     </div>
                     <span className="chip bg-ink-100 text-ink-700">{sender.emailCount} emails</span>
-                    {pref ? (
+                    {/* A From that names no sender ("Expéditeur illisible",
+                        `senderUnreadable`) has no sender to act for: no
+                        analysis, auto-pilot, rule or sweep, which the server
+                        refuses anyway (422). */}
+                    {sender.senderUnreadable ? null : pref ? (
                       <>
                         <span className={cn('chip', prefMeta.chip)}>
                           <prefMeta.Icon size={13} />
@@ -2313,9 +2317,10 @@ function Inbox() {
                         Analyser
                       </button>
                     )}
-                    {/* Archiving or deleting all of a sender's mail works on
-                        both transports; a rule is Gmail-only for now. */}
-                    {known && (
+                    {/* Archiving or deleting all of a sender's mail, and a
+                        rule, work on both transports once the mailbox is
+                        known; never for a sender that does not read. */}
+                    {known && !sender.senderUnreadable && (
                     <div className="flex items-center gap-0.5">
                       {can('rules') && (
                       <button
@@ -2403,7 +2408,7 @@ function Inbox() {
                         <span className="chip bg-positive-100 text-positive-700">
                           <Check size={13} /> Désabonné
                         </span>
-                      ) : (
+                      ) : sub.senderUnreadable ? null : (
                         <div className="flex items-center gap-1.5">
                           <button
                             onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, key: subKey })}

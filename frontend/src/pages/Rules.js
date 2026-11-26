@@ -193,8 +193,18 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
             className="input"
             placeholder="Ex. Archiver les newsletters Acme"
             value={rule.name}
-            onChange={(e) => set({ name: e.target.value })}
+            // The server's shown form no longer says this name.
+            onChange={(e) => set({ name: e.target.value, nameShown: undefined })}
           />
+          {/* A name holding characters that hide or imitate (a sender rule
+              keeps the address as written): what it is, in the server's
+              shown form. */}
+          {rule.nameShown !== undefined && rule.nameShown !== rule.name && (
+            <span className="mt-1.5 block text-xs text-muted">
+              Contient des caractères inhabituels, montré ainsi :{' '}
+              <span className="font-mono break-all">{rule.nameShown}</span>
+            </span>
+          )}
         </label>
         <label className="block">
           <span className="mb-1 block text-sm font-semibold text-ink-700">Priorité</span>
@@ -611,7 +621,8 @@ function Rules() {
     try {
       const { data } = await ruleService.duplicate(rule.id);
       track('rule_duplicated');
-      toast.success(`« ${data.name} » créée, en pause.`);
+      // The name as the screen shows it: a sender rule's holds an address.
+      toast.success(`« ${data.nameShown ?? data.name} » créée, en pause.`);
       load();
     } catch (err) {
       toast.error(apiError(err, 'Duplication impossible.'));

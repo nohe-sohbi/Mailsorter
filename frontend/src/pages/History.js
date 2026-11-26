@@ -197,7 +197,9 @@ function identityOf(entry) {
     title: subject || (from ? '(Sans sujet)' : 'Email non identifié'),
     // The server's forms (protect.Label, protect.ShownAddress), never the
     // From as written: the label in the row, the address in its tooltip.
-    sender: from ? entry.senderLabel || '' : '',
+    // An absent From says "Expéditeur illisible" too, as everywhere; an
+    // entry with nothing known of its mail says nothing of a sender.
+    sender: subject || from ? entry.senderLabel || '' : '',
     // The label is the sender's address (the server says so): laid out so
     // its domain is never cut (AddressLine).
     senderIsAddress: Boolean(from && entry.senderLabelIsAddress),

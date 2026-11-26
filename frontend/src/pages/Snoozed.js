@@ -415,7 +415,7 @@ function Snoozed() {
                       </div>
                     ) : (
                       <div className="flex items-center gap-1.5 truncate text-xs text-muted">
-                        <Mail size={12} /> {senderName(s) || 'Expéditeur inconnu'}
+                        <Mail size={12} /> {senderName(s) || 'Expéditeur illisible'}
                       </div>
                     )}
                   </div>

@@ -40,7 +40,7 @@ export function senderAddress(s = {}) {
 // protect.Label), never the From as written nor a cut of it: its display name
 // is the sender's to write, and may hold another address.
 function senderName(s = {}) {
-  return s.senderLabel || 'Expéditeur inconnu';
+  return s.senderLabel || 'Expéditeur illisible';
 }
 
 export function isSure(confidence) {

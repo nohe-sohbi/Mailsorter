@@ -355,7 +355,7 @@ function EmailReader({
   // the From as written nor a cut of it: the display name is the sender's to
   // write and may hold another address. The address shown under it is the
   // server's too (`senderAddressShown`).
-  const name = merged.senderLabel || 'Expéditeur inconnu';
+  const name = merged.senderLabel || 'Expéditeur illisible';
   const rendered = full?.bodyHtml
     ? renderHtml(full.bodyHtml, drawn, new Set(Object.keys(full.inlineImages || {})))
     : null;
@@ -565,8 +565,8 @@ function EmailReader({
             {/* The address as the server shows it (`senderAddressShown`):
                 a character that would hide or reorder what follows is made
                 visible, never dropped, so it never reads as another address.
-                None for a From that names no sender: the name above is its
-                text. */}
+                None for a From that names no sender: the name above says
+                "Expéditeur illisible", and nothing of the header shows. */}
             {merged.senderAddressShown && (
               <AddressLine value={merged.senderAddressShown} className="text-sm text-muted" />
             )}
