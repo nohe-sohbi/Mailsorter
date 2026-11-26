@@ -1866,7 +1866,9 @@ function Inbox() {
                             <span className="text-xs text-muted">{formatDate(email.receivedDate)}</span>
                           </span>
                         </span>
-                        <span className={cn('block truncate text-sm', email.isRead ? 'text-ink-600' : 'font-semibold text-ink-800')}>
+                        <span
+                          className={cn('block truncate text-sm', email.isRead ? 'font-bold text-ink-900 border-l-2 border-brand-500 pl-3' : 'font-semibold text-ink-800')}
+                        >
                           {email.subject || '(Sans sujet)'}
                         </span>
                         <span className="block truncate text-xs text-muted">{email.snippet}</span>
