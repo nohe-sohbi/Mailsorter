@@ -71,7 +71,7 @@ func (c *Client) fetch(folder, uid string) (Message, error) {
 		BodyStructure: &imapv2.FetchItemBodyStructure{Extended: true},
 		BodySection: []*imapv2.FetchItemBodySection{{
 			Specifier:    imapv2.PartSpecifierHeader,
-			HeaderFields: unsubscribeHeaders,
+			HeaderFields: listedHeaders,
 			Peek:         true,
 		}},
 	})

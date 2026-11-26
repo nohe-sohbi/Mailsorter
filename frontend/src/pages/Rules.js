@@ -5,6 +5,7 @@ import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
 import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
+import AddressLine from '../ui/AddressLine';
 import { actionMeta, labelPlace } from '../ui/actions';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { useHotel } from '../ui/hotel/HotelTheme';
@@ -53,6 +54,10 @@ const emptyRule = () => ({
 });
 
 const fieldLabel = (v) => FIELDS.find((f) => f.value === v)?.label || v;
+// A rule's name as the screen shows it: the server's form (`nameShown`,
+// protect.ShownText), which a rule made from a sender needs (its name holds
+// the sender's address); the name as typed for a rule not reloaded yet.
+const nameOf = (rule) => rule.nameShown ?? rule.name;
 const operatorLabel = (v) => OPERATORS.find((o) => o.value === v)?.label || v;
 
 // A condition's value can arrive from the API as a number (day counts), so it is
@@ -188,8 +193,18 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
             className="input"
             placeholder="Ex. Archiver les newsletters Acme"
             value={rule.name}
-            onChange={(e) => set({ name: e.target.value })}
+            // The server's shown form no longer says this name.
+            onChange={(e) => set({ name: e.target.value, nameShown: undefined })}
           />
+          {/* A name holding characters that hide or imitate (a sender rule
+              keeps the address as written): what it is, in the server's
+              shown form. */}
+          {rule.nameShown !== undefined && rule.nameShown !== rule.name && (
+            <span className="mt-1.5 block text-xs text-muted">
+              Contient des caractères inhabituels, montré ainsi :{' '}
+              <span className="font-mono break-all">{rule.nameShown}</span>
+            </span>
+          )}
         </label>
         <label className="block">
           <span className="mb-1 block text-sm font-semibold text-ink-700">Priorité</span>
@@ -253,7 +268,8 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
                   min={isTemporalOperator(c.operator) ? 0 : undefined}
                   placeholder={isTemporalOperator(c.operator) ? 'Nombre de jours... (ex. 30)' : valuePlaceholder(c)}
                   value={c.value}
-                  onChange={(e) => setCondition(i, { value: e.target.value })}
+                  // The server's shown form no longer says this value.
+                  onChange={(e) => setCondition(i, { value: e.target.value, valueShown: undefined })}
                 />
                 {rule.conditions.length > 1 && (
                   <button onClick={() => removeCondition(i)} className="btn-ghost btn-icon text-muted" aria-label="Retirer la condition">
@@ -261,6 +277,15 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
                   </button>
                 )}
               </div>
+              {/* A value holding characters that hide or imitate (a rule made
+                  from a sender keeps the address as written): what it is,
+                  in the server's shown form. */}
+              {c.valueShown !== undefined && c.valueShown !== c.value && (
+                <p className="mt-1.5 text-xs text-muted">
+                  Contient des caractères inhabituels, montrés ainsi :{' '}
+                  <span className="font-mono break-all">{c.valueShown}</span>
+                </p>
+              )}
               {/* Une regex mal comprise ne se voit pas : elle ne correspond
                   simplement à rien. L'exemple sert de garde-fou. */}
               {c.operator === 'regex' && (
@@ -375,7 +400,10 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', meta.chip)}>
             <meta.Icon size={16} />
           </span>
-          <h3 className="truncate font-bold text-ink-900">{rule.name}</h3>
+          {/* Never cut: a rule made from a sender is named after its
+              address ("Expéditeur : x@paypal.com.verification...evil.io"),
+              whose end must show. A long name wraps. */}
+          <h3 className="min-w-0 font-bold text-ink-900 [overflow-wrap:anywhere]">{nameOf(rule)}</h3>
           {!rule.enabled && <span className="chip bg-ink-100 text-ink-500">En pause</span>}
         </div>
         <p className="mt-2 text-sm text-ink-500">
@@ -383,7 +411,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           {rule.conditions.map((c, i) => (
             <span key={i}>
               {i > 0 && <span className="text-subtle"> · </span>}
-              {fieldLabel(c.field)} {operatorLabel(c.operator)} «{c.value}»
+              {fieldLabel(c.field)} {operatorLabel(c.operator)} «{c.valueShown ?? c.value}»
             </span>
           ))}
           <span className="text-subtle"> → </span>
@@ -408,7 +436,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
               onClick={() => onMove(-1)}
               disabled={position === 0 || reordering}
               className="btn-ghost btn-icon h-6 w-6 rounded-md text-muted disabled:opacity-30"
-              aria-label={`Faire passer « ${rule.name} » avant`}
+              aria-label={`Faire passer « ${nameOf(rule)} » avant`}
               title="Évaluer cette règle plus tôt"
             >
               <ChevronDown size={14} className="rotate-180" />
@@ -417,7 +445,7 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
               onClick={() => onMove(1)}
               disabled={position === total - 1 || reordering}
               className="btn-ghost btn-icon h-6 w-6 rounded-md text-muted disabled:opacity-30"
-              aria-label={`Faire passer « ${rule.name} » après`}
+              aria-label={`Faire passer « ${nameOf(rule)} » après`}
               title="Évaluer cette règle plus tard"
             >
               <ChevronDown size={14} />
@@ -430,13 +458,13 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           onChange={onToggle}
           // Le nom du commutateur reste dans la carte : le libellé visible est le
           // titre de la règle, mais un lecteur d'écran l'entendrait hors contexte.
-          label={<span className="sr-only">{`Activer la règle « ${rule.name} »`}</span>}
+          label={<span className="sr-only">{`Activer la règle « ${nameOf(rule)} »`}</span>}
         />
         <button onClick={onEdit} className="btn-ghost btn-sm">Modifier</button>
         <button
           onClick={onDuplicate}
           className="btn-ghost btn-sm btn-icon text-muted hover:text-brand-600"
-          aria-label={`Dupliquer la règle « ${rule.name} »`}
+          aria-label={`Dupliquer la règle « ${nameOf(rule)} »`}
           title="Dupliquer (la copie arrive en pause)"
         >
           <Copy size={16} />
@@ -552,7 +580,7 @@ function Rules() {
     if (
       !(await confirm({
         title: 'Supprimer cette règle ?',
-        message: `« ${rule.name} » sera définitivement supprimée. Les emails qu'elle a déjà triés ne changent pas.`,
+        message: `« ${nameOf(rule)} » sera définitivement supprimée. Les emails qu'elle a déjà triés ne changent pas.`,
         confirmLabel: 'Supprimer la règle',
         danger: true,
       }))
@@ -593,7 +621,8 @@ function Rules() {
     try {
       const { data } = await ruleService.duplicate(rule.id);
       track('rule_duplicated');
-      toast.success(`« ${data.name} » créée, en pause.`);
+      // The name as the screen shows it: a sender rule's holds an address.
+      toast.success(`« ${data.nameShown ?? data.name} » créée, en pause.`);
       load();
     } catch (err) {
       toast.error(apiError(err, 'Duplication impossible.'));
@@ -658,8 +687,8 @@ function Rules() {
       else toast.info(`Aucun email à traiter (${data.scanned} analysés).`);
       setPreview(null);
       load();
-    } catch {
-      toast.error("Impossible d'appliquer les règles.");
+    } catch (err) {
+      toast.error(apiError(err, "Impossible d'appliquer les règles."));
     } finally {
       setApplying(false);
     }
@@ -786,22 +815,34 @@ function Rules() {
                 {(preview.byRule || []).map((h) => {
                   const meta = actionMeta(h.action, { folders: isImap });
                   return (
-                    <span key={h.ruleName} className={cn('chip', meta.chip)}>
-                      <meta.Icon size={13} /> {h.ruleName} · {h.matched}
+                    // The name in the server's shown form, never cut: a rule
+                    // made from a sender is named after its address.
+                    <span key={h.ruleName} className={cn('chip max-w-full [overflow-wrap:anywhere]', meta.chip)}>
+                      <meta.Icon size={13} className="shrink-0" /> {h.ruleNameShown ?? h.ruleName}{' '}
+                      <span className="whitespace-nowrap">· {h.matched}</span>
                     </span>
                   );
                 })}
               </div>
               <ul className="mt-3 space-y-1.5 border-t border-hairline pt-3">
                 {(preview.samples || []).map((s, i) => (
-                  <li key={i} className="flex items-center gap-2 text-xs text-ink-500">
+                  <li key={i} className="flex items-start gap-2 text-xs text-ink-500">
                     {effectiveActions(s).map((a, j) => (
                       <span key={j} className={cn('chip shrink-0', actionMeta(a.type).chip)}>
                         {actionMeta(a.type, { folders: isImap }).label}
                         {a.type === 'label' ? labelPlace(a.labelName, { folders: isImap }) : ''}
                       </span>
                     ))}
-                    <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> · {s.from}</span>
+                    {/* The subject, then the sender on a line of its own: an
+                        address (the server says so) keeps its domain whole. */}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium text-ink-700">{s.subject || '(sans objet)'}</span>
+                      {s.senderLabelIsAddress ? (
+                        <AddressLine value={s.senderLabel} />
+                      ) : (
+                        <span className="block truncate">{s.senderLabel}</span>
+                      )}
+                    </span>
                   </li>
                 ))}
               </ul>

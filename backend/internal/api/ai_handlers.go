@@ -14,11 +14,12 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	gmailapi "google.golang.org/api/gmail/v1"
 )
 
 // AnalyzeEmails synchronously analyzes selected emails and creates AI suggestions.
@@ -57,6 +58,10 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 	}
 
 	progress, suggestions, err := h.runAnalysis(ctx, userEmail, req.EmailIDs, nil)
+	if errors.Is(err, errProtectedUnreadable) {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
 	if errors.Is(err, errMailboxChanged) {
 		writeMailboxChanged(w)
 		return
@@ -74,12 +79,18 @@ func (h *Handler) AnalyzeEmails(w http.ResponseWriter, r *http.Request) {
 }
 
 // autoApplySender applies a sender's saved default action to an email directly,
-// recording it as an already-applied suggestion. Returns true on success so the
-// caller can skip the AI analysis for that email.
-func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Service, userEmail string, email models.Email, pref models.SenderPreference) bool {
+// over whichever transport the session is on, recording it as an
+// already-applied suggestion. Returns true on success so the caller can skip
+// the AI analysis for that email. Over IMAP a label files the mail into the
+// folder of that name, settled and made as for the AI's proposal
+// (applySessionVerdict); a filing refused there (a special folder, one new
+// folder too many) returns false, and the email goes to the analysis like any
+// other.
+func (h *Handler) autoApplySender(ctx context.Context, session *mailSession, userEmail string, email models.Email, pref models.SenderPreference) bool {
 	suggestion := models.AISuggestion{
 		UserID:     userEmail,
 		EmailID:    email.MessageID,
+		Generation: session.generation(),
 		Action:     pref.DefaultAction,
 		LabelName:  pref.DefaultLabel,
 		Confidence: 1.0,
@@ -89,15 +100,23 @@ func (h *Handler) autoApplySender(ctx context.Context, gmailClient *gmailapi.Ser
 		AppliedAt:  time.Now(),
 	}
 
-	labelID, err := h.applyVerdict(ctx, gmailClient, userEmail, email.MessageID, pref.DefaultAction, pref.DefaultLabel, "")
+	labelID, err := h.applySessionVerdict(ctx, session, userEmail, email.MessageID, pref.DefaultAction, pref.DefaultLabel, "")
 	if err != nil {
+		if !errors.Is(err, errAlreadyOut) {
+			log.Printf("auto-pilot: %s on message %s of %s not applied, left to the analysis: %v", pref.DefaultAction, email.MessageID, userEmail, err)
+		}
 		return false
 	}
 	suggestion.LabelID = labelID
+	// Over IMAP the folder it went into, which the history and the plan
+	// name (appliedFields does the same for a proposal).
+	filed := filedUnder(suggestion, session.Transport)
+	if filed != "" {
+		suggestion.LabelName = filed
+	}
 
 	h.db.AISuggestions().InsertOne(ctx, suggestion)
-	// Over the Gmail API only (a Gmail client): no generation.
-	h.logActionMeta(ctx, userEmail, "", email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From)
+	h.logActionFiled(ctx, userEmail, session.generation(), email.MessageID, pref.DefaultAction, SourceAIAuto, email.Subject, email.From, filed)
 	return true
 }
 
@@ -121,6 +140,11 @@ func (h *Handler) AnalyzeSender(w http.ResponseWriter, r *http.Request) {
 
 	var req models.AnalyzeSenderRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// Its preference would steer the auto-pilot for a From that names
+	// nobody.
+	if refuseUnreadableSender(w, req.SenderEmail) {
 		return
 	}
 
@@ -326,7 +350,11 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
-	protectedList := h.protectedValues(ctx, userEmail)
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
 	applied := 0
 	appliedIDs := make([]string, 0, len(req.SuggestionIDs))
 	// The name each applied filing went under, settled when applying (see
@@ -376,7 +404,7 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 		// Shield protected senders from a bulk "apply all" that would take
 		// their mail out of the inbox (archive, trash, and over IMAP filing
 		// into a folder). The suggestion is left pending, untouched.
-		if len(protectedList) > 0 && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, gen, suggestion.EmailID), protectedList) {
+		if !protectedList.Empty() && !allowsOn(session.Transport, suggestion.Action, h.senderOf(ctx, userEmail, gen, suggestion.EmailID), protectedList) {
 			protectedSkipped++
 			continue
 		}
@@ -434,7 +462,10 @@ func (h *Handler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// ApplyBulk applies an action to all emails from a sender
+// ApplyBulk applies an action to all emails from a sender, over whichever
+// transport the mailbox uses. Over IMAP a label files them into the folder of
+// that name, settled once (FilingName) and made if missing, all in one move
+// (MoveOutMany), as a selection is; archiving and deleting move at once too.
 func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -446,13 +477,27 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// A card of a From that names no sender has no sender to sweep for.
+	if refuseUnreadableSender(w, req.SenderEmail) {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	gmailClient, err := h.gmailClientFor(ctx, userEmail)
+	session, err := h.openSession(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
+		return
+	}
+	defer session.Close()
+	imapBox := session.Transport == provider.TransportIMAP
+
+	// The shield first: a list that cannot be read moves nothing, and no
+	// label or folder is made for a sweep that will not run.
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
 		return
 	}
 
@@ -462,10 +507,12 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 	// to be a substring match, which also swept every From that merely
 	// contained the key: a longer address on the same domain, or the same
 	// address on a longer domain.
-	// Over the Gmail API (gmailClientFor): its rows carry no generation.
+	// Of the mailbox this session reaches (its generation): an IMAP number of
+	// another mailbox names another mail, and a card loaded on it is refused
+	// before (errMailboxChanged).
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
 		"userId":     userEmail,
-		"generation": inGeneration(""),
+		"generation": inGeneration(session.generation()),
 		"leftInbox":  notLeftInbox,
 		"from":       req.SenderEmail,
 	})
@@ -481,40 +528,108 @@ func (h *Handler) ApplyBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prepare label if needed
+	// Prepare label if needed: resolved once before the loop, a bulk apply
+	// must not create the same label per message.
 	var labelID string
-	if req.Action == "label" && req.LabelName != "" {
-		labelID, err = h.ensureLabel(ctx, gmailClient, userEmail, req.LabelName)
+	switch {
+	case req.Action == "label" && imapBox:
+		labelID, err = session.imapc.FilingName(req.LabelName)
+		if why, ok := filingRefusal(err); ok {
+			writeError(w, http.StatusUnprocessableEntity, why)
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "Classement impossible : "+err.Error())
+			return
+		}
+	case req.Action == "label" && req.LabelName != "":
+		labelID, err = h.ensureLabel(ctx, session.gmail, userEmail, req.LabelName)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to create label: "+err.Error())
 			return
 		}
 	}
-
-	// Apply action to each email, shielding protected senders from destructive
-	// sweeps (a protected sender can still be labelled in bulk).
-	protectedList := h.protectedValues(ctx, userEmail)
-	appliedCount := 0
-	protectedSkipped := 0
-	for _, email := range emails {
-		if !allows(req.Action, email.From, protectedList) {
-			protectedSkipped++
-			continue
-		}
-		// labelID is resolved once before the loop: a bulk apply must not create
-		// the same label per message.
-		_, applyErr := h.applyVerdict(ctx, gmailClient, userEmail, email.MessageID, req.Action, "", labelID)
-		if applyErr == nil {
-			appliedCount++
-			h.logActionMeta(ctx, userEmail, "", email.MessageID, req.Action, SourceBulk, email.Subject, email.From)
+	filed := ""
+	if req.Action == "label" {
+		filed = req.LabelName
+		if imapBox {
+			filed = labelID
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	// Apply action to each email, shielding protected senders from what takes
+	// their mail out of the inbox: archive and trash, and over IMAP filing
+	// into a folder (allowsOn). A protected sender can still be labelled in
+	// bulk over the Gmail API, where a label leaves the mail where it is.
+	appliedCount := 0
+	protectedSkipped := 0
+	message := ""
+	eligible := make([]models.Email, 0, len(emails))
+	for _, email := range emails {
+		if !allowsOn(session.Transport, req.Action, email.From, protectedList) {
+			protectedSkipped++
+			continue
+		}
+		eligible = append(eligible, email)
+	}
+	applied := func(email models.Email) {
+		appliedCount++
+		h.logActionFiled(ctx, userEmail, session.generation(), email.MessageID, req.Action, SourceBulk, email.Subject, email.From, filed)
+	}
+	notApplied := func(email models.Email, err error) {
+		log.Printf("apply-bulk: %s on message %s of %s: %v", req.Action, email.MessageID, userEmail, err)
+		if why, ok := filingRefusal(err); ok && message == "" {
+			message = why
+		}
+	}
+
+	if imapMove, mut := movesOutOfIMAPInbox(session.Mailbox(), req.Action, labelID); imapMove != nil {
+		ids := make([]string, 0, len(eligible))
+		for _, email := range eligible {
+			ids = append(ids, email.MessageID)
+		}
+		outcome := imapMove.MoveOutMany(ctx, ids, mut)
+		moved := make(map[string]bool, len(outcome.Moved))
+		for _, id := range outcome.Moved {
+			moved[id] = true
+		}
+		for _, email := range eligible {
+			switch {
+			case moved[email.MessageID]:
+				applied(email)
+			case outcome.Failed[email.MessageID] != nil:
+				notApplied(email, outcome.Failed[email.MessageID])
+			}
+			// Otherwise it had already left the inbox: nothing happened,
+			// nothing to count.
+		}
+	} else {
+		for _, email := range eligible {
+			_, applyErr := h.applySessionVerdict(ctx, session, userEmail, email.MessageID, req.Action, "", labelID)
+			if errors.Is(applyErr, errAlreadyOut) {
+				// Already out of the inbox: nothing happened, nothing to count.
+				continue
+			}
+			if applyErr != nil {
+				notApplied(email, applyErr)
+				continue
+			}
+			applied(email)
+		}
+	}
+
+	answer := map[string]interface{}{
 		"applied":          appliedCount,
 		"total":            len(emails),
 		"protectedSkipped": protectedSkipped,
-	})
+	}
+	if filed != "" {
+		answer["labelName"] = filed
+	}
+	if message != "" {
+		answer["message"] = message
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // GetSuggestions returns pending AI suggestions
@@ -574,12 +689,26 @@ func (h *Handler) GetSuggestions(w http.ResponseWriter, r *http.Request) {
 		Subject string `json:"subject,omitempty"`
 		From    string `json:"from,omitempty"`
 		Snippet string `json:"snippet,omitempty"`
+		// SenderAddress is From read by protect.Address: what the plan
+		// groups by and makes a sender rule of, "" when From does not read.
+		SenderAddress string `json:"senderAddress,omitempty"`
+		// SenderLabel is what the plan shows for the sender (protect.Label).
+		SenderLabel string `json:"senderLabel,omitempty"`
+		// SenderLabelIsAddress says SenderLabel is the sender's address
+		// (protect.LabelOf): the plan lays it out so its domain is never cut.
+		SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty"`
+		// SenderAddressShown is SenderAddress as the reader shows it while
+		// it opens a mail of the plan (protect.ShownAddress).
+		SenderAddressShown string `json:"senderAddressShown,omitempty"`
 	}
 	views := make([]suggestionView, 0, len(suggestions))
 	for _, s := range suggestions {
 		v := suggestionView{AISuggestion: s}
 		if e, ok := identities[s.EmailID]; ok {
 			v.Subject, v.From, v.Snippet = e.Subject, e.From, e.Snippet
+			v.SenderAddress = protect.Address(e.From)
+			v.SenderLabel, v.SenderLabelIsAddress = protect.LabelOf(e.From)
+			v.SenderAddressShown = protect.ShownAddress(v.SenderAddress)
 		}
 		views = append(views, v)
 	}
@@ -740,10 +869,13 @@ func (h *Handler) GetSenders(w http.ResponseWriter, r *http.Request) {
 	var senders []models.SenderStats
 	for _, r := range results {
 		sender := models.SenderStats{
-			SenderEmail:  r.ID,
-			SenderDomain: extractDomain(r.ID),
-			SenderName:   extractSenderName(r.ID),
-			EmailCount:   r.EmailCount,
+			SenderEmail:         r.ID,
+			SenderEmailShown:    shownSenderAddress(r.ID),
+			SenderDomain:        extractDomain(r.ID),
+			SenderName:          extractSenderName(r.ID),
+			SenderNameIsAddress: labelIsAddress(r.ID),
+			SenderUnreadable:    protect.Address(r.ID) == "",
+			EmailCount:          r.EmailCount,
 		}
 
 		// Check for existing preference
@@ -786,6 +918,24 @@ func (h *Handler) UpdateSenderPreference(w http.ResponseWriter, r *http.Request)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
+	// The auto-pilot acts on all of a sender's mail: not for a From that
+	// names no sender (a preference made before senders were read so).
+	if req.AutoApply {
+		var pref models.SenderPreference
+		err := h.db.SenderPreferences().FindOne(ctx, bson.M{"_id": objectID, "userId": userEmail}).Decode(&pref)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			writeError(w, http.StatusNotFound, "Preference not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to update preference")
+			return
+		}
+		if refuseUnreadableSender(w, pref.SenderEmail) {
+			return
+		}
+	}
 
 	result, err := h.db.SenderPreferences().UpdateOne(ctx,
 		bson.M{"_id": objectID, "userId": userEmail},
@@ -1020,6 +1170,18 @@ func appliedFields(s models.AISuggestion, transport provider.Transport) bson.M {
 	return fields
 }
 
+// applySessionVerdict applies one verdict (the AI's, a sender's auto-pilot, a
+// sweep by sender) to one message, over whichever transport the session is on.
+//
+// "keep" is not a mutation but a decision not to act, so it succeeds having
+// changed nothing. Everything else goes through the neutral vocabulary, which
+// also closed a latent hole: three of the four call sites this replaced had no
+// default branch, so an action they did not recognise left the error nil and
+// the message was then recorded, and counted, as applied without the mailbox
+// ever being touched. An unknown verb now fails, loudly.
+//
+// The resolved label id comes back because the caller stores it on the
+// suggestion: it is what makes the action undoable later.
 func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession, userEmail, messageID, action, labelName, labelID string) (string, error) {
 	if action == "keep" {
 		return "", nil
@@ -1053,31 +1215,6 @@ func (h *Handler) applySessionVerdict(ctx context.Context, session *mailSession,
 		}
 	}
 	return labelID, h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, messageID), action, labelID)
-}
-
-// applyVerdict applies one AI verdict to one message.
-//
-// "keep" is not a mutation but a decision not to act, so it succeeds having
-// changed nothing. Everything else goes through the neutral vocabulary, which
-// also closed a latent hole: three of the four call sites this replaced had no
-// default branch, so an action they did not recognise left the error nil and
-// the message was then recorded, and counted, as applied without Gmail ever
-// being touched. An unknown verb now fails, loudly.
-//
-// The resolved label id comes back because the caller stores it on the
-// suggestion: it is what makes the action undoable later.
-func (h *Handler) applyVerdict(ctx context.Context, gmailClient *gmailapi.Service, userEmail, messageID, action, labelName, labelID string) (string, error) {
-	if action == "keep" {
-		return "", nil
-	}
-	if action == "label" && labelID == "" {
-		resolved, err := h.ensureLabel(ctx, gmailClient, userEmail, labelName)
-		if err != nil {
-			return "", err
-		}
-		labelID = resolved
-	}
-	return labelID, h.applyVerb(ctx, h.mailboxOf(gmailClient), mailbox.OnAccount(messageID), action, labelID)
 }
 
 // senderOf returns the stored From of a message, or "" if unknown. Used to
@@ -1122,38 +1259,41 @@ func (h *Handler) ensureLabel(ctx context.Context, gmailClient interface{}, user
 	return gmailLabelID, nil
 }
 
+// The sender helpers below read a stored From header: the raw header on the
+// Gmail API, "Name" <address> as the IMAP listing writes it. The address is
+// always the one protect.Address reads, never one in the display name, which
+// the sender chooses: "<boss@corp.com>" <spam@evil.io> is spam@evil.io, and
+// unsubscribing from it, archiving its mail or making a rule of it must not
+// reach boss@corp.com.
+
+// extractDomain returns the domain of the sender's address (what follows its
+// last "@"), or "" when the header gives no address (protect.Address).
 func extractDomain(email string) string {
-	// Handle "Name <email@domain.com>" format
-	if idx := strings.Index(email, "<"); idx >= 0 {
-		email = email[idx+1:]
-		if idx := strings.Index(email, ">"); idx >= 0 {
-			email = email[:idx]
-		}
+	addr := protect.Address(email)
+	if idx := strings.LastIndex(addr, "@"); idx >= 0 {
+		return addr[idx+1:]
 	}
-	if idx := strings.Index(email, "@"); idx >= 0 {
-		return email[idx+1:]
-	}
-	return email
+	return ""
 }
 
-// extractSenderAddress returns the bare email address from a "Name <addr>" header,
-// or the trimmed input if no angle brackets are present.
+// extractSenderAddress returns the sender's bare address out of a From header
+// (protect.Address), as written.
 func extractSenderAddress(from string) string {
-	if idx := strings.Index(from, "<"); idx >= 0 {
-		rest := from[idx+1:]
-		if j := strings.Index(rest, ">"); j >= 0 {
-			return strings.TrimSpace(rest[:j])
-		}
-	}
-	return strings.TrimSpace(from)
+	return protect.Address(from)
 }
 
+// extractSenderName returns the name the Expediteurs and Abonnements cards,
+// and an unsubscribe record, show for the sender of a From header: what every
+// screen shows (protect.Label), the display name unless it holds an "@" of
+// any width or shows nothing, then the address read. Never an address the
+// display name writes: "boss@corp.com" <evil@evil.io> is evil@evil.io.
 func extractSenderName(from string) string {
-	// Handle "Name <email@domain.com>" format
-	if idx := strings.Index(from, "<"); idx > 0 {
-		name := strings.TrimSpace(from[:idx])
-		name = strings.Trim(name, "\"")
-		return name
-	}
-	return from
+	return protect.Label(from)
+}
+
+// labelIsAddress says whether extractSenderName of from is the sender's
+// address rather than a name (protect.LabelOf).
+func labelIsAddress(from string) bool {
+	_, isAddress := protect.LabelOf(from)
+	return isAddress
 }

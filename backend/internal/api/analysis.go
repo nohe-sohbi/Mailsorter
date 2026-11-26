@@ -16,6 +16,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -55,7 +56,14 @@ func (h *Handler) runAnalysis(
 	// is matched with the user's own here, after the fact (mailbox.MatchLabel):
 	// the Gmail labels Mailsorter made, or over IMAP the user's folders
 	// (fileVerdict).
-	protectedList := h.protectedValues(ctx, userEmail)
+	//
+	// The protected list first: unread, the auto-pilot would file a
+	// protected sender's mail and the plan would propose it, so nothing is
+	// analysed (errProtectedUnreadable).
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		return p, suggestions, err
+	}
 
 	session, serr := h.openSession(ctx, userEmail)
 	if errors.Is(serr, errMailboxChanged) {
@@ -175,15 +183,19 @@ func (h *Handler) runAnalysis(
 	// Pass 1: resolve auto-pilot + cache hits, collect the rest for batching.
 	pending := make([]models.Email, 0, len(emails))
 	for _, email := range emails {
-		if session != nil && session.gmail != nil {
+		// The auto-pilot acts for a sender: never for a From that names none.
+		if session != nil && protect.Address(email.From) != "" {
 			var pref models.SenderPreference
 			err := h.db.SenderPreferences().FindOne(ctx, bson.M{
 				"userId":      userEmail,
 				"senderEmail": email.From,
 				"autoApply":   true,
 			}).Decode(&pref)
-			if err == nil && pref.DefaultAction != "" && allows(pref.DefaultAction, email.From, protectedList) &&
-				h.autoApplySender(ctx, session.gmail, userEmail, email, pref) {
+			// Over IMAP a label files the mail out of the inbox, as an
+			// archive does: a protected sender's auto-pilot does not do it
+			// either (allowsOn).
+			if err == nil && pref.DefaultAction != "" && allowsOn(session.Transport, pref.DefaultAction, email.From, protectedList) &&
+				h.autoApplySender(ctx, session, userEmail, email, pref) {
 				p.AutoApplied++
 				p.Processed++
 				report()
@@ -316,7 +328,7 @@ func (h *Handler) analysisMailbox(ctx context.Context, userEmail string, session
 // never suggested for archive/trash, nor, over IMAP where a label is a folder,
 // for filing (allowsOn): the plan does not propose what "Tout ranger" would
 // refuse. Other verdicts pass through untouched.
-func protectAnalysis(a ai.EmailAnalysis, from string, protectedList []string, transport provider.Transport) ai.EmailAnalysis {
+func protectAnalysis(a ai.EmailAnalysis, from string, protectedList protect.Shield, transport provider.Transport) ai.EmailAnalysis {
 	if allowsOn(transport, a.Action, from, protectedList) {
 		return a
 	}

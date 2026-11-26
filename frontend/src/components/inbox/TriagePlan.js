@@ -15,6 +15,7 @@ import { cn } from '../../ui/cn';
 import Spinner from '../../ui/Spinner';
 import { Sparkles, Bolt, Check, ChevronDown, X, Tag, Pin, Alert } from '../../ui/icons';
 import { groupSuggestions, keepOrder, planTotals, idOf, isSure, RULE_ACTION } from './planGroups';
+import AddressLine from '../../ui/AddressLine';
 
 // Mirrors maxBatchActionSize in backend/internal/api/batch.go (batch-undo) and
 // maxRejectBatchSize in backend/internal/api/ai_handlers.go.
@@ -378,7 +379,11 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
           <Avatar group={group} />
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-2">
-              <span className="truncate font-semibold text-ink-900">{group.name}</span>
+              {group.nameIsAddress ? (
+                <AddressLine value={group.name} className="font-semibold text-ink-900" />
+              ) : (
+                <span className="truncate font-semibold text-ink-900">{group.name}</span>
+              )}
               {!single && <span className="shrink-0 text-xs font-medium text-muted">{emailsCount(n)}</span>}
               <ChevronDown
                 size={16}

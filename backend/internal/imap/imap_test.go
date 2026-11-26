@@ -1140,3 +1140,128 @@ func TestFilingUnderAPersonalPrefix(t *testing.T) {
 		t.Errorf("OwnFolders after filing = %v, want [Banque Factures]", got)
 	}
 }
+
+// MoveMany moves a whole selection in one UID MOVE and says, from the
+// server's COPYUID answer alone (no Message-ID given), where each message
+// landed: the number "Annuler" fetches it back by.
+func TestMoveManyMovesTheSelectionAndSaysWhereEachLanded(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	ids := map[string]string{}
+	var uids []string
+	for _, id := range []string{"<many-1@example.com>", "<many-2@example.com>", "<many-3@example.com>"} {
+		uid := appendWithMessageID(t, c, "INBOX", id)
+		ids[uid] = id
+		uids = append(uids, uid)
+	}
+	kept := appendWithMessageID(t, c, "INBOX", "<kept@example.com>")
+
+	moved, err := c.MoveMany(context.Background(), "INBOX", uids, "Archive", nil)
+	if err != nil {
+		t.Fatalf("MoveMany: %v", err)
+	}
+	if moved.Folder != "Archive" || len(moved.Gone) != 0 || len(moved.To) != len(uids) {
+		t.Fatalf("MoveMany = %+v, want the 3 messages in Archive and none gone", moved)
+	}
+	for _, uid := range uids {
+		landed := moved.To[uid]
+		found, err := c.FindByMessageID("Archive", ids[uid])
+		if err != nil || landed == "" || landed != found {
+			t.Errorf("message %s (%s) landed as %q, the Archive holds it as %q (%v)", uid, ids[uid], landed, found, err)
+		}
+	}
+	if n := countIn(t, c, "INBOX"); n != 1 {
+		t.Errorf("INBOX holds %d message(s), want 1 (%s, not selected)", n, kept)
+	}
+}
+
+// Filing a selection: the folder named like the label is made once
+// (Destination), and the whole selection moves into it in one MOVE.
+func TestMoveManyFilesTheSelectionIntoAFolderOfTheUser(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	var uids []string
+	for _, id := range []string{"<file-1@example.com>", "<file-2@example.com>"} {
+		uids = append(uids, appendWithMessageID(t, c, "INBOX", id))
+	}
+	dest, err := c.Destination(mailbox.IMAPOp{Kind: mailbox.IMAPMove, Into: "Factures"})
+	if err != nil {
+		t.Fatalf("Destination(Factures): %v", err)
+	}
+	moved, err := c.MoveMany(context.Background(), "INBOX", uids, dest, nil)
+	if err != nil {
+		t.Fatalf("MoveMany: %v", err)
+	}
+	if moved.Folder != dest || len(moved.To) != 2 {
+		t.Fatalf("MoveMany = %+v, want both in %q", moved, dest)
+	}
+	if n := countIn(t, c, dest); n != 2 {
+		t.Errorf("%s holds %d message(s), want 2", dest, n)
+	}
+	if n := countIn(t, c, "INBOX"); n != 0 {
+		t.Errorf("INBOX holds %d message(s), want 0", n)
+	}
+}
+
+// A number the folder no longer holds is reported as gone and left out of the
+// MOVE; the others move all the same.
+func TestMoveManyReportsTheMessagesThatAreGone(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	here := appendWithMessageID(t, c, "INBOX", "<here@example.com>")
+
+	moved, err := c.MoveMany(context.Background(), "INBOX", []string{"999", here}, "Trash", nil)
+	if err != nil {
+		t.Fatalf("MoveMany: %v", err)
+	}
+	if len(moved.Gone) != 1 || moved.Gone[0] != "999" {
+		t.Errorf("Gone = %v, want [999]", moved.Gone)
+	}
+	if _, ok := moved.To[here]; !ok || len(moved.To) != 1 {
+		t.Errorf("To = %v, want only %s", moved.To, here)
+	}
+	if n := countIn(t, c, "Trash"); n != 1 {
+		t.Errorf("Trash holds %d message(s), want 1", n)
+	}
+}
+
+// Nothing in the selection is a number: refused before anything moves.
+func TestMoveManyRefusesWhatIsNotAUID(t *testing.T) {
+	c := newTestServer(t, standardMailboxes())
+	uid := appendWithMessageID(t, c, "INBOX", "<stay@example.com>")
+	if _, err := c.MoveMany(context.Background(), "INBOX", []string{uid, "18c8c1f2a3b4d5e6"}, "Archive", nil); err == nil {
+		t.Fatal("MoveMany with a Gmail id among the UIDs moved on, want an error")
+	}
+	if n := countIn(t, c, "INBOX"); n != 1 {
+		t.Errorf("INBOX holds %d message(s), want 1: nothing should have moved", n)
+	}
+}
+
+// pairUIDs reads COPYUID pairwise, and gives up on an answer that does not
+// line up rather than pair a message with another's number.
+func TestPairUIDs(t *testing.T) {
+	set := func(nums ...imapv2.UID) imapv2.UIDSet {
+		var s imapv2.UIDSet
+		for _, n := range nums {
+			s.AddNum(n)
+		}
+		return s
+	}
+	got := pairUIDs(set(4, 5, 6, 9), set(20, 21, 22, 23))
+	want := map[imapv2.UID]imapv2.UID{4: 20, 5: 21, 6: 22, 9: 23}
+	if len(got) != len(want) {
+		t.Fatalf("pairUIDs = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("pairUIDs[%d] = %d, want %d", k, got[k], v)
+		}
+	}
+	for name, tc := range map[string][2]imapv2.NumSet{
+		"no answer":        {nil, nil},
+		"counts differ":    {set(1, 2), set(7)},
+		"an open range":    {imapv2.UIDSet{imapv2.UIDRange{Start: 1, Stop: 0}}, set(7)},
+		"sequence numbers": {imapv2.SeqSetNum(1), set(7)},
+	} {
+		if got := pairUIDs(tc[0], tc[1]); got != nil {
+			t.Errorf("pairUIDs on %s = %v, want nil", name, got)
+		}
+	}
+}

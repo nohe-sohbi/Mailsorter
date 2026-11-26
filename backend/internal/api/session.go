@@ -15,6 +15,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mirror"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
@@ -319,7 +320,7 @@ const imapListLimit = 100
 // has no enabled rule, and since which date a mail is an arrival.
 type syncRules struct {
 	ruleset   []models.SortingRule
-	protected []string
+	protected protect.Shield
 	// since is the later of when the option was turned on and when the
 	// mailbox was connected, to the second (INTERNALDATE has no finer): a
 	// mail received before was already in the inbox.
@@ -365,7 +366,15 @@ func (h *Handler) syncRulesFor(ctx context.Context, userEmail string, account mo
 	if len(ruleset) == 0 {
 		return syncRules{}
 	}
-	return syncRules{ruleset: ruleset, protected: h.protectedValues(ctx, userEmail), since: arrivalsSince(user.AutoApplyRulesSince, account.CreatedAt)}
+	// A protected list that cannot be read runs no rule at this sync, as a
+	// user row that cannot be read: read as "nobody is protected", the rules
+	// would archive a protected sender's mail.
+	shield, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		log.Printf("imap sync: no rule of %s runs at this sync: %v", userEmail, err)
+		return syncRules{}
+	}
+	return syncRules{ruleset: ruleset, protected: shield, since: arrivalsSince(user.AutoApplyRulesSince, account.CreatedAt)}
 }
 
 // arrivalsSince is from when a mail is an arrival: the later of when the
@@ -685,12 +694,26 @@ func (h *Handler) storeInboxMessage(ctx context.Context, userEmail, gen string, 
 	if err != nil {
 		return err
 	}
-	_, err = h.db.Emails().UpdateOne(ctx,
+	res, err := h.db.Emails().UpdateOne(ctx,
 		bson.M{"messageId": email.MessageID, "userId": userEmail, "generation": inGeneration(gen)},
 		update,
 		options.Update().SetUpsert(true),
 	)
+	if err == nil && res.UpsertedCount > 0 {
+		logSenderlessMail(userEmail, email)
+	}
 	return err
+}
+
+// logSenderlessMail logs a mail whose From names no sender (no From header,
+// one that does not read, several authors, two From headers), once: when its
+// row is made, on either transport. Such a mail is never swept, unsubscribed
+// or protected in a sender's name, and the log says why, without repeating
+// itself at every sync.
+func logSenderlessMail(userEmail string, email models.Email) {
+	if protect.Address(email.From) == "" {
+		log.Printf("mail %s of %s names no sender (From %q): nothing is done in a sender's name for it", email.MessageID, userEmail, email.From)
+	}
 }
 
 // inboxUpsert is the write that stores a message read by a sync.
@@ -1320,6 +1343,152 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 		log.Printf("imap: message %s of %s moved to %s, where it went is not recorded: %v", ref.ID, m.userEmail, landed.Folder, err)
 	}
 	return nil
+}
+
+// moveOutcome is what moving many inbox messages out did, by number.
+type moveOutcome struct {
+	// Moved left the inbox, moved by this request.
+	Moved []string
+	// Out had already left it: claimed by another request, moved by
+	// Mailsorter before, or by another mail client. Nothing happened to them.
+	Out []string
+	// Failed did not move, and why.
+	Failed map[string]error
+}
+
+// MoveOutMany moves the inbox messages numbered uids out of the inbox, the
+// way mut says (archive, trash, or file into a folder of the user's), as
+// Apply does one at a time but in ONE UID MOVE: where they go is settled
+// first (Destination, which makes a missing folder, once, before anything is
+// claimed), the stored rows are read in one query and claimed one by one (a
+// fast write each, which keeps two requests from moving the same message),
+// the claimed numbers move together (imap.Client.MoveMany), and where each
+// one landed is written in one BulkWrite. A message that is not a stored
+// inbox row, or one Mailsorter already moved out, takes Apply's own path.
+// Every row read or written is of this session's generation (m.gen): a number
+// of another mailbox names another mail.
+func (m mirroredIMAP) MoveOutMany(ctx context.Context, uids []string, mut mailbox.Mutation) moveOutcome {
+	out := moveOutcome{Failed: map[string]error{}}
+	op, err := mailbox.IMAPOpFor(mut)
+	if err == nil && (op.Kind != mailbox.IMAPMove || op.To == mailbox.FolderInbox) {
+		err = fmt.Errorf("api: %s does not move a message out of the inbox", mut.Action)
+	}
+	var dest string
+	if err == nil {
+		dest, err = m.client.Destination(op)
+	}
+	if err != nil {
+		for _, uid := range uids {
+			out.Failed[uid] = err
+		}
+		return out
+	}
+	inbox := string(mailbox.FolderInbox)
+	cur, err := m.h.db.Emails().Find(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": bson.M{"$in": uids}},
+		options.Find().SetProjection(bson.M{"messageId": 1, "headerMessageId": 1, "leftInbox": 1, "movedTo": 1}))
+	var rows []movedRow
+	if err == nil {
+		err = cur.All(ctx, &rows)
+	}
+	if err != nil {
+		// Not "unknown messages": the store could not answer, and moving on
+		// would lose where they go.
+		err = fmt.Errorf("read the stored copy of %d messages: %w", len(uids), err)
+		for _, uid := range uids {
+			out.Failed[uid] = err
+		}
+		return out
+	}
+	stored := make(map[string]movedRow, len(rows))
+	for _, r := range rows {
+		stored[r.MessageID] = r
+	}
+
+	var claimed []string
+	messageIDs := map[string]string{}
+	for _, uid := range uids {
+		if ctx.Err() != nil {
+			out.Failed[uid] = ctx.Err()
+			continue
+		}
+		row, ok := stored[uid]
+		if !ok || row.LeftInbox {
+			out.add(uid, m.Apply(ctx, mailbox.InFolder(inbox, uid), mut))
+			continue
+		}
+		res, err := m.h.db.Emails().UpdateOne(ctx,
+			bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": uid, "leftInbox": notLeftInbox},
+			bson.M{"$set": bson.M{"leftInbox": true, "leftAt": time.Now()}, "$unset": bson.M{"movedTo": ""}})
+		switch {
+		case err != nil:
+			out.Failed[uid] = fmt.Errorf("claim message %s for a move: %w", uid, err)
+		case res.MatchedCount == 0:
+			out.Out = append(out.Out, uid)
+		default:
+			claimed = append(claimed, uid)
+			messageIDs[uid] = row.HeaderMessageID
+		}
+	}
+	if len(claimed) == 0 {
+		return out
+	}
+
+	moved, moveErr := m.client.MoveMany(ctx, inbox, claimed, dest, messageIDs)
+	if moveErr == nil {
+		// Only read if MoveMany left one out without saying why.
+		moveErr = errors.New("imap: the server did not move it")
+	}
+	gone := make(map[string]bool, len(moved.Gone))
+	for _, uid := range moved.Gone {
+		gone[uid] = true
+	}
+	var landed []mongo.WriteModel
+	var release []string
+	for _, uid := range claimed {
+		if gone[uid] {
+			// Another mail client took it out of the inbox first. The row
+			// stays out of the list; with no destination, the next sync
+			// drops it.
+			out.Out = append(out.Out, uid)
+			continue
+		}
+		to, ok := moved.To[uid]
+		if !ok {
+			release = append(release, uid)
+			out.Failed[uid] = moveErr
+			continue
+		}
+		out.Moved = append(out.Moved, uid)
+		landed = append(landed, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": uid}).
+			SetUpdate(bson.M{"$set": bson.M{"movedTo": bson.M{"folder": moved.Folder, "uid": to}}}))
+	}
+	if len(release) > 0 {
+		// Not moved: release the claims, so they are listed again.
+		if _, err := m.h.db.Emails().UpdateMany(ctx,
+			bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": bson.M{"$in": release}},
+			bson.M{"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": ""}}); err != nil {
+			log.Printf("imap: %d messages of %s not moved, and their claims not released: %v", len(release), m.userEmail, err)
+		}
+	}
+	if len(landed) > 0 {
+		if _, err := m.h.db.Emails().BulkWrite(ctx, landed, options.BulkWrite().SetOrdered(false)); err != nil {
+			log.Printf("imap: %d messages of %s moved to %s, where they went is not recorded: %v", len(landed), m.userEmail, moved.Folder, err)
+		}
+	}
+	return out
+}
+
+// add files the answer of a one-at-a-time move under what it did.
+func (o *moveOutcome) add(uid string, err error) {
+	switch {
+	case err == nil:
+		o.Moved = append(o.Moved, uid)
+	case errors.Is(err, errAlreadyOut):
+		o.Out = append(o.Out, uid)
+	default:
+		o.Failed[uid] = err
+	}
 }
 
 // mirrorFlags carries a change of the read state or of the star into the

@@ -71,9 +71,16 @@ func (h *Handler) processAnalysisJob(jobID string) {
 		"updatedAt":          time.Now(),
 	}
 	if runErr != nil {
+		// What the screen shows, in French: why, when the person can do
+		// something about it (the protected senders could not be read, the
+		// mailbox changed), the
+		// generic sentence otherwise. The cause is in the log.
 		final["status"] = "error"
-		final["error"] = runErr.Error()
-		if errors.Is(runErr, errMailboxChanged) {
+		final["error"] = analysisInterruptedMessage
+		switch {
+		case errors.Is(runErr, errProtectedUnreadable):
+			final["error"] = protectedUnreadableMessage
+		case errors.Is(runErr, errMailboxChanged):
 			final["error"] = mailboxChangedMessage
 		}
 		log.Printf("analysis job %s failed: %v", jobID, runErr)
@@ -82,6 +89,10 @@ func (h *Handler) processAnalysisJob(jobID string) {
 	}
 	h.updateJob(ctx, objectID, final)
 }
+
+// analysisInterruptedMessage is the error of a job that stopped for a reason
+// the person cannot act on.
+const analysisInterruptedMessage = "Analyse interrompue. Réessayez."
 
 func (h *Handler) updateJob(ctx context.Context, id primitive.ObjectID, set bson.M) {
 	h.db.AnalysisJobs().UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": set})

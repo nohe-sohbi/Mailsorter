@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
 	"strings"
 	"testing"
@@ -104,6 +105,30 @@ func TestBuildKeepsEveryLineShort(t *testing.T) {
 	_, parts := readBuilt(t, raw)
 	if got := strings.TrimSuffix(parts["text/html"], "\r\n"); got != long {
 		t.Errorf("html part does not come back whole: got %d characters, want %d", len(got), len(long))
+	}
+}
+
+// Without HTML the message is text only: one text/plain part, the way a list
+// program reads an unsubscribe mail, not an alternative with an empty version.
+func TestBuildWithoutHTMLIsTextOnly(t *testing.T) {
+	raw := Build(Message{From: "moi@exemple.fr", To: "desabonnement@journal.fr", Subject: "unsubscribe", Text: "unsubscribe"})
+	msg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("mail.ReadMessage: %v\n%s", err, raw)
+	}
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/plain" || params["charset"] != "UTF-8" {
+		t.Errorf("Content-Type = %q (%v), want text/plain; charset=UTF-8", msg.Header.Get("Content-Type"), err)
+	}
+	if got := msg.Header.Get("Content-Transfer-Encoding"); got != "quoted-printable" {
+		t.Errorf("Content-Transfer-Encoding = %q, want quoted-printable", got)
+	}
+	body, err := io.ReadAll(quotedprintable.NewReader(msg.Body))
+	if err != nil || string(body) != "unsubscribe\r\n" {
+		t.Errorf("body = %q (%v), want %q", body, err, "unsubscribe\r\n")
+	}
+	if bytes.Contains(raw, []byte(multipartBoundary)) {
+		t.Errorf("a text-only message carries the alternative's boundary:\n%s", raw)
 	}
 }
 

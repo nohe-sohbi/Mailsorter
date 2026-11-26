@@ -24,6 +24,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
@@ -431,6 +432,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 			UnsubOneClick: oneClick,
 			CreatedAt:     time.Now(),
 		}
+		readSender(&email)
 		emails = append(emails, email)
 	}
 
@@ -625,11 +627,17 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 
 	// Autopilot: when the user opted in, run their deterministic rules over each
 	// freshly synced email: instant, AI-free, quota-free triage at sync time.
+	// A protected list that cannot be read applies no rule: the mails are
+	// stored, and the next sync, which reads the inbox again, applies them.
 	var autoRules []models.SortingRule
-	var protectedList []string
+	var protectedList protect.Shield
 	if h.autoApplyRulesEnabled(ctx, userEmail) {
-		autoRules = h.enabledRules(ctx, userEmail)
-		protectedList = h.protectedValues(ctx, userEmail)
+		var pErr error
+		if protectedList, pErr = h.protectedValues(ctx, userEmail); pErr != nil {
+			log.Printf("sync: no rule applied for %s at this sync: %v", userEmail, pErr)
+		} else {
+			autoRules = h.enabledRules(ctx, userEmail)
+		}
 	}
 	labelCache := map[string]string{}
 	byRule := map[string]int{}
@@ -660,8 +668,11 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session 
 		filter := bson.M{"messageId": msg.Id, "userId": userEmail}
 		update := bson.M{"$set": email}
 		opts := options.Update().SetUpsert(true)
-		if _, uErr := h.db.Emails().UpdateOne(ctx, filter, update, opts); uErr == nil {
+		if res, uErr := h.db.Emails().UpdateOne(ctx, filter, update, opts); uErr == nil {
 			synced++
+			if res.UpsertedCount > 0 {
+				logSenderlessMail(userEmail, email)
+			}
 		}
 
 		if len(autoRules) > 0 {

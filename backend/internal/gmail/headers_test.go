@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	gmailapi "google.golang.org/api/gmail/v1"
 )
 
@@ -77,5 +78,22 @@ func TestParseEmailHeadersSurvivesAMissingPayload(t *testing.T) {
 	// parser is exported and called from several places.
 	if _, _, _, d := ParseEmailHeaders(nil); !d.IsZero() {
 		t.Errorf("ParseEmailHeaders(nil) date = %v, want the zero time", d)
+	}
+}
+
+// Two From headers name no single sender: kept for the screen as one quoted
+// text, which protect reads as no address. Overwriting kept the last one.
+func TestParseEmailHeadersTwoFromHeadersNameNoSender(t *testing.T) {
+	msg := &gmailapi.Message{Payload: &gmailapi.MessagePart{Headers: []*gmailapi.MessagePartHeader{
+		{Name: "From", Value: "Lettre <lettre@journal.fr>"},
+		{Name: "FROM", Value: "Patron <patron@victime.fr>"},
+	}}}
+	from, _, _, _ := ParseEmailHeaders(msg)
+	if got := protect.Address(from); got != "" {
+		t.Errorf("ParseEmailHeaders with two From headers gives From %q, which reads %q, want no sender", from, got)
+	}
+	one := &gmailapi.Message{Payload: &gmailapi.MessagePart{Headers: []*gmailapi.MessagePartHeader{{Name: "From", Value: "Lettre <lettre@journal.fr>"}}}}
+	if from, _, _, _ := ParseEmailHeaders(one); from != "Lettre <lettre@journal.fr>" {
+		t.Errorf("ParseEmailHeaders with one From header gives %q, want it as written", from)
 	}
 }

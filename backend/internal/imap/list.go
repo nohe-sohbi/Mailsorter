@@ -1,11 +1,9 @@
 package imap
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
-	"net/textproto"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +12,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
 )
 
@@ -33,10 +32,12 @@ import (
 // as long as that takes.
 const maxListLimit = 200
 
-// unsubscribeHeaders are the two the listing reads. Named here so the FETCH
-// asks for them specifically: BODY[HEADER] pulls every header a sender wrote,
-// which on marketing mail is routinely larger than the text of the message.
-var unsubscribeHeaders = []string{"List-Unsubscribe", "List-Unsubscribe-Post"}
+// listedHeaders are the headers the listing and the reader read besides the
+// envelope: the two unsubscribe ones, and From as its sender wrote it
+// (senderFrom). Named here so the FETCH asks for them specifically:
+// BODY[HEADER] pulls every header a sender wrote, which on marketing mail is
+// routinely larger than the text of the message.
+var listedHeaders = []string{"From", "List-Unsubscribe", "List-Unsubscribe-Post"}
 
 // List returns the newest messages in a folder, newest first.
 //
@@ -96,7 +97,7 @@ func listOptions() *imapv2.FetchOptions {
 		InternalDate: true,
 		BodySection: []*imapv2.FetchItemBodySection{{
 			Specifier:    imapv2.PartSpecifierHeader,
-			HeaderFields: unsubscribeHeaders,
+			HeaderFields: listedHeaders,
 			// Peek is load-bearing and easy to miss. A plain BODY[...] fetch
 			// sets \Seen on every message it touches, so a listing without it
 			// marks the entire inbox read just by rendering it, and the user
@@ -179,7 +180,6 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	if env := msg.Envelope; env != nil {
 		email.Subject = env.Subject
 		email.HeaderMessageID = env.MessageID
-		email.From = formatAddress(env.From)
 		email.To = addressList(env.To)
 		email.ReceivedDate = env.Date
 	}
@@ -190,8 +190,10 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	if !msg.InternalDate.IsZero() {
 		email.ReceivedDate = msg.InternalDate
 	}
+	email.From = senderFrom(msg)
 
-	links := unsubscribe.Parse(headerValue(msg, "List-Unsubscribe"), headerValue(msg, "List-Unsubscribe-Post"))
+	headers, _ := fetchedHeaders(msg)
+	links := unsubscribe.ParseHeaders(headers["list-unsubscribe"], headers.first("List-Unsubscribe-Post"))
 	email.UnsubURL = links.URL
 	email.UnsubMailto = links.Mailto
 	email.UnsubOneClick = links.OneClick
@@ -211,17 +213,47 @@ func flagNames(flags []imapv2.Flag) []string {
 // formatAddress renders a sender the way the rest of the app expects to read
 // one: "Name <address>", the form a mail header uses, which is what the Gmail
 // path stores and what extractSenderAddress and extractSenderName parse back.
+//
+// The address is written the way net/mail reads it back: its local part in
+// quotes when it is not a dot-atom. go-imap hands the local part unquoted, so
+// "<boss@corp.com>"@evil.io came back as <boss@corp.com>@evil.io, which no
+// parser reads as evil.io's address, and a reader falling back on the last
+// "<...>" took it for boss@corp.com.
+//
+// A From of several addresses is stored whole, as net/mail writes a list
+// ("a@x.fr", "Lettre" <lettre@journal.fr>): keeping only the first one made
+// "patron@victime.fr, Lettre <lettre@journal.fr>" read as the patron's, and
+// the Gmail path, which stores the header as it is, reads such a list as no
+// sender at all (protect.Address). The same goes for an address of the
+// envelope without a mailbox or a domain (a group's marker): its name is
+// written in quotes, which reads as no address, never alone, since a name
+// "patron@victime.fr" would then be one.
 func formatAddress(addrs []imapv2.Address) string {
-	if len(addrs) == 0 {
-		return ""
+	parts := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		if part := formatOne(a); part != "" {
+			parts = append(parts, part)
+		}
 	}
-	a := addrs[0]
-	addr := a.Addr()
-	if a.Name == "" {
-		return addr
+	return strings.Join(parts, ", ")
+}
+
+// formatOne is one address of an envelope, as formatAddress writes it.
+func formatOne(a imapv2.Address) string {
+	addr := addrSpec(a)
+	name := a.Name
+	if addr == "" && name == "" {
+		// A group's marker carries its phrase in Mailbox.
+		name = a.Mailbox
 	}
 	if addr == "" {
-		return a.Name
+		if name == "" {
+			return ""
+		}
+		return quoteName(name)
+	}
+	if name == "" {
+		return addr
 	}
 	// Written out by hand, not with net/mail's Address.String: that one
 	// re-encodes any non-ASCII name as RFC 2047 ("=?utf-8?q?R=C3=A9seau?="),
@@ -229,8 +261,24 @@ func formatAddress(addrs []imapv2.Address) string {
 	// decoded the name, in any charset go-message knows (Connect's
 	// WordDecoder); it is stored readable, quoted the way the Gmail path
 	// stores it.
-	name := strings.ReplaceAll(strings.ReplaceAll(a.Name, `\`, `\\`), `"`, `\"`)
-	return `"` + name + `" <` + addr + `>`
+	return quoteName(name) + ` <` + addr + `>`
+}
+
+// quoteName is a display name as a quoted string (protect.QuotedText: valid
+// UTF-8, a control character turned into a space).
+func quoteName(name string) string {
+	return protect.QuotedText(name)
+}
+
+// addrSpec is the address of a, as an RFC 5322 addr-spec: the local part
+// quoted when it needs to be (net/mail's own rule), "" when a has none.
+func addrSpec(a imapv2.Address) string {
+	addr := a.Addr()
+	if addr == "" {
+		return ""
+	}
+	spec := (&mail.Address{Address: addr}).String()
+	return strings.TrimSuffix(strings.TrimPrefix(spec, "<"), ">")
 }
 
 func addressList(addrs []imapv2.Address) []string {
@@ -241,33 +289,4 @@ func addressList(addrs []imapv2.Address) []string {
 		}
 	}
 	return out
-}
-
-// headerValue reads one header out of the fetched header block.
-//
-// The block comes back as raw bytes rather than parsed fields, so it is parsed
-// here with the standard library's MIME header reader, which handles the
-// folding a sender is free to use: a List-Unsubscribe with two endpoints
-// routinely wraps onto a second line, and a naive line split would return half
-// of it.
-func headerValue(msg *imapclient.FetchMessageBuffer, name string) string {
-	for _, section := range msg.BodySection {
-		raw := section.Bytes
-		if len(raw) == 0 {
-			continue
-		}
-		// ReadMIMEHeader needs the blank line that ends a header block, and some
-		// servers do not include it in a partial section fetch.
-		if !bytes.HasSuffix(raw, []byte("\r\n\r\n")) {
-			raw = append(append([]byte{}, raw...), "\r\n\r\n"...)
-		}
-		header, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw))).ReadMIMEHeader()
-		if err != nil && len(header) == 0 {
-			continue
-		}
-		if v := strings.TrimSpace(header.Get(name)); v != "" {
-			return v
-		}
-	}
-	return ""
 }

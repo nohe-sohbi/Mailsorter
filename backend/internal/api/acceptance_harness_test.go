@@ -374,6 +374,12 @@ type incoming struct {
 	// Unsubscribe is the List-Unsubscribe header, e.g. "<mailto:stop@boutique.com>".
 	// Use a mailto link: an https one makes the server POST to the internet.
 	Unsubscribe string
+	// UnsubscribePost is the List-Unsubscribe-Post header (RFC 8058), e.g.
+	// "List-Unsubscribe=One-Click": with an https link in Unsubscribe, it is
+	// what offers the unsubscribe in one click. Only with a link to a fake
+	// site of the harness (acceptance_unsubscribe_test.go), never to the
+	// internet.
+	UnsubscribePost string
 	// HTML, when set, is the mail's HTML version: the mail is then
 	// multipart/alternative, Body being its text version, the way most
 	// newsletters are sent. That is two versions of one text, not an
@@ -436,13 +442,14 @@ func (a *testApp) receive(mails ...incoming) []string {
 			a.fatalf("le faux Gmail ne sait pas déposer le mail %q avec sa version HTML ou sa pièce jointe : à ajouter dans acceptance_fakegmail_test.go avant d'écrire ce scénario", subject)
 		}
 		ids = append(ids, a.gmail.add(&fakeMessage{
-			from:            m.From,
-			to:              scenarioUser,
-			subject:         subject,
-			body:            body,
-			date:            base.Add(time.Duration(i) * time.Minute),
-			listUnsubscribe: m.Unsubscribe,
-			labels:          map[string]bool{labelInbox: true, labelUnread: true},
+			from:                m.From,
+			to:                  scenarioUser,
+			subject:             subject,
+			body:                body,
+			date:                base.Add(time.Duration(i) * time.Minute),
+			listUnsubscribe:     m.Unsubscribe,
+			listUnsubscribePost: m.UnsubscribePost,
+			labels:              map[string]bool{labelInbox: true, labelUnread: true},
 		}))
 	}
 	return ids

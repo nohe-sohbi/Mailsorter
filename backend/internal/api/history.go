@@ -14,6 +14,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -150,6 +151,10 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 				reversible = imapState.inInbox[l.MessageID]
 			}
 		}
+		// One label for every From, an absent one included ("Expéditeur
+		// illisible", as everywhere).
+		l.SenderLabel, l.SenderLabelIsAddress = protect.LabelOf(l.From)
+		l.SenderAddressShown = protect.ShownAddress(protect.Address(l.From))
 		// An entry of another mailbox than the one connected now names a
 		// message by a number the one connected now gives to another.
 		current := ofCurrentGeneration(l, gen)

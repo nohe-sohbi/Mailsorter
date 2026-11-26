@@ -93,6 +93,14 @@ func (d *Database) Unsubscribes() *mongo.Collection {
 	return d.DB.Collection("unsubscribes")
 }
 
+// UnsubscribeMails holds, per account and per address, when Mailsorter last
+// wrote an unsubscribe mail there on the person's behalf (over IMAP): one
+// document per (userId, address), unique, which is what refuses a second
+// mail to that address for 24 hours, whichever list asks for it.
+func (d *Database) UnsubscribeMails() *mongo.Collection {
+	return d.DB.Collection("unsubscribe_mails")
+}
+
 func (d *Database) SortingRules() *mongo.Collection {
 	return d.DB.Collection("sorting_rules")
 }
@@ -214,6 +222,7 @@ func (d *Database) EnsureIndexes(ctx context.Context) error {
 		{d.AnalysisJobs(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "createdAt", Value: -1}}}},
 		{d.Usage(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "period", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Unsubscribes(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "senderEmail", Value: 1}}, Options: options.Index().SetUnique(true)}},
+		{d.UnsubscribeMails(), mongo.IndexModel{Keys: bson.D{{Key: "userId", Value: 1}, {Key: "address", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{d.Users(), mongo.IndexModel{Keys: bson.D{{Key: "stripeSubscriptionId", Value: 1}}, Options: options.Index().SetSparse(true)}},
 		// One account per address. Register checks then inserts, so this index
 		// is what actually stops two concurrent sign-ups from creating twins.

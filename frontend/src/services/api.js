@@ -104,13 +104,13 @@ export function apiError(err, fallback = 'Une erreur est survenue.') {
   return fallback;
 }
 
-// The analysis routes answer 503 when the instance runs no AI at all. Said in
-// one French sentence everywhere, rather than the server's raw text or a
-// "réessayez" that cannot help.
+// The analysis routes answer 503 when the instance runs no AI at all, or
+// when the protected senders could not be read: the server says which in
+// French, and the screen shows it rather than a "réessayez" that cannot help.
 export const NO_AI_MESSAGE = "Aucune IA n'est configurée sur cette instance.";
 
 export function aiError(err, fallback) {
-  return err?.response?.status === 503 ? NO_AI_MESSAGE : fallback;
+  return err?.response?.status === 503 ? apiError(err, NO_AI_MESSAGE) : fallback;
 }
 
 export const authService = {
@@ -214,7 +214,11 @@ export const snoozeService = {
 
 export const protectService = {
   list: () => apiClient.get('/api/protected'),
-  add: (value, note = '') => apiClient.post('/api/protected', { value, note }),
+  // `fromMail`: value is a mail's From header ("Protéger" in the reader); the
+  // server protects the sender's address exactly as it reads it out of that
+  // header. Without it, value is what the person typed in the settings.
+  add: (value, note = '', { fromMail = false } = {}) =>
+    apiClient.post('/api/protected', fromMail ? { value, note, fromMail: true } : { value, note }),
   remove: (id) => apiClient.delete(`/api/protected/${id}`),
 };
 

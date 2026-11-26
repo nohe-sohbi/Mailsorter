@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gorilla/mux"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
@@ -69,8 +72,66 @@ func (h *Handler) GetRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to load rules")
 		return
 	}
+	for i := range ruleset {
+		ruleset[i].NameShown = shownRuleName(ruleset[i].Name)
+		for j := range ruleset[i].Conditions {
+			ruleset[i].Conditions[j].ValueShown = shownConditionValue(ruleset[i].Conditions[j].Value)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"rules": ruleset})
+}
+
+// senderRulePrefix opens the name of a rule made from a sender
+// (ruleForSender), which its address follows.
+const senderRulePrefix = "Expéditeur : "
+
+// ruleHitsView is a rule's count in the preview, with its name as the screen
+// shows it (shownRuleName).
+type ruleHitsView struct {
+	rules.RuleHits
+	RuleNameShown string `json:"ruleNameShown"`
+}
+
+// shownHits is the preview's counts by rule, each name in its shown form.
+func shownHits(hits []rules.RuleHits) []ruleHitsView {
+	out := make([]ruleHitsView, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, ruleHitsView{RuleHits: h, RuleNameShown: shownRuleName(h.RuleName)})
+	}
+	return out
+}
+
+// shownRuleName is a rule's name as the screen shows it: a sender rule's
+// address (the first word after senderRulePrefix) in the one form addresses
+// are shown in (a rule saved before names were written so holds it as
+// written), and everything else (what follows it, " (copie)" or a word the
+// user typed; any other name) with what would hide or reorder made visible.
+// The address alone goes to ShownAddress: with what follows it, it made one
+// domain of "café.fr (copie)", which IDNA refuses.
+func shownRuleName(name string) string {
+	rest, ok := strings.CutPrefix(name, senderRulePrefix)
+	if !ok {
+		return protect.ShownText(name)
+	}
+	address, tail := rest, ""
+	if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
+		address, tail = rest[:i], rest[i:]
+	}
+	if !strings.Contains(address, "@") {
+		return protect.ShownText(name)
+	}
+	return senderRulePrefix + protect.ShownAddress(address) + protect.ShownText(tail)
+}
+
+// shownConditionValue is a rule's condition value as the screen shows it: an
+// address (a sender rule's, written by the sender) in the one form addresses
+// are shown in, any other text with what would hide or reorder made visible.
+func shownConditionValue(value string) string {
+	if strings.Contains(value, "@") {
+		return protect.ShownAddress(value)
+	}
+	return protect.ShownText(value)
 }
 
 // CreateRule validates and persists a new rule.
@@ -221,6 +282,14 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
+	// The shield first: a protected list that cannot be read runs no rule
+	// and holds no mail (503).
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
+
 	// Over IMAP the run holds the mails it judges (rulesClaim), as a sync
 	// does: a mail a sync is judging right now is left to it, and a sync
 	// leaves alone the ones held here.
@@ -233,7 +302,7 @@ func (h *Handler) ApplyRules(w http.ResponseWriter, r *http.Request) {
 		defer h.releaseHold(ctx, userEmail, hold)
 	}
 
-	done := h.runRules(ctx, session, userEmail, emails, enabled, h.protectedValues(ctx, userEmail), already)
+	done := h.runRules(ctx, session, userEmail, emails, enabled, protectedList, already)
 	if session.Transport == provider.TransportIMAP {
 		// Judged here, a mail marked for the rules at a sync is not judged
 		// again there (a second star, a second line in the history); one
@@ -308,15 +377,29 @@ func (h *Handler) PreviewRules(w http.ResponseWriter, r *http.Request) {
 		items, hits = rules.Preview(emails, enabled)
 	}
 
-	samples := items
-	if len(samples) > previewSampleCap {
-		samples = samples[:previewSampleCap]
+	shown := items
+	if len(shown) > previewSampleCap {
+		shown = shown[:previewSampleCap]
+	}
+	// What the preview shows for each sender is what every screen shows
+	// (protect.Label), never the From as written.
+	// SenderLabelIsAddress says the label is the sender's address, which the
+	// screen lays out so its domain is never cut.
+	type previewSample struct {
+		rules.PreviewItem
+		SenderLabel          string `json:"senderLabel"`
+		SenderLabelIsAddress bool   `json:"senderLabelIsAddress,omitempty"`
+	}
+	samples := make([]previewSample, 0, len(shown))
+	for _, it := range shown {
+		label, isAddress := protect.LabelOf(it.From)
+		samples = append(samples, previewSample{PreviewItem: it, SenderLabel: label, SenderLabelIsAddress: isAddress})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"scanned":   len(emails),
 		"willApply": len(items),
-		"byRule":    hits,
+		"byRule":    shownHits(hits),
 		"samples":   samples,
 	})
 }
@@ -635,7 +718,7 @@ type rulesDone struct {
 // actions in rules.ApplyOrder but those already done on it (already, a try
 // that failed half-way), each written in the history (SourceRule), and the
 // count of each rule kept on it (appliedCount).
-func (h *Handler) runRules(ctx context.Context, session *mailSession, userEmail string, emails []models.Email, ruleset []models.SortingRule, protectedList []string, already map[string][]string) rulesDone {
+func (h *Handler) runRules(ctx context.Context, session *mailSession, userEmail string, emails []models.Email, ruleset []models.SortingRule, protectedList protect.Shield, already map[string][]string) rulesDone {
 	done := rulesDone{byRule: map[string]int{}, progress: map[string][]string{}}
 	labelCache := map[string]string{} // labelName -> Gmail label ID
 	for _, email := range emails {
@@ -692,8 +775,10 @@ func ruleForSender(userEmail string, req models.CreateSenderRuleRequest) models.
 	addr := extractSenderAddress(req.SenderEmail)
 	now := time.Now()
 	return models.SortingRule{
-		UserID:   userEmail,
-		Name:     "Expéditeur : " + addr,
+		UserID: userEmail,
+		// The name is shown as it is: the address in its shown form, the
+		// condition below keeps it as written, which is what matches.
+		Name:     senderRulePrefix + protect.ShownAddress(addr),
 		Enabled:  true,
 		MatchAll: true,
 		Conditions: []models.RuleCondition{
@@ -722,7 +807,7 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if extractSenderAddress(req.SenderEmail) == "" {
-		writeError(w, http.StatusBadRequest, "Adresse d'expéditeur requise")
+		writeError(w, http.StatusUnprocessableEntity, unreadableSenderActionMessage)
 		return
 	}
 
@@ -761,7 +846,7 @@ func (h *Handler) CreateSenderRule(w http.ResponseWriter, r *http.Request) {
 // (logged). An action type in done was applied at an earlier try that failed
 // on another one: it is not done again (a mail marked unread since stays
 // unread).
-func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList []string, labelCache map[string]string, done []string) (applied []models.RuleAction, protectedSkip, failed bool) {
+func (h *Handler) applyRuleToMessage(ctx context.Context, session *mailSession, userEmail string, email models.Email, rule models.SortingRule, protectedList protect.Shield, labelCache map[string]string, done []string) (applied []models.RuleAction, protectedSkip, failed bool) {
 	order := rules.ApplyOrder
 	if session.Transport == provider.TransportIMAP {
 		order = rules.ApplyOrderOnFolders

@@ -26,6 +26,9 @@ const (
 	DatasetSenderPrefs      Dataset = "senderPreferences"
 	DatasetSmartLabels      Dataset = "smartLabels"
 	DatasetUnsubscribes     Dataset = "unsubscribes"
+	// DatasetUnsubscribeMails is when an unsubscribe mail was last written to
+	// each address on the person's behalf: the 24-hour window.
+	DatasetUnsubscribeMails Dataset = "unsubscribeMails"
 	DatasetUsage            Dataset = "usage"
 	DatasetActionLog        Dataset = "actionLog"
 	DatasetJobs             Dataset = "analysisJobs"
@@ -69,6 +72,7 @@ func Datasets() []Dataset {
 		DatasetSenderPrefs,
 		DatasetSmartLabels,
 		DatasetUnsubscribes,
+		DatasetUnsubscribeMails,
 		DatasetUsage,
 		DatasetActionLog,
 		DatasetJobs,

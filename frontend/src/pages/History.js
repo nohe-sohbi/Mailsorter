@@ -10,6 +10,7 @@ import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
 import { useMailbox } from '../contexts/EmailContext';
+import AddressLine from '../ui/AddressLine';
 
 // Une page à la fois : le serveur plafonne à 200, mais 50 lignes remplissent
 // déjà l'écran et rendent « Charger plus » utile plutôt que décoratif.
@@ -42,7 +43,6 @@ const SOURCE_FILTERS = [
   { value: 'undo', label: 'Annulations' },
 ];
 
-const senderName = (from = '') => from.split('<')[0].replace(/"/g, '').trim() || from;
 
 function formatWhen(dateStr) {
   if (!dateStr) return '';
@@ -155,9 +155,13 @@ function HotelRegister({ entries, undoing, onUndo, undoOk, folders }) {
                     {timeOf(e.createdAt)}
                   </time>
                   <div className="hd-reg__what">
-                    <span className={identity.known ? undefined : 'italic text-muted'} title={identity.known ? identity.from : UNKNOWN_HINT}>
-                      {who}
-                    </span>{' '}
+                    {identity.senderIsAddress ? (
+                      <AddressLine value={who} inline title={identity.address} />
+                    ) : (
+                      <span className={identity.known ? undefined : 'italic text-muted'} title={identity.known ? identity.address : UNKNOWN_HINT}>
+                        {who}
+                      </span>
+                    )}{' '}
                     <em>{pastInSentence(e, folders)}</em>
                     <small>
                       {identity.sender && identity.known ? `${identity.title}. ` : ''}
@@ -191,8 +195,15 @@ function identityOf(entry) {
   return {
     known: Boolean(subject || from),
     title: subject || (from ? '(Sans sujet)' : 'Email non identifié'),
-    sender: from ? senderName(from) : '',
-    from,
+    // The server's forms (protect.Label, protect.ShownAddress), never the
+    // From as written: the label in the row, the address in its tooltip.
+    // An absent From says "Expéditeur illisible" too, as everywhere; an
+    // entry with nothing known of its mail says nothing of a sender.
+    sender: subject || from ? entry.senderLabel || '' : '',
+    // The label is the sender's address (the server says so): laid out so
+    // its domain is never cut (AddressLine).
+    senderIsAddress: Boolean(from && entry.senderLabelIsAddress),
+    address: entry.senderAddressShown || entry.senderLabel || '',
   };
 }
 
@@ -504,9 +515,13 @@ function History() {
                         {identity.sender && (
                           <>
                             <span aria-hidden="true" className="text-subtle">·</span>
-                            <span className="max-w-[16rem] truncate" title={identity.from}>
-                              {identity.sender}
-                            </span>
+                            {identity.senderIsAddress ? (
+                              <AddressLine value={identity.sender} className="max-w-[16rem]" title={identity.address} />
+                            ) : (
+                              <span className="max-w-[16rem] truncate" title={identity.address}>
+                                {identity.sender}
+                              </span>
+                            )}
                           </>
                         )}
                         <span aria-hidden="true" className="text-subtle">·</span>

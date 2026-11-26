@@ -193,6 +193,7 @@ func (h *Handler) GetEmail(w http.ResponseWriter, r *http.Request) {
 		opts,
 	)
 
+	readSender(&view.Email)
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -369,12 +370,14 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 		opts,
 	)
 
-	writeJSON(w, http.StatusOK, messageView{
+	view := messageView{
 		Email:        msg.Email,
 		BodyHTML:     msg.HTML,
 		Attachments:  imapAttachmentViews(msg.Attachments),
 		InlineImages: msg.InlineImages,
-	})
+	}
+	readSender(&view.Email)
+	writeJSON(w, http.StatusOK, view)
 }
 
 // imapAttachmentViews describes the files of an IMAP message for the reader.

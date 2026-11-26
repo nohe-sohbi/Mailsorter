@@ -11,7 +11,9 @@
 //
 // What it does NOT do is follow any of it. Acting on the https endpoint is a
 // server-side request to an address a stranger chose, which is internal/egress
-// territory.
+// territory. ParseMailto reads a mailto: into the mail it asks for, and
+// refuses what Mailsorter will not write on the person's behalf; sending it is
+// the api package's.
 package unsubscribe
 
 import "strings"
@@ -31,6 +33,20 @@ type Links struct {
 
 // Any reports whether the message offers a way out at all.
 func (l Links) Any() bool { return l.URL != "" || l.Mailto != "" }
+
+// ParseHeaders reads a message's List-Unsubscribe headers, every one of them,
+// and its List-Unsubscribe-Post. One List-Unsubscribe is read (Parse). Two or
+// more offer no way out at all, nothing done automatically and nothing to
+// open: each transport kept a different one of them (the Gmail path the last,
+// the IMAP listing the first), so the same mail offered a different link
+// depending on how it was fetched, and nothing says which one is the list's.
+// The same rule as for two From headers.
+func ParseHeaders(listUnsubscribe []string, listUnsubscribePost string) Links {
+	if len(listUnsubscribe) != 1 {
+		return Links{}
+	}
+	return Parse(listUnsubscribe[0], listUnsubscribePost)
+}
 
 // Parse reads the two header values. Callers pass them however their transport
 // hands headers over, which is the only thing the two differ on.

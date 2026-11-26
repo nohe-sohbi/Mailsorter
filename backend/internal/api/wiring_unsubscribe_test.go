@@ -1,0 +1,1800 @@
+//go:build acceptance
+
+package api
+
+// Wiring tests (see wiring_imap_test.go) for what an IMAP mailbox does on
+// its own on "Se désabonner" and on the action bar: the unsubscribe mail it
+// writes, or refuses to write, through the mailbox's sending server, and the
+// selection it moves at once. Not in the report.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/quotedprintable"
+	"net"
+	"net/http"
+	"net/mail"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+// sentBodies is the text of every message this person's sending server took,
+// oldest first.
+func (p *imapPerson) sentBodies() []string {
+	a := p.app
+	a.t.Helper()
+	s := p.sendingServer()
+	s.mu.Lock()
+	received := append([]smtpMessage(nil), s.received...)
+	s.mu.Unlock()
+	out := make([]string, 0, len(received))
+	for i, m := range received {
+		msg, err := mail.ReadMessage(bytes.NewReader(m.data))
+		if err != nil {
+			a.fatalf("le message n°%d reçu par le serveur d'envoi de %s est illisible : %v", i+1, p.email, err)
+		}
+		var body io.Reader = msg.Body
+		if strings.EqualFold(msg.Header.Get("Content-Transfer-Encoding"), "quoted-printable") {
+			body = quotedprintable.NewReader(msg.Body)
+		}
+		text, err := io.ReadAll(body)
+		if err != nil {
+			a.fatalf("le texte du message n°%d reçu par le serveur d'envoi de %s est illisible : %v", i+1, p.email, err)
+		}
+		out = append(out, strings.TrimSpace(string(text)))
+	}
+	return out
+}
+
+// unsubscribeRow is this person's row of unsubscribes for a sender.
+func (p *imapPerson) unsubscribeRow(sender string) models.Unsubscribe {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var row models.Unsubscribe
+	if err := a.h.db.Unsubscribes().FindOne(ctx, bson.M{"userId": p.email, "senderEmail": sender}).Decode(&row); err != nil {
+		a.fatalf("lecture du désabonnement de %s à %s : %v", p.email, sender, err)
+	}
+	return row
+}
+
+// A mailto: aimed off the sender's own domain is not written from the
+// person's address: the answer hands it to the screen, as on Gmail. The
+// three abuses: joining a group, confirming a token, writing to the boss.
+func TestAcceptance_UnsubscribeMailtoOffTheSendersDomainIsNotSent(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	abuses := []incoming{
+		{From: "Promo <promo@spam.example>", Subject: "Rejoins le groupe", Unsubscribe: "<mailto:groupe+subscribe@googlegroups.com>"},
+		{From: "Promo <promo@spam.example>", Subject: "Confirme", Unsubscribe: "<mailto:groupe+subscribe@googlegroups.com?subject=confirm%20a1b2c3d4>"},
+		{From: "Promo <promo2@spam.example>", Subject: "Au patron", Unsubscribe: "<mailto:patron@entreprise.fr?body=Je%20d%C3%A9missionne>"},
+	}
+	moi, uids := syncedIMAPInbox(app, abuses...)
+	moi.withSendingServer()
+
+	for i, uid := range uids {
+		got := moi.unsubscribeFrom(uid, false)
+		want := strings.Trim(abuses[i].Unsubscribe, "<>")
+		if done, _ := got["done"].(bool); done {
+			app.failf("le désabonnement de %q ne devrait pas être fait par le serveur, l'adresse n'étant pas chez l'expéditeur : %v", abuses[i].Subject, got)
+		}
+		if mailto, _ := got["mailto"].(string); mailto != want {
+			app.failf("le désabonnement de %q devrait rendre à l'écran l'adresse %q à ouvrir, il rend %q", abuses[i].Subject, want, mailto)
+		}
+	}
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("le serveur d'envoi de %s n'aurait dû recevoir aucun mail, il a reçu : %s", moi.email, describeSent(sent))
+	}
+}
+
+// On the sender's own domain the mail leaves, but its text is never the
+// stranger's: the body the mailto: asks for is ignored.
+func TestAcceptance_UnsubscribeMailIgnoresTheBodyItIsAskedFor(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{
+		From: "RH <rh@entreprise.fr>", Subject: "La lettre RH",
+		Unsubscribe: "<mailto:patron@entreprise.fr?subject=stop&body=Je%20d%C3%A9missionne>",
+	})
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+	if to, _ := got["sentTo"].(string); to != "patron@entreprise.fr" {
+		app.failf("la réponse devrait nommer l'adresse à qui le mail est parti (patron@entreprise.fr), elle nomme %q : %v", to, got)
+	}
+	bodies := moi.sentBodies()
+	if len(bodies) != 1 || bodies[0] != unsubscribe.Body {
+		app.failf("le serveur d'envoi devrait avoir reçu un mail, dont le texte est %q, il a reçu %q", unsubscribe.Body, bodies)
+	}
+	if row := moi.unsubscribeRow("rh@entreprise.fr"); row.SentTo != "patron@entreprise.fr" || row.SentAt.IsZero() {
+		app.failf("le désabonnement gardé devrait dire à qui et quand le mail est parti, il dit %q le %v", row.SentTo, row.SentAt)
+	}
+}
+
+// A second click within 24 hours sends nothing more, and says why.
+func TestAcceptance_UnsubscribeMailIsNotSentTwiceInADay(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, mailtoOnlyLetter)
+	moi.withSendingServer()
+
+	moi.unsubscribeFrom(uids[0], false)
+	again := moi.unsubscribeFrom(uids[0], false)
+
+	if sent := moi.sentThroughBox(); len(sent) != 1 {
+		app.failf("deux clics sur « Se désabonner » devraient envoyer un seul mail, le serveur d'envoi en a reçu : %s", describeSent(sent))
+	}
+	if already, _ := again["alreadySent"].(bool); !already {
+		app.failf("la seconde réponse devrait dire que la demande est déjà partie : %v", again)
+	}
+	if to, _ := again["sentTo"].(string); to != letterUnsubscribeAddress {
+		app.failf("la seconde réponse devrait nommer %s, elle nomme %q", letterUnsubscribeAddress, to)
+	}
+	if mailto, _ := again["mailto"].(string); mailto != "" {
+		app.failf("la seconde réponse ne devrait pas ouvrir la messagerie, elle donne %q", mailto)
+	}
+	if message, _ := again["message"].(string); !strings.Contains(message, letterUnsubscribeAddress) {
+		app.failf("la seconde réponse devrait dire en mots qu'une demande est déjà partie vers %s, elle dit %q", letterUnsubscribeAddress, message)
+	}
+}
+
+// A sending server that does not answer has its own time: the mails are
+// archived first, the answer says the mail did not leave and hands it to the
+// screen, and the next try is not refused.
+func TestAcceptance_UnsubscribeArchivesWhenTheSendingServerIsSilent(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	second := mailtoOnlyLetter
+	second.Subject = "La lettre du mercredi"
+	moi, uids := syncedIMAPInbox(app, mailtoOnlyLetter, second)
+
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		app.fatalf("serveur d'envoi muet : %v", err)
+	}
+	t.Cleanup(func() { _ = silent.Close() })
+	go func() {
+		for {
+			c, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	moi.updateRow(bson.M{"$set": bson.M{
+		rowSMTPHost: "127.0.0.1",
+		rowSMTPPort: silent.Addr().(*net.TCPAddr).Port,
+		rowSMTPTLS:  string(provider.TLSImplicit),
+	}})
+	budget := unsubscribeSendBudget
+	unsubscribeSendBudget = 2 * time.Second
+	t.Cleanup(func() { unsubscribeSendBudget = budget })
+
+	got := moi.unsubscribeFrom(uids[0], true)
+
+	for _, m := range []incoming{mailtoOnlyLetter, second} {
+		moi.expectOnServer(serverArchive, m.Subject)
+	}
+	if n := app.number(got, "archived"); n != 2 {
+		app.failf("la réponse devrait compter 2 mails archivés, elle en compte %d : %v", n, got)
+	}
+	if done, _ := got["done"].(bool); done {
+		app.failf("la réponse ne devrait pas dire que c'est fait, le mail n'étant pas parti : %v", got)
+	}
+	if mailto, _ := got["mailto"].(string); mailto == "" {
+		app.failf("la réponse devrait rendre l'adresse à ouvrir dans la messagerie : %v", got)
+	}
+	if message, _ := got["message"].(string); message == "" {
+		app.failf("la réponse devrait dire en mots que le mail n'est pas parti : %v", got)
+	}
+	if row := moi.unsubscribeRow("lettre@journal.fr"); !row.SentAt.IsZero() {
+		app.failf("un mail qui n'est pas parti ne devrait pas compter pour la fenêtre de 24 h, le désabonnement gardé dit %q le %v", row.SentTo, row.SentAt)
+	}
+}
+
+// Archiving a selection over IMAP moves what is still in the inbox, and says
+// which mails had already left it (moved from the phone): neither done nor
+// failed, for the screen to take off the list.
+func TestAcceptance_SelectionSaysWhatHadAlreadyLeft(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, travelOffer)
+	moi.movedElsewhere(uids[1], serverTrash)
+
+	done := moi.actOnSelection("archive", uids...)
+
+	moi.expectDoneInSelection(done, "l'archivage de la sélection", uids[0], uids[2])
+	if n := app.number(done, "failed"); n != 0 {
+		app.failf("l'archivage de la sélection ne devrait compter aucun échec, il en compte %d : %v", n, done)
+	}
+	out, _ := done["alreadyOut"].([]interface{})
+	if len(out) != 1 || out[0] != uids[1] {
+		app.failf("la réponse devrait dire que le mail n°%s était déjà sorti de la boîte, elle dit %v", uids[1], done["alreadyOut"])
+	}
+	for _, m := range []incoming{bankStatement, travelOffer} {
+		moi.expectOnServer(serverArchive, m.Subject)
+		moi.expectDoesNotShow(m.Subject, "tu viens d'archiver la sélection")
+	}
+	moi.expectOnServer(serverTrash, shopOrder.Subject)
+	moi.expectNotOnServer(serverArchive, shopOrder.Subject, "un autre logiciel l'avait mis à la corbeille")
+
+	// "Annuler" brings back what moved, from where the one MOVE put it.
+	if got := moi.undoSelection("archive", doneInSelection(done)...); got.code != 200 || app.number(got.body, "restored") != 2 {
+		app.failf("« Annuler » devrait remettre les 2 mails archivés, il a répondu %s", got)
+	}
+	for _, m := range []incoming{bankStatement, travelOffer} {
+		moi.expectOnServer(serverInbox, m.Subject)
+	}
+}
+
+// The display name of a From header is the sender's to write. These mails
+// come from lettre@journal.fr and carry another address in their name: the
+// address of a third party (the person's boss), whose own mail sits in the
+// same inbox.
+const trappedFrom = `"<patron@victime.fr>" <lettre@journal.fr>`
+
+var (
+	trappedLetter = incoming{From: trappedFrom, Subject: "La lettre piégée",
+		Unsubscribe: "<mailto:patron@victime.fr?subject=Je%20d%C3%A9missionne>"}
+	trappedLetterAgain = incoming{From: trappedFrom, Subject: "La lettre piégée, encore",
+		Unsubscribe: "<mailto:patron@victime.fr?subject=Je%20d%C3%A9missionne>"}
+	bossMail = incoming{From: "Patron <patron@victime.fr>", Subject: "Point de lundi"}
+)
+
+// unsubscribeRowExists says whether this person has a row of unsubscribes
+// for this sender.
+func unsubscribeRowExists(a *testApp, userID, sender string) bool {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	n, err := a.h.db.Unsubscribes().CountDocuments(ctx, bson.M{"userId": userID, "senderEmail": sender})
+	if err != nil {
+		a.fatalf("lecture des désabonnements de %s : %v", userID, err)
+	}
+	return n > 0
+}
+
+// An address in the display name is not the sender's: the mailto: it names
+// is not on the sender's domain, so nothing is written to it.
+func TestAcceptance_UnsubscribeMailIsNotSentToAnAddressInTheDisplayName(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, trappedLetter)
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("le serveur d'envoi de %s n'aurait dû rien recevoir, l'adresse du désabonnement n'étant que dans le nom affiché de l'expéditeur, il a reçu : %s", moi.email, describeSent(sent))
+	}
+	if done, _ := got["done"].(bool); done {
+		app.failf("la réponse ne devrait pas dire que c'est fait : %v", got)
+	}
+	if mailto, _ := got["mailto"].(string); mailto != strings.Trim(trappedLetter.Unsubscribe, "<>") {
+		app.failf("la réponse devrait rendre l'adresse à ouvrir dans la messagerie, elle rend %q", mailto)
+	}
+	if sender, _ := got["sender"].(string); sender != "lettre@journal.fr" {
+		app.failf("la réponse devrait nommer l'expéditeur lettre@journal.fr, elle nomme %q", sender)
+	}
+}
+
+// "Se désabonner" with "et archiver ses mails" on such a mail, over IMAP:
+// only the mails of the real address leave the inbox, the boss's stays, and
+// it is the real address that is recorded as unsubscribed.
+func TestAcceptance_UnsubscribeAndArchiveReachOnlyTheRealAddressIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, trappedLetter, bossMail, trappedLetterAgain)
+
+	got := moi.unsubscribeFrom(uids[0], true)
+
+	for _, m := range []incoming{trappedLetter, trappedLetterAgain} {
+		moi.expectOnServer(serverArchive, m.Subject)
+		moi.expectDoesNotShow(m.Subject, "tu viens de te désabonner de lettre@journal.fr en rangeant ses mails")
+	}
+	moi.expectOnServer(serverInbox, bossMail.Subject)
+	moi.expectNotOnServer(serverArchive, bossMail.Subject, "il est de patron@victime.fr, pas de lettre@journal.fr")
+	moi.expectShows(uids[1], bossMail.Subject)
+	if n := app.number(got, "archived"); n != 2 {
+		app.failf("la réponse devrait compter 2 mails archivés, elle en compte %d : %v", n, got)
+	}
+	if unsubscribeRowExists(app, moi.email, "patron@victime.fr") {
+		app.failf("patron@victime.fr ne devrait pas être enregistré comme désabonné : il n'a envoyé aucune lettre")
+	}
+	if !unsubscribeRowExists(app, moi.email, "lettre@journal.fr") {
+		app.failf("lettre@journal.fr devrait être enregistré comme désabonné")
+	}
+}
+
+// The same over the Gmail API, which never wrote an unsubscribe mail but
+// archived and recorded the address of the display name all the same.
+func TestAcceptance_UnsubscribeAndArchiveReachOnlyTheRealAddressGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(trappedLetter, bossMail, trappedLetterAgain)
+
+	app.unsubscribeAndArchive(ids[0])
+
+	app.expectNotInInbox(ids[0], ids[2])
+	app.expectInInbox(ids[1])
+	if unsubscribeRowExists(app, scenarioUser, "patron@victime.fr") {
+		app.failf("patron@victime.fr ne devrait pas être enregistré comme désabonné : il n'a envoyé aucune lettre")
+	}
+	app.expectUnsubscribed("lettre@journal.fr")
+}
+
+// unsubscribeAtOnce is "Se désabonner" on each of these mails, the requests
+// released at the same instant (two tabs, two lists in one click each). Like
+// twiceAtOnce, on goroutines that never stop the test themselves.
+func (p *imapPerson) unsubscribeAtOnce(uids ...string) []answer {
+	a := p.app
+	a.t.Helper()
+	got := make([]answer, len(uids))
+	errs := make([]error, len(uids))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, uid := range uids {
+		raw, err := json.Marshal(map[string]interface{}{"messageId": uid, "alsoArchive": false})
+		if err != nil {
+			a.fatalf("encodage du désabonnement : %v", err)
+		}
+		wg.Add(1)
+		go func(i int, raw []byte) {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPost, a.server.URL+"/api/unsubscribe", bytes.NewReader(raw))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+p.token)
+			req.Header.Set("Content-Type", "application/json")
+			<-start
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer resp.Body.Close()
+			var out map[string]interface{}
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+			got[i] = answer{code: resp.StatusCode, body: out}
+		}(i, raw)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			a.fatalf("le désabonnement n°%d de %s n'a pas abouti : %v", i+1, p.email, err)
+		}
+	}
+	return got
+}
+
+// Two lists of one publisher share their unsubscribe address. Unsubscribing
+// from both at once writes to it once: the 24 hours are counted per address,
+// whichever list asks.
+func TestAcceptance_UnsubscribeMailIsSentOnceForTwoListsSharingAnAddress(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app,
+		incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<mailto:stop@journal.fr>"},
+		incoming{From: "Les offres du Journal <offres@journal.fr>", Subject: "Les offres", Unsubscribe: "<mailto:stop@journal.fr>"},
+	)
+	moi.withSendingServer()
+
+	got := moi.unsubscribeAtOnce(uids...)
+
+	if sent := moi.sentThroughBox(); len(sent) != 1 {
+		app.failf("deux désabonnements à la fois vers stop@journal.fr devraient envoyer un seul mail, le serveur d'envoi en a reçu : %s", describeSent(sent))
+	}
+	done, already := 0, 0
+	for i, g := range got {
+		if g.code != http.StatusOK {
+			app.failf("le désabonnement n°%d a répondu %s", i+1, g)
+			continue
+		}
+		if d, _ := g.body["done"].(bool); d {
+			done++
+		}
+		if al, _ := g.body["alreadySent"].(bool); al {
+			already++
+		}
+	}
+	if done != 1 || already != 1 {
+		app.failf("une réponse devrait dire que c'est fait et l'autre que la demande est déjà partie, elles disent : %v et %v", got[0].body, got[1].body)
+	}
+}
+
+// Undoing a labelled selection: over the Gmail API the label name says which
+// label to take off, and without it nothing can be removed (400, rather than
+// a reversal that removed nothing). Over IMAP the mail comes back from the
+// folder Mailsorter recorded, with or without the name.
+func TestAcceptance_BatchUndoOfALabelNeedsItsNameOnlyOnGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(shopOrder)
+	if code, out := app.call(http.MethodPost, "/api/emails/batch-undo",
+		map[string]interface{}{"messageIds": ids, "action": "label"}); code != http.StatusBadRequest {
+		app.failf("« Annuler » d'un classement sur Gmail sans nom d'étiquette devrait répondre 400, il a répondu %d : %v", code, out)
+	}
+
+	moi, uids := syncedIMAPInbox(app, travelOffer)
+	if got := moi.fileSelectionInto("Voyages", uids...); got.code != http.StatusOK || app.number(got.body, "failed") != 0 {
+		app.fatalf("« Classer » la sélection dans Voyages a répondu %s", got)
+	}
+	moi.requireOnServer("Voyages", travelOffer.Subject, "tu viens de classer la sélection dans Voyages")
+	if got := moi.undoSelection("label", uids...); got.code != http.StatusOK || app.number(got.body, "restored") != 1 {
+		app.failf("« Annuler » d'un classement sur IMAP sans nom d'étiquette devrait remettre le mail, il a répondu %s", got)
+	}
+	moi.expectOnServer(serverInbox, travelOffer.Subject)
+}
+
+// Filing a selection over IMAP: into the user's folder named alike (the
+// plural set aside), one move, a protected sender's mail left in the inbox,
+// and the folder named in the answer.
+func TestAcceptance_SelectionIsFiledIntoTheFolderNamedAlike(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder, shopInvoice)
+	moi.newFolderElsewhere("Factures")
+	moi.protect(bankStatement.From)
+
+	got := moi.fileSelectionInto("facture", uids...)
+	if got.code != http.StatusOK {
+		app.fatalf("« Classer » la sélection a répondu %s", got)
+	}
+	moi.expectDoneInSelection(got.body, "le classement de la sélection", uids[1], uids[2])
+	if name, _ := got.body["labelName"].(string); name != "Factures" {
+		app.failf("la réponse devrait nommer le dossier Factures, elle nomme %q", name)
+	}
+	if n := app.number(got.body, "protectedSkipped"); n != 1 {
+		app.failf("le classement devrait épargner 1 mail protégé, il en épargne %d", n)
+	}
+	for _, m := range []incoming{shopOrder, shopInvoice} {
+		moi.expectOnServer("Factures", m.Subject)
+		moi.expectDoesNotShow(m.Subject, "tu viens de le classer dans Factures")
+	}
+	moi.expectOnServer(serverInbox, bankStatement.Subject)
+	moi.expectShows(uids[0], bankStatement.Subject)
+	for _, uid := range uids[1:] {
+		lines := moi.historyLinesOf(uid)
+		if len(lines) == 0 || lines[0].Action != "label" {
+			app.failf("l'historique devrait montrer le classement du mail n°%s, il montre : %s", uid, describeHistory(lines))
+		}
+	}
+}
+
+// A special folder is not one Mailsorter files into: the whole selection is
+// refused, in the sentence the AI's proposal gets, and nothing moves.
+func TestAcceptance_SelectionIsNotFiledIntoASpecialFolder(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, shopOrder)
+
+	got := moi.fileSelectionInto("Trash", uids...)
+	if got.code != http.StatusUnprocessableEntity || got.said() != notOwnFolderMessage {
+		app.failf("« Classer » dans Trash devrait être refusé (422, %q), il a répondu %s", notOwnFolderMessage, got)
+	}
+	moi.expectOnServer(serverInbox, shopOrder.Subject)
+}
+
+// "Tout classer" for a sender over IMAP (apply-bulk with a label): all of his
+// mails in one folder, made for it.
+func TestAcceptance_SenderIsFiledIntoAFolder(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, _ := syncedIMAPInbox(app, shopOrder, bankStatement, shopInvoice)
+	card := moi.requireSenderCard("info@boutique.com")
+
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/ai/apply-bulk",
+		map[string]string{"senderEmail": card.SenderEmail, "action": "label", "labelName": "Boutique"})
+	if code != http.StatusOK || app.number(out, "applied") != 2 {
+		app.fatalf("classer tous les mails de info@boutique.com a répondu %d : %v", code, out)
+	}
+	for _, m := range []incoming{shopOrder, shopInvoice} {
+		moi.expectOnServer("Boutique", m.Subject)
+	}
+	moi.expectOnServer(serverInbox, bankStatement.Subject)
+}
+
+// The auto-pilot of a sender whose default is a label files his mails at the
+// analysis, without the model; a protected sender's stays.
+func TestAcceptance_AutopilotFilesIntoAFolder(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+	moi.protect(bankStatement.From)
+	app.ai.willSay("keep", 0.95)
+	moi.autopilotFiling("info@boutique.com", "Courrier")
+	moi.autopilotFiling("info@banque.fr", "Courrier")
+
+	moi.analyze(uids...)
+
+	moi.requireOnServer("Courrier", shopOrder.Subject, "le pilote automatique de info@boutique.com le classe dans Courrier")
+	moi.expectDoesNotShow(shopOrder.Subject, "le pilote automatique l'a classé")
+	moi.expectOnServer(serverInbox, bankStatement.Subject)
+	moi.expectShows(uids[0], bankStatement.Subject)
+}
+
+// A From whose local part is quoted and looks like someone else's address:
+// "<boss@corp.com>"@evil.io is an address on evil.io. Stored unquoted, it read
+// as boss@corp.com, and "Se désabonner et archiver" on this spam archived the
+// boss's mail and recorded him unsubscribed.
+var (
+	quotedLocalSpam = incoming{From: `"<boss@corp.com>"@evil.io`, Subject: "Promo au nom piégé",
+		Unsubscribe: "<mailto:boss@corp.com?subject=unsubscribe>"}
+	realBossMail = incoming{From: "Patron <boss@corp.com>", Subject: "Réunion de demain"}
+)
+
+// listedSenderAddress is the senderAddress GET /api/emails gives the mail of
+// this subject, and whether it lists that mail.
+func listedSenderAddress(a *testApp, token, subject string) (string, bool) {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	list, _ := out["emails"].([]interface{})
+	for _, raw := range list {
+		m, _ := raw.(map[string]interface{})
+		if s, _ := m["subject"].(string); s == subject {
+			addr, _ := m["senderAddress"].(string)
+			return addr, true
+		}
+	}
+	return "", false
+}
+
+func TestAcceptance_QuotedLocalPartIsNotTheAddressItLooksLikeIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, quotedLocalSpam, realBossMail)
+	moi.withSendingServer()
+
+	if addr, ok := listedSenderAddress(app, moi.token, quotedLocalSpam.Subject); !ok || addr != `"<boss@corp.com>"@evil.io` {
+		app.failf("la liste devrait donner l'adresse \"<boss@corp.com>\"@evil.io au spam, elle donne %q (listé : %v)", addr, ok)
+	}
+
+	got := moi.unsubscribeFrom(uids[0], true)
+
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("rien ne devrait partir vers boss@corp.com, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+	moi.expectOnServer(serverInbox, realBossMail.Subject)
+	moi.expectNotOnServer(serverArchive, realBossMail.Subject, "il est de boss@corp.com, pas de evil.io")
+	moi.expectShows(uids[1], realBossMail.Subject)
+	moi.expectOnServer(serverArchive, quotedLocalSpam.Subject)
+	if unsubscribeRowExists(app, moi.email, "boss@corp.com") {
+		app.failf("boss@corp.com ne devrait pas être enregistré comme désabonné")
+	}
+	if sender, _ := got["sender"].(string); sender != `"<boss@corp.com>"@evil.io` {
+		app.failf("la réponse devrait nommer l'expéditeur \"<boss@corp.com>\"@evil.io, elle nomme %q", sender)
+	}
+}
+
+func TestAcceptance_QuotedLocalPartIsNotTheAddressItLooksLikeGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(quotedLocalSpam, realBossMail)
+
+	app.unsubscribeAndArchive(ids[0])
+
+	app.expectNotInInbox(ids[0])
+	app.expectInInbox(ids[1])
+	if unsubscribeRowExists(app, scenarioUser, "boss@corp.com") {
+		app.failf("boss@corp.com ne devrait pas être enregistré comme désabonné")
+	}
+}
+
+// A subject that is not an unsubscribe command is not written in the
+// person's name, even on the sender's own domain: the screen opens it.
+func TestAcceptance_UnsubscribeMailWithASentenceAsSubjectIsNotSent(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre du jeudi",
+		Unsubscribe: "<mailto:desabonnement@journal.fr?subject=Je%20d%C3%A9missionne%20avec%20effet%20imm%C3%A9diat>"})
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("un sujet qui n'est pas une commande ne devrait pas partir, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+	if mailto, _ := got["mailto"].(string); mailto == "" {
+		app.failf("la réponse devrait rendre l'adresse à ouvrir dans la messagerie : %v", got)
+	}
+}
+
+// The mail goes to the address as the list wrote it; only the 24-hour count
+// ignores its case.
+func TestAcceptance_UnsubscribeMailGoesToTheAddressAsWritten(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre du vendredi",
+		Unsubscribe: "<mailto:Desabonnement+Lettre@journal.fr>"})
+	moi.withSendingServer()
+
+	moi.unsubscribeFrom(uids[0], false)
+	sent := moi.sentThroughBox()
+	if len(sent) != 1 || len(sent[0].envelopeTo) != 1 || sent[0].envelopeTo[0] != "Desabonnement+Lettre@journal.fr" {
+		app.failf("le mail devrait partir vers Desabonnement+Lettre@journal.fr tel qu'écrit, il est parti : %s", describeSent(sent))
+	}
+}
+
+// A Gmail header whose display name nobody quoted, "Doe, John <j@x.com>",
+// names j@x.com: "Créer une règle", "Se désabonner et archiver" and
+// "Protéger" all reach that address, as for any readable sender.
+func TestAcceptance_GmailUnquotedNameWithACommaIsItsSendersAddress(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const doe = "Doe, John <j@x.com>"
+	const page = "<https://desabonnement.x.invalid/lettre>"
+	ids := app.receiveAndSync(
+		incoming{From: doe, Subject: "Le point de John"},
+		incoming{From: doe, Subject: "La lettre de John", Unsubscribe: page},
+		incoming{From: "Autre <autre@x.com>", Subject: "Un autre expéditeur"},
+	)
+
+	// "Créer une règle" on the card: From contains j@x.com.
+	code, out := app.call(http.MethodPost, "/api/senders/rule", map[string]string{"senderEmail": doe, "action": "archive"})
+	if code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("« Créer une règle » pour %q a répondu %d : %v", doe, code, out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var rule models.SortingRule
+	if err := app.h.db.SortingRules().FindOne(ctx, bson.M{"userId": scenarioUser}).Decode(&rule); err != nil {
+		app.fatalf("lecture de la règle créée : %v", err)
+	}
+	if len(rule.Conditions) != 1 || rule.Conditions[0].Value != "j@x.com" {
+		app.failf("la règle créée pour %q devrait viser j@x.com, elle vise %+v", doe, rule.Conditions)
+	}
+
+	// "Se désabonner" with "et archiver ses mails": his two, not the other.
+	app.unsubscribeAndArchive(ids[1])
+	app.expectNotInInbox(ids[0], ids[1])
+	app.expectInInbox(ids[2])
+	if !unsubscribeRowExists(app, scenarioUser, "j@x.com") {
+		app.failf("j@x.com devrait être enregistré comme désabonné")
+	}
+
+	// "Protéger": his next mail is spared by an archive of the selection.
+	app.protect(doe)
+	next := app.receiveAndSync(incoming{From: doe, Subject: "Encore John"})
+	done := app.batchAction("archive", next...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage du mail de %q, protégé, devrait l'épargner, il en épargne %d : %v", doe, n, done)
+	}
+	app.expectInInbox(next...)
+}
+
+// A From naming two authors, the first one protected. It names no sender:
+// the shield spares it while anyone is protected, and a sweep by the other
+// author's address does not reach it, on both transports.
+const twoAuthors = "patron@victime.fr, Lettre <lettre@journal.fr>"
+
+func TestAcceptance_TwoAuthorsSpareTheProtectedOneGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	app.protect("patron@victime.fr")
+	ids := app.receiveAndSync(
+		incoming{From: "Lettre <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<https://desabonnement.x.invalid/lettre>"},
+		incoming{From: twoAuthors, Subject: "Deux auteurs"},
+	)
+
+	done := app.batchAction("archive", ids[1])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("le mail dont le From nomme patron@victime.fr (protégé) devrait être épargné, la réponse en épargne %d : %v", n, done)
+	}
+	app.expectInInbox(ids[1])
+
+	app.unsubscribeAndArchive(ids[0])
+	app.expectNotInInbox(ids[0])
+	app.expectInInbox(ids[1])
+}
+
+func TestAcceptance_TwoAuthorsSpareTheProtectedOneIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Lettre <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<https://desabonnement.x.invalid/lettre>"}
+	both := incoming{From: twoAuthors, Subject: "Deux auteurs"}
+	moi, uids := syncedIMAPInbox(app, letter, both)
+	moi.protect("patron@victime.fr")
+
+	if addr, ok := listedSenderAddress(app, moi.token, both.Subject); !ok || addr != "" {
+		app.failf("la liste ne devrait donner aucune adresse d'expéditeur au mail à deux auteurs, elle donne %q (listé : %v)", addr, ok)
+	}
+	done := moi.actOnSelection("archive", uids[1])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("le mail dont le From nomme patron@victime.fr (protégé) devrait être épargné, la réponse en épargne %d : %v", n, done)
+	}
+	moi.expectOnServer(serverInbox, both.Subject)
+
+	moi.unsubscribeFrom(uids[0], true)
+	moi.expectOnServer(serverArchive, letter.Subject)
+	moi.expectOnServer(serverInbox, both.Subject)
+	moi.expectShows(uids[1], both.Subject)
+}
+
+// "Protéger" on a mail whose address has a quoted local part, through the
+// route the reader calls: the selection archived next spares it.
+func TestAcceptance_ProtectingAQuotedLocalPartSparesItGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const jean = `"jean dupont"@exemple.fr`
+	ids := app.receiveAndSync(incoming{From: jean, Subject: "De Jean"}, incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"})
+	app.protect(jean)
+
+	done := app.batchAction("archive", ids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé, il en épargne %d : %v", jean, n, done)
+	}
+	app.expectInInbox(ids[0])
+	app.expectNotInInbox(ids[1])
+}
+
+func TestAcceptance_ProtectingAQuotedLocalPartSparesItIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	jean := incoming{From: `"jean dupont"@exemple.fr`, Subject: "De Jean"}
+	other := incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"}
+	moi, uids := syncedIMAPInbox(app, jean, other)
+	moi.protect(jean.From)
+
+	done := moi.actOnSelection("archive", uids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé, il en épargne %d : %v", jean.From, n, done)
+	}
+	moi.expectOnServer(serverInbox, jean.Subject)
+	moi.expectOnServer(serverArchive, other.Subject)
+}
+
+// protectFromMail is "Protéger" in the reader, on a mail whose From is from:
+// POST /api/protected with the header and fromMail, as handleProtect sends
+// it. It returns the answer, whatever it is.
+func protectFromMail(a *testApp, token, from string) answer {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodPost, "/api/protected",
+		map[string]interface{}{"value": from, "fromMail": true})
+	return answer{code: code, body: out}
+}
+
+// 'patron'@victime.fr is an address, apostrophes included: "Protéger" on its
+// mail protects exactly it, and an archived selection spares the mail.
+// Retouched (the apostrophes dropped), it protected nobody.
+func TestAcceptance_ProtectingFromTheMailKeepsTheAddressAsReadGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const patron = "'patron'@victime.fr"
+	ids := app.receiveAndSync(incoming{From: patron, Subject: "Du patron"}, incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"})
+	if got := protectFromMail(app, app.token, patron); got.code != http.StatusCreated && got.code != http.StatusOK {
+		app.fatalf("« Protéger » sur le mail de %s a répondu %s", patron, got)
+	}
+
+	done := app.batchAction("archive", ids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé depuis ce mail, il en épargne %d : %v", patron, n, done)
+	}
+	app.expectInInbox(ids[0])
+	app.expectNotInInbox(ids[1])
+}
+
+func TestAcceptance_ProtectingFromTheMailKeepsTheAddressAsReadIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	patron := incoming{From: "'patron'@victime.fr", Subject: "Du patron"}
+	other := incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"}
+	moi, uids := syncedIMAPInbox(app, patron, other)
+	row, _ := moi.shownRow(uids[0])
+	if got := protectFromMail(app, moi.token, row.From); got.code != http.StatusCreated && got.code != http.StatusOK {
+		app.fatalf("« Protéger » sur le mail de %s a répondu %s", row.From, got)
+	}
+
+	done := moi.actOnSelection("archive", uids...)
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("l'archivage devrait épargner le mail de %s, protégé depuis ce mail, il en épargne %d : %v", row.From, n, done)
+	}
+	moi.expectOnServer(serverInbox, patron.Subject)
+	moi.expectOnServer(serverArchive, other.Subject)
+}
+
+// A From that names no sender cannot be protected from its mail: the answer
+// says so, and nothing is stored.
+func TestAcceptance_ProtectingFromAMailWithNoSenderIsRefused(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	got := protectFromMail(app, app.token, twoAuthors)
+	if got.code != http.StatusBadRequest || got.said() != unreadableSenderProtectMessage {
+		app.failf("« Protéger » sur un mail à deux auteurs devrait être refusé (400, %q), il a répondu %s", unreadableSenderProtectMessage, got)
+	}
+}
+
+// A sender on a domain IDNA refuses cannot be protected from its mail:
+// stored as written, x@pay<U+202E>pal.com showed in the settings as what it
+// is not. The answer says why, and nothing is stored.
+func TestAcceptance_ProtectingASenderOnADomainIDNARefusesIsRefused(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	for _, from := range []string{"x@pay\u202Epal.com", "'patron@victime.fr'", "x@paypal\u2024com"} {
+		got := protectFromMail(app, app.token, from)
+		if got.code != http.StatusBadRequest || got.said() != unprotectableDomainMessage {
+			app.failf("« Protéger » sur un mail de %q devrait être refusé (400, %q), il a répondu %s", from, unprotectableDomainMessage, got)
+		}
+	}
+	code, out := app.call(http.MethodGet, "/api/protected", nil)
+	if list, _ := out["protected"].([]interface{}); code != http.StatusOK || len(list) != 0 {
+		app.failf("rien ne devrait être protégé, GET /api/protected répond %d : %v", code, out)
+	}
+}
+
+// A mail with two From headers, written the way the harness writes one: the
+// first header, then a second. It names no single sender: unsubscribing from
+// the first author with "et archiver" does not sweep it, and it cannot be
+// protected from the mail. (Over the Gmail API, imap's
+// TestTheSameFromNamesTheSameSenderOnBothTransports proves the same reading
+// through gmail.ParseEmailHeaders; the fake Gmail holds one From.)
+func TestAcceptance_TwoFromHeadersNameNoSenderIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Lettre <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<https://desabonnement.x.invalid/lettre>"}
+	twoFroms := incoming{From: "Lettre <lettre@journal.fr>\r\nFrom: Patron <patron@victime.fr>", Subject: "Deux en-têtes From"}
+	moi, uids := syncedIMAPInbox(app, letter, twoFroms)
+
+	if addr, ok := listedSenderAddress(app, moi.token, twoFroms.Subject); !ok || addr != "" {
+		app.failf("la liste ne devrait donner aucune adresse d'expéditeur au mail à deux en-têtes From, elle donne %q (listé : %v)", addr, ok)
+	}
+	row, _ := moi.shownRow(uids[1])
+	if got := protectFromMail(app, moi.token, row.From); got.code != http.StatusBadRequest {
+		app.failf("« Protéger » sur le mail à deux en-têtes From devrait être refusé (400), il a répondu %s", got)
+	}
+
+	moi.unsubscribeFrom(uids[0], true)
+	moi.expectOnServer(serverArchive, letter.Subject)
+	moi.expectOnServer(serverInbox, twoFroms.Subject)
+	moi.expectShows(uids[1], twoFroms.Subject)
+}
+
+// An accented domain is one domain in any of its forms. "café.fr" typed in
+// the settings protects contact@xn--caf-dma.fr, the form a header carries;
+// a letter from lettre@café.fr unsubscribes at stop@xn--caf-dma.fr (one
+// registrable domain), and "et archiver" reaches its mail in both forms.
+func TestAcceptance_AccentedDomainIsOneDomainIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Le Café <lettre@café.fr>", Subject: "La lettre du café", Unsubscribe: "<mailto:stop@xn--caf-dma.fr>"}
+	again := incoming{From: "lettre@xn--caf-dma.fr", Subject: "La lettre du café, encore"}
+	shop := incoming{From: "Contact <contact@xn--caf-dma.fr>", Subject: "Votre commande au café"}
+	other := incoming{From: "Autre <autre@x.fr>", Subject: "D'un autre"}
+	moi, uids := syncedIMAPInbox(app, letter, again, shop, other)
+	moi.withSendingServer()
+
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/protected", map[string]string{"value": "café.fr"})
+	if code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("protéger café.fr a répondu %d : %v", code, out)
+	}
+	done := moi.actOnSelection("archive", uids[2], uids[3])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("café.fr protégé devrait épargner le mail de contact@xn--caf-dma.fr, la réponse en épargne %d : %v", n, done)
+	}
+	moi.expectOnServer(serverInbox, shop.Subject)
+	moi.expectOnServer(serverArchive, other.Subject)
+
+	// Unprotected again, to see the sweep reach both forms.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.ProtectedSenders().DeleteMany(ctx, bson.M{"userId": moi.email}); err != nil {
+		app.fatalf("retrait de la protection : %v", err)
+	}
+	got := moi.unsubscribeFrom(uids[0], true)
+	sent := moi.sentThroughBox()
+	if len(sent) != 1 || !onlyAddress(sent[0].envelopeTo, "stop@xn--caf-dma.fr") {
+		app.failf("le mail de désabonnement de lettre@café.fr devrait partir vers stop@xn--caf-dma.fr (même domaine), il est parti : %s (réponse %v)", describeSent(sent), got)
+	}
+	for _, m := range []incoming{letter, again} {
+		moi.expectOnServer(serverArchive, m.Subject)
+	}
+	moi.expectOnServer(serverInbox, shop.Subject)
+}
+
+// What the screens show for a sender whose display name is another address:
+// the address read, in the list, the reader, the triage plan, the history
+// and "Plus tard".
+func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const tricky = `"boss@corp.com" <evil@evil.io>`
+	ids := app.receiveAndSync(
+		incoming{From: tricky, Subject: "Le faux patron"},
+		incoming{From: tricky, Subject: "Le faux patron, encore"},
+		incoming{From: tricky, Subject: "Le faux patron, toujours"},
+	)
+
+	code, out := app.call(http.MethodGet, "/api/emails/"+ids[2], nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails/%s a répondu %d : %v", ids[2], code, out)
+	}
+	if out["senderLabel"] != "evil@evil.io" || out["senderLabelIsAddress"] != true {
+		app.failf("le lecteur devrait montrer evil@evil.io pour %s, une adresse, il montre %v (adresse : %v)", tricky, out["senderLabel"], out["senderLabelIsAddress"])
+	}
+
+	app.ai.willSay("archive", 0.95)
+	app.analyze(ids[2])
+	code, out = app.call(http.MethodGet, "/api/ai/suggestions", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/ai/suggestions a répondu %d : %v", code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var suggestions []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &suggestions); err != nil || len(suggestions) == 0 {
+		app.fatalf("aucune proposition lisible après l'analyse (%v) : %s", err, raw)
+	}
+	for _, sg := range suggestions {
+		if sg["senderLabel"] != "evil@evil.io" || sg["senderLabelIsAddress"] != true {
+			app.failf("le plan de tri devrait montrer evil@evil.io pour %s, une adresse, il montre %v (adresse : %v)", tricky, sg["senderLabel"], sg["senderLabelIsAddress"])
+		}
+	}
+
+	code, out = app.call(http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	list, _ := out["emails"].([]interface{})
+	for _, raw := range list {
+		m, _ := raw.(map[string]interface{})
+		if label, _ := m["senderLabel"].(string); label != "evil@evil.io" || m["senderLabelIsAddress"] != true {
+			app.failf("la liste devrait montrer evil@evil.io pour %s, elle montre %q", tricky, label)
+		}
+	}
+
+	app.act(ids[0], "archive")
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/activity/log a répondu %d : %v", code, out)
+	}
+	entries, _ := out["entries"].([]interface{})
+	if len(entries) == 0 {
+		app.fatalf("l'historique est vide après un archivage")
+	}
+	if e, _ := entries[0].(map[string]interface{}); e["senderLabel"] != "evil@evil.io" || e["senderLabelIsAddress"] != true {
+		app.failf("l'historique devrait montrer evil@evil.io pour %s, une adresse, il montre %v", tricky, e)
+	}
+
+	app.snooze(ids[1])
+	code, out = app.call(http.MethodGet, "/api/snoozes", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/snoozes a répondu %d : %v", code, out)
+	}
+	snoozes, _ := out["snoozes"].([]interface{})
+	if len(snoozes) == 0 {
+		app.fatalf("« Plus tard » est vide après un report")
+	}
+	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" || s["senderLabelIsAddress"] != true {
+		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, une adresse, il montre %v", tricky, s)
+	}
+}
+
+// A mail whose From names no sender is logged once, when its row is made,
+// however many syncs read it again.
+const senderlessLog = "names no sender"
+
+func TestAcceptance_SenderlessMailIsLoggedOnceGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	logs := captureLog(t)
+	app.receiveAndSync(incoming{From: "patron@victime.fr, Lettre <lettre@journal.fr>", Subject: "Deux auteurs"})
+	app.sync()
+	if n := strings.Count(logs.String(), senderlessLog); n != 1 {
+		app.failf("le mail sans expéditeur devrait être journalisé une fois en deux synchronisations, il l'est %d fois", n)
+	}
+}
+
+func TestAcceptance_SenderlessMailIsLoggedOnceIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	logs := captureLog(t)
+	moi, _ := syncedIMAPInbox(app, incoming{From: "patron@victime.fr, Lettre <lettre@journal.fr>", Subject: "Deux auteurs"})
+	moi.sync()
+	if n := strings.Count(logs.String(), senderlessLog); n != 1 {
+		app.failf("le mail sans expéditeur devrait être journalisé une fois en deux synchronisations, il l'est %d fois", n)
+	}
+}
+
+// One address in two forms is one address for the 24 hours: a list that
+// asks for stop@café.fr after another asked for stop@xn--caf-dma.fr gets no
+// second mail.
+func TestAcceptance_UnsubscribeMailCountsOneAddressInAnyForm(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app,
+		incoming{From: "Le Café <lettre@xn--caf-dma.fr>", Subject: "La lettre du café", Unsubscribe: "<mailto:stop@xn--caf-dma.fr>"},
+		incoming{From: "Les offres du café <offres@xn--caf-dma.fr>", Subject: "Les offres du café", Unsubscribe: "<mailto:STOP@café.fr>"},
+	)
+	moi.withSendingServer()
+
+	moi.unsubscribeFrom(uids[0], false)
+	again := moi.unsubscribeFrom(uids[1], false)
+	if sent := moi.sentThroughBox(); len(sent) != 1 {
+		app.failf("stop@xn--caf-dma.fr puis STOP@café.fr, une seule adresse, devraient recevoir un seul mail en 24 h, le serveur d'envoi en a reçu : %s", describeSent(sent))
+	}
+	if already, _ := again["alreadySent"].(bool); !already {
+		app.failf("la seconde réponse devrait dire que la demande est déjà partie : %v", again)
+	}
+}
+
+// protectedListUnreadable makes every read of the protected list fail, the
+// way a datastore that stumbles would: protected_senders becomes a view
+// whose pipeline divides by zero on each row it reads. The entries the test
+// stored before are kept in the view's source, so the list is not empty, it
+// is unreadable.
+func protectedListUnreadable(app *testApp) {
+	app.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db := app.h.db.DB
+	source := db.Collection("protected_senders_unreadable")
+	var rows []bson.M
+	cursor, err := app.h.db.ProtectedSenders().Find(ctx, bson.M{})
+	if err == nil {
+		err = cursor.All(ctx, &rows)
+	}
+	if err != nil {
+		app.fatalf("lecture des expéditeurs protégés avant la panne : %v", err)
+	}
+	docs := []interface{}{bson.M{"userId": "personne@exemple.fr"}}
+	for _, r := range rows {
+		docs = append(docs, r)
+	}
+	if _, err := source.InsertMany(ctx, docs); err != nil {
+		app.fatalf("copie des expéditeurs protégés : %v", err)
+	}
+	if err := app.h.db.ProtectedSenders().Drop(ctx); err != nil {
+		app.fatalf("retrait de la collection des expéditeurs protégés : %v", err)
+	}
+	// userId is rewritten, so the filter on it cannot run before the
+	// division: every row read fails.
+	pipeline := mongo.Pipeline{{{Key: "$addFields", Value: bson.M{"userId": bson.M{"$divide": bson.A{1, 0}}}}}}
+	if err := db.CreateView(ctx, "protected_senders", source.Name(), pipeline); err != nil {
+		app.fatalf("création de la vue en panne : %v", err)
+	}
+	if _, err := app.h.protectedValues(ctx, scenarioUser); err == nil {
+		app.fatalf("la liste des expéditeurs protégés se lit encore : le test ne prouve rien")
+	}
+}
+
+// expectNothingMoved checks one answer of a call made while the protected
+// list cannot be read: 503 and the sentence that says nothing was filed.
+func expectNothingMoved(app *testApp, what string, code int, out map[string]interface{}) {
+	app.t.Helper()
+	if code != http.StatusServiceUnavailable || out["error"] != protectedUnreadableMessage {
+		app.failf("%s, la liste des protégés illisible, devrait répondre 503 « %s », il répond %d : %v", what, protectedUnreadableMessage, code, out)
+	}
+}
+
+// With the protected list unreadable, nothing moves on its own or in bulk:
+// the selection, "Plus tard" on a selection, the AI's plan, the rules, the
+// auto-pilot, "Tout archiver" and "Se désabonner et archiver" answer 503.
+// A sync stores the mail and applies no rule.
+func TestAcceptance_UnreadableProtectedListMovesNothingGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const shop = "Boutique <promo@boutique.fr>"
+	ids := app.receiveAndSync(
+		incoming{From: shop, Subject: "Soldes", Unsubscribe: "<https://boutique.fr/stop>"},
+		incoming{From: shop, Subject: "Soldes, encore"},
+	)
+	app.ai.willSay("archive", 0.95)
+	app.analyze(ids...)
+	suggestionIDs := []string{app.suggestionFor(ids[0]).ID, app.suggestionFor(ids[1]).ID}
+	app.rule("Soldes", 1, "from", "contains", "boutique.fr", models.RuleAction{Type: "archive"})
+	app.setAutoApplyRules(true)
+	app.autopilot(shop, "archive")
+	key := app.senderKey(shop)
+	app.protect("boutique.fr")
+	protectedListUnreadable(app)
+
+	code, out := app.call(http.MethodPost, "/api/emails/batch-action", map[string]interface{}{"messageIds": ids, "action": "archive"})
+	expectNothingMoved(app, "« Archiver » sur la sélection", code, out)
+	code, out = app.call(http.MethodPost, "/api/emails/batch-snooze", map[string]interface{}{"messageIds": ids, "preset": "tomorrow"})
+	expectNothingMoved(app, "« Plus tard » sur la sélection", code, out)
+	code, out = app.call(http.MethodPost, "/api/ai/apply-batch", map[string]interface{}{"suggestionIds": suggestionIDs})
+	expectNothingMoved(app, "« Tout ranger »", code, out)
+	code, out = app.call(http.MethodPost, "/api/rules/apply", nil)
+	expectNothingMoved(app, "« Appliquer mes règles »", code, out)
+	code, out = app.call(http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": ids})
+	expectNothingMoved(app, "L'analyse avec le pilote automatique", code, out)
+	code, out = app.call(http.MethodPost, "/api/ai/apply-bulk", map[string]string{"senderEmail": key, "action": "archive"})
+	expectNothingMoved(app, "« Tout archiver »", code, out)
+	code, out = app.call(http.MethodPost, "/api/unsubscribe", map[string]interface{}{"messageId": ids[0], "alsoArchive": true})
+	expectNothingMoved(app, "« Se désabonner et archiver »", code, out)
+	app.sync()
+
+	// What leaves the mail where it is does not depend on the list.
+	for _, action := range []string{"read", "star"} {
+		code, out = app.call(http.MethodPost, "/api/emails/batch-action", map[string]interface{}{"messageIds": ids, "action": action})
+		if applied, _ := out["applied"].([]interface{}); code != http.StatusOK || len(applied) != len(ids) {
+			app.failf("l'action %q sur la sélection ne dépend pas des protégés et devrait passer, elle répond %d : %v", action, code, out)
+		}
+	}
+
+	app.expectInInbox(ids...)
+}
+
+func TestAcceptance_UnreadableProtectedListMovesNothingIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	letter := incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<mailto:stop@journal.fr>"}
+	again := incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre, encore"}
+	moi, uids := syncedIMAPInbox(app, letter, again)
+	moi.withSendingServer()
+	card := moi.requireSenderCard("lettre@journal.fr")
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/protected", map[string]string{"value": "journal.fr"})
+	if code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("protéger journal.fr a répondu %d : %v", code, out)
+	}
+	moi.rule("Le journal", 1, "from", "contains", "journal.fr", models.RuleAction{Type: "archive"})
+	moi.setAutoApplyRules(true)
+	protectedListUnreadable(app)
+
+	// The rules: "Appliquer mes règles" answers 503, and a sync with the
+	// rules on runs none (a mail of the protected sender that arrives stays,
+	// and no rule line is written).
+	ruled := moi.applyRules()
+	expectNothingMoved(app, "« Appliquer mes règles »", ruled.code, ruled.body)
+	evening := incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre du soir"}
+	moi.arrive(evening)
+	moi.sync()
+	moi.expectOnServer(serverInbox, evening.Subject)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if n, err := app.h.db.ActionLog().CountDocuments(ctx, bson.M{"userId": moi.email, "source": SourceRule}); err != nil || n != 0 {
+		app.failf("aucune règle ne devrait avoir tourné, l'historique en compte %d (%v)", n, err)
+	}
+
+	got := moi.onSelection("archive", uids...)
+	expectNothingMoved(app, "« Archiver » sur la sélection", got.code, got.body)
+	code, out = app.callAs(moi.token, http.MethodPost, "/api/emails/batch-snooze", map[string]interface{}{"messageIds": uids, "preset": "tomorrow"})
+	expectNothingMoved(app, "« Reporter la sélection »", code, out)
+	code, out = app.callAs(moi.token, http.MethodPost, "/api/ai/apply-bulk", map[string]string{"senderEmail": card.SenderEmail, "action": "archive"})
+	expectNothingMoved(app, "« Tout archiver »", code, out)
+	code, out = app.callAs(moi.token, http.MethodPost, "/api/unsubscribe", map[string]interface{}{"messageId": uids[0], "alsoArchive": true})
+	expectNothingMoved(app, "« Se désabonner et archiver »", code, out)
+
+	for _, m := range []incoming{letter, again} {
+		moi.expectOnServer(serverInbox, m.Subject)
+	}
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("« Se désabonner et archiver » refusé ne devrait rien envoyer, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+}
+
+// A list that writes its address with an accented domain gets it in ASCII,
+// in RCPT TO and in the To header, which a server without SMTPUTF8 takes.
+func TestAcceptance_UnsubscribeMailGoesToTheASCIIDomain(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Café <lettre@xn--caf-dma.fr>", Subject: "La lettre du café", Unsubscribe: "<mailto:stop@café.fr>"})
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+	sent := moi.sentThroughBox()
+	if len(sent) != 1 || len(sent[0].envelopeTo) != 1 || sent[0].envelopeTo[0] != "stop@xn--caf-dma.fr" || !onlyAddress(sent[0].to, "stop@xn--caf-dma.fr") {
+		app.failf("le mail de désabonnement vers stop@café.fr devrait partir vers stop@xn--caf-dma.fr (enveloppe et en-tête To), il est parti : %s (réponse %v)", describeSent(sent), got)
+	}
+	if to, _ := got["sentTo"].(string); to != "stop@xn--caf-dma.fr" {
+		app.failf("la réponse devrait nommer stop@xn--caf-dma.fr, elle nomme %q", to)
+	}
+	// What the screen says: the address in the one form addresses are shown
+	// in, the domain readable since its one script imitates nothing.
+	if shown, _ := got["sentToShown"].(string); shown != "stop@caf\u00E9.fr" {
+		app.failf("l'écran devrait dire stop@café.fr, la réponse donne %q", shown)
+	}
+}
+
+// An address whose local part is not ASCII has no form every server takes:
+// nothing leaves, and the link goes to the person's mail program.
+func TestAcceptance_UnsubscribeMailToAnAccentedMailboxIsHandedToTheScreen(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, incoming{From: "Le Journal <lettre@journal.fr>", Subject: "La lettre", Unsubscribe: "<mailto:désabo@journal.fr>"})
+	moi.withSendingServer()
+
+	got := moi.unsubscribeFrom(uids[0], false)
+	if sent := moi.sentThroughBox(); len(sent) != 0 {
+		app.failf("rien ne devrait partir vers désabo@journal.fr, le serveur d'envoi a reçu : %s", describeSent(sent))
+	}
+	if mailto, _ := got["mailto"].(string); mailto == "" {
+		app.failf("la réponse devrait rendre le lien à l'écran, elle dit : %v", got)
+	}
+	if done, _ := got["done"].(bool); done {
+		app.failf("la réponse ne devrait pas dire que c'est fait : %v", got)
+	}
+}
+
+// "Plus tard" on an IMAP mailbox shows the sender the server read, as on
+// Gmail: never the address a display name writes.
+func TestAcceptance_SenderLabelIsNeverTheAddressOfTheNameOnPlusTardIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const tricky = `"boss@corp.com" <evil@evil.io>`
+	moi, uids := syncedIMAPInbox(app, incoming{From: tricky, Subject: "Le faux patron"})
+	if got := moi.snoozeAnswer(uids[0]); got.code != http.StatusOK {
+		app.fatalf("« Reporter » a répondu %s", got)
+	}
+	code, out := app.callAs(moi.token, http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/snoozes a répondu %d : %v", code, out)
+	}
+	snoozes, _ := out["snoozes"].([]interface{})
+	if len(snoozes) != 1 {
+		app.fatalf("« Plus tard » devrait montrer le mail reporté, il montre : %v", out)
+	}
+	if s, _ := snoozes[0].(map[string]interface{}); s["senderLabel"] != "evil@evil.io" {
+		app.failf("« Plus tard » devrait montrer evil@evil.io pour %s, il montre %v", tricky, s["senderLabel"])
+	}
+}
+
+// hiddenCharacterSenders are Froms whose address holds a character that
+// would hide or reorder what follows, in the domain or in the local part,
+// and what the screens must show of them: the character made visible, never
+// dropped (dropped, x@pay<U+202E>pal.com read x@paypal.com while the app
+// compared another domain).
+var hiddenCharacterSenders = []struct{ from, shown string }{
+	{"x@pay\u202Epal.com", "x@pay\uFFFDpal.com"},
+	{"y@pay\u200Dpal.com", "y@pay\uFFFDpal.com"},
+	{"pay\u202Epal@x.com", "pay\uFFFDpal@x.com"},
+	{"pay\u200Dpal@y.com", "pay\uFFFDpal@y.com"},
+}
+
+// expectHiddenCharactersShown checks the list and the reader of the person
+// signed in with token, for mails whose subjects are the indexes of
+// hiddenCharacterSenders and ids are ids.
+func expectHiddenCharactersShown(app *testApp, token string, ids []string) {
+	app.t.Helper()
+	code, out := app.callAs(token, http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	listed := map[string]string{}
+	list, _ := out["emails"].([]interface{})
+	for _, raw := range list {
+		m, _ := raw.(map[string]interface{})
+		subject, _ := m["subject"].(string)
+		label, _ := m["senderLabel"].(string)
+		listed[subject] = label
+	}
+	for i, c := range hiddenCharacterSenders {
+		subject := fmt.Sprintf("Caché %d", i)
+		if listed[subject] != c.shown {
+			app.failf("la liste devrait montrer %q pour %q, elle montre %q", c.shown, c.from, listed[subject])
+		}
+		code, out := app.callAs(token, http.MethodGet, "/api/emails/"+url.PathEscape(ids[i]), nil)
+		if code != http.StatusOK {
+			app.fatalf("GET /api/emails/%s a répondu %d : %v", ids[i], code, out)
+		}
+		if out["senderLabel"] != c.shown || out["senderAddressShown"] != c.shown {
+			app.failf("le lecteur devrait montrer %q pour %q, il montre %v et %v", c.shown, c.from, out["senderLabel"], out["senderAddressShown"])
+		}
+	}
+}
+
+func hiddenCharacterMails() []incoming {
+	mails := make([]incoming, 0, len(hiddenCharacterSenders))
+	for i, c := range hiddenCharacterSenders {
+		mails = append(mails, incoming{From: c.from, Subject: fmt.Sprintf("Caché %d", i)})
+	}
+	return mails
+}
+
+func TestAcceptance_AnAddressIsNeverCleanedIntoAnotherGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(hiddenCharacterMails()...)
+	expectHiddenCharactersShown(app, app.token, ids)
+}
+
+func TestAcceptance_AnAddressIsNeverCleanedIntoAnotherIMAP(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	moi, uids := syncedIMAPInbox(app, hiddenCharacterMails()...)
+	expectHiddenCharactersShown(app, moi.token, uids)
+}
+
+// The Expediteurs and Abonnements cards name a sender as every screen does:
+// never the address a display name writes.
+func TestAcceptance_SenderCardsNeverNameTheAddressOfTheNameGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const tricky = `"boss@corp.com" <evil@evil.io>`
+	app.receiveAndSync(incoming{From: tricky, Subject: "Le faux patron", Unsubscribe: "<https://evil.io/stop>"})
+
+	// A display name is not flagged as an address, in the reader either.
+	named := app.receiveAndSync(incoming{From: "Ma Banque <info@banque.fr>", Subject: "Relevé", Unsubscribe: "<https://banque.fr/stop>"})
+	code, one := app.call(http.MethodGet, "/api/emails/"+named[0], nil)
+	if code != http.StatusOK || one["senderLabel"] != "Ma Banque" || one["senderLabelIsAddress"] != nil {
+		app.failf("le lecteur devrait montrer « Ma Banque », un nom, il répond %d : %v (adresse : %v)", code, one["senderLabel"], one["senderLabelIsAddress"])
+	}
+
+	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
+		code, out := app.call(http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			app.fatalf("GET %s a répondu %d : %v", path, code, out)
+		}
+		raw, _ := out["_raw"].(string)
+		var cards []map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &cards); err != nil || len(cards) == 0 {
+			app.fatalf("GET %s ne donne aucune carte lisible (%v) : %s", path, err, raw)
+		}
+		for _, c := range cards {
+			if c["senderName"] == "Ma Banque" {
+				if c["senderNameIsAddress"] != nil {
+					app.failf("GET %s marque « Ma Banque » comme une adresse", path)
+				}
+				continue
+			}
+			if c["senderName"] != "evil@evil.io" || c["senderNameIsAddress"] != true {
+				app.failf("GET %s devrait nommer evil@evil.io pour %s, il nomme %v", path, tricky, c["senderName"])
+			}
+		}
+	}
+}
+
+// The Expediteurs and Abonnements cards show a sender's address in the one
+// form addresses are shown in (senderEmailShown), never the From or the
+// address as written; senderEmail stays the key sent back. The same goes for
+// the protected list, the rules, their preview and the history's tooltip.
+func TestAcceptance_EveryAddressShownIsTheServersFormGmail(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const hidden = "Promo <x@pay\u202Epal.com>"
+	const shown = "x@pay\uFFFDpal.com"
+	ids := app.receiveAndSync(
+		incoming{From: hidden, Subject: "Soldes", Unsubscribe: "<https://pay.example/stop>"},
+		incoming{From: "y@p\u0430ypal.com", Subject: "Votre compte", Unsubscribe: "<https://compte.example/stop>"},
+	)
+
+	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
+		code, out := app.call(http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			app.fatalf("GET %s a répondu %d : %v", path, code, out)
+		}
+		raw, _ := out["_raw"].(string)
+		var cards []map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &cards); err != nil {
+			app.fatalf("GET %s illisible (%v) : %s", path, err, raw)
+		}
+		found, lookAlike := false, false
+		for _, c := range cards {
+			if c["senderEmailShown"] == shown {
+				found = true
+			}
+			// The Cyrillic "а" of y@pаypal.com: the domain in punycode,
+			// never read as paypal.com.
+			if c["senderEmailShown"] == "y@xn--pypal-4ve.com" {
+				lookAlike = true
+			}
+			if s, _ := c["senderEmailShown"].(string); strings.ContainsRune(s, '\u202E') || s == "x@paypal.com" {
+				app.failf("GET %s montre %q : l'adresse telle qu'écrite", path, s)
+			}
+		}
+		if !found {
+			app.failf("GET %s devrait montrer %q pour %q, il montre : %s", path, shown, hidden, raw)
+		}
+		if !lookAlike {
+			app.failf("GET %s devrait montrer y@xn--pypal-4ve.com pour y@p\u0430ypal.com, il montre : %s", path, raw)
+		}
+	}
+
+	// The settings: "Protéger" from a mail on a Cyrillic look-alike domain
+	// shows the domain in punycode, in the answer and in the list.
+	got := protectFromMail(app, app.token, "y@p\u0430ypal.com")
+	if got.code != http.StatusCreated && got.code != http.StatusOK {
+		app.fatalf("« Protéger » a répondu %s", got)
+	}
+	if got.body["valueShown"] != "y@xn--pypal-4ve.com" {
+		app.failf("la réponse de « Protéger » devrait montrer y@xn--pypal-4ve.com, elle montre %v", got.body["valueShown"])
+	}
+	code, out := app.call(http.MethodGet, "/api/protected", nil)
+	list, _ := out["protected"].([]interface{})
+	if code != http.StatusOK || len(list) != 1 {
+		app.fatalf("GET /api/protected a répondu %d : %v", code, out)
+	}
+	if row, _ := list[0].(map[string]interface{}); row["valueShown"] != "y@xn--pypal-4ve.com" {
+		app.failf("les Réglages devraient montrer y@xn--pypal-4ve.com, ils montrent %v", row["valueShown"])
+	}
+
+	// A sender rule: its name and its condition as the rules screen shows them.
+	app.mustCall(http.MethodPost, "/api/senders/rule", map[string]string{"senderEmail": hidden, "action": "archive"}, http.StatusCreated, http.StatusOK)
+	code, out = app.call(http.MethodGet, "/api/rules", nil)
+	rulesList, _ := out["rules"].([]interface{})
+	if code != http.StatusOK || len(rulesList) != 1 {
+		app.fatalf("GET /api/rules a répondu %d : %v", code, out)
+	}
+	rule, _ := rulesList[0].(map[string]interface{})
+	conds, _ := rule["conditions"].([]interface{})
+	cond, _ := conds[0].(map[string]interface{})
+	if rule["name"] != "Expéditeur : "+shown || cond["valueShown"] != shown {
+		app.failf("la règle devrait se montrer avec %q, elle montre %v et %v", shown, rule["name"], cond["valueShown"])
+	}
+
+	// Its preview names the sender as every screen does.
+	code, out = app.call(http.MethodPost, "/api/rules/preview", nil)
+	samples, _ := out["samples"].([]interface{})
+	if code != http.StatusOK || len(samples) == 0 {
+		app.fatalf("POST /api/rules/preview a répondu %d : %v", code, out)
+	}
+	for _, raw := range samples {
+		if s, _ := raw.(map[string]interface{}); s["senderLabel"] != "Promo" {
+			app.failf("l'aperçu des règles devrait nommer « Promo », il nomme %v", s["senderLabel"])
+		}
+	}
+	byRule, _ := out["byRule"].([]interface{})
+	if len(byRule) == 0 {
+		app.fatalf("l'aperçu des règles ne compte aucune règle : %v", out)
+	}
+	if h, _ := byRule[0].(map[string]interface{}); h["ruleNameShown"] != "Expéditeur : "+shown {
+		app.failf("l'aperçu devrait nommer la règle « Expéditeur : %s », il la nomme %v", shown, h["ruleNameShown"])
+	}
+
+	// The history's tooltip.
+	app.act(ids[1], "archive")
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	entries, _ := out["entries"].([]interface{})
+	if code != http.StatusOK || len(entries) == 0 {
+		app.fatalf("GET /api/activity/log a répondu %d : %v", code, out)
+	}
+	if e, _ := entries[0].(map[string]interface{}); e["senderAddressShown"] != "y@xn--pypal-4ve.com" {
+		app.failf("l'infobulle de l'historique devrait montrer y@xn--pypal-4ve.com, elle montre %v", e["senderAddressShown"])
+	}
+
+	// A rule saved before names were written in their shown form: its name
+	// holds the address as written, and the screen gets nameShown.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	legacy := models.SortingRule{
+		UserID: scenarioUser, Name: "Expéditeur : x@pay\u202Epal.com", Enabled: true, MatchAll: true,
+		Conditions: []models.RuleCondition{{Field: "from", Operator: "contains", Value: "x@pay\u202Epal.com"}},
+		Action:     "archive", Priority: 5,
+	}
+	if _, err := app.h.db.SortingRules().InsertOne(ctx, legacy); err != nil {
+		app.fatalf("enregistrement d'une ancienne règle : %v", err)
+	}
+	code, out = app.call(http.MethodGet, "/api/rules", nil)
+	rulesList, _ = out["rules"].([]interface{})
+	seen := false
+	for _, raw := range rulesList {
+		r, _ := raw.(map[string]interface{})
+		if r["name"] == legacy.Name {
+			seen = true
+			if r["nameShown"] != "Expéditeur : "+shown {
+				app.failf("l'ancienne règle devrait se montrer « Expéditeur : %s », elle montre %v", shown, r["nameShown"])
+			}
+		}
+	}
+	if code != http.StatusOK || !seen {
+		app.fatalf("GET /api/rules ne rend pas l'ancienne règle (%d) : %v", code, out)
+	}
+}
+
+// A failed background analysis says why in French: the protected senders
+// that could not be read, or the generic sentence for any other cause (the
+// AI does not answer). The cause itself stays in the log.
+func TestAcceptance_AFailedAnalysisJobSaysWhyInFrench(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	ids := app.receiveAndSync(incoming{From: "Boutique <promo@boutique.fr>", Subject: "Soldes"})
+	jobError := func(why string) string {
+		app.t.Helper()
+		out := app.mustCall(http.MethodPost, "/api/ai/analyze-async", map[string]interface{}{"emailIds": ids}, http.StatusAccepted)
+		jobID, _ := out["jobId"].(string)
+		app.workersRunQueuedAnalyses()
+		code, job := app.call(http.MethodGet, "/api/ai/jobs/"+jobID, nil)
+		if code != http.StatusOK || job["status"] != "error" {
+			app.fatalf("l'analyse en arrière-plan (%s) devrait finir en erreur, elle répond %d : %v", why, code, job)
+		}
+		e, _ := job["error"].(string)
+		return e
+	}
+
+	app.ai.close()
+	if e := jobError("IA muette"); e != analysisInterruptedMessage {
+		app.failf("une analyse arrêtée par l'IA devrait dire « %s », elle dit %q", analysisInterruptedMessage, e)
+	}
+	protectedListUnreadable(app)
+	if e := jobError("protégés illisibles"); e != protectedUnreadableMessage {
+		app.failf("une analyse arrêtée par la liste des protégés devrait dire « %s », elle dit %q", protectedUnreadableMessage, e)
+	}
+}
+
+// After the mailbox is replaced, the sweeps and the selection act on the
+// mailbox connected now only (its generation, generation.go):
+//
+//   - from a screen loaded on the old mailbox, "Tout archiver", "Se
+//     désabonner et archiver" and an archived selection are refused (409)
+//     and nothing moves on the new server;
+//   - from a request that names no screen, rows the old mailbox's sync wrote
+//     late (its generation, the same numbers as the new mailbox's mails) are
+//     never read: "Se désabonner et archiver" and "Tout archiver" do not take
+//     the new mailbox's mail numbered like one of them for the sender's, and
+//     the shield reads the new mailbox's sender of a selected mail, not the
+//     old row's.
+func TestAcceptance_SweepsAndSelectionsOfAReplacedMailboxTouchNothingOfTheNew(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	oldLetter := incoming{From: "Ancien <ancien@vieux.fr>", Subject: "La lettre de l'ancienne boîte", Unsubscribe: "<https://vieux.example/stop>"}
+	moi, oldUIDs := syncedIMAPInbox(app, oldLetter, otherBoxMails[1], otherBoxMails[2])
+	stale := screenGeneration(moi)
+	oldCard := moi.requireSenderCard("ancien@vieux.fr")
+
+	moi.disconnectMailbox()
+	moi.connectOtherMailbox(otherMailbox)
+	letter := incoming{From: "Ancien <ancien@vieux.fr>", Subject: "La lettre de la nouvelle boîte", Unsubscribe: "<https://vieux.example/stop>"}
+	patron := incoming{From: "Patron <patron@x.fr>", Subject: "Du patron"}
+	club := incoming{From: "Club <accueil@club.fr>", Subject: "Votre club"}
+	newUIDs := moi.receive(letter, patron, club)
+	for i := range newUIDs {
+		moi.expectNumbered(newUIDs[i], oldUIDs[i])
+	}
+	moi.sync()
+	moi.withSendingServer()
+	if code, out := app.callAs(moi.token, http.MethodPost, "/api/protected", map[string]string{"value": "patron@x.fr"}); code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("protéger patron@x.fr a répondu %d : %v", code, out)
+	}
+
+	// A screen of the old mailbox: 409, nothing moves.
+	for _, c := range []struct {
+		what, path string
+		body       interface{}
+	}{
+		{"« Tout archiver »", "/api/ai/apply-bulk", map[string]string{"senderEmail": oldCard.SenderEmail, "action": "archive"}},
+		{"« Se désabonner et archiver »", "/api/unsubscribe", map[string]interface{}{"messageId": oldUIDs[0], "alsoArchive": true}},
+		{"« Archiver » sur une sélection", "/api/emails/batch-action", map[string]interface{}{"messageIds": oldUIDs, "action": "archive"}},
+	} {
+		code, out := callFromScreen(moi, stale, http.MethodPost, c.path, c.body)
+		if changed, _ := out["mailboxChanged"].(bool); code != http.StatusConflict || !changed {
+			app.failf("%s depuis l'écran de l'ancienne boîte devrait être refusé (409, mailboxChanged), il a répondu %d : %v", c.what, code, out)
+		}
+	}
+	if in := moi.onServer(serverArchive); len(in) != 0 {
+		app.fatalf("rien ne devrait bouger sur la nouvelle boîte, son archive contient %s", quotedList(in))
+	}
+
+	// What the old mailbox's sync wrote late: its rows numbered like the new
+	// mailbox's patron and club mails, of another sender each.
+	row, ok := moi.shownRow(newUIDs[0])
+	if !ok {
+		app.fatalf("la nouvelle boîte ne montre pas le mail n°%s", newUIDs[0])
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, late := range []models.Email{
+		{UserID: moi.email, Generation: stale, Folder: serverInbox, MessageID: newUIDs[1], From: "Spam <spam@y.fr>", Subject: "Ancienne promo"},
+		{UserID: moi.email, Generation: stale, Folder: serverInbox, MessageID: newUIDs[2], From: row.From, Subject: "Ancienne lettre"},
+	} {
+		if _, err := app.h.db.Emails().InsertOne(ctx, late); err != nil {
+			app.fatalf("écriture tardive de l'ancienne boîte : %v", err)
+		}
+	}
+
+	// No screen named: the sweeps reach the new mailbox's letter only.
+	moi.unsubscribeFrom(newUIDs[0], true)
+	moi.expectOnServer(serverArchive, letter.Subject)
+	moi.expectOnServer(serverInbox, club.Subject)
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/ai/apply-bulk", map[string]string{"senderEmail": row.From, "action": "archive"})
+	if code != http.StatusOK {
+		app.fatalf("« Tout archiver » a répondu %d : %v", code, out)
+	}
+	moi.expectOnServer(serverInbox, club.Subject)
+
+	// The selection: the shield reads the new mailbox's sender of n°2, the
+	// protected patron, not the old row's.
+	done := moi.actOnSelection("archive", newUIDs[1])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("le mail n°%s de la nouvelle boîte, du patron protégé, devrait être épargné, la réponse en épargne %d : %v", newUIDs[1], n, done)
+	}
+	moi.expectOnServer(serverInbox, patron.Subject)
+}
+
+// A From that names no sender (it does not read, two authors, a group) is
+// shown "Expéditeur illisible" on every route, nothing of the header: the
+// list, the reader, the Expediteurs and Abonnements cards (no address), the
+// plan, the rules preview, the history and "Plus tard". Its text, shown,
+// read "<support@pаypal.com" or "support@paypal.com.secure-ve...".
+func TestAcceptance_AFromWithNoSenderIsShownUnreadableEverywhere(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	froms := []string{
+		"<support@p\u0430ypal.com",
+		"support@paypal.com.secure-verification.example, Lettre <lettre@journal.fr>",
+		"Service client: support@paypal.com;",
+	}
+	mails := make([]incoming, 0, len(froms))
+	for i, from := range froms {
+		mails = append(mails, incoming{From: from, Subject: fmt.Sprintf("Illisible %d", i), Unsubscribe: "<https://desabonnement.example/stop>"})
+	}
+	ids := app.receiveAndSync(mails...)
+	want := protect.UnreadableSenderLabel
+	check := func(where string, row map[string]interface{}, labelKey string) {
+		app.t.Helper()
+		if row[labelKey] != want {
+			app.failf("%s devrait montrer « %s », il montre %v", where, want, row[labelKey])
+		}
+		for _, key := range []string{"senderAddressShown", "senderEmailShown", "senderLabelIsAddress", "senderNameIsAddress"} {
+			if v, ok := row[key]; ok && v != "" {
+				app.failf("%s ne devrait rien montrer de l'en-tête, %s vaut %v", where, key, v)
+			}
+		}
+	}
+	array := func(path string, method string, body interface{}) []map[string]interface{} {
+		app.t.Helper()
+		code, out := app.call(method, path, body)
+		if code != http.StatusOK {
+			app.fatalf("%s %s a répondu %d : %v", method, path, code, out)
+		}
+		raw, _ := out["_raw"].(string)
+		var rows []map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+			app.fatalf("%s %s illisible (%v) : %s", method, path, err, raw)
+		}
+		return rows
+	}
+	listOf := func(out map[string]interface{}, key string) []map[string]interface{} {
+		list, _ := out[key].([]interface{})
+		rows := make([]map[string]interface{}, 0, len(list))
+		for _, r := range list {
+			m, _ := r.(map[string]interface{})
+			rows = append(rows, m)
+		}
+		return rows
+	}
+
+	code, out := app.call(http.MethodGet, "/api/emails?q=in:inbox", nil)
+	if code != http.StatusOK {
+		app.fatalf("GET /api/emails a répondu %d : %v", code, out)
+	}
+	if rows := listOf(out, "emails"); len(rows) != len(froms) {
+		app.fatalf("la liste devrait montrer %d mails, elle en montre %d", len(froms), len(rows))
+	} else {
+		for _, r := range rows {
+			check("La liste", r, "senderLabel")
+		}
+	}
+	for _, id := range ids {
+		code, out := app.call(http.MethodGet, "/api/emails/"+id, nil)
+		if code != http.StatusOK {
+			app.fatalf("GET /api/emails/%s a répondu %d : %v", id, code, out)
+		}
+		check("Le lecteur", out, "senderLabel")
+	}
+	for _, path := range []string{"/api/senders", "/api/subscriptions"} {
+		rows := array(path, http.MethodGet, nil)
+		if len(rows) == 0 {
+			app.fatalf("GET %s ne montre aucune carte", path)
+		}
+		for _, r := range rows {
+			check("La carte de "+path, r, "senderName")
+		}
+	}
+
+	app.ai.willSay("archive", 0.95)
+	app.analyze(ids...)
+	for _, r := range array("/api/ai/suggestions", http.MethodGet, nil) {
+		check("Le plan", r, "senderLabel")
+	}
+
+	app.rule("Les illisibles", 1, "subject", "contains", "Illisible", models.RuleAction{Type: "archive"})
+	code, out = app.call(http.MethodPost, "/api/rules/preview", nil)
+	if samples := listOf(out, "samples"); code != http.StatusOK || len(samples) == 0 {
+		app.fatalf("POST /api/rules/preview a répondu %d : %v", code, out)
+	} else {
+		for _, r := range samples {
+			check("L'aperçu des règles", r, "senderLabel")
+		}
+	}
+
+	app.act(ids[0], "archive")
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	if entries := listOf(out, "entries"); code != http.StatusOK || len(entries) == 0 {
+		app.fatalf("GET /api/activity/log a répondu %d : %v", code, out)
+	} else {
+		check("L'historique", entries[0], "senderLabel")
+	}
+
+	app.snooze(ids[1])
+	code, out = app.call(http.MethodGet, "/api/snoozes", nil)
+	if snoozes := listOf(out, "snoozes"); code != http.StatusOK || len(snoozes) == 0 {
+		app.fatalf("GET /api/snoozes a répondu %d : %v", code, out)
+	} else {
+		check("« Plus tard »", snoozes[0], "senderLabel")
+	}
+
+	// An absent From says the same, in the history and in "Plus tard".
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := app.h.db.ActionLog().InsertOne(ctx, models.ActionLog{
+		UserID: scenarioUser, MessageID: "sans-expediteur", Action: "archive", Source: SourceDirect,
+		Subject: "Sans expéditeur", CreatedAt: time.Now().Add(time.Minute),
+	}); err != nil {
+		app.fatalf("ligne d'historique sans From : %v", err)
+	}
+	if _, err := app.h.db.Snoozes().InsertOne(ctx, models.Snooze{
+		UserID: scenarioUser, MessageID: "sans-expediteur", Subject: "Sans expéditeur",
+		WakeAt: time.Now().Add(48 * time.Hour), Status: "scheduled", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}); err != nil {
+		app.fatalf("report sans From : %v", err)
+	}
+	code, out = app.call(http.MethodGet, "/api/activity/log", nil)
+	seen := false
+	for _, e := range listOf(out, "entries") {
+		if e["subject"] == "Sans expéditeur" {
+			seen = true
+			check("L'historique d'un mail sans From", e, "senderLabel")
+		}
+	}
+	if code != http.StatusOK || !seen {
+		app.fatalf("l'historique ne montre pas la ligne sans From (%d) : %v", code, out)
+	}
+	code, out = app.call(http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	seen = false
+	for _, sn := range listOf(out, "snoozes") {
+		if sn["subject"] == "Sans expéditeur" {
+			seen = true
+			check("« Plus tard » d'un mail sans From", sn, "senderLabel")
+		}
+	}
+	if code != http.StatusOK || !seen {
+		app.fatalf("« Plus tard » ne montre pas le report sans From (%d) : %v", code, out)
+	}
+
+	// No action on all of its mail: the cards say so, the server refuses.
+	cards := array("/api/senders", http.MethodGet, nil)
+	for _, c := range cards {
+		if c["senderUnreadable"] != true {
+			app.failf("la carte %v devrait être marquée illisible (senderUnreadable)", c["senderEmail"])
+		}
+	}
+	for _, c := range array("/api/subscriptions", http.MethodGet, nil) {
+		if c["senderUnreadable"] != true {
+			app.failf("l'abonnement %v devrait être marqué illisible (senderUnreadable)", c["sampleMessageId"])
+		}
+	}
+	key, _ := cards[0]["senderEmail"].(string)
+	for _, c := range []struct {
+		what, path string
+		body       interface{}
+	}{
+		{"« Tout archiver »", "/api/ai/apply-bulk", map[string]string{"senderEmail": key, "action": "archive"}},
+		{"« Tout supprimer »", "/api/ai/apply-bulk", map[string]string{"senderEmail": key, "action": "delete"}},
+		{"« Créer une règle »", "/api/senders/rule", map[string]string{"senderEmail": key, "action": "archive"}},
+		{"« Analyser »", "/api/ai/analyze-sender", map[string]string{"senderEmail": key}},
+	} {
+		code, out := app.call(http.MethodPost, c.path, c.body)
+		if code != http.StatusUnprocessableEntity || out["error"] != unreadableSenderActionMessage {
+			app.failf("%s pour un expéditeur illisible devrait être refusé (422, %q), il a répondu %d : %v", c.what, unreadableSenderActionMessage, code, out)
+		}
+	}
+	res, err := app.h.db.SenderPreferences().InsertOne(ctx, models.SenderPreference{
+		UserID: scenarioUser, SenderEmail: key, DefaultAction: "archive", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		app.fatalf("préférence d'un expéditeur illisible : %v", err)
+	}
+	prefID := res.InsertedID.(primitive.ObjectID).Hex()
+	code, out = app.call(http.MethodPut, "/api/senders/"+prefID+"/preferences", map[string]interface{}{"autoApply": true, "defaultAction": "archive"})
+	if code != http.StatusUnprocessableEntity || out["error"] != unreadableSenderActionMessage {
+		app.failf("l'auto-pilote d'un expéditeur illisible devrait être refusé (422), il a répondu %d : %v", code, out)
+	}
+	app.expectInInbox(ids[2])
+}
+
+// A sender rule saved before names were written in their shown form holds the
+// sender's address as written: its name shows the address in the one form
+// addresses are shown in, in GET /api/rules, the preview's counts and the
+// answer of "Dupliquer", whose toast says it.
+func TestAcceptance_ALegacySenderRuleNameIsShownEverywhere(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	const address = "y@p\u0430ypal.com"
+	const shownName = "Expéditeur : y@xn--pypal-4ve.com"
+	app.receiveAndSync(incoming{From: address, Subject: "Votre compte"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := app.h.db.SortingRules().InsertOne(ctx, models.SortingRule{
+		UserID: scenarioUser, Name: "Expéditeur : " + address, Enabled: true, MatchAll: true,
+		Conditions: []models.RuleCondition{{Field: "from", Operator: "contains", Value: address}},
+		Action:     "archive", Priority: 1,
+	})
+	if err != nil {
+		app.fatalf("enregistrement de l'ancienne règle : %v", err)
+	}
+	id := res.InsertedID.(primitive.ObjectID).Hex()
+
+	code, out := app.call(http.MethodGet, "/api/rules", nil)
+	rulesList, _ := out["rules"].([]interface{})
+	if len(rulesList) != 1 {
+		app.fatalf("GET /api/rules devrait rendre l'ancienne règle (%d) : %v", code, out)
+	}
+	if r, _ := rulesList[0].(map[string]interface{}); r["nameShown"] != shownName {
+		app.failf("GET /api/rules devrait nommer la règle %q, il la nomme %v", shownName, r["nameShown"])
+	}
+	code, out = app.call(http.MethodPost, "/api/rules/preview", nil)
+	byRule, _ := out["byRule"].([]interface{})
+	if len(byRule) == 0 {
+		app.fatalf("l'aperçu ne compte pas l'ancienne règle (%d) : %v", code, out)
+	}
+	if h, _ := byRule[0].(map[string]interface{}); h["ruleNameShown"] != shownName {
+		app.failf("l'aperçu devrait nommer la règle %q, il la nomme %v", shownName, h["ruleNameShown"])
+	}
+	code, out = app.call(http.MethodPost, "/api/rules/"+id+"/duplicate", nil)
+	if code != http.StatusCreated || out["nameShown"] != shownName+" (copie)" {
+		app.failf("« Dupliquer » devrait nommer la copie %q, il répond %d : %v", shownName+" (copie)", code, out)
+	}
+}

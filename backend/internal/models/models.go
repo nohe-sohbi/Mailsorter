@@ -120,6 +120,23 @@ type Email struct {
 	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`
 	UnsubOneClick bool      `json:"unsubOneClick,omitempty" bson:"unsubOneClick,omitempty"`
 	CreatedAt     time.Time `json:"createdAt" bson:"createdAt"`
+
+	// SenderAddress is the sender's address as the server reads it out of
+	// From (protect.Address: never one in the display name, "" when From does
+	// not read as one address). Set on the way out of a listing and the
+	// reader, for the screens to group, show and make rules by; never stored.
+	SenderAddress string `json:"senderAddress,omitempty" bson:"-"`
+	// SenderLabel is what the list shows for the sender (protect.Label).
+	// Set with SenderAddress; never stored.
+	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderLabelIsAddress says SenderLabel is the sender's address, not a
+	// name (protect.LabelOf): the screen lays it out so its domain is never
+	// cut. Set with it; never stored.
+	SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty" bson:"-"`
+	// SenderAddressShown is SenderAddress as the reader shows it under the
+	// name (protect.ShownAddress: what would not show, or would move what
+	// follows, made visible). Set with SenderAddress; never stored.
+	SenderAddressShown string `json:"senderAddressShown,omitempty" bson:"-"`
 }
 
 // RegisterRequest is the body for POST /api/auth/register.
@@ -199,6 +216,11 @@ type RuleCondition struct {
 	Field    string `json:"field" bson:"field"`
 	Operator string `json:"operator" bson:"operator"`
 	Value    string `json:"value" bson:"value"`
+	// ValueShown is Value as the rules screen shows it (an address in its
+	// shown form, protect.ShownAddress; other text with what hides made
+	// visible, protect.ShownText). Set on the way out of GET /api/rules,
+	// never stored.
+	ValueShown string `json:"valueShown,omitempty" bson:"-"`
 }
 
 // RuleAction is a single thing a rule does to a matching email. A rule can
@@ -219,9 +241,14 @@ type RuleAction struct {
 // multi-action (and the one-click sender rules) populate it instead, and it
 // always mirrors the primary (first) action so older readers still work.
 type SortingRule struct {
-	ID           string          `json:"id" bson:"_id,omitempty"`
-	UserID       string          `json:"userId" bson:"userId"`
-	Name         string          `json:"name" bson:"name"`
+	ID     string `json:"id" bson:"_id,omitempty"`
+	UserID string `json:"userId" bson:"userId"`
+	Name   string `json:"name" bson:"name"`
+	// NameShown is Name as the rules screen shows it (protect.ShownText): a
+	// rule made from a sender before the name was written in its shown
+	// form holds the sender's address as written. Set on the way out of
+	// GET /api/rules, never stored.
+	NameShown    string          `json:"nameShown,omitempty" bson:"-"`
 	Enabled      bool            `json:"enabled" bson:"enabled"`
 	MatchAll     bool            `json:"matchAll" bson:"matchAll"` // true = AND all conditions, false = OR any
 	Conditions   []RuleCondition `json:"conditions" bson:"conditions"`
@@ -273,12 +300,19 @@ type ProtectedSender struct {
 	Kind      string    `json:"kind" bson:"kind"`   // "address" | "domain"
 	Note      string    `json:"note,omitempty" bson:"note,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	// ValueShown is Value as the settings show it (protect.ShownEntry); set
+	// on the way out, never stored.
+	ValueShown string `json:"valueShown,omitempty" bson:"-"`
 }
 
 // ProtectedSenderInput is the request body for POST /api/protected.
 type ProtectedSenderInput struct {
 	Value string `json:"value"`
 	Note  string `json:"note"`
+	// FromMail says Value is the From header of a mail ("Protéger" in the
+	// reader): the sender's address is read out of it exactly
+	// (protect.EntryFromMail), rather than normalized as a typed entry.
+	FromMail bool `json:"fromMail,omitempty"`
 }
 
 // ============================================
@@ -316,6 +350,14 @@ type Snooze struct {
 	// "Réactiver" or "Annuler" brings it back, and it is listed only while
 	// that mailbox is connected.
 	Generation string `json:"-" bson:"generation,omitempty"`
+
+	// SenderLabel is what "Plus tard" shows for the sender (protect.Label),
+	// set on the way out; never stored.
+	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderLabelIsAddress says SenderLabel is the sender's address, not a
+	// name (protect.LabelOf): the screen lays it out so its domain is never
+	// cut. Set with it; never stored.
+	SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty" bson:"-"`
 }
 
 // MailAccount is the mailbox a user connected, and how to reach it again.
@@ -454,6 +496,17 @@ type ActionLog struct {
 	// mail of the mailbox connected since.
 	Generation string    `json:"-" bson:"generation,omitempty"`
 	CreatedAt  time.Time `json:"createdAt" bson:"createdAt"`
+
+	// SenderLabel is what the history shows for the sender (protect.Label),
+	// set on the way out; never stored.
+	SenderLabel string `json:"senderLabel,omitempty" bson:"-"`
+	// SenderLabelIsAddress says SenderLabel is the sender's address, not a
+	// name (protect.LabelOf): the screen lays it out so its domain is never
+	// cut. Set with it; never stored.
+	SenderLabelIsAddress bool `json:"senderLabelIsAddress,omitempty" bson:"-"`
+	// SenderAddressShown is the sender's address as the history shows it in
+	// its tooltip (protect.ShownAddress); set on the way out, never stored.
+	SenderAddressShown string `json:"senderAddressShown,omitempty" bson:"-"`
 }
 
 // ============================================
@@ -591,7 +644,10 @@ type UpdateSenderPreferenceRequest struct {
 }
 
 // Unsubscribe records a completed or assisted unsubscribe from a mailing-list
-// sender, keyed by (userId, senderEmail) so it is idempotent.
+// sender, keyed by (userId, senderEmail) so it is idempotent. SentTo and
+// SentAt are the address and the time of the last unsubscribe mail Mailsorter
+// wrote for this sender (over IMAP, through the mailbox's sending server):
+// SentAt is what refuses a second one to that address for 24 hours.
 type Unsubscribe struct {
 	ID          string    `json:"id" bson:"_id,omitempty"`
 	UserID      string    `json:"userId" bson:"userId"`
@@ -601,6 +657,8 @@ type Unsubscribe struct {
 	Status      string    `json:"status" bson:"status"` // "done", "opened"
 	CreatedAt   time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt" bson:"updatedAt"`
+	SentTo      string    `json:"sentTo,omitempty" bson:"sentTo,omitempty"`
+	SentAt      time.Time `json:"sentAt,omitzero" bson:"sentAt,omitempty"`
 }
 
 // UnsubscribeRequest is the request body for POST /api/unsubscribe
@@ -612,8 +670,20 @@ type UnsubscribeRequest struct {
 // Subscription is an aggregated mailing-list sender that advertises an
 // unsubscribe link, returned by GET /api/subscriptions.
 type Subscription struct {
-	SenderEmail     string    `json:"senderEmail"`
-	SenderName      string    `json:"senderName"`
+	SenderEmail string `json:"senderEmail"`
+	// SenderEmailShown is the sender's address as the card shows it
+	// (protect.ShownAddress), empty when the From names no sender:
+	// SenderEmail stays the key the screen sends back.
+	SenderEmailShown string `json:"senderEmailShown"`
+	SenderName       string `json:"senderName"`
+	// SenderNameIsAddress says SenderName is the sender's address, not a
+	// name (protect.LabelOf): the card lays it out so its domain is never cut.
+	SenderNameIsAddress bool `json:"senderNameIsAddress,omitempty"`
+	// SenderUnreadable says the From names no sender (it does not read, two
+	// authors, a group): the card is named "Expéditeur illisible" and offers
+	// no action on all of its mail, which the server refuses (422).
+	SenderUnreadable bool `json:"senderUnreadable,omitempty"`
+
 	EmailCount      int       `json:"emailCount"`
 	LastReceived    time.Time `json:"lastReceived"`
 	SampleMessageID string    `json:"sampleMessageId"`
@@ -623,11 +693,23 @@ type Subscription struct {
 
 // SenderStats represents aggregated info about a sender
 type SenderStats struct {
-	SenderEmail  string            `json:"senderEmail"`
-	SenderDomain string            `json:"senderDomain"`
-	SenderName   string            `json:"senderName"`
-	EmailCount   int               `json:"emailCount"`
-	Preference   *SenderPreference `json:"preference,omitempty"`
+	// SenderEmail is the card's key: the raw From the mails were grouped by,
+	// which the screen sends back for a sender-wide action. Never shown.
+	SenderEmail string `json:"senderEmail"`
+	// SenderEmailShown is what the card shows as the sender's address
+	// (protect.ShownAddress), empty when the From names no sender.
+	SenderEmailShown string `json:"senderEmailShown"`
+	SenderDomain     string `json:"senderDomain"`
+	// SenderNameIsAddress says SenderName is the sender's address, not a
+	// name (protect.LabelOf): the card lays it out so its domain is never cut.
+	SenderNameIsAddress bool              `json:"senderNameIsAddress,omitempty"`
+	SenderName          string            `json:"senderName"`
+	EmailCount          int               `json:"emailCount"`
+	Preference          *SenderPreference `json:"preference,omitempty"`
+	// SenderUnreadable says the From names no sender (it does not read, two
+	// authors, a group): the card is named "Expéditeur illisible" and offers
+	// no action on all of its mail, which the server refuses (422).
+	SenderUnreadable bool `json:"senderUnreadable,omitempty"`
 }
 
 // ============================================

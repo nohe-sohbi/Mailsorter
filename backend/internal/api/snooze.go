@@ -363,10 +363,16 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 	}
 	defer session.Close()
 
+	// The shield first: a list that cannot be read reports nothing.
+	protectedList, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		writeProtectedUnreadable(w, userEmail, err)
+		return
+	}
+
 	// One lookup for the whole batch, exactly as BatchAction does: the shield
 	// needs each sender, and the snoozed list needs the subject to be readable.
 	identities := h.emailIdentities(ctx, userEmail, session.generation(), req.MessageIDs)
-	protectedList := h.protectedValues(ctx, userEmail)
 
 	var snoozeOne func(meta models.Email) error
 	if session.Transport == provider.TransportIMAP {
@@ -381,7 +387,7 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "Impossible de préparer le report")
 			return
 		}
-		if len(protectedList) > 0 || len(identities) < len(req.MessageIDs) {
+		if !protectedList.Empty() || len(identities) < len(req.MessageIDs) {
 			h.fillMissingIdentities(ctx, session.gmail, req.MessageIDs, identities)
 		}
 		snoozeOne = func(meta models.Email) error {
@@ -401,7 +407,7 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 		meta.MessageID = id
 		// Fail safe, like the batch actions: a sender we could not establish is
 		// treated as possibly protected rather than assumed harmless.
-		if len(protectedList) > 0 && (meta.From == "" || !allows(protect.ActionArchive, meta.From, protectedList)) {
+		if !protectedList.Empty() && (meta.From == "" || !allows(protect.ActionArchive, meta.From, protectedList)) {
 			res.Protected++
 			continue
 		}
@@ -475,6 +481,11 @@ func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One label for every From, an absent one included ("Expéditeur
+	// illisible", as everywhere).
+	for i := range rows {
+		rows[i].SenderLabel, rows[i].SenderLabelIsAddress = protect.LabelOf(rows[i].From)
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"snoozes": rows})
 }
 

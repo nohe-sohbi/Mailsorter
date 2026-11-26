@@ -5,22 +5,16 @@
 // the landing must not promise them to someone who can only connect a
 // mailbox. Porting a feature to IMAP is deleting its line here: the corridor
 // badges, the key-board legend, the hall, the demo and the "Outlook" answer
-// all follow. Classifying left it: over IMAP the AI's proposal files the mail
-// in the folder of that name (internal/mailbox/imap.go). So did the rules,
-// which run on IMAP mailboxes too, their "Étiqueter" filing in a folder there.
-// Reporting left it too: over IMAP a reported mail waits in the folder « Plus
-// tard » of the mailbox and comes back from there
-// (backend/internal/api/snooze.go). Classifying a selection by hand still goes
-// through the Gmail API: that screen keeps it closed on `fullFeatures`, not on
-// this list.
+// all follow. Classifying left it: over IMAP the AI's proposal, a selection
+// classified by hand and a sender's auto-pilot file the mail in the folder of
+// that name (internal/mailbox/imap.go). So did the rules, which run on IMAP
+// mailboxes too, their "Étiqueter" filing in a folder there. Reporting left
+// it too: over IMAP a reported mail waits in the folder « Plus tard » of the
+// mailbox and comes back from there (backend/internal/api/snooze.go). So did
+// unsubscribing and the actions on a whole sender. Nothing is left: the
+// landing promises every feature to both transports.
 // Each label carries its article, because it is used inside sentences.
-// `sender` is acting on a whole sender at once: archiving or deleting all of
-// its emails, and its auto-pilot (the AI's verdict applied by itself at each
-// analysis), which the IMAP analysis skips.
-export const GMAIL_ONLY = {
-  unsubscribe: 'le désabonnement',
-  sender: 'les actions par expéditeur',
-};
+export const GMAIL_ONLY = {};
 
 export function isGmailOnly(feature) {
   return Object.prototype.hasOwnProperty.call(GMAIL_ONLY, feature);

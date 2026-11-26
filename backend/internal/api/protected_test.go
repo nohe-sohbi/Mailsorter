@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
 func TestProtectAnalysisDowngradesDestructive(t *testing.T) {
-	protectedList := []string{"boss@corp.com", "acme.com"}
+	protectedList := protect.NewShield([]string{"boss@corp.com", "acme.com"})
 
 	// A destructive verdict for a protected sender is forced to "keep".
 	got := protectAnalysis(ai.EmailAnalysis{Action: "archive", Confidence: 0.7}, "The Boss <boss@corp.com>", protectedList, provider.TransportGmailAPI)
@@ -51,7 +52,7 @@ func TestProtectAnalysisDowngradesDestructive(t *testing.T) {
 }
 
 func TestAllowsWrapper(t *testing.T) {
-	protectedList := []string{"vip@corp.com"}
+	protectedList := protect.NewShield([]string{"vip@corp.com"})
 	if allows("archive", "vip@corp.com", protectedList) {
 		t.Error("archive on protected sender should not be allowed")
 	}
@@ -67,7 +68,7 @@ func TestAllowsWrapper(t *testing.T) {
 // "Tout ranger" must not do that to a protected sender. Over the Gmail API the
 // mail stays in the inbox, and labelling stays allowed.
 func TestAllowsOnReadsALabelAsAMoveOverIMAP(t *testing.T) {
-	protectedList := []string{"vip@corp.com"}
+	protectedList := protect.NewShield([]string{"vip@corp.com"})
 	if allowsOn(provider.TransportIMAP, "label", "VIP <vip@corp.com>", protectedList) {
 		t.Error("label on a protected sender over IMAP should not be allowed")
 	}

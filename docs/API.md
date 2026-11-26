@@ -330,6 +330,7 @@ Get a page of the mailbox, through the caller's transport.
       "userId": "user@gmail.com",
       "threadId": "18c8c1f2a3b4d5e6",
       "from": "sender@example.com",
+      "senderAddress": "sender@example.com",
       "to": ["user@gmail.com"],
       "subject": "Test Email",
       "snippet": "This is a test email...",
@@ -346,6 +347,75 @@ Get a page of the mailbox, through the caller's transport.
 
 Bodies are deliberately omitted: the page carries up to 500 messages and the
 reader fetches the one it opens (`GET /api/emails/{id}`).
+
+`senderAddress` is the sender's address as the server reads it out of `from`
+(RFC 5322, never an address in the display name, a local part quoted when it
+is not a dot-atom; a display name nobody quoted, `Doe, John <j@x.com>`, is read
+again in quotes when it holds no `<`, `>` or quote), the one the screens show
+and act on; it is absent when `from` names several authors or uses the group
+syntax (`Undisclosed: a@x.fr;`), when the mail has two From headers, and when
+`from` does not read as one address, and the screens then show "Expéditeur
+illisible" (`senderLabel`), never `from` or an address read out of it. `GET
+/api/emails/{id}` carries it too.
+
+`senderLabel` is what the screens show for the sender (protect.Label): the
+display name, or the address read when the name holds an `@` in any width
+(`"boss@corp.com" <evil@evil.io>`, `boss＠corp.com` or `boss﹫corp.com`, RFC
+2047 encoded or not, show `evil@evil.io`), the address when there is no name
+or one that shows nothing (zero-width spaces, blank Braille or Hangul
+fillers), and "Expéditeur illisible" when it names no sender (it does not
+read, it names several authors or a group, there is none), with nothing of
+the header: its text, shown, read `<support@pаypal.com` or
+`support@paypal.com.secure-ve...`, with no closed list and its end cut. A
+name shows without control or format characters (bidi overrides and
+isolates, marks, zero-width spaces), the zero-width joiner and non-joiner
+aside. An address is shown in the one form below (`protect.ShownAddress`);
+`senderAddressShown` and `senderEmailShown` are empty for a From that names no
+sender. The reader, the suggestions, the history (`GET /api/activity/log`)
+and "Plus tard" (`GET /api/snoozes`) carry it too; a screen given none shows
+"Expéditeur inconnu", or nothing, never the From. A stored From holds no
+control byte.
+
+`senderAddressShown` is `senderAddress` as the reader shows it under the name
+(`protect.ShownAddress`); none when From names no sender.
+
+The screens never show a From or an address as written: every one comes in a
+form the server computed, `protect.ShownAddress` for an address, from a
+closed list of characters: the ASCII letters and digits, the hyphen, and the
+letters of Latin-1 Supplement (U+00C0-U+00FF but `×` and `÷`) and Latin
+Extended-A (U+0100-U+017F but `ı`, `ĸ`, `ŀ`, `ŉ` and `ſ`, drawn like an ASCII
+letter or a dot). The promise: the domain never reads as another one; an
+unusual character of the local part shows as U+FFFD (the replacement
+character).
+
+- **The domain**: each label in Unicode only when all its characters are in
+  the list and it is stable in NFC (`café.fr`, `crème-brûlée.fr`,
+  `straße.de`), in punycode otherwise, also when the sender wrote it so:
+  `y@pаypal.com` (a Cyrillic `а`) shows `y@xn--pypal-4ve.com`, `ɡoogle.com`
+  (an IPA `ɡ`) `xn--oogle-qmc.com`, `gıthub.com`, `yahᴏᴏ.com`, Greek, CJK and
+  a combining mark left over likewise. A domain IDNA refuses shows each
+  non-ASCII character as U+FFFD (`x@paypal<U+2024>com`, a one dot leader,
+  shows `x@paypal<U+FFFD>com`; `x@pay<U+202E>pal.com` shows
+  `x@pay<U+FFFD>pal.com`, never `x@paypal.com`).
+- **The local part**: printable ASCII and the list as they are, any other
+  character as U+FFFD, a U+FFFD already there included: `ѕupport@paypal.com`
+  (a Cyrillic `ѕ`) shows `<U+FFFD>upport@paypal.com`, and so does a hidden or
+  reordering character or an `@` of another width (`＠`, `﹫`).
+- **On screen**: the local part may be truncated, the domain never is; a
+  domain too long for its line wraps (`AddressLine` in the frontend): the
+  address lines of the Expéditeurs and Abonnements cards and of the reader,
+  and every label that is an address, which the server flags
+  (`senderLabelIsAddress` on the listing, the reader, the suggestions, the
+  history, "Plus tard" and the rules preview's samples; `senderNameIsAddress`
+  on the cards), so the screen never guesses: the list row (both themes), the
+  name line of the cards and of the reader, the plan, the history, "Plus
+  tard", the rules preview (the sender on a line of its own). A rule's name
+  is never cut either: it wraps.
+
+The forms: `senderLabel` and `senderAddressShown`
+(listing, reader, plan, history, "Plus tard"), `senderEmailShown` (Expéditeurs,
+Abonnements), `valueShown` (protected senders, a rule's conditions),
+`sentToShown` (an unsubscribe mail), `senderLabel` on the rules preview.
 
 On a mailbox reached over IMAP the answer is served from the stored mailbox and
 `labelIds` is empty, because a message there is in one folder rather than in a
@@ -737,12 +807,38 @@ SPA downloads through the API client and hands the browser an object URL.
 
 #### POST /api/emails/batch-action
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP. Over IMAP a label is the folder of that
+name: `label` files the selection there ("Classer").
 
 Apply one triage action to a list of messages in a single request. Protected
 senders are shielded from destructive actions exactly as in the rules and
 bulk-by-sender paths; a message that fails is counted rather than aborting the
 batch.
+
+Over IMAP the ids are the numbers the stored inbox gives (UIDs). Archive and
+delete are moves to the server's Archive and Trash folders, the whole selection
+in ONE `UID MOVE`: the stored rows are read in one query and claimed one by one,
+the claimed numbers move together, and where each one landed (the server's
+`COPYUID` answer, or, without UIDPLUS, a search by Message-ID) is written in one
+bulk write, for `/batch-undo`. The messages leave the listing at once. Read,
+unread and the star are flags, one message at a time, written to the stored
+copy at once too. The sender a protected check reads comes from the stored copy
+only: a message it does not hold is spared by a destructive action when the
+protected list is not empty. A message that had already left the inbox (moved
+by Mailsorter before, or by another mail client) is neither `applied` nor
+`failed`: it is listed in `alreadyOut`, which the client takes off the list,
+saying why.
+
+`label` over IMAP files the selection the way the AI's proposal is applied: the
+name is settled once (`FilingName`: the user's folder named alike, "facture"
+into "Factures", or the cleaned new name), the folder is made if missing, then
+the selection moves into it in the same one `UID MOVE`, out of the inbox. A
+protected sender's mail stays in the inbox, as for an archive. `labelName` in the
+answer is the folder it went into. A special folder (the inbox, the archive,
+the trash, sent, drafts, junk) or a name no folder is made under is refused
+before anything moves (`422`, the sentence `apply` gives); a refusal met while
+moving (more than 10 new folders in one request) is in `message`. Undone like
+an archive, by `/batch-undo`.
 
 **Request body:**
 ```json
@@ -756,19 +852,24 @@ exist. At most 200 ids per request.
 ```json
 {
   "applied": ["18c..."],
+  "alreadyOut": [],
   "failed": 0,
   "protectedSkipped": 1,
   "total": 2,
+  "labelName": "",
   "reversible": true,
   "inverse": "unarchive"
 }
 ```
 `reversible` tells the client whether to offer an "Annuler" affordance;
-`applied` carries the exact ids to hand back to `/batch-undo`.
+`applied` carries the exact ids to hand back to `/batch-undo`. `alreadyOut` is
+always empty on the Gmail API.
 
 **Error Responses:**
 - `400 Bad Request`: Empty selection, unsupported action, missing label name, or over 200 ids
 - `401 Unauthorized`: Missing or expired session
+- `422 Unprocessable Entity`: `label` over IMAP into a special folder, or under a name no folder is made under
+- `428 Precondition Required`: No mailbox connected
 - `502 Bad Gateway`: The label could not be created
 
 ---
@@ -785,11 +886,12 @@ because the client already holds the exact ids, which is what makes undoing a
 ```json
 { "messageIds": ["18c..."], "action": "label", "labelName": "Factures" }
 ```
-`archive`, `delete` and `label` are reversible. `labelName` is required when
-undoing a `label` and is the name the client just applied: the server resolves it
-to a Gmail label id, which the client does not have. Over IMAP a label is the
-folder of that name, and undoing it brings the mail back to the inbox from the
-folder it was filed in. Marking as read stays one-way on purpose.
+`archive`, `delete` and `label` are reversible. On the Gmail API `labelName` is
+required when undoing a `label` and is the name the client just applied: the
+server resolves it to a Gmail label id, which the client does not have. Over
+IMAP a label is the folder of that name, and undoing it brings the mail back to
+the inbox from the folder Mailsorter recorded: no name is needed there. Marking
+as read stays one-way on purpose.
 
 The matching ledger entries are marked undone so the history does not offer a
 second "Annuler" on the same work. Over IMAP a message whose latest entry for
@@ -820,7 +922,7 @@ sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le
 depuis votre messagerie.".
 
 **Error Responses:**
-- `400 Bad Request`: Non-reversible action, empty list, missing label name, or over 200 ids
+- `400 Bad Request`: Non-reversible action, empty list, missing label name (Gmail API), or over 200 ids
 - `401 Unauthorized`: Missing or expired session
 
 ---
@@ -937,6 +1039,7 @@ hour (see above) is counted as `failed`.
 - `400 Bad Request`: Empty selection, over 200 ids, or an invalid deadline
 - `401 Unauthorized`: Missing or expired session
 - `502 Bad Gateway`: The snooze label could not be prepared (Gmail API)
+- `503 Service Unavailable`: The protected senders could not be read: nothing reported ("Vos expéditeurs protégés n'ont pas pu être lus : rien n'a été rangé, réessayez dans un instant.")
 
 ### List snoozes
 
@@ -983,7 +1086,11 @@ mail in the inbox (a Gmail label, star, mark read) are unaffected.
 
 #### GET /api/protected
 
-Returns `{ "protected": [ { "id", "value", "kind", "note", "createdAt" } ] }`.
+Returns `{ "protected": [ { "id", "value", "valueShown", "kind", "note", "createdAt" } ] }`.
+`valueShown` is what the settings show (`protect.ShownEntry`: an address in
+the one form addresses are shown in, a domain from the same closed list); `value` is
+the entry as stored, never shown. The answer of `POST /api/protected` carries
+it too.
 
 ### Add a protected sender
 
@@ -991,10 +1098,63 @@ Returns `{ "protected": [ { "id", "value", "kind", "note", "createdAt" } ] }`.
 
 **Body:**
 ```json
-{ "value": "boss@corp.com", "note": "" }
+{ "value": "boss@corp.com", "note": "", "fromMail": false }
 ```
-The value is normalized and classified server-side (`kind`: `address` or
-`domain`). A raw `Name <addr>` header is accepted; the bare address is stored.
+Two ways in:
+
+- `fromMail: true` ("Protéger" in the reader): `value` is the mail's From
+  header, and the sender's address is stored exactly as it is read out of it
+  (`protect.EntryFromMail`, the reading of `senderAddress`), its local part
+  lowercased, its domain shown the way the settings show one (below), and
+  nothing else (`'patron@victime.fr'` keeps its apostrophes, a quoted local
+  part its quotes): that is how the next mails are compared with it. A From
+  that names no sender (unreadable, several authors, a group) answers `400`
+  "L'adresse de cet expéditeur est illisible : il ne peut pas être protégé
+  depuis ce mail.". One whose domain IDNA refuses (`x@pay<U+202E>pal.com`,
+  `'patron@victime.fr'`, whose domain ends with the apostrophe) answers
+  `400` "Le domaine de cet expéditeur n'est pas un nom de domaine valide : il
+  ne peut pas être protégé depuis ce mail.": stored as written, it showed in
+  the settings as what it is not. `'patron'@victime.fr` keeps its
+  apostrophes.
+- Otherwise (typed in the settings): the value is normalized and classified
+  (`kind`: `address` or `domain`), apostrophes around it dropped: an address
+  that reads (a raw `Name <addr>` header is accepted and its address stored), or
+  a well-formed domain (`acme.com`, `@acme.com`: letters, digits and hyphens, no
+  final dot). Anything else answers `400`: two addresses, a space or a tab in
+  an address, a stray `>`, two `@`, a name, a final dot, a domain IDNA refuses.
+
+An accented domain is one domain in any of its forms. Every comparison of
+senders is made in ASCII: the domain goes as written to IDNA's Lookup profile
+(UTS 46, which does its own case mapping: Go's lowercase never comes first,
+it turned `lİnkedin.com` into `linkedin.com`), and only the local part is
+lowercased. So `café.fr` protects `contact@xn--caf-dma.fr`, the form a header
+carries, as well as `contact@café.fr`; `linkedin.com` does not protect
+`news@lİnkedin.com`; and an entry typed `lİnkedin.com` protects a From written
+`lİnkedin.com`. The unsubscribe rules (same registrable domain), the 24 hours
+of an unsubscribe mail and the sweep by sender compare the same way.
+
+An entry's domain is stored the way every screen shows a domain (the closed
+list of `GET /api/emails`): in Unicode (`café.fr`, whether typed so or as
+`xn--caf-dma.fr`; full-width letters folded, `ｅｘａｍｐｌｅ.fr` is
+`example.fr`) only for labels whose characters are all in the list;
+otherwise in punycode (`xn--80ak6aa92e.com`, Cyrillic drawn like "apple",
+stays so; `日本.jp` is stored `xn--wgv71a.jp`; `li̇nkedin.com`, an `i` with a
+combining dot above it, `xn--linkedin-p0e.com`).
+
+When the protected list cannot be read, nothing moves on its own or in bulk:
+the selection (`POST /api/emails/batch-action`, `POST
+/api/emails/batch-snooze`), the plan (`POST /api/ai/apply-batch`), the rules
+(`POST /api/rules/apply`), the analysis with its auto-pilot (`POST
+/api/ai/analyze`; an `analyze-async` job ends in `error` with the same
+sentence), "Tout archiver" / "Tout supprimer" (`POST /api/ai/apply-bulk`) and
+"Se désabonner et archiver" answer `503` "Vos expéditeurs protégés n'ont pas
+pu être lus : rien n'a été rangé, réessayez dans un instant." before anything
+is done. The selection reads the list only for what takes mail out of the
+inbox (archive, delete, a label over IMAP): read, unread, a star and a Gmail
+label do not depend on it. A sync stores the mail and applies no rule (the
+next one does). The
+list was read as empty before, which let all of them move a protected
+sender's mail.
 
 ### Remove a protected sender
 
@@ -1006,7 +1166,10 @@ The value is normalized and classified server-side (`kind`: `address` or
 
 Detects mailing-list senders via the `List-Unsubscribe` (RFC 2369) and
 `List-Unsubscribe-Post` (RFC 8058) headers, and unsubscribes the user, either
-silently server-side (one-click) or by handing back the link to open.
+silently server-side (one-click) or by handing back the link to open. A mail
+with two `List-Unsubscribe` headers offers no way out on either transport
+(nothing done automatically, nothing to open): the two transports used to keep
+different ones.
 
 ### Get Subscriptions
 
@@ -1014,7 +1177,13 @@ silently server-side (one-click) or by handing back the link to open.
 
 Aggregates the senders in the stored mailbox that advertise an unsubscribe link,
 ranked by volume (at most 100). It reads the datastore only, so it answers on
-both transports.
+both transports. Senders are grouped by their raw From header; `senderEmail` is
+the address read out of it as for `senderAddress` (see `GET /api/emails`), and
+"" for a From that does not read as one address: such a row can still be
+unsubscribed through its `sampleMessageId`, but nothing is archived or recorded
+for it. `senderEmailShown` is what the card shows (the address in the one form
+addresses are shown in, empty when the From names no sender, whose card is
+named "Expéditeur illisible"); `senderEmail` is never shown.
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -1038,7 +1207,7 @@ both transports.
 
 #### POST /api/unsubscribe
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP.
 
 Unsubscribes from the sender of a given message. When the sender supports RFC
 8058 one-click, the POST is performed server-side (`done: true`); otherwise the
@@ -1056,6 +1225,72 @@ the cloud metadata endpoint, carrier-grade NAT), on the resolved address and on
 every redirect hop. A refused endpoint is not an error for the caller: the
 response falls back to `done: false` with the `url` for the client to open, which
 is where a request driven by a stranger belongs.
+
+The backlog is archived first, on the request's 30 seconds, checked before
+each mail: what is left when they are spent is counted in `notArchived`, not
+tried. The unsubscribe itself comes after, on a clock of its own.
+
+Over IMAP the headers are read from the stored inbox (the sync stores both; the
+mailbox is opened only to archive), and a sender that offers only a `mailto:` may
+be written to by the server, from the mailbox's own address, through the
+mailbox's sending server, logged in as for the daily recap, with 20 seconds of
+its own. Nobody sees that mail before it leaves, and the header that asks for it
+was written by whoever sent the newsletter, so it is written only when
+(`unsubscribe.ForSender`):
+
+- the link names exactly one plain address (not in `to`, `cc` or `bcc` fields
+  as well, no display name), on the same registrable domain as the sender (the
+  public suffix plus one label: `lettre@journal.fr` may ask for
+  `desabonnement@journal.fr`, never for `groupe+subscribe@googlegroups.com`).
+  The sender is the address of the From header as RFC 5322 reads it, never an
+  address in its display name, which the sender writes:
+  `"<patron@victime.fr>" <lettre@journal.fr>` is `lettre@journal.fr`, and
+  `"<patron@victime.fr>"@evil.io` an address on `evil.io`. A From that is not
+  exactly one address names no sender: nothing is written, swept or recorded
+  for it. An IP address or a domain literal is no registrable domain;
+- its `subject` is an unsubscribe command, case aside: a command word
+  (`unsubscribe`, `unsub`, `remove`, `stop`, `désinscription`,
+  `desinscription`) followed at most by one ASCII token without a space
+  (`unsubscribe 8f3a`, `remove:news`), or one such token alone, 100 characters
+  at most (`unsubscribe` when it gives none). A sentence ("Je démissionne avec
+  effet immédiat", "unsubscribe I quit") is not written for the person. Its
+  `body` is ignored: the text is always `unsubscribe`. The mail goes to the
+  address as the link writes it, an accented domain in its ASCII form
+  (`stop@café.fr` is written `stop@xn--caf-dma.fr`, in `RCPT TO` and in the
+  `To` header) so a sending server without SMTPUTF8 takes it; an address
+  whose local part is not ASCII (`désabo@journal.fr`) has no such form, and
+  is handed to the screen;
+- no unsubscribe mail went to that address for this account in the last 24
+  hours, whichever list asked for it and however it writes the address
+  (`stop@café.fr` and `STOP@xn--caf-dma.fr` are one): one document per
+  address, in the form senders are compared in, in
+  `unsubscribe_mails`, unique on the account and the address, so two lists
+  sharing an address, or two clicks at once, write once. The sender's
+  `unsubscribes` row keeps where the mail went and when (`sentTo`, `sentAt`).
+
+Sent, the answer is `done: true`, `method: "mailto"`, an empty `mailto` (the
+client opens nothing) and `sentTo`, the address written to (`sentToShown`, what
+the screen says of it, in the one form addresses are shown in). Within the 24
+hours, nothing is sent: `done: false`, `alreadySent: true`, `sentTo`, an empty
+`mailto`, and a `message`. Off the sender's domain, or with a link refused
+above, nothing is sent either and the answer is the one the Gmail API gives:
+`done: false` with the `mailto` for the client to open in the person's own mail
+program. When the sending server is unknown, refuses or does not answer, the
+same, with a `message` saying the mail did not leave, and the 24 hours do not
+count it.
+
+`message`, when present, says in French what was not done (the mail already
+sent, the mail that did not leave, mails not archived).
+
+With `alsoArchive`, the sweep reaches the stored inbox mails whose sender is
+the same address, found by their domain in the forms it may be written in (as
+in the clicked mail, in ASCII, in Unicode). A mail of the same sender that
+writes its domain yet another way (full-width letters, a capital ẞ, another
+case of an accented letter) is not found and stays in the inbox: the sweep can
+miss a mail of the sender, never reach another sender's. When the protected
+list cannot be read, nothing is done, the unsubscribe included: `503` "Vos
+expéditeurs protégés n'ont pas pu être lus : rien n'a été rangé, réessayez
+dans un instant.".
 
 **Headers:**
 - `Authorization: Bearer <session-token>` (required)
@@ -1079,11 +1314,29 @@ is where a request driven by a stranger belongs.
   "sender": "news@medium.com"
 }
 ```
+Over IMAP, after a mail written by the server, with a mail left in the inbox:
+```json
+{
+  "done": true,
+  "method": "mailto",
+  "url": "",
+  "mailto": "",
+  "sentTo": "desabonnement@journal.fr",
+  "archived": 3,
+  "notArchived": 1,
+  "message": "1 email de cet expéditeur n'a pas pu être archivé : réessayez.",
+  "sender": "lettre@journal.fr"
+}
+```
 
 **Error Responses:**
 - `401 Unauthorized`: Missing or expired session
-- `404 Not Found`: Email not found
+- `404 Not Found`: Email not found (over IMAP: not in the stored inbox)
 - `422 Unprocessable Entity`: Sender exposes no unsubscribe link
+- `428 Precondition Required`: No mailbox connected
+- `500 Internal Server Error`: The stored inbox could not be read (IMAP)
+- `503 Service Unavailable`: With `alsoArchive`, the protected list could not
+  be read; nothing was done
 
 ---
 
@@ -1109,13 +1362,13 @@ mailbox is on IMAP, rather than acting on the wrong message.
 | `POST /api/emails/sync` (rules on the messages that arrive), `POST /api/rules/apply`, `POST /api/rules/preview` (on the stored mailbox, see "Sorting Rules Endpoints") | |
 | `GET /api/emails` (served from the stored mailbox, see below) | the `label:`, `filename:`, `category:` terms, `has:` other than `attachment`, `is:` other than `read` / `unread` / `starred`, `in:` other than `inbox`, and a malformed `newer_than:` / `older_than:` / `larger:` / `smaller:` |
 | `GET /api/emails/{id}` (body and attachment list included), `GET /api/emails/{id}/attachments/{attachmentId}` | |
-| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message, archived, deleted or filed in a folder, is fetched back from where Mailsorter put it, see below) | `POST /api/emails/batch-action` |
+| `POST /api/emails/action` (archive, delete, unarchive, untrash, read, unread, star, unstar), `POST /api/emails/batch-action` (the same, and label, which files the selection in the folder of that name), `POST /api/emails/batch-undo`, `POST /api/activity/undo` (a moved message, archived, deleted or filed in a folder, is fetched back from where Mailsorter put it, see below) | |
 | `GET /api/stats` (inbox total and unread, counted locally) | the sent, draft, spam, trash and per-label counters stay at zero |
-| `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (no sender auto-pilot) | `POST /api/ai/apply-bulk` |
+| `POST /api/ai/analyze`, `POST /api/ai/analyze-async` (sender auto-pilot included, a label filing into the folder), `POST /api/ai/apply-bulk` (archive, delete, label) | |
 | `POST /api/ai/apply`, `POST /api/ai/apply-batch` (archive, delete, keep, and label, which files the mail in the folder of that name) | |
 | Suggestions, senders, saved searches, protected senders, rules CRUD, history, activity and digest preview (datastore only) | |
 | `POST /api/emails/snooze`, `POST /api/emails/batch-snooze`, `POST /api/snoozes/{id}/wake` and the wake sweep (the mail waits in the folder `Plus tard`, see Snooze Endpoints) | |
-| `GET /api/subscriptions` (from the stored mailbox) | `POST /api/unsubscribe` |
+| `GET /api/subscriptions` (from the stored mailbox), `POST /api/unsubscribe` (a `mailto:` is sent through the mailbox's sending server) | |
 | `POST /api/account/digest/test` and the daily digest loop (through the mailbox's sending server, see there) | `POST /api/smart-labels` |
 | `GET /api/labels` (the user's own folders) | |
 
@@ -1233,7 +1486,9 @@ and the history entries carry it.
   comes back as a new generation.
 - Every read (the list, its filters, the counters, the reader, the senders,
   the subscriptions, the AI's plan, the rules and their preview, the history's
-  "Annuler") is of the generation connected now. Every write carries the
+  "Annuler", a selection and its shield, "Tout archiver" / "Tout supprimer",
+  "Se désabonner" and its sweep, the auto-pilot) is of the generation
+  connected now. Every write carries the
   generation of the operation that makes it: a sync, a run of the rules, an
   analysis or an "Annuler" still running on a mailbox since replaced writes
   only rows that are never read.
@@ -1765,7 +2020,7 @@ Returns a single JSON document with everything Mailsorter stores about the
 caller: a **redacted** account profile (the same one as
 `GET /api/account/profile`), the current settings, plus every user-owned
 dataset (rules, protected senders, snoozes, suggestions, sender preferences,
-smart labels, unsubscribes, usage, action log, analysis jobs, saved searches,
+smart labels, unsubscribes, the unsubscribe mails written, usage, action log, analysis jobs, saved searches,
 the mailbox connection, the AI provider override, a Pro waitlist signup made
 while signed in, labels, and `emails`: the local mirror of the synced messages,
 decoded bodies included). Served as a downloadable attachment. The mailbox
@@ -1795,7 +2050,7 @@ that does not.
 
 Every dataset is a key, an empty list when the user has none: `rules`,
 `protectedSenders`, `snoozes`, `suggestions`, `senderPreferences`,
-`smartLabels`, `unsubscribes`, `usage`, `actionLog`, `analysisJobs`,
+`smartLabels`, `unsubscribes`, `unsubscribeMails`, `usage`, `actionLog`, `analysisJobs`,
 `savedSearches`, `mailAccounts`, `aiSettings`, `waitlist`, `labels`, `emails`.
 
 ### Delete account (RGPD / right to erasure)
@@ -1965,9 +2220,13 @@ reasoning, persisted as a pending suggestion the user reviews and applies.
 
 Analyze a set of messages now, by the ids `GET /api/emails` returns (Gmail
 message ids, or IMAP UIDs), at most 200. A message missing from the stored
-mailbox is fetched through the caller's session first. Over the Gmail API,
-senders on auto-pilot get their learned action applied inline (source
-`ai-auto`), without the model. Then the shared cache answers what it already
+mailbox is fetched through the caller's session first. Senders on auto-pilot
+get their learned action applied inline (source `ai-auto`), without the model,
+on both transports, except a protected sender's destructive one (over IMAP a
+`label` is one: it files the mail in the folder of that name, settled and made
+as when a proposal is applied). A filing refused there (a special folder, an
+eleventh new folder) goes on to the cache and the model like any other email.
+Then the shared cache answers what it already
 knows, and the rest goes to the configured AI provider in batches of 8, falling
 back to one email at a time when a batch answer does not line up. The caller's
 own provider is tried first when they set one, then the instance's, in
@@ -2047,7 +2306,11 @@ Poll an analysis job.
   "autoApplied": 6, "suggestionsCreated": 30, "cachedHits": 4
 }
 ```
-`status` is one of `queued`, `running`, `done`, `error` (with an `error` field).
+`status` is one of `queued`, `running`, `done`, `error` (with an `error` field,
+a French sentence for the screen: "Vos expéditeurs protégés n'ont pas pu être
+lus : rien n'a été rangé, réessayez dans un instant." when the protected list
+could not be read, "Analyse interrompue. Réessayez." otherwise; the cause is
+in the server's log).
 
 ### Learn a sender
 
@@ -2156,13 +2419,20 @@ on the Gmail API and over IMAP. A
 
 #### POST /api/ai/apply-bulk
 
-Gmail API only: `501` over IMAP.
+Works on the Gmail API and over IMAP. Over IMAP `label` files every mail of the
+sender in the folder of that name, settled, made and refused as for
+`batch-action`, and the archive, the trash and the filing move in one
+`UID MOVE`; `labelName` in the answer is the folder, a refusal met while moving
+is in `message`.
 
 Apply one action to every stored email from a sender ("learn once, clean up
 everything"). `senderEmail` is the `senderEmail` of a `GET /api/senders` row, a
 stored From header, and is matched exactly: the action reaches the mails that row
 counts and nothing else, never a From that merely contains it. A protected
-sender's mail is skipped for `archive`, `trash` and `delete`.
+sender's mail is skipped for `archive`, `trash` and `delete`, and over IMAP for
+`label` too. Over IMAP the
+stored copy of the inbox is what is swept (the messages still in it), and a
+mail that already left the inbox is not counted.
 
 **Request body:**
 ```json
@@ -2174,6 +2444,14 @@ sender's mail is skipped for `archive`, `trash` and `delete`.
 { "applied": 34, "total": 40, "protectedSkipped": 0 }
 ```
 
+A `senderEmail` that names no sender (it does not read, two authors, a group:
+the card "Expéditeur illisible", `senderUnreadable`) answers `422` "Cet
+expéditeur est illisible : aucune action ne peut viser tous ses mails.", and so
+do the other actions on all of a sender's mail: `POST /api/ai/analyze-sender`,
+`POST /api/senders/rule`, and turning the auto-pilot on (`PUT
+/api/senders/{id}/preferences`). The auto-pilot never acts for such a From,
+and the screens offer none of them on its card.
+
 ### List suggestions
 
 #### GET /api/ai/suggestions?status=pending
@@ -2183,7 +2461,8 @@ List the caller's suggestions, filtered by `status` (default `pending`), the
 
 **Response:** `200 OK`, an array of `AISuggestion` enriched with the identity of
 the email each one is about: `subject`, `from`, `snippet`, resolved in one
-lookup. Without them the client had to find the message among those currently on
+lookup, and `senderAddress`, read as for `GET /api/emails`: what the plan groups
+by and makes a sender rule of. Without them the client had to find the message among those currently on
 screen, so any suggestion for an email outside the loaded page asked the user to
 approve an action on an email shown as "Sans sujet" from "Expéditeur inconnu".
 The three fields are omitted when the message is no longer in the stored mailbox.
@@ -2330,13 +2609,19 @@ and any learned preference. Reads the datastore only.
 ```json
 [
   {
-    "senderEmail": "news@acme.com", "senderDomain": "acme.com",
-    "senderName": "Acme", "emailCount": 12,
+    "senderEmail": "Acme <news@acme.com>", "senderEmailShown": "news@acme.com",
+    "senderDomain": "acme.com", "senderName": "Acme", "emailCount": 12,
     "preference": { "autoApply": true, "defaultAction": "archive", "defaultLabel": "" }
   }
 ]
 ```
-`preference` is omitted when the sender has none.
+`preference` is omitted when the sender has none. `senderUnreadable` (both
+lists) marks a From that names no sender: its card is named "Expéditeur
+illisible", shows no address and offers no action on all of its mail (see `POST
+/api/ai/apply-bulk`). `senderEmail` is the card's
+key, the raw From the mails were grouped by, sent back for a sender-wide
+action and never shown; `senderEmailShown` is what the card shows, as on the
+Abonnements tab.
 
 ### Create a rule from a sender
 
@@ -2443,6 +2728,17 @@ A rule has the shape:
 ```
 
 - **`matchAll`** : `true` ANDs every condition, `false` ORs them.
+- **`nameShown`** (`GET /api/rules` only, never stored): the name as the
+  screen shows it: a sender rule's "Expéditeur : " and its address in the one
+  form addresses are shown in (a rule saved before names were written so
+  holds it as written), any other name with each hidden or reordering
+  character as U+FFFD. The editor shows a condition's `valueShown`
+  under its field when it differs from `value`.
+- **Condition `valueShown`** (`GET /api/rules` only, never stored): the value
+  as the screen shows it, an address in the one form addresses are shown in
+  (a rule made from a sender holds the sender's address as written), other
+  text with what would hide or reorder made visible. A rule made from a sender
+  is named `Expéditeur : ` and that shown address.
 - **Condition `field`** : `from`, `subject`, `snippet`, `to`, `body`.
 - **Condition `operator`** : text: `contains`, `notContains`, `equals`,
   `notEquals`, `startsWith`, `endsWith`, `regex` (all case-insensitive except
@@ -2544,16 +2840,23 @@ it: it runs the same matching function as `POST /api/rules/apply`.
   "scanned": 120,
   "willApply": 18,
   "byRule": [
-    { "ruleName": "Archiver les newsletters Acme", "action": "archive", "matched": 12 }
+    {
+      "ruleName": "Expéditeur : news@acme.com", "ruleNameShown": "Expéditeur : news@acme.com",
+      "action": "archive", "matched": 12
+    }
   ],
   "samples": [
     {
       "messageId": "18c...", "from": "news@acme.com", "subject": "...",
-      "ruleName": "Archiver les newsletters Acme", "action": "archive"
+      "ruleName": "Expéditeur : news@acme.com", "action": "archive",
+      "senderLabel": "news@acme.com", "senderLabelIsAddress": true
     }
   ]
 }
 ```
+`ruleNameShown` is the rule's name as the screen shows it (as `nameShown` of
+`GET /api/rules`), `senderLabel` and `senderLabelIsAddress` the sample's sender
+as every screen shows it (see `GET /api/emails`).
 `samples` is capped server-side. When the user has no rules, `willApply` is `0`
 and the arrays are empty. It does not model the protected senders: `willApply`
 is what `apply` would at most act on. Over IMAP it counts the messages a rule
@@ -2599,7 +2902,9 @@ is named `<name> (copie)` (then `(copie 2)`, since the per-rule apply counter is
 keyed by name) and arrives **disabled**: until it is edited it would be a second
 rule acting on the same mail as the one it was cloned from.
 
-**Response:** `201 Created`, the new rule.
+**Response:** `201 Created`, the new rule, with `nameShown` and each
+condition's `valueShown` as `GET /api/rules` gives them: the screen says the
+copy's name in that form ("Expéditeur : " and its address, then " (copie)").
 
 **Error Responses:**
 - `400 Bad Request`: Invalid rule id
@@ -2976,9 +3281,9 @@ above): `{ "error": "...", "status": <code> }`, `Content-Type: application/json`
 | `428` | No mailbox is connected to this account yet; or the mail provider refuses the IMAP password on file (to be connected again on `/connect`: not a `401`, which the SPA takes for a dead Mailsorter session and signs out) | `{ "error": "Aucune boîte mail n'est branchée à ce compte.", "status": 428 }` (the screens then offer "Brancher une boîte", to `/connect`), `{ "error": "Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application.", "status": 428, "passwordRefused": true }` (the screens then lead to the new password form, `/connect?motdepasse=1`) |
 | `429` | Rate limited: 20 req/s sustained, burst 40, per account or visitor; the sign-in limiter, which also throttles connecting a mailbox and a new app password, is far lower | `{ "error": "Too many requests", "status": 429 }` |
 | `500` | Mailsorter failed (usually the datastore) | `{ "error": "Failed to load rules", "status": 500 }` |
-| `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a label on IMAP, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
+| `501` | Not implemented for this mailbox: a Gmail-only route called on an IMAP mailbox, a query term the stored mailbox cannot answer | `{ "error": "Cette action n'est pas encore disponible sur une boîte branchée en IMAP.", "status": 501 }` |
 | `502` | A service Mailsorter depends on failed: Gmail, the mail server, Stripe; or the IMAP mailbox could not be opened (out of reach, too slow, unavailable) | `{ "error": "Report impossible : ...", "status": 502 }`, `{ "error": "Votre boîte n'a pas répondu, réessayez dans un instant.", "status": 502 }` |
-| `503` | A dependency is not configured (AI, billing), or the datastore is unreachable (`/health`) | `{ "error": "Aucune IA n'est configurée sur cette instance.", "status": 503 }` |
+| `503` | A dependency is not configured (AI, billing), the datastore is unreachable (`/health`), or the protected senders could not be read by a call that would move mail (nothing moved) | `{ "error": "Aucune IA n'est configurée sur cette instance.", "status": 503 }`, `{ "error": "Vos expéditeurs protégés n'ont pas pu être lus : rien n'a été rangé, réessayez dans un instant.", "status": 503 }` |
 
 A `401` on a route the SPA considers non-optional clears the session and returns
 the user to the login screen, unless it is marked `mailboxRejected` (the mail

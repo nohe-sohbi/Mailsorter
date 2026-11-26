@@ -29,6 +29,7 @@ import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitive
 import { useScrollLock } from '../ui/scrollLock';
 import { actionMeta, labelPlace, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
+import AddressLine from '../ui/AddressLine';
 import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import Plaque from '../ui/hotel/Plaque';
@@ -74,6 +75,8 @@ const SHORTCUTS = [
   ['Suppr / Retour arrière', 'Supprimer'],
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
+  // Once the mailbox is known: a folder over IMAP, a label over Gmail.
+  ['L', 'Classer la sélection (ou le mail, en mode tri)', 'mailbox'],
   // Once the mailbox is known, like the reader's star (see flagAction).
   ['S', 'Mettre en favori', 'mailbox'],
   ['A', 'Ranger les suggestions sûres'],
@@ -170,16 +173,14 @@ function SaveSearchDialog({ query, onCancel, onSave }) {
   );
 }
 
-// The display name out of a From header.
-//
-// The quotes are the part that is easy to forget: RFC 5322 wraps a display name
-// in them as soon as it contains anything special, and the IMAP listing writes
-// that form for every named sender, so "Acme News" rendered with its quotes and
-// the avatar letter was a quotation mark. EmailReader, Snoozed and History each
-// strip them already; this file was the one that did not.
-function senderLabel(from) {
-  if (!from) return '';
-  return from.split('<')[0].replace(/"/g, '').trim() || from;
+// What a row shows for the sender: the label the server read out of From
+// (`senderLabel`, protect.Label: the display name, or the address read when
+// the name holds another address, or the From's text when it names no
+// sender). Cutting the header at its first "<" here showed boss@corp.com for
+// "boss@corp.com" <evil@evil.io>. The screen never shows a From or an
+// address as written: every one comes in the server's shown form.
+function senderLabel(email) {
+  return email?.senderLabel || '';
 }
 
 // The levers of the first-run dialog, in both themes. Each one is promised
@@ -252,11 +253,12 @@ function Inbox() {
     addSuggestion, removeSuggestion, restoreSuggestions, markUnsubscribed,
   } = useEmails();
   const { selfHosted } = useInstance();
-  // Over IMAP reading, archiving, deleting, read and the star on one mail, the
-  // quick filters, the AI's proposals (a label proposal files the mail in its
-  // folder there), reporting (one mail or a selection) and undo work today.
+  // Over IMAP reading, archiving, deleting, read and the star on one mail or a
+  // selection, the quick filters, the AI's proposals (a label proposal files the
+  // mail in its folder there), reporting (one mail or a selection), undo, the
+  // actions on a whole sender, its auto-pilot and unsubscribing work today.
   // Every control the server would answer "not available" to is hidden, not
-  // disabled: one rule everywhere.
+  // disabled (the one rule, see IMAP_UNAVAILABLE in landing/features.js).
   // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
   // and stays false when that answer failed: a guess offers nothing the server
   // may refuse. `known` is for what works on both transports once the mailbox
@@ -681,7 +683,9 @@ function Inbox() {
         setJob(null);
         setAnalyzing(false);
         await fetchData({ forceRefresh: true, sync: false });
-        if (data.status === 'error') toast.error('Analyse interrompue. Réessayez.');
+        // The job says why in French when the person can act on it (the
+        // protected senders could not be read); the generic sentence else.
+        if (data.status === 'error') toast.error(data.error || 'Analyse interrompue. Réessayez.');
         else announceResult(data);
         return;
       }
@@ -811,6 +815,11 @@ function Inbox() {
         messageId: suggestion.emailId,
         subject: suggestion.subject,
         from: suggestion.from,
+        // What the reader shows until it has fetched the mail: the server's
+        // forms, never the From as written.
+        senderLabel: suggestion.senderLabel,
+        senderLabelIsAddress: suggestion.senderLabelIsAddress,
+        senderAddressShown: suggestion.senderAddressShown,
         snippet: suggestion.snippet,
       }
     );
@@ -848,10 +857,18 @@ function Inbox() {
         for (let i = 0; i < ids.length; i += BATCH_LIMIT) chunks.push(ids.slice(i, i + BATCH_LIMIT));
 
         const applied = [];
+        // Mails that had already left the inbox (moved from the phone, or by
+        // another tab): nothing was done to them, but they are not in the
+        // inbox either, so they leave the list too.
+        const alreadyOut = [];
         let failed = 0;
         let protectedSkipped = 0;
         let reversible = false;
         let hardError = null;
+        // The folder a label went into over IMAP, as the server settled it
+        // ("facture" into "Factures"), and why some were not filed.
+        let filedAs = labelName;
+        let refusal = '';
         for (const chunk of chunks) {
           // Each chunk is caught on its own. A single try around the loop meant
           // a second chunk failing threw away everything the first one had
@@ -860,9 +877,12 @@ function Inbox() {
           try {
             const { data } = await emailService.batchAction(chunk, action, labelName);
             applied.push(...(data.applied || []));
+            alreadyOut.push(...(data.alreadyOut || []));
             failed += data.failed || 0;
             protectedSkipped += data.protectedSkipped || 0;
             reversible = reversible || Boolean(data.reversible);
+            if (data.labelName) filedAs = data.labelName;
+            if (data.message) refusal = data.message;
           } catch (err) {
             failed += chunk.length;
             hardError = err;
@@ -872,9 +892,10 @@ function Inbox() {
         track('bulk_selection', { action, applied: applied.length });
         bumpGamify(applied.length);
 
-        // Archiving and trashing take the message out of the inbox view; a
-        // label or a read flag does not.
-        if (action === 'archive' || action === 'delete') {
+        // Archiving and trashing take the message out of the inbox view, and
+        // so does a label over IMAP, which files it in a folder; a Gmail label
+        // or a read flag does not.
+        if (action === 'archive' || action === 'delete' || (action === 'label' && isImap)) {
           removeEmails(applied);
           plan.settle(applied);
         } else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
@@ -885,18 +906,36 @@ function Inbox() {
           if (leavesList(action, activeQuery)) removeEmails(applied);
           else applied.forEach((id) => patchEmail(id, { isStarred: false }));
         }
+        if (alreadyOut.length) {
+          removeEmails(alreadyOut);
+          plan.settle(alreadyOut);
+        }
 
         setSelectedEmails([]);
 
-        const parts = [`${applied.length} email${plural(applied.length)} ${pastParticiple(action, applied.length)}`];
+        const parts = [
+          `${applied.length} email${plural(applied.length)} ${pastParticiple(action, applied.length, { folders: isImap })}${
+            action === 'label' ? labelPlace(filedAs, { folders: isImap }) : ''
+          }`,
+        ];
         if (data.protectedSkipped)
           parts.push(`${data.protectedSkipped} protégé${plural(data.protectedSkipped)} ignoré${plural(data.protectedSkipped)}`);
+        if (alreadyOut.length)
+          parts.push(`${alreadyOut.length} déjà sorti${plural(alreadyOut.length)} de la boîte`);
         const message = parts.join(' · ');
 
-        if (applied.length === 0) {
+        if (applied.length === 0 && alreadyOut.length && !hardError) {
+          toast.info(
+            alreadyOut.length === 1
+              ? "Cet email n'était déjà plus dans la boîte de réception : il a été rangé ailleurs entre-temps."
+              : `${alreadyOut.length} emails n'étaient déjà plus dans la boîte de réception : ils ont été rangés ailleurs entre-temps.`
+          );
+        } else if (applied.length === 0) {
           toast.error(
             hardError
               ? apiError(hardError, "L'action groupée a échoué.")
+              : refusal
+              ? refusal
               : data.protectedSkipped
               ? 'Aucun email traité : tous sont protégés.'
               : "Aucun email n'a pu être traité."
@@ -927,8 +966,11 @@ function Inbox() {
         } else {
           toast.success(message);
         }
-        if (data.failed && applied.length > 0) {
-          toast.error(`${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`);
+        if (data.failed && (applied.length > 0 || alreadyOut.length > 0)) {
+          toast.error(
+            refusal ||
+              `${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`
+          );
         }
       } catch (err) {
         showMailboxError(err, "L'action groupée a échoué.");
@@ -937,7 +979,7 @@ function Inbox() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedEmails, confirm, activeQuery]
+    [selectedEmails, confirm, activeQuery, isImap]
   );
 
   // Snooze the whole selection to one wake time. Same chunking as runBulk (the
@@ -1036,8 +1078,8 @@ function Inbox() {
       removeEmails(email.messageId);
       setSelectedEmail((prev) => (prev && prev.messageId === email.messageId ? { ...prev, ...optimistic } : prev));
     };
-    // Over IMAP the batch route does not exist yet (501), while the single
-    // action does read, unread and the star: that one is used there, and
+    // Over IMAP the single action is used: it says when the mail is no longer
+    // in the inbox (404), where the batch route only counts it as failed. And
     // whenever the mailbox is not known, since it works on both transports.
     // The stored copy of an IMAP inbox keeps the star, so it stays at the next
     // listing.
@@ -1139,6 +1181,27 @@ function Inbox() {
     }
   }, [triageIndex, triageIds, emails]);
 
+  // The current mail of the triage left the inbox: it leaves the triage too,
+  // and the next one opens, or the triage ends.
+  const leaveTriageItem = (currentId) => {
+    setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
+    const nextIds = triageIds.filter((id) => id !== currentId);
+    setTriageIds(nextIds);
+
+    if (nextIds.length === 0) {
+      setTriageMode(false);
+      setSelectedEmail(null);
+      toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
+      return;
+    }
+
+    const nextIdx = Math.min(triageIndex, nextIds.length - 1);
+    setTriageIndex(nextIdx);
+    const nextId = nextIds[nextIdx];
+    const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
+    setSelectedEmail(nextEmail);
+  };
+
   const handleTriageAction = useCallback(
     async (action) => {
       const currentId = triageIds[triageIndex];
@@ -1146,23 +1209,7 @@ function Inbox() {
       const cur = emails.find((e) => e.messageId === currentId) || { messageId: currentId };
 
       directAction(cur, action);
-
-      setSelectedEmails((prev) => prev.filter((id) => id !== currentId));
-      const nextIds = triageIds.filter((id) => id !== currentId);
-      setTriageIds(nextIds);
-
-      if (nextIds.length === 0) {
-        setTriageMode(false);
-        setSelectedEmail(null);
-        toast.success('Tri terminé ! Tous les emails sélectionnés ont été traités.');
-        return;
-      }
-
-      const nextIdx = Math.min(triageIndex, nextIds.length - 1);
-      setTriageIndex(nextIdx);
-      const nextId = nextIds[nextIdx];
-      const nextEmail = emails.find((e) => e.messageId === nextId) || { messageId: nextId };
-      setSelectedEmail(nextEmail);
+      leaveTriageItem(currentId);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [triageIds, triageIndex, emails, directAction]
@@ -1228,8 +1275,8 @@ function Inbox() {
 
   const handleProtect = async (email) => {
     try {
-      const { data } = await protectService.add(email.from);
-      toast.action(`${data.value} est désormais protégé.`, 'Gérer', () => navigate('/settings'));
+      const { data } = await protectService.add(email.from, '', { fromMail: true });
+      toast.action(`${data.valueShown} est désormais protégé.`, 'Gérer', () => navigate('/settings'));
     } catch (err) {
       toast.error(apiError(err, 'Protection impossible.'));
     }
@@ -1241,9 +1288,20 @@ function Inbox() {
     try {
       const { data } = await subscriptionService.unsubscribe(messageId, alsoArchive);
       const archivedNote = data.archived ? ` · ${data.archived} email${data.archived > 1 ? 's' : ''} archivé${data.archived > 1 ? 's' : ''}` : '';
-      if (data.done) {
+      if (data.done && data.method === 'mailto') {
+        // Over IMAP the server wrote to the list's address itself, from the
+        // mailbox: the request has left, the list has not answered yet. The
+        // address is named: the person sees who was written to in their name.
+        track('unsubscribe', { mode: 'sent' });
+        toast.success(`Demande de désabonnement envoyée à ${data.sentToShown}${archivedNote}`);
+      } else if (data.done) {
         track('unsubscribe', { mode: 'oneclick' });
         toast.success(`Désabonné en un clic${archivedNote}`);
+      } else if (data.alreadySent) {
+        // Written less than a day ago: the server does not write again, and
+        // its message says so.
+        track('unsubscribe', { mode: 'already' });
+        toast.info(`${data.message}${archivedNote}`);
       } else if (data.url) {
         track('unsubscribe', { mode: 'url' });
         window.open(data.url, '_blank', 'noopener,noreferrer');
@@ -1253,6 +1311,9 @@ function Inbox() {
         window.location.href = data.mailto;
         toast.info('Email de désabonnement préparé');
       }
+      // What was not done (a mail that did not leave, mails not archived),
+      // in the server's words. Already shown above when it was sent before.
+      if (data.message && !data.alreadySent) toast.error(data.message);
       if (data.sender) markUnsubscribed(data.sender);
       if (alsoArchive || data.archived) fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
@@ -1269,7 +1330,7 @@ function Inbox() {
       await aiService.analyzeSender(sender.senderEmail);
       const sendersRes = await senderService.getSenders();
       setLocalSenders(sendersRes.data || []);
-      toast.success(`${sender.senderName || sender.senderEmail} analysé`);
+      toast.success(`${sender.senderName || sender.senderEmailShown} analysé`);
     } catch (err) {
       toast.error("Analyse de l'expéditeur impossible");
     } finally {
@@ -1297,7 +1358,7 @@ function Inbox() {
   };
 
   const handleApplyBulk = async (sender, action) => {
-    const who = sender.senderName || sender.senderEmail;
+    const who = sender.senderName || sender.senderEmailShown;
     const meta = actionMeta(action);
     const ok = await confirm({
       title: `${meta.label} tous les emails de ${who} ?`,
@@ -1327,7 +1388,7 @@ function Inbox() {
       await senderService.createRule(sender.senderEmail, 'archive');
       track('rule_created', { source: 'sender' });
       toast.action(
-        `Règle créée : les emails de ${sender.senderName || sender.senderEmail} seront archivés.`,
+        `Règle créée : les emails de ${sender.senderName || sender.senderEmailShown} seront archivés.`,
         'Voir les règles',
         () => navigate('/rules')
       );
@@ -1392,6 +1453,11 @@ function Inbox() {
           handleAiAnalyzeSingle(openEmail);
           return;
         }
+        if ((e.key === 'l' || e.key === 'L') && known) {
+          e.preventDefault();
+          setTriageLabeling(true);
+          return;
+        }
         if (e.key === 'j' || e.key === 'ArrowRight') {
           e.preventDefault();
           handleTriageNext();
@@ -1413,6 +1479,12 @@ function Inbox() {
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
       if (e.key === 'r') { handleSync(); return; }
       if (e.key === 'a' && plan.totals.sure > 0) { plan.applyAll(); return; }
+      // "Classer" (a folder over IMAP) or "Étiqueter" the selection.
+      if ((e.key === 'l' || e.key === 'L') && known && selectedEmails.length > 0 && can('label')) {
+        e.preventDefault();
+        setLabelPickerOpen(true);
+        return;
+      }
       if (view !== 'emails' || emails.length === 0) return;
 
       const cur = emails[focusedIndex];
@@ -1517,10 +1589,10 @@ function Inbox() {
               onPrev: handleTriagePrev,
               onNext: handleTriageNext,
               onKeep: handleTriageKeep,
-              // Labelling by hand goes through the batch route, Gmail API
-              // only: closed over IMAP, where only the AI's proposal files a
-              // mail in a folder so far.
-              onLabel: fullFeatures ? () => setTriageLabeling(true) : undefined,
+              // Labelling by hand goes through the batch route, on both
+              // transports once the mailbox is known: over IMAP it files the
+              // mail in a folder.
+              onLabel: known ? () => setTriageLabeling(true) : undefined,
             }
           : null
       }
@@ -1660,9 +1732,9 @@ function Inbox() {
             layout viewport to match: every fixed toast, "Annuler" included, was
             laid out off the bottom of the screen. */}
         <div className="inline-flex max-w-full overflow-x-auto rounded-xl border border-hairline bg-surface p-1 shadow-soft" role="tablist">
-          {/* The Abonnements tab exists to unsubscribe, which an IMAP mailbox
-              cannot do yet: the tab is hidden there rather than left as a list
-              with nothing to press. */}
+          {/* The Abonnements tab exists to unsubscribe: on a mailbox that could
+              not (GMAIL_ONLY), it would be hidden rather than left as a list
+              with nothing to press. Both transports can today. */}
           {[
             { id: 'emails', label: 'Emails', Icon: InboxIcon },
             { id: 'senders', label: `Expéditeurs · ${localSenders.length}`, Icon: Users },
@@ -1888,12 +1960,12 @@ function Inbox() {
                       <span>Trier un par un</span>
                     </button>
                     {/* The actions over a selection go through the batch
-                        route, which an IMAP mailbox cannot use yet: there, the
-                        selection is for "Trier un par un", the AI and
-                        "Reporter", which has a route of its own. */}
+                        route, on both transports once the mailbox is known.
+                        Over IMAP a label is a folder: "Classer" files the
+                        selection there (actionMeta with folders). */}
                     {known && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
-                  {fullFeatures && BULK_ACTIONS.map((key) => {
-                    const meta = actionMeta(key);
+                  {known && BULK_ACTIONS.filter((key) => key !== 'label' || can('label')).map((key) => {
+                    const meta = actionMeta(key, { folders: isImap });
                     return (
                       <button
                         key={key}
@@ -2023,7 +2095,7 @@ function Inbox() {
                   ? triageIds.map((id) => emails.find((e) => e.messageId === id) || { messageId: id, subject: 'Chargement...' })
                   : emails
                 ).map((email, idx) => {
-                  const name = senderLabel(email.from) || '?';
+                  const name = senderLabel(email) || '?';
                   const isActive = selectedEmail?.messageId === email.messageId;
                   const isChecked = selectedEmails.includes(email.messageId);
                   const isFocused = idx === focusedIndex;
@@ -2096,10 +2168,18 @@ function Inbox() {
                       </span>
                       <button onClick={openRow} className="min-w-0 flex-1 text-left">
                         <span className="flex items-baseline justify-between gap-2">
-                          <span className={cn('truncate text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
-                            {name}
-                            {!email.isRead && <span className="sr-only"> (non lu)</span>}
-                          </span>
+                          {/* A label that is the sender's address (the server says
+                              so) keeps its domain whole: AddressLine. */}
+                          {email.senderLabelIsAddress ? (
+                            <AddressLine value={name} className={cn('text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
+                              {!email.isRead && <span className="sr-only"> (non lu)</span>}
+                            </AddressLine>
+                          ) : (
+                            <span className={cn('truncate text-sm', email.isRead ? 'font-medium text-ink-700' : 'font-bold text-ink-900')}>
+                              {name}
+                              {!email.isRead && <span className="sr-only"> (non lu)</span>}
+                            </span>
+                          )}
                           <span className="flex shrink-0 items-center gap-1.5">
                             {triageMode && isActive && (
                               <span className="chip bg-brand-100 text-brand-800 text-[10px] font-bold">
@@ -2188,22 +2268,37 @@ function Inbox() {
                 return (
                   <div key={sender.senderEmail} className="card flex flex-wrap items-center gap-3 p-4">
                     <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sender.senderEmail))} aria-hidden>
-                      {avatarText(sender.senderName || sender.senderEmail)}
+                      {avatarText(sender.senderName || sender.senderEmailShown)}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-semibold text-ink-900">{sender.senderName || sender.senderEmail.split('@')[0]}</div>
-                      <div className="truncate text-xs text-muted">{sender.senderEmail}</div>
+                      {/* The server's shown forms (`senderName`, `senderEmailShown`):
+                          `senderEmail` is the card's key, the raw From, and is
+                          sent back, never shown. */}
+                      {sender.senderNameIsAddress || !sender.senderName ? (
+                        <AddressLine value={sender.senderName || sender.senderEmailShown} className="font-semibold text-ink-900" />
+                      ) : (
+                        <div className="truncate font-semibold text-ink-900">{sender.senderName}</div>
+                      )}
+                      {/* No address for a From that names no sender: its
+                          name line says "Expéditeur illisible". */}
+                      {sender.senderEmailShown && <AddressLine value={sender.senderEmailShown} className="text-xs text-muted" />}
                     </div>
                     <span className="chip bg-ink-100 text-ink-700">{sender.emailCount} emails</span>
-                    {pref ? (
+                    {/* A From that names no sender ("Expéditeur illisible",
+                        `senderUnreadable`) has no sender to act for: no
+                        analysis, auto-pilot, rule or sweep, which the server
+                        refuses anyway (422). */}
+                    {sender.senderUnreadable ? null : pref ? (
                       <>
                         <span className={cn('chip', prefMeta.chip)}>
                           <prefMeta.Icon size={13} />
                           {prefMeta.label}
                         </span>
-                        {/* Applying by sender, by hand or at each sort, is
-                            Gmail-only for now: hidden over IMAP. */}
-                        {fullFeatures && (
+                        {/* The auto-pilot applies this verdict at each sort,
+                            on both transports (over IMAP a label files into
+                            the folder of that name), once the mailbox is
+                            known (canApplyVerdict). */}
+                        {known && canApplyVerdict(pref.defaultAction, known) && (
                         <button
                           onClick={() => handleToggleAutoApply(sender)}
                           aria-pressed={Boolean(pref.autoApply)}
@@ -2224,20 +2319,25 @@ function Inbox() {
                         Analyser
                       </button>
                     )}
-                    {fullFeatures && (
+                    {/* Archiving or deleting all of a sender's mail, and a
+                        rule, work on both transports once the mailbox is
+                        known; never for a sender that does not read. */}
+                    {known && !sender.senderUnreadable && (
                     <div className="flex items-center gap-0.5">
+                      {can('rules') && (
                       <button
                         onClick={() => handleCreateSenderRule(sender)}
                         className="btn-ghost btn-sm btn-icon text-brand-600 hover:bg-brand-50"
-                        aria-label={`Créer une règle pour ${sender.senderEmail}`}
+                        aria-label={`Créer une règle pour ${sender.senderEmailShown || sender.senderName}`}
                         title="Créer une règle : toujours archiver les futurs emails de cet expéditeur"
                       >
                         <Bolt size={17} />
                       </button>
+                      )}
                       <button
                         onClick={() => handleApplyBulk(sender, 'archive')}
                         className="btn-ghost btn-sm btn-icon"
-                        aria-label={`Tout archiver de ${sender.senderEmail}`}
+                        aria-label={`Tout archiver de ${sender.senderEmailShown || sender.senderName}`}
                         title="Tout archiver (emails existants)"
                       >
                         <Archive size={17} />
@@ -2245,7 +2345,7 @@ function Inbox() {
                       <button
                         onClick={() => handleApplyBulk(sender, 'delete')}
                         className="btn-ghost btn-sm btn-icon text-danger-600 hover:bg-danger-50"
-                        aria-label={`Tout supprimer de ${sender.senderEmail}`}
+                        aria-label={`Tout supprimer de ${sender.senderEmailShown || sender.senderName}`}
                         title="Tout supprimer (emails existants)"
                       >
                         <Trash size={17} />
@@ -2283,15 +2383,22 @@ function Inbox() {
                   </p>
                 </div>
                 {subscriptions.map((sub) => {
-                  const busy = unsubscribing === sub.senderEmail;
+                  // A sender whose address does not read (senderEmail "") is
+                  // keyed by its mail: two of them are not one row.
+                  const subKey = sub.senderEmail || sub.sampleMessageId;
+                  const busy = unsubscribing === subKey;
                   return (
-                    <div key={sub.senderEmail} className={cn('card flex flex-wrap items-center gap-3 p-4', sub.unsubscribed && 'opacity-60')}>
+                    <div key={subKey} className={cn('card flex flex-wrap items-center gap-3 p-4', sub.unsubscribed && 'opacity-60')}>
                       <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white', avatarTone(sub.senderEmail))} aria-hidden>
-                        {avatarText(sub.senderName || sub.senderEmail)}
+                        {avatarText(sub.senderName || sub.senderEmailShown)}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold text-ink-900">{sub.senderName || sub.senderEmail.split('@')[0]}</div>
-                        <div className="truncate text-xs text-muted">{sub.senderEmail}</div>
+                        {sub.senderNameIsAddress || !sub.senderName ? (
+                          <AddressLine value={sub.senderName || sub.senderEmailShown} className="font-semibold text-ink-900" />
+                        ) : (
+                          <div className="truncate font-semibold text-ink-900">{sub.senderName}</div>
+                        )}
+                        {sub.senderEmailShown && <AddressLine value={sub.senderEmailShown} className="text-xs text-muted" />}
                       </div>
                       <span className="chip bg-ink-100 text-ink-700">{sub.emailCount} email{sub.emailCount > 1 ? 's' : ''}</span>
                       {sub.oneClick && !sub.unsubscribed && (
@@ -2303,20 +2410,20 @@ function Inbox() {
                         <span className="chip bg-positive-100 text-positive-700">
                           <Check size={13} /> Désabonné
                         </span>
-                      ) : (
+                      ) : sub.senderUnreadable ? null : (
                         <div className="flex items-center gap-1.5">
                           <button
-                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, key: sub.senderEmail })}
+                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, key: subKey })}
                             disabled={busy}
                             className="btn-secondary btn-sm"
                           >
                             {busy ? <Spinner size={16} /> : <BellOff size={16} />} Se désabonner
                           </button>
                           <button
-                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, alsoArchive: true, key: sub.senderEmail })}
+                            onClick={() => handleUnsubscribe({ messageId: sub.sampleMessageId, alsoArchive: true, key: subKey })}
                             disabled={busy}
                             className="btn-ghost btn-sm btn-icon"
-                            aria-label={`Se désabonner et archiver tous les emails de ${sub.senderEmail}`}
+                            aria-label={`Se désabonner et archiver tous les emails de ${sub.senderEmailShown || sub.senderName}`}
                             title="Se désabonner et archiver tous les emails de cet expéditeur"
                           >
                             <Archive size={17} />
@@ -2364,10 +2471,12 @@ function Inbox() {
           ))}
       </div>
 
-      {/* Label picker for the bulk "Étiqueter" action and triage mode */}
+      {/* Label picker for the bulk "Étiqueter" ("Classer" over IMAP) action
+          and triage mode */}
       <LabelPicker
         open={labelPickerOpen || triageLabeling}
         count={triageLabeling ? 1 : selectedEmails.length}
+        folders={isImap}
         onClose={() => {
           setLabelPickerOpen(false);
           setTriageLabeling(false);
@@ -2378,11 +2487,27 @@ function Inbox() {
             const currentId = triageIds[triageIndex];
             if (currentId) {
               try {
-                await emailService.batchAction([currentId], 'label', name);
-                toast.success(`Étiquette "${name}" appliquée`);
-                handleTriageNext();
-              } catch {
-                toast.error("Impossible d'appliquer l'étiquette");
+                const { data } = await emailService.batchAction([currentId], 'label', name);
+                if (!(data.applied || []).length) {
+                  toast.error(
+                    data.message ||
+                      (data.protectedSkipped ? 'Expéditeur protégé : action ignorée.' : "Impossible de classer cet email")
+                  );
+                  return;
+                }
+                toast.success(
+                  `${actionMeta('label', { folders: isImap }).past}${labelPlace(data.labelName || name, { folders: isImap })}`
+                );
+                if (isImap) {
+                  // Filed in a folder: out of the inbox, as an archive.
+                  removeEmails([currentId]);
+                  plan.settle([currentId]);
+                  leaveTriageItem(currentId);
+                } else {
+                  handleTriageNext();
+                }
+              } catch (err) {
+                toast.error(apiError(err, "Impossible de classer cet email"));
               }
             }
           } else {
@@ -2456,8 +2581,9 @@ function Inbox() {
 
 // LabelPicker offers the user's real Gmail labels while still allowing a new
 // one: /api/labels existed and was never called, so labelling meant typing a
-// name blind and hoping it matched.
-function LabelPicker({ open, count, onClose, onPick }) {
+// name blind and hoping it matched. Over IMAP (`folders`) the same route lists
+// the mailbox's own folders, and a label is a folder: the words say so.
+function LabelPicker({ open, count, folders = false, onClose, onPick }) {
   const [labels, setLabels] = useState(null);
   const [value, setValue] = useState('');
   const inputRef = useRef(null);
@@ -2485,21 +2611,25 @@ function LabelPicker({ open, count, onClose, onPick }) {
     <Modal
       open={open}
       onClose={onClose}
-      title="Étiqueter la sélection"
-      description={`${count} email${count > 1 ? 's' : ''} recevront ce libellé.`}
+      title={folders ? 'Classer la sélection' : 'Étiqueter la sélection'}
+      description={
+        folders
+          ? `${count} email${count > 1 ? 's' : ''} ${count > 1 ? 'iront' : 'ira'} dans ce dossier.`
+          : `${count} email${count > 1 ? 's' : ''} recevront ce libellé.`
+      }
       size="sm"
       initialFocusRef={inputRef}
       footer={
         <>
           <button onClick={onClose} className="btn-secondary w-full sm:w-auto">Annuler</button>
           <button onClick={() => onPick(trimmed)} disabled={!trimmed} className="btn-primary w-full sm:w-auto">
-            <Tag size={16} /> Étiqueter
+            <Tag size={16} /> {folders ? 'Classer' : 'Étiqueter'}
           </button>
         </>
       }
     >
       <label className="block">
-        <span className="mb-1.5 block text-sm font-semibold text-ink-700">Libellé</span>
+        <span className="mb-1.5 block text-sm font-semibold text-ink-700">{folders ? 'Dossier' : 'Libellé'}</span>
         <input
           ref={inputRef}
           list="mailsorter-labels"
@@ -2520,7 +2650,7 @@ function LabelPicker({ open, count, onClose, onPick }) {
       </label>
       {isNew && (
         <p className="mt-2 text-xs text-muted">
-          <span className="font-semibold text-caution-700">Nouveau libellé</span> : « {trimmed} » sera créé dans votre boîte.
+          <span className="font-semibold text-caution-700">{folders ? 'Nouveau dossier' : 'Nouveau libellé'}</span> : « {trimmed} » sera créé dans votre boîte.
         </p>
       )}
       {labels && labels.length > 0 && (

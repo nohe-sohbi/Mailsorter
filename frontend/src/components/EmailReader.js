@@ -9,19 +9,11 @@ import { actionMeta, labelPlace } from '../ui/actions';
 import { useToast } from '../ui/Toast';
 import SnoozeButton from '../ui/SnoozeMenu';
 import { cn } from '../ui/cn';
+import AddressLine from '../ui/AddressLine';
 import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import { hotelTone, initials } from './hotel/avatar';
 import { proposalText } from './hotel/InboxBits';
-
-function extractEmail(from) {
-  const match = from?.match(/<(.+)>/);
-  return match ? match[1] : from;
-}
-function extractName(from) {
-  const match = from?.match(/^(.+?)\s*</);
-  return match ? match[1].replace(/"/g, '').trim() : from;
-}
 
 // Gmail's own labels are noise in a reader: the user knows the message is in
 // their inbox and whether they have read it.
@@ -359,7 +351,11 @@ function EmailReader({
     });
   };
 
-  const name = extractName(merged.from) || 'Expéditeur inconnu';
+  // What the server read for the sender (`senderLabel`, protect.Label), never
+  // the From as written nor a cut of it: the display name is the sender's to
+  // write and may hold another address. The address shown under it is the
+  // server's too (`senderAddressShown`).
+  const name = merged.senderLabel || 'Expéditeur illisible';
   const rendered = full?.bodyHtml
     ? renderHtml(full.bodyHtml, drawn, new Set(Object.keys(full.inlineImages || {})))
     : null;
@@ -561,8 +557,19 @@ function EmailReader({
             {hotel ? initials(name) : name[0]?.toUpperCase() || '?'}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate font-semibold text-ink-900">{name}</div>
-            <div className="truncate text-sm text-muted">{extractEmail(merged.from)}</div>
+            {merged.senderLabelIsAddress ? (
+              <AddressLine value={name} className="font-semibold text-ink-900" />
+            ) : (
+              <div className="truncate font-semibold text-ink-900">{name}</div>
+            )}
+            {/* The address as the server shows it (`senderAddressShown`):
+                a character that would hide or reorder what follows is made
+                visible, never dropped, so it never reads as another address.
+                None for a From that names no sender: the name above says
+                "Expéditeur illisible", and nothing of the header shows. */}
+            {merged.senderAddressShown && (
+              <AddressLine value={merged.senderAddressShown} className="text-sm text-muted" />
+            )}
           </div>
           {merged.receivedDate && (
             <time

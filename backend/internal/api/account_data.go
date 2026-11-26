@@ -32,6 +32,8 @@ func (h *Handler) datasetCollection(ds account.Dataset) *mongo.Collection {
 		return h.db.SmartLabels()
 	case account.DatasetUnsubscribes:
 		return h.db.Unsubscribes()
+	case account.DatasetUnsubscribeMails:
+		return h.db.UnsubscribeMails()
 	case account.DatasetUsage:
 		return h.db.Usage()
 	case account.DatasetActionLog:

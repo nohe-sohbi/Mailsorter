@@ -178,6 +178,9 @@ func (h *Handler) listFromMirror(ctx context.Context, userEmail, gen, query stri
 	if err := cursor.All(ctx, &emails); err != nil {
 		return nil, fmt.Errorf("read stored messages: %w", err)
 	}
+	for i := range emails {
+		readSender(&emails[i])
+	}
 
 	// A next token only when there is a next page. Handing one out at the end
 	// of the list makes the client fetch an empty page to find out.

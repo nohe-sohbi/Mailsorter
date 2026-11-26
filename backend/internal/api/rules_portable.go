@@ -153,6 +153,12 @@ func (h *Handler) DuplicateRule(w http.ResponseWriter, r *http.Request) {
 	if id, ok := res.InsertedID.(primitive.ObjectID); ok {
 		copyOf.ID = id.Hex()
 	}
+	// What the screen shows of it, as GET /api/rules gives it: a sender
+	// rule's name holds an address.
+	copyOf.NameShown = shownRuleName(copyOf.Name)
+	for i := range copyOf.Conditions {
+		copyOf.Conditions[i].ValueShown = shownConditionValue(copyOf.Conditions[i].Value)
+	}
 
 	writeJSON(w, http.StatusCreated, copyOf)
 }

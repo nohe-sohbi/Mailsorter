@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/egress"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/unsubscribe"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -535,10 +536,13 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 	}
 
 	var dateHeader string
+	var froms []string
 	for _, header := range message.Payload.Headers {
+		if strings.EqualFold(header.Name, "From") {
+			froms = append(froms, header.Value)
+			continue
+		}
 		switch header.Name {
-		case "From":
-			from = header.Value
 		case "Subject":
 			subject = header.Value
 		case "To":
@@ -548,7 +552,26 @@ func ParseEmailHeaders(message *gmail.Message) (from, subject string, to []strin
 		}
 	}
 	date = parseDateHeader(dateHeader, message.InternalDate)
+	from = fromOf(froms)
 	return
+}
+
+// fromOf is the From a message's From headers give. One is the sender as
+// written, its control bytes turned into spaces for the screen as long as it
+// reads as the same sender, or none (protect.FromText), as the IMAP listing
+// does. Two or more name no single sender: overwriting kept the last one,
+// whoever the first named, so the mail read as the second author's, swept by
+// his unsubscribe and spared by his protection. They are kept for the screen
+// as one quoted text, which names no sender (protect.QuotedText), as the IMAP
+// listing does.
+func fromOf(froms []string) string {
+	switch len(froms) {
+	case 0:
+		return ""
+	case 1:
+		return protect.FromText(froms[0])
+	}
+	return protect.QuotedText(strings.Join(froms, ", "))
 }
 
 // Snippet returns the message's preview as plain text.
@@ -642,19 +665,23 @@ func ParseUnsubscribe(message *gmail.Message) (httpURL, mailto string, oneClick 
 	if message == nil || message.Payload == nil {
 		return
 	}
-	var listUnsub, listUnsubPost string
+	var listUnsub []string
+	var listUnsubPost string
 	for _, hdr := range message.Payload.Headers {
 		switch strings.ToLower(hdr.Name) {
 		case "list-unsubscribe":
-			listUnsub = hdr.Value
+			listUnsub = append(listUnsub, hdr.Value)
 		case "list-unsubscribe-post":
-			listUnsubPost = hdr.Value
+			if listUnsubPost == "" {
+				listUnsubPost = hdr.Value
+			}
 		}
 	}
 	// The parsing itself is in internal/unsubscribe: the headers belong to the
 	// message, not to the way it was fetched, and the IMAP listing reads the
-	// same two values off a different wire.
-	links := unsubscribe.Parse(listUnsub, listUnsubPost)
+	// same values off a different wire. Two List-Unsubscribe headers offer no
+	// link (ParseHeaders).
+	links := unsubscribe.ParseHeaders(listUnsub, listUnsubPost)
 	return links.URL, links.Mailto, links.OneClick
 }
 

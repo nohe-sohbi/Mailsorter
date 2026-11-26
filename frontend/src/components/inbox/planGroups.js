@@ -23,18 +23,24 @@ const MOVES = ['delete', 'archive', 'label'];
 
 export const idOf = (s) => s.id || s._id;
 
-// The bare address out of a From header, lowercased. It keys the group, and it
-// is what a sender rule matches (`From contains <address>` on the server).
-export function senderAddress(from = '') {
-  const angle = from.match(/<([^>]+)>/);
-  return (angle ? angle[1] : from).trim().toLowerCase();
+// The sender's address of a suggestion, lowercased: the one the server read
+// out of From (`senderAddress`, protect.Address), never one this screen reads
+// itself. The display name is the sender's to choose and may hold someone
+// else's address ("<boss@corp.com>" <spam@evil.io>), and a reading of its own
+// here diverged from the server's (`<vrai@x.fr> (<boss@corp.com>)`): it
+// grouped a spam with the boss's mail and made a rule against the boss. It
+// keys the group, and it is what a sender rule matches. "" when the server
+// gave none (a From that does not read): the group is then the mail alone,
+// and offers no rule.
+export function senderAddress(s = {}) {
+  return (s.senderAddress || '').trim().toLowerCase();
 }
 
-// The display name out of a From header, without the quotes RFC 5322 wraps it
-// in, falling back to the address.
-export function senderName(from = '') {
-  const name = from.split('<')[0].replace(/"/g, '').trim();
-  return name || senderAddress(from) || 'Expéditeur inconnu';
+// What the plan shows for the sender: the server's reading (`senderLabel`,
+// protect.Label), never the From as written nor a cut of it: its display name
+// is the sender's to write, and may hold another address.
+function senderName(s = {}) {
+  return s.senderLabel || 'Expéditeur illisible';
 }
 
 export function isSure(confidence) {
@@ -57,7 +63,7 @@ export function groupSuggestions(suggestions = []) {
   const byKey = new Map();
   for (const s of suggestions) {
     const action = canonicalAction(s.action);
-    const address = senderAddress(s.from || '');
+    const address = senderAddress(s);
     const key = groupKey(action, s.labelName, address || `email:${s.emailId}`);
     let g = byKey.get(key);
     if (!g) {
@@ -66,7 +72,10 @@ export function groupSuggestions(suggestions = []) {
         action,
         labelName: action === 'label' ? (s.labelName || '').trim() : '',
         address,
-        name: senderName(s.from || ''),
+        name: senderName(s),
+        // The name is the sender's address (the server says so): laid out
+        // so its domain is never cut (AddressLine).
+        nameIsAddress: Boolean(s.senderLabelIsAddress),
         from: s.from || '',
         items: [],
         reasoning: '',

@@ -110,24 +110,14 @@ func TestBatchUndoOnlyAcceptsReversibleActions(t *testing.T) {
 	}
 }
 
-// Undoing a labelling is the one reversal that takes an argument. Without the
-// label name the server has nothing to remove, and must say so rather than
-// reporting a reversal that removed nothing.
-func TestBatchUndoOfALabelNeedsTheLabelName(t *testing.T) {
-	srv := newRoutedTestServer(t)
-	token := newTestAuth(t).IssueSession("nohe@example.com")
-
-	res := postBatch(t, srv.URL, "/api/emails/batch-undo", token, BatchActionRequest{
-		MessageIDs: []string{"a"},
-		Action:     "label",
-	})
-	if res.StatusCode != http.StatusBadRequest {
-		t.Errorf("batch-undo of a label with no name = %d, want 400", res.StatusCode)
-	}
-
-	// That it is accepted WITH a name is asserted without a round trip: reaching
-	// the acceptance path means waiting out the deliberately dead datastore, and
-	// the contract that matters is the mapping itself.
+// Labelling a selection is meant to be reversible. Undoing it over the Gmail
+// API takes the label name (which label to take off), over IMAP it does not
+// (the mail comes back from the folder Mailsorter recorded): which of the two
+// a caller is depends on its mailbox, so the 400 for a missing name is
+// asserted where there is a datastore, by
+// TestAcceptance_BatchUndoOfALabelNeedsItsNameOnlyOnGmail
+// (wiring_unsubscribe_test.go), not here against the dead one.
+func TestBatchUndoOfALabelIsReversible(t *testing.T) {
 	if batchInverse["label"] != "unlabel" {
 		t.Errorf("batchInverse[label] = %q, want unlabel: labelling is meant to be reversible", batchInverse["label"])
 	}

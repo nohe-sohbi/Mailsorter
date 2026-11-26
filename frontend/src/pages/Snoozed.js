@@ -10,6 +10,7 @@ import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
 import { hotelTone, initials } from '../components/hotel/avatar';
+import AddressLine from '../ui/AddressLine';
 
 const AVATAR_GRADIENTS = [
   'bg-brand-fill', 'bg-info-fill',
@@ -20,7 +21,9 @@ const gradientFor = (seed = '') => {
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
   return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
 };
-const senderName = (from = '') => from.split('<')[0].replace(/"/g, '').trim() || from;
+// The label the server read out of From (protect.Label), never a cut of the
+// header here, and never the header as written: the screen shows no From.
+const senderName = (s) => s?.senderLabel || '';
 
 // Le backend connaît trois états à montrer (`scheduled`, `done`, `failed`) et la
 // page n'en montrait qu'un. Un report en échec (message introuvable dans la
@@ -398,14 +401,23 @@ function Snoozed() {
                       hotel ? hotelTone(s.from) : gradientFor(s.from)
                     )}
                   >
-                    {hotel ? initials(senderName(s.from)) : senderName(s.from)[0]?.toUpperCase() || '?'}
+                    {hotel ? initials(senderName(s)) : senderName(s)[0]?.toUpperCase() || '?'}
                   </span>
 
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-semibold text-ink-900">{s.subject || '(Sans sujet)'}</div>
-                    <div className="flex items-center gap-1.5 truncate text-xs text-muted">
-                      <Mail size={12} /> {senderName(s.from) || 'Expéditeur inconnu'}
-                    </div>
+                    {s.senderLabelIsAddress ? (
+                      // The label is the sender's address (the server says
+                      // so): its domain is never cut (AddressLine).
+                      <div className="flex items-start gap-1.5 text-xs text-muted">
+                        <Mail size={12} className="mt-0.5 shrink-0" />
+                        <AddressLine value={senderName(s)} className="min-w-0 flex-1" />
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 truncate text-xs text-muted">
+                        <Mail size={12} /> {senderName(s) || 'Expéditeur illisible'}
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex flex-col items-end gap-1">
