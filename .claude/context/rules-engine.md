@@ -1,39 +1,45 @@
 ---
 subsystem: rules-engine
 description: Deterministic AI-free triage: sorting rules (conditions, operators, multi-action, priority, temporal), the protected-senders VIP veto on destructive actions, snooze scheduling and wake sweep, and the periodic-work schedule helper.
-keywords: [sorting rules, rule engine, deterministic triage, condition operators, rule priority, dry run preview, protected senders, vip guardrail, snooze, wake time, snooze preset, autopilot, olderthan, newerthan, multi-action rule]
+keywords: [sorting rules, rule engine, deterministic triage, condition operators, rule priority, dry run preview, protected senders, vip guardrail, snooze, wake time, snooze preset, autopilot, olderthan, newerthan, multi-action rule, imap rules, action order, arrivals]
 files:
   - backend/internal/rules/rules.go
   - backend/internal/protect/protect.go
   - backend/internal/snooze/snooze.go
   - backend/internal/schedule/schedule.go
   - backend/internal/api/rules.go
+  - backend/internal/api/session.go
   - backend/internal/api/snooze.go
   - backend/internal/api/protected.go
+  - backend/internal/imap/text.go
   - frontend/src/pages/Rules.js
   - frontend/src/pages/Snoozed.js
+  - frontend/src/components/inbox/TriagePlan.js
 priority: high
 related: [ai-triage, gmail-sync, data-model, background-workers]
-last-verified: 2026-08-09
+last-verified: 2026-11-24
 ---
 # Rules Engine (deterministic, AI-free triage)
 
 The cheap half of Mailsorter. A sorting rule pairs conditions with actions and is
-applied straight to Gmail with no model call and no quota burn. Layered on top,
-the protected-senders list vetoes any *automated* destructive action, and snooze
-moves a message out of the inbox with a scheduled return. Every decision here is
-computed by a pure package under `backend/internal/`; `backend/internal/api` is
-the only layer that touches Mongo or Gmail.
+applied straight to the mailbox, over the Gmail API or over IMAP, with no model
+call and no quota burn. Layered on top, the protected-senders list vetoes any
+*automated* destructive action, and snooze moves a message out of the inbox with
+a scheduled return (Gmail API only). Every decision here is computed by a pure
+package under `backend/internal/`; `backend/internal/api` is the only layer that
+touches Mongo or the mailboxes.
 
 ## Package map
 
 | Package | Purity | Owns | Entry points |
 |---|---|---|---|
-| `internal/rules` | pure | matching, validation, dry-run projection | `Matches`, `MatchesAt`, `FirstMatch`, `FirstMatchAt`, `Preview`, `PreviewAt`, `Validate`, `EffectiveActions` |
+| `internal/rules` | pure | matching, validation, dry-run projection (and its form for a mailbox of folders), the order a rule's actions run in, whether a ruleset reads the text | `Matches`, `MatchesAt`, `FirstMatch`, `FirstMatchAt`, `Preview`, `PreviewAt`, `PreviewOnFolders`, `Validate`, `EffectiveActions`, `ApplyOrder`, `ApplyOrderOnFolders`, `ReadsText` |
 | `internal/protect` | pure | VIP veto on destructive actions | `Allowed`, `Match`, `IsDestructive`, `NormalizeEntry`, `NormalizeAddress`, `Domain` |
 | `internal/snooze` | pure | preset to absolute wake time | `Resolve` |
 | `internal/schedule` | pure | "is this periodic work due" | `Due(last, now, interval)` |
-| `internal/api/rules.go` | I/O | rule CRUD, apply, preview, per-message action fan-out | `GetRules`, `CreateRule`, `UpdateRule`, `DeleteRule`, `ApplyRules`, `PreviewRules`, `CreateSenderRule`, `enabledRules`, `applyRuleToMessage`, `applyOneAction` |
+| `internal/api/rules.go` | I/O | rule CRUD, apply, preview (both transports, through a session), the messages a run judges, per-message action fan-out | `GetRules`, `CreateRule`, `UpdateRule`, `DeleteRule`, `ApplyRules`, `PreviewRules`, `CreateSenderRule`, `enabledRules`, `ruleCandidates`, `withTexts`, `runRules`, `countRuleHits`, `applyRuleToMessage`, `applyOneAction` |
+| `internal/api/session.go` | I/O | the IMAP sync, and the rules it runs on the mails that arrive | `syncInboxIMAP`, `syncRulesFor`, `arrivalsSince`, `syncRules.arrival`, `comingBack`, `rulesOnArrivals`, `claimRulesDue`, `releaseRulesDue`, `storeInboxMessage`, `inboxUpsert` |
+| `internal/imap/text.go` | I/O (client) | the text a rule reads of IMAP messages the stored copy keeps no text of | `Client.Texts` |
 | `internal/api/protected.go` | I/O | VIP list CRUD, list loader | `GetProtected`, `CreateProtected`, `DeleteProtected`, `protectedValues`, `allows` |
 | `internal/api/snooze.go` | I/O | snooze write, list, manual wake, 1 min sweeper | `Snooze`, `GetSnoozes`, `WakeSnooze`, `restoreSnoozed`, `startSnoozeLoop`, `wakeDueSnoozes` |
 
@@ -77,9 +83,9 @@ field name yields `""` and never matches, and `Validate` rejects it.
 |---|---|---|---|
 | `FieldFrom` | `from` | `Email.From` | the raw From header, display name included |
 | `FieldSubject` | `subject` | `Email.Subject` | |
-| `FieldSnippet` | `snippet` | `Email.Snippet` | Gmail's own snippet |
+| `FieldSnippet` | `snippet` | `Email.Snippet` | Gmail's own snippet; over IMAP the preview line `Texts` derives from the text |
 | `FieldTo` | `to` | `strings.Join(Email.To, " ")` | recipients joined with a single space |
-| `FieldBody` | `body` | `Email.Body` | first text part, decoded from base64url |
+| `FieldBody` | `body` | `Email.Body` | Gmail: first text part, decoded from base64url; IMAP: the plain part, or the text of the HTML part, read by `Texts` (the stored copy keeps neither) |
 
 ## Conditions: operators (exhaustive)
 
@@ -116,23 +122,40 @@ rejected up front by `Validate`.
 
 ## Actions (exhaustive)
 
-Constants at `backend/internal/rules/rules.go:51`. `applyOneAction`
-(`backend/internal/api/rules.go:438`) is the only place a rule action reaches Gmail.
+Constants in `backend/internal/rules/rules.go`. `applyOneAction`
+(`backend/internal/api/rules.go`) is the only place a rule action reaches the
+mailbox, through `session.Mailbox()` and `h.applyVerb` (translation in
+`internal/mailbox`).
 
-| Action constant | Value | Gmail mutation (`ModifyMessage(add, remove)`) | Destructive |
-|---|---|---|---|
-| `ActionArchive` | `archive` | remove `INBOX` | yes |
-| `ActionTrash` | `trash` | add `TRASH` | yes |
-| `ActionLabel` | `label` | add the resolved label ID, `labelName` required | no |
-| `ActionMarkRead` | `markRead` | remove `UNREAD` | no |
-| `ActionStar` | `star` | add `STARRED` | no |
+| Action constant | Value | Gmail mutation (`ModifyMessage(add, remove)`) | IMAP | Destructive |
+|---|---|---|---|---|
+| `ActionArchive` | `archive` | remove `INBOX` | MOVE to the Archive folder (`mirroredIMAP` flags the row `leftInbox` with `movedTo`, for "Annuler") | yes |
+| `ActionTrash` | `trash` | add `TRASH` | MOVE to the Trash folder (same) | yes |
+| `ActionLabel` | `label` | add the resolved label ID, `labelName` required | MOVE to the user's folder of that name (`FilingName`, then `Destination` makes it, subscribed, when missing; never a special folder; at most 10 new folders a request), journaled with the folder (`logActionFiled`), undone like an archive | yes over IMAP (`allowsOn`), no on Gmail |
+| `ActionMarkRead` | `markRead` | remove `UNREAD` | STORE `+FLAGS \Seen`, mirrored into the row at once (`mirrorFlags`) | no |
+| `ActionStar` | `star` | add `STARRED` | STORE `+FLAGS \Flagged`, same | no |
 
-Multi-action rules run their actions in list order (`applyRuleToMessage`,
-`backend/internal/api/rules.go:423`). The canonical case the single-action shape
-could not express is "label Newsletters, then archive". Label IDs are resolved
-once per apply pass through a `labelCache map[labelName]labelID` and created on
-demand by `h.ensureLabel`. A failing action is skipped; the remaining actions of
-the same rule still run.
+Multi-action rules run ALL their actions, in `rules.ApplyOrder`, not in the order
+written: what changes the mail where it is (`markRead`, `star`, `label`) first, in
+the order written, then what moves it out of the inbox (`archive`, `trash`). Over
+IMAP a moved mail takes a new number in its new folder, so "archive then star"
+written in that order would archive without starring. On Gmail the order changes
+nothing visible (only the order of the ledger rows). The editor says so ("Lu,
+favori et étiquette d'abord, puis le rangement"). Over IMAP the order is
+`rules.ApplyOrderOnFolders`: a label is a move there, and a mail moves once,
+so the flags first, then one move chosen by meaning, not by the order written:
+the trash if the rule deletes, else the folder if it labels (the first label
+written), else the archive. "Étiqueter Factures, puis Archiver", the Gmail way
+of filing out of the inbox, files in Factures; the editor says so on IMAP ("un
+mail ne va qu'à un endroit"). `ApplyOrder` returns a new slice: the
+stored rule and the editor keep the order written. Label
+IDs are resolved once per apply pass through a `labelCache map[labelName]labelID`
+and created on demand by `h.ensureLabel` (Gmail only). A failing action is
+skipped and logged; the remaining actions of the same rule still run. Three
+outcomes are not failures and are neither logged nor journaled:
+a folder no mail is filed into (`imap.ErrNotOwnFolder`, `ErrBadFolderName`,
+`mailbox.ErrLabelRequired`: logged, not retried), `errAlreadyOut` (the mail already left the inbox) and
+`errLeftInbox` (a flag on a number the inbox no longer holds).
 
 ## Validation
 
@@ -177,20 +200,46 @@ run for that email.
 
 ## Apply versus preview
 
-Both handlers share `enabledRules`, the same `in:inbox` query with the same cap,
-and the same first-match attribution, so the dry run is a faithful forecast of
-the apply. They differ only in what happens after the match.
+Both handlers share `enabledRules`, read the same messages (`ruleCandidates`,
+through a session, `openSession`, either transport; no `gmailClientFor`) and use
+the same first-match attribution, so the dry run is a faithful forecast of the
+apply. They differ only in what happens after the match. Over IMAP the preview
+opens no session unless a rule reads the text (`storedInboxCandidates` reads
+the copy alone), and uses `rules.PreviewOnFolders`: each item and tally carries
+what applying the rule does there (the flags, then the one move, a folder for
+a label), and a mail a rule would file is counted.
+
+`ruleCandidates` reads the `rulesScanLimit = 200` most recent inbox messages:
+over the Gmail API, `ListMessages(client, "in:inbox", 200)`, text included; over
+IMAP, the stored copy of the inbox (`emails`, `folder: INBOX`, `notLeftInbox`,
+newest first), which is what the inbox screen shows: a mail moved out by hand is
+not there, one arrived since the last sync not yet. The copy keeps no body nor
+snippet, so when `rules.ReadsText(enabled)` (an enabled rule with a `body` or
+`snippet` condition that can match), `withTexts` reads them from the server with
+`imap.Client.Texts`: the first 256 KiB of each message, `BODY.PEEK[]<0.N>` (the
+messages stay unread), 20 a FETCH, through `imap.ReadInHalves`, the request's
+context checked before each FETCH. A message whose text cannot be parsed is left
+out, logged (judged on an empty text, "does not contain" would match it), and so
+is one `Texts` reports `NotReached`: larger than what is read, and either no
+text part in its beginning (a file before the text) or the read stopped inside
+the text part a rule would judge (the plain one, or the HTML when there is
+none; `readBodies` marks a part cut when its end was not read, or when the
+message is not multipart). Rules on the sender or the subject still judge it.
+A read the server stops, or that runs out of time, fails the request. `apply`
+skips the rows a sync holds, starts from the actions already done
+(`rulesDone`), and then settles the marks (`settleMarks`): a marked mail judged
+without a failure is unmarked, one that failed keeps what was done.
 
 | | `POST /api/rules/apply` (`ApplyRules`) | `POST /api/rules/preview` (`PreviewRules`) |
 |---|---|---|
-| Handler | `backend/internal/api/rules.go:201` | `backend/internal/api/rules.go:292` |
 | Context timeout | 90 s | 60 s |
-| Gmail read | `ListMessages(client, "in:inbox", 200)` | same |
-| Gmail write | yes, per action | none |
+| Read | `ruleCandidates` (above) | same |
+| Mailbox write | yes, per action (`runRules`) | none |
 | Protected check | yes, per action, via `allows` | no, the preview does not model the veto |
-| Ledger | `logAction(..., SourceRule)` per applied action | none |
-| `appliedCount` | `$inc` per rule name | untouched |
+| Ledger | `logActionMeta(..., SourceRule)` per applied action | none |
+| `appliedCount` | `$inc` per rule name (`countRuleHits`, a failure logged) | untouched |
 | Empty ruleset | `{applied:0, scanned:0, byRule:{}}` | `{scanned:0, willApply:0, byRule:[], samples:[]}` |
+| Read failure | `500` when the stored IMAP copy cannot be read (`errInboxCopyUnread`), `502` when the mailbox cannot (`writeCandidatesError`) | same |
 | Response | `applied`, `scanned`, `byRule` (map name to count), `protectedSkipped` | `scanned`, `willApply`, `byRule` (`[]rules.RuleHits`), `samples` (`[]rules.PreviewItem`, capped at `previewSampleCap = 12`) |
 
 `rules.Preview` returns `RuleHits` in the order rules first matched, tallied in a
@@ -202,17 +251,66 @@ the apply. They differ only in what happens after the match.
 | Path | Trigger | Code | Autopilot gate | Cap |
 |---|---|---|---|---|
 | Manual apply | user clicks "Appliquer maintenant" on `/rules` | `ApplyRules` | none | 200 messages |
-| At-sync autopilot | any inbox sync, manual or background | `syncInbox` (`backend/internal/api/handlers.go:354`, rule block at `:406`) | `autoApplyRulesEnabled` reads the user's `autoApplyRules` setting | 100 messages |
-| One-click sender rule | `POST /api/senders/rule` from the inbox | `ruleForSender` (`backend/internal/api/rules.go:357`) | n/a | n/a |
+| At-sync autopilot, Gmail API | any inbox sync, manual or background | `syncInboxGmail` (`backend/internal/api/handlers.go`) | `autoApplyRulesEnabled` reads the user's `autoApplyRules` setting | the 100 listed messages, every sync |
+| At-sync autopilot, IMAP | same | `syncInboxIMAP` -> `rulesOnArrivals` (`backend/internal/api/session.go`) | `syncRulesFor`: the same setting, and at least one enabled rule | the mails that ARRIVE (below) |
+| One-click sender rule | `POST /api/senders/rule` from the inbox (the triage plan's "Toujours archiver ses emails", both transports; a `label` one on the Gmail API only) | `ruleForSender` (`backend/internal/api/rules.go`) | n/a | n/a |
 
-`ruleForSender` builds `{Name: "Expéditeur : <addr>", Enabled: true, MatchAll:
-true, Conditions: [from contains <addr>], Priority: 0}` where `<addr>` comes from
-`extractSenderAddress` (`backend/internal/api/ai_handlers.go:855`). It is pure and
-its result goes through `rules.Validate` like any other rule.
+Over IMAP the at-sync autopilot judges the mails that arrive, not every listed
+mail. Each sentence of "Tes règles sur une boîte IMAP" pins part of this.
 
-Both apply paths persist per-rule counts with
-`UpdateOne({userId, name}, {$inc: {appliedCount: n}})` and log one ledger row per
-*action*, not per email, all tagged `SourceRule`.
+- **What arrives.** A listed mail the sync stores for the FIRST time (the
+  upsert inserts the row), received by its server (INTERNALDATE, to the second)
+  no earlier than `arrivalsSince`: the later of when the option was turned on
+  (`users.autoApplyRulesSince`, stamped by `PUT /api/account/settings` only
+  when it goes from off to on; zero for an option turned on before the stamp
+  existed) and when the mailbox was connected (`mail_accounts.createdAt`). So
+  turning the option on, or connecting a mailbox with it on, sorts nothing
+  already there; "Appliquer maintenant" does. And the very first sync of a
+  mailbox marks nothing, whatever the dates (`firstSync`: no
+  `mail_accounts.firstSyncedAt` and an empty copy of its generation;
+  `markFirstSync` stamps its row, by `_id`, after the store loop, so an empty
+  inbox once synced has had it).
+- **What comes back is not an arrival.** `comingBack`, read after the listing
+  and before `dropStaleInbox` (which may drop the old row), finds the listed
+  mails whose Message-ID the copy holds under ANOTHER number, whatever that
+  row's state: a mail put back by "Annuler" when the server did not say its new
+  number, a mail Mailsorter moved out (kept 30 days) that another program moved
+  back, a mail another program moved out and back between two syncs. NOT
+  recognized: a mail another program moved out, a sync dropped its row, then
+  it was moved back (judged on its INTERNALDATE like any other). When that read
+  fails, the sync marks nothing (fail closed). A mail put back by "Annuler" with
+  its new number keeps its row (`putBack`), so it is not inserted at all.
+- **Marked, then judged, until judged.** `inboxUpsert(email, rulesDue)` puts
+  `rulesDue: true` on a new row only (`$setOnInsert`). Right after the store
+  loop, `rulesOnArrivals` claims the marked rows still in the inbox and received
+  since `arrivalsSince` (`claimRulesDue`: `rulesClaim` token and `rulesClaimAt`,
+  held `rulesClaimFor` = 2 x `autoSyncTimeout`, longer than any sync, so two
+  syncs, or a sync and `ApplyRules`, which skips held rows, never act on one
+  mail at once), reads their text if a rule needs it, and runs `runRules`.
+- **What is tried again, and what is not.** Tried again at the next sync
+  (`releaseRulesDue`: `rulesTries + 1`, pending): a mail whose text read the
+  server stopped or that ran out of time, and a mail on which an action of its
+  rule failed (a move refused). The actions its rule already did are kept on
+  the row (`rulesDone`) and skipped at the next try (`applyRuleToMessage`'s
+  `done`): not done again (a mail marked unread since stays unread), not
+  journaled twice, `appliedCount` counted once, at the first action. A mail is
+  in `rulesApplied` (everything done, something at least) or in
+  `rulesPending`, never both. Not tried again (unmarked, logged): a mail whose
+  text cannot be parsed, or `NotReached`. At `maxRuleTries` (3) a mail is
+  given up (unmarked, logged), and `mail_accounts.rulesGivenUp` (the row of
+  that mailbox's generation) is incremented: a sync
+  from the screen (`SyncEmails`, the button and the page load) takes it
+  (`takeGivenUp`) and tells it once in `rulesMessage`, whichever sync gave the
+  mail up, the background one included. The sync answers 200 all the same.
+- Old favorites stored by `storeStarredOutsideList` are never marked.
+
+`rulesApplied` counts the marked mails a rule acted on at this sync.
+
+Every apply path persists per-rule counts with
+`UpdateOne({userId, name}, {$inc: {appliedCount: n}})` (`countRuleHits`, a
+failure logged) and logs one ledger row per *action*, not per email, all tagged
+`SourceRule`. A rule's `trash` is journaled as `trash` (the history reads it as a
+deletion and undoes it with `untrash`, on both transports).
 
 ## Protected senders (VIP guardrail)
 
@@ -264,7 +362,7 @@ starring, marking read and "keep" are never blocked.
 
 | Site | File:line | What it guards | Behaviour when blocked |
 |---|---|---|---|
-| Rule action fan-out | `backend/internal/api/rules.go:425` | every action of a matched rule, manual apply and at-sync autopilot alike | that action is skipped, `protectedSkip = true`, non-destructive actions of the same rule still run |
+| Rule action fan-out | `applyRuleToMessage` in `backend/internal/api/rules.go` | every action of a matched rule, manual apply and at-sync autopilot alike, both transports | that action is skipped, `protectedSkip = true`, non-destructive actions of the same rule still run |
 | Sender auto-pilot | `backend/internal/api/analysis.go:82` | `SenderPreference.DefaultAction` with `autoApply: true` | auto-apply is skipped, the email falls through to a normal (non-destructive) suggestion |
 | AI verdict downgrade | `backend/internal/api/analysis.go:169` (`protectAnalysis`, called at `:93` and `:149`) | the suggestion about to be persisted | action rewritten to `keep`, label cleared, reasoning set to the protected-sender message, confidence floored at 0.9 |
 | Bulk suggestion apply | `backend/internal/api/ai_handlers.go:331` (`ApplyBatch`) | each suggestion in a batch, sender resolved via `h.senderOf` | suggestion left pending, `protectedSkipped++` |
@@ -397,7 +495,9 @@ the constitution (`writeJSON` / `writeError`), not the surrounding code.
 
 | Page | Service | What it drives |
 |---|---|---|
-| `frontend/src/pages/Rules.js` | `ruleService` (`services/api.js:127`) | rule list, editor, enable toggle, "Aperçu" dry run, "Appliquer maintenant", autopilot switch via `accountService.updateSettings({autoApplyRules})` |
+| `frontend/src/pages/Rules.js` | `ruleService` (`services/api.js`) | rule list, editor, enable toggle, "Aperçu" dry run, "Appliquer maintenant", autopilot switch via `accountService.updateSettings({autoApplyRules})`. All of it on both transports once the mailbox is known (`rulesRun = known`); "Étiqueter" offered on the Gmail API only (`labelsOk = fullFeatures`), "Mettre en favori" on both. "Étiqueter" is offered once the mailbox is known (`labelsOk = known`); on IMAP (`folders`) it reads "Classer", picks among the mailbox's own folders (`GET /api/labels`), and a rule card reads "Classer dans « Factures »" |
+| `frontend/src/components/inbox/TriagePlan.js` | `senderService.createRule` | "Toujours ... ses emails" on a group of the triage plan: a sender rule, on both transports once the mailbox is known (`rulesAvailable`), a `label` one included ("Toujours classer ses emails dans « Factures »" on IMAP) |
+| `frontend/src/pages/Settings.js` | `accountService` | the sync card says the rules sort the new mails at each sync once the mailbox is known (`rulesRun`) |
 | `frontend/src/pages/Snoozed.js` | `snoozeService` (`services/api.js:63`) | scheduled list, manual "Réactiver" |
 | `frontend/src/components/EmailReader.js` | `emailService.snooze` (`services/api.js:60`) | the `SNOOZE_PRESETS` menu, five entries matching the Go constants |
 | `frontend/src/pages/Settings.js` | `protectService` (`services/api.js:68`) | the `ProtectedSenders` card: add, list, remove |
@@ -412,18 +512,21 @@ is the authority and its French error string is surfaced through
 `err.response?.data`.
 
 The editor disables an action type already used, except `label`, which may repeat
-with different names. Temporal operators switch the value input to
-`type="number"` with `min=0`.
+with different names, and hides `label` on an IMAP mailbox (an imported rule that
+already labels keeps its choice). Temporal operators switch the value input to
+`type="number"` with `min=0`. `GMAIL_ONLY` in `components/landing/features.js`
+no longer lists `rules`: the landing promises them for IMAP too.
 
 ## Tuning constants (current values)
 
 ```
 previewSampleCap:       12 (items)      cap on the dry-run sample list
-ApplyRules scan:        200 (messages)  ListMessages "in:inbox"
+rulesScanLimit:         200 (messages)  apply and preview: Gmail "in:inbox", or the IMAP stored copy
 ApplyRules timeout:     90 s
-PreviewRules scan:      200 (messages)
 PreviewRules timeout:   60 s
-syncInbox scan:         100 (messages)  the autopilot path
+textBatch:              20 (messages)   one FETCH of IMAP texts (withTexts)
+textBytes:              256 KiB         what Texts reads of each IMAP message
+syncInbox scan:         100 (messages)  the autopilot path (IMAP: its arrivals only)
 snoozeLabelName:        "Mailsorter/Reporté"
 snoozeSweepInterval:    1 min           background wake ticker
 maxSnoozeWakeAttempts:  5               then status becomes "failed"
@@ -447,6 +550,11 @@ Standard library only, table-driven, no mocks. Run with
 |---|---|
 | `backend/internal/rules/rules_test.go` | all seven text operators plus their misses, unknown field, unknown operator, invalid regex, empty value, AND versus OR, disabled and condition-less guards, `FirstMatch` ordering, `Preview` tallies and disabled-rule exclusion, `Validate`, `EffectiveActions`, multi-action validation and preview |
 | `backend/internal/rules/rules_temporal_test.go` | `notContains` / `notEquals` including the empty-value guard, `olderThan` / `newerThan` against 40-day and 2-day emails, undated email, malformed day count, temporal through `MatchesAt` and `PreviewAt`, temporal validation (accepts `0`, rejects non-numeric and negative) |
+| `backend/internal/rules/rules_apply_test.go` | `ApplyOrder` (moves last, the rest in the order written, the rule left as written), `ReadsText` (body, snippet, case, disabled rule, temporal, blank value), `ApplyOrderOnFolders` (a label is a move, one move: trash, else folder, else archive), `PreviewOnFolders` (the flags, then the folder) |
+| `backend/internal/imap/text_test.go` | `Texts` against the in-memory IMAP server: plain or HTML text, read back off the server as unread, a file after the text not read, a text longer than what is read kept up to the cut, `NotReached` for a file before the text, a done context, a UID the folder does not hold |
+| `backend/internal/api/sync_imap_test.go` | `inboxUpsert` marks only a new row, `arrivalsSince`, `syncRules.arrival` |
+| `backend/internal/api/scenarios_4_rules_test.go`, `scenarios_4_imap_rules_test.go` | the sentences "Tes règles" (Gmail) and "Tes règles sur une boîte IMAP" (acceptance tag, real MongoDB and a real IMAP server) |
+| `backend/internal/api/wiring_imap_test.go` | `TestAcceptance_IMAPRuleMovesAMailOnce` (star then the folder; label and archive filed, one history line with the folder; delete and label to the trash), `TestAcceptance_AutoRules*`: a mail moved back by another program (after a rule, or held under another number) is not an arrival; a failed sync is judged again at the next one, a mail put away meanwhile not counted; given up after 3 tries. `TestAcceptance_IMAPPreviewReadsTheCopyAndCountsTheFiling`, `TestAcceptance_RulesDoNotJudgeATextNotRead`, `TestAcceptance_AutoApplyRulesStampedWhenTurnedOn` |
 | `backend/internal/protect/protect_test.go` | `NormalizeAddress` (display name, quotes, unterminated `<`), `NormalizeEntry` classification, `Match` (exact, case, domain, subdomain, the `evilacme.com` non-match), `IsDestructive` on both vocabularies, `Allowed` in all three combinations |
 | `backend/internal/snooze/snooze_test.go` | the five presets against a fixed Wednesday 10:00, `laterToday` at 20:00, `thisEvening` past 18:00, `weekend` on a Saturday morning, unknown preset |
 | `backend/internal/schedule/schedule_test.go` | `Due` including the zero-`last` and non-positive-interval cases |
@@ -488,12 +596,38 @@ response `protectedSkipped` and that the message is still in the inbox.
 - **Protecting a sender does not disable a matching rule.** The veto only blocks
   `archive` / `trash` / `delete`. A rule that labels or stars a VIP keeps running,
   and a multi-action rule partially applies: the label lands, the archive does not.
-- **`body` conditions see the first text part only.** `gmail.GetEmailBody` returns
+- **On Gmail, `body` conditions see the first text part only.** `gmail.GetEmailBody` returns
   `Payload.Body.Data` if present, else the first `text/plain` **or** `text/html`
   part of `Payload.Parts`, with no recursion into nested multiparts. For most
   marketing mail that means the condition is matched against raw HTML source, so
   `body contains "unsubscribe"` can hit markup, and deeply nested parts are
   invisible to the rule.
+- **Over IMAP, apply and preview judge the stored copy, not the server.** A mail
+  arrived since the last sync is not judged until a sync stores it; one another
+  mail program moved out still stored answers `errAlreadyOut` / `errLeftInbox`
+  and is neither counted nor journaled.
+- **An IMAP arrival is judged 3 syncs at most.** A failure that does not go
+  away (a folder the server refuses) is told at 3 syncs, then the mail is
+  given up (logged, told once by the next sync from the screen, the page
+  load's included) and left where it is; "Appliquer maintenant" still judges
+  it. The background sync (`auto_sync.go`) only logs; the count waits on the
+  mailbox's row (`rulesGivenUp`).
+- **A mail is an arrival by its server's clock.** INTERNALDATE is set by the
+  mail server, the option's stamp by Mailsorter's: a skew between the two moves
+  the boundary by as much; hence the first sync of a mailbox marks nothing. A
+  mailbox connected with another address or server gets a row of its own
+  (`sameMailbox`): a new generation (`api/generation.go`), connected now
+  (`createdAt`), never synced (`firstSyncedAt`), told of nothing given up
+  (`rulesGivenUp`). Every read and write of the rules (the marks, the claims,
+  the holds, the history lines) is of one generation: a sync or a run still
+  going on the previous mailbox writes nothing the next one reads, and what is
+  not of the generation connected now is erased (`clearMailboxCopy`).
+- **A rule on the text costs a read over IMAP.** `withTexts` reads up to 200
+  messages, 256 KiB each at most, only when `rules.ReadsText` is true; a text
+  not read in full within 256 KiB is not judged by a rule on the text.
+- **A rule moves a mail once over IMAP.** "Supprimer" with a label goes to the
+  trash, and the label is not applied; "Étiqueter" with "Archiver" files, and
+  the archive is not done (`ApplyOrderOnFolders`). On Gmail all happen.
 - **Apply and preview are N+1 Gmail calls.** `ListMessages` issues one
   `messages.list` then one `messages.get` with `Format("full")` per message
   (`backend/internal/gmail/gmail.go:141`). A 200-message apply is around 201 Gmail
@@ -502,7 +636,8 @@ response `protectedSkipped` and that the message is still in the inbox.
   consistent with them).
 - **Autopilot and manual apply scan different depths.** 100 messages at sync
   versus 200 on manual apply, so a rule can look inert in autopilot and fire on
-  the manual run.
+  the manual run. Over IMAP the autopilot judges only the mails that arrive, so a
+  rule created after a mail arrived sorts it only through the manual run.
 - **The snooze sweep is global and unsorted.** `wakeDueSnoozes` queries all users
   with `SetLimit(200)` and no sort. With more than 200 rows due at once, which
   ones wake first is whatever Mongo returns, and the remainder waits for the next
@@ -527,7 +662,7 @@ response `protectedSkipped` and that the message is still in the inbox.
 
 | File | Description |
 |---|---|
-| `backend/internal/rules/rules.go` | matcher, validator, preview, all field/operator/action constants |
+| `backend/internal/rules/rules.go` | matcher, validator, preview, `ApplyOrder`, `ReadsText`, all field/operator/action constants |
 | `backend/internal/rules/rules_test.go` | operator, ordering, preview and validation coverage |
 | `backend/internal/rules/rules_temporal_test.go` | negation and temporal operator coverage |
 | `backend/internal/protect/protect.go` | VIP normalization, matching and the destructive-action veto |
@@ -535,17 +670,20 @@ response `protectedSkipped` and that the message is still in the inbox.
 | `backend/internal/snooze/snooze.go` | preset to wake time |
 | `backend/internal/snooze/snooze_test.go` | preset and roll-forward coverage |
 | `backend/internal/schedule/schedule.go` | `Due(last, now, interval)` |
-| `backend/internal/api/rules.go` | rule CRUD, apply, preview, per-message action fan-out |
+| `backend/internal/api/rules.go` | rule CRUD, apply, preview, the messages they judge, per-message action fan-out |
+| `backend/internal/api/session.go` | the IMAP sync and its rules on the mails that arrive |
+| `backend/internal/imap/text.go` | `Client.Texts`, the text a rule reads over IMAP |
 | `backend/internal/api/protected.go` | VIP CRUD, `protectedValues`, the `allows` wrapper |
 | `backend/internal/api/snooze.go` | snooze write, list, manual wake, 1 min sweeper |
 | `backend/internal/api/analysis.go` | `protectAnalysis` and the auto-pilot guard |
 | `backend/internal/api/ai_handlers.go` | `ApplyBatch` / `ApplyBulk` guards, `extractSenderAddress` |
-| `backend/internal/api/handlers.go` | `syncInbox`, the at-sync autopilot |
+| `backend/internal/api/handlers.go` | `syncInbox`, the at-sync autopilot on the Gmail API |
 | `backend/internal/api/auto_sync.go` | the only `schedule.Due` caller |
 | `backend/internal/api/ledger.go` | `SourceRule`, `SourceSnooze`, `logAction` |
 | `backend/internal/models/models.go` | `SortingRule`, `RuleCondition`, `RuleAction`, `ProtectedSender`, `Snooze` |
 | `backend/internal/database/database.go` | `sorting_rules`, `protected_senders`, `snoozes` accessors and indexes |
 | `frontend/src/pages/Rules.js` | rule editor, dry run, autopilot toggle |
+| `frontend/src/components/inbox/TriagePlan.js` | a sender rule from a group of the triage plan |
 | `frontend/src/pages/Snoozed.js` | scheduled list and manual wake |
 | `frontend/src/components/EmailReader.js` | `SNOOZE_PRESETS` menu |
 | `frontend/src/pages/Settings.js` | the protected-senders card |
@@ -558,7 +696,7 @@ response `protectedSkipped` and that the message is still in the inbox.
 - `backend/internal/protect/protect.go` - 149 lines, the only place "destructive" is defined
 - `backend/internal/snooze/snooze.go` - 82 lines, clock-injected preset resolution
 - `backend/internal/schedule/schedule.go` - 20 lines, one function
-- `backend/internal/api/rules.go` - the I/O half: Mongo, Gmail, ledger
+- `backend/internal/api/rules.go` - the I/O half: Mongo, the mailbox through a session, ledger
 - `backend/internal/api/protected.go` - VIP CRUD and the fail-open loader
 - `backend/internal/api/snooze.go` - write path, wake path, sweeper
 - `backend/internal/api/routes.go` - route registrations, lines 24, 34-35, 38-40, 57-62, 84

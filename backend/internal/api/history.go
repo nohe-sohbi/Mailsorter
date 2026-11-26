@@ -20,15 +20,21 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
 )
 
 // actionLogView is one row of the user-facing action history. It enriches the
 // raw ledger entry with whether the action can still be reversed (it has a clean
 // inverse and has not already been undone), so the UI can decide where to show
 // an "Annuler" button without re-deriving the rule.
+//
+// MailboxGone says the entry is of a mailbox no longer connected (see
+// generation.go): final, its message number names, now, a mail of the one
+// connected since, or of none.
 type actionLogView struct {
 	models.ActionLog
-	Undoable bool `json:"undoable"`
+	Undoable    bool `json:"undoable"`
+	MailboxGone bool `json:"mailboxGone,omitempty"`
 }
 
 // GetActionLog returns the caller's most recent ledger entries (newest first),
@@ -111,9 +117,24 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.resolveLogIdentities(ctx, userEmail, logs)
+	// The mailbox connected now: "Annuler" only acts on its entries.
+	transport, account, tErr := h.transportFor(ctx, userEmail)
+	if errors.Is(tErr, errMailboxChanged) {
+		writeAuthError(w, tErr)
+		return
+	}
+	known := tErr == nil || errors.Is(tErr, errNoMailboxConnected)
+	if tErr != nil && known {
+		transport, account = "", models.MailAccount{}
+	}
+	if !known {
+		log.Printf("history: which mailbox %s is on: %v", userEmail, tErr)
+	}
+	gen := generationOf(transport, account)
 
-	imapState := h.imapUndoState(ctx, userEmail, logs)
+	h.resolveLogIdentities(ctx, userEmail, gen, logs)
+
+	imapState := h.imapUndoState(ctx, userEmail, transport, gen, known, logs)
 	views := make([]actionLogView, 0, len(logs))
 	for _, l := range logs {
 		inverse, reversible := activity.Inverse(l.Action)
@@ -134,7 +155,10 @@ func (h *Handler) GetActionLog(w http.ResponseWriter, r *http.Request) {
 			l.SenderLabel, l.SenderLabelIsAddress = protect.LabelOf(l.From)
 			l.SenderAddressShown = protect.ShownAddress(protect.Address(l.From))
 		}
-		views = append(views, actionLogView{ActionLog: l, Undoable: reversible && !l.Undone})
+		// An entry of another mailbox than the one connected now names a
+		// message by a number the one connected now gives to another.
+		current := ofCurrentGeneration(l, gen)
+		views = append(views, actionLogView{ActionLog: l, Undoable: known && reversible && !l.Undone && current, MailboxGone: known && !current})
 	}
 
 	// A full page means there is probably more; hand back the cursor to ask for
@@ -160,15 +184,15 @@ type imapUndo struct {
 	inInbox map[string]bool
 }
 
-// imapUndoState answers for these entries; nil off IMAP, where every
-// reversible action stays reversible. When the store cannot answer, nothing
-// is offered: offering "Annuler" on what cannot be undone is a promise broken
-// on click, hiding it for one page load is not.
-func (h *Handler) imapUndoState(ctx context.Context, userEmail string, logs []models.ActionLog) *imapUndo {
+// imapUndoState answers for these entries, from the copy of the mailbox
+// connected now (gen); nil off IMAP, where every reversible action stays
+// reversible. When the store cannot answer (known false: which mailbox is
+// connected could not be read), nothing is offered: offering "Annuler" on
+// what cannot be undone is a promise broken on click, hiding it for one page
+// load is not.
+func (h *Handler) imapUndoState(ctx context.Context, userEmail string, transport provider.Transport, gen string, known bool, logs []models.ActionLog) *imapUndo {
 	none := &imapUndo{canBringBack: map[string]bool{}, inInbox: map[string]bool{}}
-	transport, _, err := h.transportFor(ctx, userEmail)
-	if err != nil {
-		log.Printf("history: which transport %s is on: %v", userEmail, err)
+	if !known {
 		return none
 	}
 	if transport != provider.TransportIMAP {
@@ -183,11 +207,10 @@ func (h *Handler) imapUndoState(ctx context.Context, userEmail string, logs []mo
 	if len(ids) == 0 {
 		return none
 	}
-	cur, err := h.db.Emails().Find(ctx, bson.M{
-		"userId":    userEmail,
-		"folder":    string(mailbox.FolderInbox),
-		"messageId": bson.M{"$in": ids},
-	}, options.Find().SetProjection(bson.M{"messageId": 1, "headerMessageId": 1, "leftInbox": 1, "leftAt": 1, "movedTo": 1}))
+	filter := inboxOf(userEmail, gen)
+	filter["messageId"] = bson.M{"$in": ids}
+	cur, err := h.db.Emails().Find(ctx, filter,
+		options.Find().SetProjection(bson.M{"messageId": 1, "headerMessageId": 1, "leftInbox": 1, "leftAt": 1, "movedTo": 1}))
 	if err != nil {
 		log.Printf("history: which actions of %s can be undone: %v", userEmail, err)
 		return none
@@ -237,12 +260,14 @@ func parseLogCursor(raw string) (time.Time, primitive.ObjectID, bool) {
 // written without them (either by a caller that did not hold the message, or
 // before the ledger carried an identity at all). It costs a single indexed
 // lookup for the whole page, and leaves entries whose email is no longer cached
-// untouched so the UI can fall back to a neutral label.
-func (h *Handler) resolveLogIdentities(ctx context.Context, userEmail string, logs []models.ActionLog) {
+// untouched so the UI can fall back to a neutral label. Only the entries of
+// the mailbox connected now (gen) are resolved, from its copy: another
+// mailbox's number names, there, another mail.
+func (h *Handler) resolveLogIdentities(ctx context.Context, userEmail, gen string, logs []models.ActionLog) {
 	missing := make([]string, 0, len(logs))
 	seen := make(map[string]bool, len(logs))
 	for _, l := range logs {
-		if l.Subject != "" || l.From != "" || l.MessageID == "" || seen[l.MessageID] {
+		if l.Subject != "" || l.From != "" || l.MessageID == "" || seen[l.MessageID] || !ofCurrentGeneration(l, gen) {
 			continue
 		}
 		seen[l.MessageID] = true
@@ -253,8 +278,9 @@ func (h *Handler) resolveLogIdentities(ctx context.Context, userEmail string, lo
 	}
 
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId":    userEmail,
-		"messageId": bson.M{"$in": missing},
+		"userId":     userEmail,
+		"generation": inGeneration(gen),
+		"messageId":  bson.M{"$in": missing},
 	}, options.Find().SetProjection(bson.M{"messageId": 1, "subject": 1, "from": 1}))
 	if err != nil {
 		return // best-effort: the history still renders without identities
@@ -270,7 +296,7 @@ func (h *Handler) resolveLogIdentities(ctx context.Context, userEmail string, lo
 		byID[e.MessageID] = e
 	}
 	for i := range logs {
-		if logs[i].Subject != "" || logs[i].From != "" {
+		if logs[i].Subject != "" || logs[i].From != "" || !ofCurrentGeneration(logs[i], gen) {
 			continue
 		}
 		if e, ok := byID[logs[i].MessageID]; ok {
@@ -311,9 +337,24 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// The mailbox connected now; refused first for a screen loaded on
+	// another (errMailboxChanged). None connected goes the Gmail way, whose
+	// client lookup answers for it (writeAuthError).
+	transport, account, tErr := h.transportFor(ctx, userEmail)
+	if tErr != nil && !errors.Is(tErr, errNoMailboxConnected) {
+		writeAuthError(w, tErr)
+		return
+	}
+
 	var entry models.ActionLog
 	if err := h.db.ActionLog().FindOne(ctx, bson.M{"_id": oid, "userId": userEmail}).Decode(&entry); err != nil {
 		writeError(w, http.StatusNotFound, "Action introuvable")
+		return
+	}
+	if !ofCurrentGeneration(entry, generationOf(transport, account)) {
+		// Of a mailbox no longer connected: its message number names, now,
+		// a mail of the one connected since, which it would touch.
+		writeError(w, http.StatusGone, mailboxGoneMessage)
 		return
 	}
 	if entry.Undone {
@@ -335,9 +376,6 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Action déjà annulée")
 		return
 	}
-	// A transport that cannot be resolved goes the Gmail way, whose client
-	// lookup answers for it (writeAuthError).
-	transport, _, tErr := h.transportFor(ctx, userEmail)
 	onIMAP := tErr == nil && transport == provider.TransportIMAP
 	inverse, ok := activity.Inverse(entry.Action)
 	if onIMAP {
@@ -359,12 +397,18 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer session.Close()
+		if !ofCurrentGeneration(entry, session.generation()) {
+			// Another mailbox connected since the check above.
+			writeError(w, http.StatusGone, mailboxGoneMessage)
+			return
+		}
 		back := func() error {
 			return h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, entry.MessageID), inverse, "")
 		}
 		if returnsToInbox(inverse, provider.TransportIMAP) {
-			// Undoing a report ends it (endReportOnReturn).
-			err = h.endReportOnReturn(ctx, userEmail, entry.MessageID, back)
+			// Undoing a report ends it (endReportOnReturn), the report of
+			// this mailbox's mail.
+			err = h.endReportOnReturn(ctx, userEmail, session.generation(), session.account.CreatedAt, entry.MessageID, back)
 		} else {
 			err = back()
 		}
@@ -405,7 +449,7 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		back := func() error { return h.applyInverseAction(gmailClient, entry.MessageID, inverse) }
 		if returnsToInbox(inverse, provider.TransportGmailAPI) {
 			// Undoing a report ends it (endReportOnReturn).
-			err = h.endReportOnReturn(ctx, userEmail, entry.MessageID, back)
+			err = h.endReportOnReturn(ctx, userEmail, "", time.Time{}, entry.MessageID, back)
 		} else {
 			err = back()
 		}
@@ -414,6 +458,11 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
+			if gmailNamesNoMail(err) {
+				log.Printf("history: undo entry %s of %s, Gmail knows no message %q: %v", oid.Hex(), userEmail, entry.MessageID, err)
+				writeError(w, http.StatusNotFound, undoNoMailMessage)
+				return
+			}
 			writeError(w, http.StatusBadGateway, "Annulation impossible : "+err.Error())
 			return
 		}
@@ -426,9 +475,26 @@ func (h *Handler) UndoAction(w http.ResponseWriter, r *http.Request) {
 		log.Printf("history: entry %s of %s undone but not marked: %v", oid.Hex(), userEmail, err)
 	}
 	// Record the reversal itself so the audit trail stays truthful.
-	h.logActionFiled(ctx, userEmail, entry.MessageID, inverse, SourceUndo, entry.Subject, entry.From, entry.LabelName)
+	h.logActionFiled(ctx, userEmail, entry.Generation, entry.MessageID, inverse, SourceUndo, entry.Subject, entry.From, entry.LabelName)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "undone", "action": inverse})
+}
+
+// mailboxGoneMessage is what the user reads for "Annuler" on an entry of a
+// mailbox no longer connected (ofCurrentGeneration).
+const mailboxGoneMessage = "Cette action concerne une boîte débranchée depuis."
+
+// undoNoMailMessage is what the user reads for "Annuler" over the Gmail API on
+// an entry whose message Gmail does not know (gmailNamesNoMail): deleted for
+// good since, or an entry of an IMAP mailbox disconnected before entries
+// carried their generation, whose number Gmail refuses as an id.
+const undoNoMailMessage = "Ce mail n'est pas dans votre boîte Gmail : cette action ne peut pas être annulée d'ici."
+
+// gmailNamesNoMail says whether the Gmail API refused a message id as naming
+// no message: not found (404), or not an id at all (400, an IMAP number).
+func gmailNamesNoMail(err error) bool {
+	var apiErr *googleapi.Error
+	return errors.As(err, &apiErr) && (apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusBadRequest)
 }
 
 // sameUndoWindow is how long after an "Annuler" another "Annuler" of the
@@ -451,17 +517,18 @@ func (h *Handler) sameUndo(ctx context.Context, userEmail string, entry models.A
 	if !recentUndo(entry.UndoneAt, now) {
 		return false, nil
 	}
-	acted, err := h.actedOnSince(ctx, userEmail, entry.MessageID, entry.UndoneAt)
+	acted, err := h.actedOnSince(ctx, userEmail, entry.Generation, entry.MessageID, entry.UndoneAt)
 	return !acted, err
 }
 
 // actedOnSince says whether the history holds an action on this mail since
 // that time, other than a reversal ("Annuler" records its own). Over IMAP a
 // mail "Annuler" brought back has a new number, which its stored row keeps
-// alongside the old one (restoredFrom): an action under either counts.
-func (h *Handler) actedOnSince(ctx context.Context, userEmail, messageID string, since time.Time) (bool, error) {
+// alongside the old one (restoredFrom): an action under either counts. Within
+// the mailbox of that generation (gen): another names other mails so.
+func (h *Handler) actedOnSince(ctx context.Context, userEmail, gen, messageID string, since time.Time) (bool, error) {
 	ids := []string{messageID}
-	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "restoredFrom": messageID},
+	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "generation": inGeneration(gen), "restoredFrom": messageID},
 		options.Find().SetProjection(bson.M{"messageId": 1}))
 	if err != nil {
 		return false, fmt.Errorf("look for message %s put back: %w", messageID, err)
@@ -476,10 +543,11 @@ func (h *Handler) actedOnSince(ctx context.Context, userEmail, messageID string,
 		ids = append(ids, r.MessageID)
 	}
 	n, err := h.db.ActionLog().CountDocuments(ctx, bson.M{
-		"userId":    userEmail,
-		"messageId": bson.M{"$in": ids},
-		"createdAt": bson.M{"$gt": since},
-		"source":    bson.M{"$ne": SourceUndo},
+		"userId":     userEmail,
+		"generation": inGeneration(gen),
+		"messageId":  bson.M{"$in": ids},
+		"createdAt":  bson.M{"$gt": since},
+		"source":     bson.M{"$ne": SourceUndo},
 	}, options.Count().SetLimit(1))
 	if err != nil {
 		return false, fmt.Errorf("count the actions on message %s since its undo: %w", messageID, err)

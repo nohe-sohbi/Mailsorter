@@ -5,7 +5,7 @@ import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
 import { cn } from '../ui/cn';
 import Spinner from '../ui/Spinner';
-import { actionMeta } from '../ui/actions';
+import { actionMeta, labelPlace } from '../ui/actions';
 import { Toggle, EmptyState, ErrorState } from '../ui/primitives';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
@@ -95,41 +95,42 @@ const effectiveActions = (rule) =>
 // array the editor can mutate, regardless of how it was stored.
 const normalizeForEdit = (rule) => ({ ...rule, actions: effectiveActions(rule) });
 
-// LabelField: the user picks from their real Gmail labels, but stays free to
-// name a new one. Typing blind was how a single typo ended up creating a second,
+// LabelField: the user picks from their real labels, or over IMAP their own
+// folders (`folders`, a label being a folder there), but stays free to name a
+// new one. Typing blind was how a single typo ended up creating a second,
 // near-identical label, so an unknown name is now announced *before* saving,
-// instead of being discovered later in Gmail.
-function LabelField({ value, onChange, labels, labelsKnown, listId, hintId }) {
+// instead of being discovered later in the mailbox.
+function LabelField({ value, onChange, labels, labelsKnown, listId, hintId, folders }) {
   const typed = (value || '').trim();
   const isNew = labelsKnown && typed !== '' && !labels.includes(typed);
+  const what = folders ? 'dossier' : 'libellé';
   return (
     <div className="min-w-[180px] flex-1">
       <input
         className="input"
         list={listId}
-        placeholder={labels.length ? 'Choisissez ou créez un libellé...' : 'Ex. Factures'}
+        placeholder={labels.length ? `Choisissez ou créez un ${what}...` : 'Ex. Factures'}
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
-        aria-label="Libellé à appliquer"
+        aria-label={folders ? 'Dossier où classer' : 'Libellé à appliquer'}
         aria-describedby={isNew ? hintId : undefined}
         autoComplete="off"
       />
       {isNew && (
         <span id={hintId} className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-caution-700">
-          <Tag size={12} /> Nouveau libellé : il sera créé dans votre boîte.
+          <Tag size={12} /> Nouveau {what} : il sera créé dans votre boîte.
         </span>
       )}
     </div>
   );
 }
 
-// `labelsOk` is false where rules do not run (IMAP, or not known yet):
-// "Étiqueter" and "Mettre en favori" are then not offered for a new action.
-// Over IMAP a label is a folder, which only the AI's proposals file into so
-// far, and a rule that stars waits for rules to run there. An action that
-// already does one (an imported rule) keeps its choice, so the list can still
-// show it.
-function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, labelsOk }) {
+// `labelsOk` is false while the mailbox is not known: "Étiqueter" is then not
+// offered for a new action, since what it does depends on the mailbox. Over
+// IMAP (`folders`) a label is a folder: the action reads "Classer" and files
+// the mail there. An action that already labels (an imported rule) keeps its
+// choice, so the list can still show it.
+function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, labelsOk, folders }) {
   const [rule, setRule] = useState(initial);
   const toast = useToast();
   const uid = useId();
@@ -158,17 +159,15 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
   // Actions already chosen can't be picked again (except "label", which can
   // repeat with different names), which keeps the combo meaningful.
   const usedTypes = new Set(rule.actions.map((a) => a.type));
-  // Rules do not run over IMAP yet: the label (a folder there, which only the
-  // AI's proposals file into so far) and the star join the editor there when
-  // they do.
-  const gmailOnly = (type) => type === 'label' || type === 'star';
+  // The label waits for the mailbox to be known; the star is offered on both.
+  const whenKnown = (type) => type === 'label';
   const offered = (type, current) => {
-    if (gmailOnly(type) && !labelsOk && current !== type) return false;
+    if (whenKnown(type) && !labelsOk && current !== type) return false;
     return type === 'label' || type === current || !usedTypes.has(type);
   };
   // What "+ Ajouter une action" adds: a label, which can repeat, or else the
   // first action not chosen yet.
-  const nextType = labelsOk ? 'label' : ACTION_TYPES.find((type) => !gmailOnly(type) && !usedTypes.has(type));
+  const nextType = labelsOk ? 'label' : ACTION_TYPES.find((type) => !whenKnown(type) && !usedTypes.has(type));
   const addAction = () =>
     setRule((r) => ({ ...r, actions: [...r.actions, { type: nextType, labelName: '' }] }));
   const removeAction = (i) =>
@@ -297,17 +296,31 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
       <div>
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold text-ink-700">Actions</span>
+          {/* Not the order written: the engine marks read and stars before it
+              moves the mail (rules.ApplyOrder, rules.ApplyOrderOnFolders in
+              the backend). Over IMAP classifying moves the mail too, and a
+              mail moves once, chosen by what the rule means. */}
           <span className="text-xs text-muted">
-            Exécutées dans l'ordre, ex. <em>{labelsOk ? 'Étiqueter' : 'Marquer comme lu'}</em> puis <em>Archiver</em>
+            {folders ? (
+              <>
+                Sur cette boîte, un mail ne va qu'à un endroit : la corbeille si la règle supprime, sinon le
+                dossier si elle classe, sinon l'archive.
+              </>
+            ) : (
+              <>
+                {labelsOk ? 'Lu, favori et étiquette' : 'Lu et favori'} d'abord, puis le rangement (<em>Archiver</em> ou{' '}
+                <em>Supprimer</em>)
+              </>
+            )}
           </span>
         </div>
         <div className="space-y-2">
           {rule.actions.map((a, i) => (
             <div key={i} className="flex flex-wrap items-start gap-2">
               <select className="select w-auto flex-none" value={a.type} onChange={(e) => setActionType(i, e.target.value)}>
-                {ACTION_TYPES.filter((type) => !gmailOnly(type) || offered(type, a.type)).map((type) => (
+                {ACTION_TYPES.filter((type) => !whenKnown(type) || offered(type, a.type)).map((type) => (
                   <option key={type} value={type} disabled={!offered(type, a.type)}>
-                    {actionMeta(type).label}
+                    {actionMeta(type, { folders }).label}
                   </option>
                 ))}
               </select>
@@ -319,6 +332,7 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
                   labelsKnown={labelsKnown}
                   listId={listId}
                   hintId={`${uid}-new-label-${i}`}
+                  folders={folders}
                 />
               )}
               {rule.actions.length > 1 && (
@@ -352,9 +366,11 @@ function RuleEditor({ initial, onCancel, onSave, saving, labels, labelsKnown, la
   );
 }
 
-function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplicate, onMove, reordering }) {
+// `folders` is a mailbox where a label is a folder (IMAP): a rule that labels
+// reads "Classer dans « Factures »" there.
+function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplicate, onMove, reordering, folders }) {
   const actions = effectiveActions(rule);
-  const meta = actionMeta(actions[0].type);
+  const meta = actionMeta(actions[0].type, { folders });
   return (
     <div className="card flex items-start justify-between gap-4 p-5">
       <div className="min-w-0">
@@ -388,7 +404,8 @@ function RuleCard({ rule, position, total, onToggle, onEdit, onDelete, onDuplica
           {actions.map((a, i) => (
             <span key={i} className="font-semibold text-ink-700">
               {i > 0 && <span className="font-normal text-subtle"> + </span>}
-              {actionMeta(a.type).label}{a.type === 'label' ? ` « ${a.labelName} »` : ''}
+              {actionMeta(a.type, { folders }).label}
+              {a.type === 'label' ? labelPlace(a.labelName, { folders }) : ''}
             </span>
           ))}
         </p>
@@ -465,15 +482,16 @@ function Rules() {
   // Distinct from `labels.length`: tant que l'appel n'a pas abouti, on ne peut
   // pas affirmer qu'un libellé saisi n'existe pas.
   const [labelsKnown, setLabelsKnown] = useState(false);
-  // Rules run through the Gmail API only: over IMAP the preview, "Appliquer
-  // maintenant" and the run at each sync answer 501, so they are hidden and the
-  // page says so once. Writing rules still works, so the page then describes
-  // what a rule says, never that it sorts by itself, and offers no label (over
-  // IMAP a label is a folder, and a rule does not file into one yet). The
-  // quota is mentioned only where there is one. `rulesRun` is false too while
-  // the mailbox is not known.
-  const { isImap, fullFeatures } = useMailbox();
-  const rulesRun = fullFeatures;
+  // Rules run on both transports: the preview, "Appliquer maintenant" and the
+  // run at each sync (over IMAP it sorts the mails that arrive). A rule labels
+  // on both too (`labelsOk`): over IMAP a label is a folder (`isImap`), which
+  // the rule files the mail in, made when there is none. The quota is
+  // mentioned only where there is one. While the mailbox is not known, the
+  // page describes what a rule says, never that it sorts by itself
+  // (`rulesRun`).
+  const { known, isImap } = useMailbox();
+  const rulesRun = known;
+  const labelsOk = known;
   const { selfHosted } = useInstance();
 
   const load = () => {
@@ -497,12 +515,11 @@ function Rules() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Les libellés sont chargés une fois pour toute la page, et seulement là où
-  // les règles tournent (pas en IMAP, où un libellé est un dossier qu'une
-  // règle ne sait pas encore remplir). Un échec est silencieux : l'éditeur
-  // retombe alors sur la saisie libre.
+  // Les libellés sont chargés une fois pour toute la page, dès que la boîte
+  // est connue : en IMAP ce sont ses dossiers à elle. Un échec est
+  // silencieux : l'éditeur retombe alors sur la saisie libre.
   useEffect(() => {
-    if (!fullFeatures) return;
+    if (!known) return;
     labelService
       .list()
       .then((r) => {
@@ -516,7 +533,7 @@ function Rules() {
         setLabelsKnown(true);
       })
       .catch(() => {});
-  }, [fullFeatures]);
+  }, [known]);
 
   const save = async (rule) => {
     setSaving(true);
@@ -744,18 +761,6 @@ function Rules() {
         </div>
       )}
 
-      {isImap && (
-        <div className="card mb-5 flex items-start gap-3 p-4">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-muted">
-            <Bolt size={18} />
-          </span>
-          <p className="text-sm text-ink-600">
-            Les règles ne s'appliquent pas encore sur les boîtes IMAP : vous pouvez les écrire ici, mais ni
-            l'aperçu ni l'application, à la demande ou à chaque synchronisation, ne sont disponibles.
-          </p>
-        </div>
-      )}
-
       {hasRules && rulesRun && (
         <div className="card mb-5 flex items-center gap-3 p-4">
           <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', autoApply ? 'bg-brand-50 text-brand-600' : 'bg-ink-100 text-muted')}>
@@ -793,7 +798,7 @@ function Rules() {
             <>
               <div className="flex flex-wrap gap-2">
                 {(preview.byRule || []).map((h) => {
-                  const meta = actionMeta(h.action);
+                  const meta = actionMeta(h.action, { folders: isImap });
                   return (
                     <span key={h.ruleName} className={cn('chip', meta.chip)}>
                       <meta.Icon size={13} /> {h.ruleName} · {h.matched}
@@ -805,7 +810,10 @@ function Rules() {
                 {(preview.samples || []).map((s, i) => (
                   <li key={i} className="flex items-center gap-2 text-xs text-ink-500">
                     {effectiveActions(s).map((a, j) => (
-                      <span key={j} className={cn('chip shrink-0', actionMeta(a.type).chip)}>{actionMeta(a.type).label}</span>
+                      <span key={j} className={cn('chip shrink-0', actionMeta(a.type).chip)}>
+                        {actionMeta(a.type, { folders: isImap }).label}
+                        {a.type === 'label' ? labelPlace(a.labelName, { folders: isImap }) : ''}
+                      </span>
                     ))}
                     <span className="truncate"><span className="font-medium text-ink-700">{s.subject || '(sans objet)'}</span> · {s.senderLabel}</span>
                   </li>
@@ -824,7 +832,8 @@ function Rules() {
             saving={saving}
             labels={labels}
             labelsKnown={labelsKnown}
-            labelsOk={rulesRun}
+            labelsOk={labelsOk}
+            folders={isImap}
             onCancel={() => setEditing(null)}
             onSave={save}
           />
@@ -847,13 +856,13 @@ function Rules() {
               !rulesRun
                 ? "Une règle dit quoi faire de ce qui revient chaque semaine (l'archiver, le supprimer, le marquer comme lu). Sans IA."
                 : selfHosted
-                ? 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA.'
-                : 'Une règle archive, étiquette ou supprime toute seule ce qui revient chaque semaine. Sans IA, sans quota.'
+                ? `Une règle ${isImap ? 'archive, classe ou supprime' : 'archive, étiquette ou supprime'} toute seule ce qui revient chaque semaine. Sans IA.`
+                : `Une règle ${isImap ? 'archive, classe ou supprime' : 'archive, étiquette ou supprime'} toute seule ce qui revient chaque semaine. Sans IA, sans quota.`
             }
             title="Aucune règle pour l'instant"
             description={
               rulesRun
-                ? 'Créez votre première règle pour archiver, étiqueter ou supprimer automatiquement les emails récurrents.'
+                ? `Créez votre première règle pour ${isImap ? 'archiver, classer dans un dossier ou supprimer' : 'archiver, étiqueter ou supprimer'} automatiquement les emails récurrents.`
                 : 'Créez votre première règle pour dire quoi faire des emails récurrents : les archiver, les supprimer ou les marquer comme lus.'
             }
             action={<button onClick={() => setEditing('new')} className="btn-primary">+ Créer une règle</button>}
@@ -876,7 +885,8 @@ function Rules() {
                 saving={saving}
                 labels={labels}
                 labelsKnown={labelsKnown}
-                labelsOk={rulesRun}
+                labelsOk={labelsOk}
+                folders={isImap}
                 onCancel={() => setEditing(null)}
                 onSave={save}
               />
@@ -892,6 +902,7 @@ function Rules() {
                 onDelete={() => remove(rule)}
                 onDuplicate={() => duplicate(rule)}
                 onMove={(delta) => move(rules.indexOf(rule), delta)}
+                folders={isImap}
               />
             )
           )}

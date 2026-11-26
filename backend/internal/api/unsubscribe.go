@@ -83,7 +83,13 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		defer session.Close()
 	}
 
-	links, from, err := h.unsubscribeLinksOf(ctx, transport, session, userEmail, req.MessageID)
+	// The mailbox read is the one the session reaches when there is one (the
+	// sweep acts on its generation), the one connected now otherwise.
+	gen := generationOf(transport, account)
+	if session != nil {
+		gen = session.generation()
+	}
+	links, from, err := h.unsubscribeLinksOf(ctx, transport, session, userEmail, gen, req.MessageID)
 	if errors.Is(err, errMessageUnknown) {
 		writeError(w, http.StatusNotFound, "Email introuvable")
 		return
@@ -250,12 +256,13 @@ var errMessageUnknown = errors.New("api: no such message")
 // Over IMAP they are read from the stored copy of the inbox, which the sync
 // wrote them into (imap.Client.List reads both headers): the screen only
 // shows what it holds, and reading them again costs a connection for the
-// same answer.
-func (h *Handler) unsubscribeLinksOf(ctx context.Context, transport provider.Transport, session *mailSession, userEmail, messageID string) (unsubscribe.Links, string, error) {
+// same answer. The copy of the mailbox connected now (gen): the same number
+// in another mailbox's copy is another mail.
+func (h *Handler) unsubscribeLinksOf(ctx context.Context, transport provider.Transport, session *mailSession, userEmail, gen, messageID string) (unsubscribe.Links, string, error) {
 	if transport == provider.TransportIMAP {
 		var stored models.Email
 		err := h.db.Emails().FindOne(ctx, bson.M{
-			"userId": userEmail, "folder": string(mailbox.FolderInbox), "messageId": messageID,
+			"userId": userEmail, "generation": inGeneration(gen), "folder": string(mailbox.FolderInbox), "messageId": messageID,
 		}).Decode(&stored)
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return unsubscribe.Links{}, "", errMessageUnknown
@@ -403,10 +410,13 @@ func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, use
 	for _, f := range forms {
 		quoted = append(quoted, regexp.QuoteMeta(f))
 	}
+	// Of the mailbox this session reaches (its generation): an IMAP number
+	// names a mail in one mailbox only.
 	cursor, err := h.db.Emails().Find(ctx, bson.M{
-		"userId":    userEmail,
-		"leftInbox": notLeftInbox,
-		"from":      bson.M{"$regex": strings.Join(quoted, "|"), "$options": "i"},
+		"userId":     userEmail,
+		"generation": inGeneration(session.generation()),
+		"leftInbox":  notLeftInbox,
+		"from":       bson.M{"$regex": strings.Join(quoted, "|"), "$options": "i"},
 	})
 	if err != nil {
 		log.Printf("unsubscribe: listing the mail of %s for %s failed, nothing archived: %v", senderAddr, userEmail, err)
@@ -445,7 +455,7 @@ func (h *Handler) archiveBySender(ctx context.Context, session *mailSession, use
 			continue
 		}
 		archived++
-		h.logActionMeta(ctx, userEmail, e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
+		h.logActionMeta(ctx, userEmail, session.generation(), e.MessageID, "archive", SourceUnsubscribe, e.Subject, e.From)
 	}
 	return archived, notArchived
 }
@@ -463,10 +473,17 @@ func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
+	// The senders of the mailbox connected now (see generation.go).
+	gen, err := h.currentGeneration(ctx, userEmail)
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
 	pipeline := []bson.M{
 		{"$match": bson.M{
-			"userId":    userEmail,
-			"leftInbox": notLeftInbox,
+			"userId":     userEmail,
+			"generation": inGeneration(gen),
+			"leftInbox":  notLeftInbox,
 			"$or": []bson.M{
 				{"unsubUrl": bson.M{"$nin": []interface{}{nil, ""}}},
 				{"unsubMailto": bson.M{"$nin": []interface{}{nil, ""}}},

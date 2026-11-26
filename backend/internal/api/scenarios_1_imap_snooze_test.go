@@ -379,5 +379,91 @@ func TestScenarios_IMAPSnooze(t *testing.T) {
 				moi.expectShows(uids[0], bankStatement.Subject)
 			},
 		},
+		{
+			phrase: "Débrancher une boîte IMAP annule ses reports : ils quittent tes mails reportés, et leurs mails restent dans le dossier « Plus tard » de la boîte, où tu les retrouves depuis ta messagerie.",
+			status: validated,
+			run: func(t *testing.T, app *testApp) {
+				moi, uids := syncedIMAPInbox(app, bankStatement, shopOrder)
+				later := reportedOnIMAP(moi, uids[1], shopOrder)
+				if _, ok := moi.reportedRow(shopOrder.Subject); !ok {
+					app.fatalf("les mails reportés de %s devraient montrer le mail %q qu'il vient de reporter, ils ne le montrent pas (ils montrent : %s) : le scénario ne prouve rien", moi.email, shopOrder.Subject, describeReported(moi.reported()))
+				}
+				first := moi.connectedNow()
+
+				// "Déconnecter" on the /connect screen: its reports leave the
+				// "Prévus" tab at once.
+				moi.disconnectMailbox()
+				if rows := moi.reported(); len(rows) > 0 {
+					app.failf("juste après « Déconnecter » la boîte %s, les mails reportés de %s ne devraient plus rien montrer, ses reports sont annulés : ils montrent %s", first.address, moi.email, describeReported(rows))
+				}
+
+				// Another mailbox connected, whose server numbers its mails
+				// as the first one's: its mail n°2 is another mail than the
+				// one reported. Then the sync the inbox runs as it opens.
+				moi.connectOtherMailbox(otherMailbox)
+				newUIDs := moi.receive(otherBoxMails...)
+				moi.expectNumbered(newUIDs[1], uids[1])
+				moi.sync()
+				other := moi.connectedNow()
+				if rows := moi.reported(); len(rows) > 0 {
+					app.failf("après avoir débranché %s et branché %s, les mails reportés de %s ne devraient rien montrer, ils montrent %s", first.address, otherMailbox, moi.email, describeReported(rows))
+				}
+
+				// The reported mail where it waited, as the person's mail
+				// program shows the first mailbox.
+				stays := func(when string) {
+					app.t.Helper()
+					held, ok := first.subjectsIn(later)
+					switch {
+					case !ok:
+						app.failf("%s, la boîte %s devrait avoir encore son dossier « %s », où le mail %q attend : elle ne l'a plus", when, first.address, laterFolder, shopOrder.Subject)
+					case !containsSubject(held, shopOrder.Subject):
+						app.failf("%s, le mail %q devrait être encore dans le dossier « %s » de la boîte %s, où tu le retrouves depuis ta messagerie : il n'y est pas (le dossier contient : %s)", when, shopOrder.Subject, laterFolder, first.address, quotedList(held))
+					}
+					if inbox, _ := first.subjectsIn(serverInbox); containsSubject(inbox, shopOrder.Subject) {
+						app.failf("%s, le mail %q ne devrait pas être revenu dans la boîte de réception de %s : son report est annulé, il y est", when, shopOrder.Subject, first.address)
+					}
+				}
+				stays("après avoir débranché la boîte")
+
+				// The first mailbox connected again, later: annulled, the
+				// report does not come back with it. It is where its hour
+				// would find its mail again.
+				moi.disconnectMailbox()
+				moi.connectAgain(first)
+				moi.sync()
+				if rows := moi.reported(); len(rows) > 0 {
+					app.failf("après avoir rebranché %s, les mails reportés de %s ne devraient rien montrer, son report a été annulé quand tu l'as débranchée : ils montrent %s", first.address, moi.email, describeReported(rows))
+				}
+
+				// Its hour passes: nothing moves, on either mailbox, and
+				// nothing is written in the history.
+				before := moi.historyScreen()
+				app.reportsHourPassesFor(moi.email)
+				stays("à l'heure prévue de son report annulé")
+				inbox, _ := other.subjectsIn(serverInbox)
+				for _, m := range otherBoxMails {
+					if !containsSubject(inbox, m.Subject) {
+						app.failf("à l'heure prévue du report annulé, le mail %q devrait être toujours dans la boîte de réception de %s, il n'y est plus (elle contient : %s)", m.Subject, otherMailbox, quotedList(inbox))
+					}
+				}
+				if after := moi.historyScreen(); len(after) != len(before) {
+					app.failf("à l'heure prévue du report annulé, l'historique de %s ne devrait rien montrer de nouveau, il montre %d ligne(s) de plus, la plus récente : %q (%s)", moi.email, len(after)-len(before), after[0].Action, after[0].Source)
+				}
+				if rows := moi.reported(); len(rows) > 0 {
+					app.failf("à l'heure prévue du report annulé, les mails reportés de %s ne devraient rien montrer, ils montrent %s", moi.email, describeReported(rows))
+				}
+			},
+		},
 	})
+}
+
+// containsSubject reports whether subjects holds this one.
+func containsSubject(subjects []string, subject string) bool {
+	for _, s := range subjects {
+		if s == subject {
+			return true
+		}
+	}
+	return false
 }

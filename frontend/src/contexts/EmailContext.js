@@ -1,5 +1,14 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { emailService, aiService, senderService, subscriptionService, mailboxService, reconnectAction } from '../services/api';
+import {
+  emailService,
+  aiService,
+  senderService,
+  subscriptionService,
+  mailboxService,
+  reconnectAction,
+  whenMailboxChanged,
+} from '../services/api';
+import { setMailboxGeneration } from '../lib/session';
 
 const EmailContext = createContext(null);
 
@@ -59,6 +68,10 @@ export function EmailProvider({ children }) {
         // "Boîte synchronisée" when nothing was fetched is a lie the UI told
         // every time the button was used twice within five minutes.
         sync = forceRefresh,
+        // Whether the caller shows what the sync has to say (syncNotice): only
+        // then does it ask for the mails the rules gave up on, which the
+        // server tells once.
+        notice = false,
       } = options;
 
       // Return cached data if valid, same query, and not forcing refresh.
@@ -88,11 +101,15 @@ export function EmailProvider({ children }) {
       let syncError = '';
       let syncSaid = false;
       let syncReconnect = null;
+      // What a sync that worked has to say besides (over IMAP, rules that
+      // could not run on some new mails yet): information, never an error.
+      let syncNotice = '';
       try {
         const now = Date.now();
         if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
           try {
-            await emailService.syncEmails();
+            const syncRes = await emailService.syncEmails(notice);
+            syncNotice = syncRes?.data?.rulesMessage || '';
             lastSyncRef.current = now;
           } catch (syncErr) {
             console.warn('Sync failed:', syncErr);
@@ -121,7 +138,7 @@ export function EmailProvider({ children }) {
           subscriptionService.getSubscriptions(),
         ]);
 
-        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect };
+        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect, syncNotice };
 
         // The listing is the one call whose failure the user must see: without
         // it the screen falls back to an empty list, which the inbox used to
@@ -129,7 +146,17 @@ export function EmailProvider({ children }) {
         if (emailsRes.status === 'rejected') {
           reportError(emailsRes.reason);
           setLoading(false);
-          return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect, listError: true };
+          return {
+            emails,
+            senders,
+            suggestions,
+            stats: newStats,
+            syncError,
+            syncSaid,
+            syncReconnect,
+            syncNotice,
+            listError: true,
+          };
         }
 
         let newEmails = [];
@@ -158,10 +185,19 @@ export function EmailProvider({ children }) {
         setSubscriptions(newSubscriptions);
         lastFetchRef.current = Date.now();
 
-        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats, syncError, syncSaid, syncReconnect };
+        return {
+          emails: newEmails,
+          senders: newSenders,
+          suggestions: newSuggestions,
+          stats: newStats,
+          syncError,
+          syncSaid,
+          syncReconnect,
+          syncNotice,
+        };
       } catch (err) {
         if (!isStale()) reportError(err);
-        return { emails, senders, suggestions, stats, syncError, syncSaid, syncReconnect, listError: true };
+        return { emails, senders, suggestions, stats, syncError, syncSaid, syncReconnect, syncNotice, listError: true };
       } finally {
         if (!isStale()) setLoading(false);
       }
@@ -256,6 +292,10 @@ export function EmailProvider({ children }) {
   // question is asked again by the next screen that needs it, or after
   // MAILBOX_RETRY_MS on the one still open.
   const [mailbox, setMailbox] = useState(undefined);
+  // The generation of the mailbox the screens show (GET /api/mailbox): the
+  // screens that need a mailbox start again from it when it changes
+  // (RequireMailbox in App.js), and load what they show of the new one.
+  const [generation, setGeneration] = useState(null);
   const [mailboxFailed, setMailboxFailed] = useState(false);
   const mailboxRequestRef = useRef(null);
   const mailboxRetryRef = useRef(null);
@@ -263,17 +303,57 @@ export function EmailProvider({ children }) {
   // disconnect) must not be overwritten by a slower request about the mailbox
   // as it was before.
   const mailboxSeqRef = useRef(0);
-  const loadMailbox = useCallback(({ force = false } = {}) => {
+  // The mailbox what this provider holds was loaded from (its generation),
+  // which every request names (setMailboxGeneration).
+  const generationRef = useRef(null);
+  // Forgets what was loaded of a mailbox: the mails, the proposals and the
+  // rest were another mailbox's, and their numbers name, in the next one,
+  // other mails. A request still on its way answers into nothing
+  // (requestSeqRef), and the next screen loads everything again.
+  const forgetMailbox = useCallback(() => {
+    requestSeqRef.current += 1;
+    setEmails([]);
+    setSenders([]);
+    setSubscriptions([]);
+    setSuggestions([]);
+    setStats(null);
+    setPagination({ nextPageToken: null, resultSizeEstimate: 0 });
+    setLoading(false);
+    setError('');
+    lastFetchRef.current = null;
+    lastSyncRef.current = null;
+    lastStatsRef.current = null;
+  }, []);
+  const loadMailbox = useCallback(({ force = false, sameMailbox = false } = {}) => {
     if (mailboxRequestRef.current && !force) return mailboxRequestRef.current;
     clearTimeout(mailboxRetryRef.current);
-    // A forced reload follows a change of mailbox: until it answers, what was
-    // known is no longer true.
-    if (force) setMailbox(undefined);
+    // A forced reload follows a change of mailbox (a connection, a
+    // disconnection): until it answers, what was known is no longer true,
+    // and what was loaded of the mailbox before goes. Not after a new app
+    // password (sameMailbox): the same mailbox, the same generation; what
+    // was loaded goes only if the answer names another.
+    // The mailbox the screens held, to tell, once the answer is in, that it
+    // went away with none in its place.
+    const previous = generationRef.current;
+    if (force && !sameMailbox) {
+      setMailbox(undefined);
+      forgetMailbox();
+      generationRef.current = null;
+      setMailboxGeneration('');
+    }
     const seq = ++mailboxSeqRef.current;
     mailboxRequestRef.current = mailboxService
       .get()
       .then(({ data }) => {
         if (seq !== mailboxSeqRef.current) return;
+        const generation = data?.generation || '';
+        if (generationRef.current !== null && generationRef.current !== generation) forgetMailbox();
+        // A mailbox the screens held is gone, none connected in its place: the
+        // screens that need one lead to /connect (RequireMailbox in App.js).
+        if (!data?.mailbox && previous) localStorage.removeItem('hasMailbox');
+        generationRef.current = generation;
+        setMailboxGeneration(generation);
+        setGeneration(generation);
         setMailbox(data?.mailbox || null);
         setMailboxFailed(false);
       })
@@ -284,8 +364,11 @@ export function EmailProvider({ children }) {
         mailboxRetryRef.current = setTimeout(() => loadMailbox(), MAILBOX_RETRY_MS);
       });
     return mailboxRequestRef.current;
-  }, []);
+  }, [forgetMailbox]);
   useEffect(() => () => clearTimeout(mailboxRetryRef.current), []);
+  // A request refused because the mailbox changed since this was loaded
+  // (409, api.js): ask again which mailbox it is, and forget the other one's.
+  useEffect(() => whenMailboxChanged(() => loadMailbox({ force: true })), [loadMailbox]);
 
   const markUnsubscribed = useCallback((senderEmail) => {
     setSubscriptions((prev) =>
@@ -318,6 +401,7 @@ export function EmailProvider({ children }) {
     isCacheValid,
     mailbox,
     mailboxFailed,
+    generation,
     loadMailbox,
   };
 
@@ -371,12 +455,14 @@ function errorMessage(err, { sync = false } = {}) {
 
 // The server's own sentence about a failed sync, to be shown alone, or "": a
 // sentence of SyncEmails (marked syncMessage, whatever its status), or the
-// one of a 4xx the user can act on (428: the mailbox to connect again).
+// one of a 4xx the user can act on (428: the mailbox to connect again; 409
+// marked mailboxChanged: the mailbox changed since the page was loaded, which
+// is being loaded again).
 export function syncSentence(err) {
   const status = err?.response?.status;
   const raw = err?.response?.data;
   if (!raw || typeof raw !== 'object' || typeof raw.error !== 'string' || !raw.error.trim()) return '';
-  if (raw.syncMessage || status === 428) return raw.error.trim();
+  if (raw.syncMessage || status === 428 || (status === 409 && raw.mailboxChanged)) return raw.error.trim();
   return '';
 }
 
@@ -402,7 +488,7 @@ export function useEmails() {
 // controls that depend on it (RequireMailbox in App.js), so they do not appear
 // or vanish under the user's eyes.
 export function useMailbox() {
-  const { mailbox, mailboxFailed, loadMailbox } = useEmails();
+  const { mailbox, mailboxFailed, generation, loadMailbox } = useEmails();
   useEffect(() => {
     if (mailbox === undefined) loadMailbox();
   }, [mailbox, loadMailbox]);
@@ -418,5 +504,8 @@ export function useMailbox() {
     isGmail: mailbox?.transport === 'gmail',
     fullFeatures: known && !isImap,
     reload: () => loadMailbox({ force: true }),
+    // Which mailbox it is, for a screen to start again on another (null until
+    // known).
+    generation,
   };
 }

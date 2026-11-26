@@ -1450,3 +1450,91 @@ func TestAcceptance_AFailedAnalysisJobSaysWhyInFrench(t *testing.T) {
 		app.failf("une analyse arrêtée par la liste des protégés devrait dire « %s », elle dit %q", protectedUnreadableMessage, e)
 	}
 }
+
+// After the mailbox is replaced, the sweeps and the selection act on the
+// mailbox connected now only (its generation, generation.go):
+//
+//   - from a screen loaded on the old mailbox, "Tout archiver", "Se
+//     désabonner et archiver" and an archived selection are refused (409)
+//     and nothing moves on the new server;
+//   - from a request that names no screen, rows the old mailbox's sync wrote
+//     late (its generation, the same numbers as the new mailbox's mails) are
+//     never read: "Se désabonner et archiver" and "Tout archiver" do not take
+//     the new mailbox's mail numbered like one of them for the sender's, and
+//     the shield reads the new mailbox's sender of a selected mail, not the
+//     old row's.
+func TestAcceptance_SweepsAndSelectionsOfAReplacedMailboxTouchNothingOfTheNew(t *testing.T) {
+	app := newTestApp(t, &scenarioResult{})
+	oldLetter := incoming{From: "Ancien <ancien@vieux.fr>", Subject: "La lettre de l'ancienne boîte", Unsubscribe: "<https://vieux.example/stop>"}
+	moi, oldUIDs := syncedIMAPInbox(app, oldLetter, otherBoxMails[1], otherBoxMails[2])
+	stale := screenGeneration(moi)
+	oldCard := moi.requireSenderCard("ancien@vieux.fr")
+
+	moi.disconnectMailbox()
+	moi.connectOtherMailbox(otherMailbox)
+	letter := incoming{From: "Ancien <ancien@vieux.fr>", Subject: "La lettre de la nouvelle boîte", Unsubscribe: "<https://vieux.example/stop>"}
+	patron := incoming{From: "Patron <patron@x.fr>", Subject: "Du patron"}
+	club := incoming{From: "Club <accueil@club.fr>", Subject: "Votre club"}
+	newUIDs := moi.receive(letter, patron, club)
+	for i := range newUIDs {
+		moi.expectNumbered(newUIDs[i], oldUIDs[i])
+	}
+	moi.sync()
+	moi.withSendingServer()
+	if code, out := app.callAs(moi.token, http.MethodPost, "/api/protected", map[string]string{"value": "patron@x.fr"}); code != http.StatusCreated && code != http.StatusOK {
+		app.fatalf("protéger patron@x.fr a répondu %d : %v", code, out)
+	}
+
+	// A screen of the old mailbox: 409, nothing moves.
+	for _, c := range []struct {
+		what, path string
+		body       interface{}
+	}{
+		{"« Tout archiver »", "/api/ai/apply-bulk", map[string]string{"senderEmail": oldCard.SenderEmail, "action": "archive"}},
+		{"« Se désabonner et archiver »", "/api/unsubscribe", map[string]interface{}{"messageId": oldUIDs[0], "alsoArchive": true}},
+		{"« Archiver » sur une sélection", "/api/emails/batch-action", map[string]interface{}{"messageIds": oldUIDs, "action": "archive"}},
+	} {
+		code, out := callFromScreen(moi, stale, http.MethodPost, c.path, c.body)
+		if changed, _ := out["mailboxChanged"].(bool); code != http.StatusConflict || !changed {
+			app.failf("%s depuis l'écran de l'ancienne boîte devrait être refusé (409, mailboxChanged), il a répondu %d : %v", c.what, code, out)
+		}
+	}
+	if in := moi.onServer(serverArchive); len(in) != 0 {
+		app.fatalf("rien ne devrait bouger sur la nouvelle boîte, son archive contient %s", quotedList(in))
+	}
+
+	// What the old mailbox's sync wrote late: its rows numbered like the new
+	// mailbox's patron and club mails, of another sender each.
+	row, ok := moi.shownRow(newUIDs[0])
+	if !ok {
+		app.fatalf("la nouvelle boîte ne montre pas le mail n°%s", newUIDs[0])
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, late := range []models.Email{
+		{UserID: moi.email, Generation: stale, Folder: serverInbox, MessageID: newUIDs[1], From: "Spam <spam@y.fr>", Subject: "Ancienne promo"},
+		{UserID: moi.email, Generation: stale, Folder: serverInbox, MessageID: newUIDs[2], From: row.From, Subject: "Ancienne lettre"},
+	} {
+		if _, err := app.h.db.Emails().InsertOne(ctx, late); err != nil {
+			app.fatalf("écriture tardive de l'ancienne boîte : %v", err)
+		}
+	}
+
+	// No screen named: the sweeps reach the new mailbox's letter only.
+	moi.unsubscribeFrom(newUIDs[0], true)
+	moi.expectOnServer(serverArchive, letter.Subject)
+	moi.expectOnServer(serverInbox, club.Subject)
+	code, out := app.callAs(moi.token, http.MethodPost, "/api/ai/apply-bulk", map[string]string{"senderEmail": row.From, "action": "archive"})
+	if code != http.StatusOK {
+		app.fatalf("« Tout archiver » a répondu %d : %v", code, out)
+	}
+	moi.expectOnServer(serverInbox, club.Subject)
+
+	// The selection: the shield reads the new mailbox's sender of n°2, the
+	// protected patron, not the old row's.
+	done := moi.actOnSelection("archive", newUIDs[1])
+	if n := app.number(done, "protectedSkipped"); n != 1 {
+		app.failf("le mail n°%s de la nouvelle boîte, du patron protégé, devrait être épargné, la réponse en épargne %d : %v", newUIDs[1], n, done)
+	}
+	moi.expectOnServer(serverInbox, patron.Subject)
+}

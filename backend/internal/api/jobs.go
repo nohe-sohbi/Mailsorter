@@ -43,6 +43,11 @@ func (h *Handler) processAnalysisJob(jobID string) {
 	}
 
 	h.updateJob(ctx, objectID, bson.M{"status": "running", "updatedAt": time.Now()})
+	if job.Mailbox != "" {
+		// Run on the mailbox the ids were chosen on, or not at all
+		// (errMailboxChanged, see generation.go).
+		ctx = context.WithValue(ctx, screenMailboxKey{}, job.Mailbox)
+	}
 
 	onProgress := func(p analysisProgress) {
 		h.updateJob(ctx, objectID, bson.M{
@@ -67,12 +72,16 @@ func (h *Handler) processAnalysisJob(jobID string) {
 	}
 	if runErr != nil {
 		// What the screen shows, in French: why, when the person can do
-		// something about it (the protected senders could not be read), the
+		// something about it (the protected senders could not be read, the
+		// mailbox changed), the
 		// generic sentence otherwise. The cause is in the log.
 		final["status"] = "error"
 		final["error"] = analysisInterruptedMessage
-		if errors.Is(runErr, errProtectedUnreadable) {
+		switch {
+		case errors.Is(runErr, errProtectedUnreadable):
 			final["error"] = protectedUnreadableMessage
+		case errors.Is(runErr, errMailboxChanged):
+			final["error"] = mailboxChangedMessage
 		}
 		log.Printf("analysis job %s failed: %v", jobID, runErr)
 	} else {
@@ -127,11 +136,23 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The mailbox the ids are of, which the job runs on (refused here for a
+	// screen loaded on another one).
+	stamp := ""
+	transport, account, err := h.transportFor(ctx, userEmail)
+	switch {
+	case err == nil:
+		stamp = mailboxStamp(transport, account)
+	case !errors.Is(err, errNoMailboxConnected):
+		writeAuthError(w, err)
+		return
+	}
 	job := models.AnalysisJob{
 		UserID:    userEmail,
 		Status:    "queued",
 		Total:     len(req.EmailIDs),
 		EmailIDs:  req.EmailIDs,
+		Mailbox:   stamp,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}

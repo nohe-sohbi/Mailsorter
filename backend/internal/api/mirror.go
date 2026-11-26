@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
-	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/search"
 	"go.mongodb.org/mongo-driver/bson"
@@ -138,11 +137,12 @@ func containsInsensitive(value string) bson.M {
 	return bson.M{"$regex": regexp.QuoteMeta(value), "$options": "i"}
 }
 
-// listFromMirror answers a listing out of the stored mailbox.
+// listFromMirror answers a listing out of the stored mailbox, of the
+// generation connected now (gen, see generation.go).
 //
 // The page token is an offset. Gmail's is opaque and so is this one as far as
 // the client is concerned; it only ever echoes back what it was handed.
-func (h *Handler) listFromMirror(ctx context.Context, userEmail, query string, maxResults int64, pageToken string) (map[string]interface{}, error) {
+func (h *Handler) listFromMirror(ctx context.Context, userEmail, gen, query string, maxResults int64, pageToken string) (map[string]interface{}, error) {
 	crit, unsupported := search.Parse(query)
 	if len(unsupported) > 0 {
 		return nil, errUnsupportedQuery{terms: unsupported}
@@ -157,6 +157,7 @@ func (h *Handler) listFromMirror(ctx context.Context, userEmail, query string, m
 	}
 
 	filter := mirrorFilter(userEmail, crit, time.Now())
+	filter["generation"] = inGeneration(gen)
 
 	total, err := h.db.Emails().CountDocuments(ctx, filter)
 	if err != nil {
@@ -217,20 +218,19 @@ func parseOffsetToken(token string) (int64, error) {
 // It reports what it can and leaves the rest at zero rather than inventing it:
 // there is no sent, draft, spam or trash mirror, and LabelStats is Gmail label
 // vocabulary that means nothing on a transport where a message is in one
-// folder. The frontend renders a counter it has no value for as a dash.
-func (h *Handler) statsFromMirror(ctx context.Context, userEmail string) (*gmail.MailboxStats, error) {
-	inbox := bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox), "leftInbox": bson.M{"$ne": true}}
+// folder. The frontend renders a counter it has no value for as a dash. Of
+// the generation connected now (gen).
+func (h *Handler) statsFromMirror(ctx context.Context, userEmail, gen string) (*gmail.MailboxStats, error) {
+	inbox := inboxOf(userEmail, gen)
+	inbox["leftInbox"] = bson.M{"$ne": true}
 
 	total, err := h.db.Emails().CountDocuments(ctx, inbox)
 	if err != nil {
 		return nil, fmt.Errorf("count stored messages: %w", err)
 	}
-	unread, err := h.db.Emails().CountDocuments(ctx, bson.M{
-		"userId":    userEmail,
-		"folder":    string(mailbox.FolderInbox),
-		"leftInbox": bson.M{"$ne": true},
-		"isRead":    false,
-	})
+	unreadOnes := inboxOf(userEmail, gen)
+	unreadOnes["leftInbox"], unreadOnes["isRead"] = bson.M{"$ne": true}, false
+	unread, err := h.db.Emails().CountDocuments(ctx, unreadOnes)
 	if err != nil {
 		return nil, fmt.Errorf("count unread stored messages: %w", err)
 	}

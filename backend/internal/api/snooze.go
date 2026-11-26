@@ -205,7 +205,7 @@ func (h *Handler) snoozeMessage(ctx context.Context, gmailClient *gmailapi.Servi
 		return fmt.Errorf("le report n'a pas pu être enregistré: %w", err)
 	}
 
-	h.logActionMeta(ctx, userEmail, messageID, "archive", SourceSnooze, identity.Subject, identity.From)
+	h.logActionMeta(ctx, userEmail, "", messageID, "archive", SourceSnooze, identity.Subject, identity.From)
 	return nil
 }
 
@@ -238,10 +238,16 @@ type snoozedRow struct {
 // mail moved without that record could not be found again at its hour.
 // errLeftInbox otherwise, and errAlreadyOut for a mail already out of the
 // inbox (reported a moment ago, or moved by another mail client first).
+//
+// The report carries the generation of the session's mailbox (see
+// generation.go), as the rows it reads and the move it makes do: only that
+// mailbox's hour, "Réactiver" or "Annuler" brings it back.
 func (h *Handler) snoozeIMAP(ctx context.Context, session *mailSession, userEmail, messageID string, wakeAt, now time.Time) error {
-	inbox := string(mailbox.FolderInbox)
+	gen := session.generation()
+	row := inboxOf(userEmail, gen)
+	row["messageId"] = messageID
 	var before snoozedRow
-	if err := h.db.Emails().FindOne(ctx, bson.M{"userId": userEmail, "folder": inbox, "messageId": messageID}).Decode(&before); err != nil {
+	if err := h.db.Emails().FindOne(ctx, row).Decode(&before); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return errLeftInbox
 		}
@@ -269,7 +275,7 @@ func (h *Handler) snoozeIMAP(ctx context.Context, session *mailSession, userEmai
 	// the store (logged by the move) leaves the folder, known by its name on
 	// the server, and the Message-ID to find the mail in it at its hour.
 	var after movedRow
-	if err := h.db.Emails().FindOne(ctx, bson.M{"userId": userEmail, "folder": inbox, "messageId": messageID}).Decode(&after); err != nil {
+	if err := h.db.Emails().FindOne(ctx, row).Decode(&after); err != nil {
 		log.Printf("snooze: message %s of %s moved, where it landed not read back: %v", messageID, userEmail, err)
 	}
 	folder, uid := after.MovedTo.Folder, after.MovedTo.UID
@@ -287,10 +293,10 @@ func (h *Handler) snoozeIMAP(ctx context.Context, session *mailSession, userEmai
 	// Out of the inbox, like a mail tidied away: a pending AI proposal about
 	// it would otherwise outlive it, and come back beside a second one once
 	// the mail is back under its new number.
-	h.markProposalsMoot(ctx, userEmail, []string{messageID})
+	h.markProposalsMoot(ctx, userEmail, gen, []string{messageID})
 
 	if _, err := h.db.Snoozes().UpdateOne(ctx,
-		bson.M{"userId": userEmail, "messageId": messageID, "status": snooze.StatusScheduled},
+		bson.M{"userId": userEmail, "generation": gen, "messageId": messageID, "status": snooze.StatusScheduled},
 		bson.M{
 			"$set": bson.M{
 				"from": before.From, "subject": before.Subject,
@@ -298,7 +304,7 @@ func (h *Handler) snoozeIMAP(ctx context.Context, session *mailSession, userEmai
 				"folder": folder, "folderUid": uid, "headerMessageId": before.HeaderMessageID,
 			},
 			"$setOnInsert": bson.M{
-				"userId": userEmail, "messageId": messageID, "createdAt": now,
+				"userId": userEmail, "generation": gen, "messageId": messageID, "createdAt": now,
 			},
 		},
 		options.Update().SetUpsert(true),
@@ -308,7 +314,7 @@ func (h *Handler) snoozeIMAP(ctx context.Context, session *mailSession, userEmai
 		return fmt.Errorf("le report n'a pas pu être enregistré: %w", err)
 	}
 
-	h.logActionMeta(ctx, userEmail, messageID, "archive", SourceSnooze, before.Subject, before.From)
+	h.logActionMeta(ctx, userEmail, gen, messageID, "archive", SourceSnooze, before.Subject, before.From)
 	return nil
 }
 
@@ -366,7 +372,7 @@ func (h *Handler) BatchSnooze(w http.ResponseWriter, r *http.Request) {
 
 	// One lookup for the whole batch, exactly as BatchAction does: the shield
 	// needs each sender, and the snoozed list needs the subject to be readable.
-	identities := h.emailIdentities(ctx, userEmail, req.MessageIDs)
+	identities := h.emailIdentities(ctx, userEmail, session.generation(), req.MessageIDs)
 
 	var snoozeOne func(meta models.Email) error
 	if session.Transport == provider.TransportIMAP {
@@ -447,8 +453,21 @@ func (h *Handler) GetSnoozes(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	// The reports of the mailbox connected now (see generation.go), those of
+	// IMAP made before reports carried a generation included (adoptReports).
+	transport, account, err := h.transportFor(ctx, userEmail)
+	if err != nil && !errors.Is(err, errNoMailboxConnected) {
+		writeAuthError(w, err)
+		return
+	}
+	gen := generationOf(transport, account)
+	if err := h.adoptReports(ctx, userEmail, gen, account.CreatedAt); err != nil {
+		log.Printf("snooze: %s: %v", userEmail, err)
+		writeError(w, http.StatusInternalServerError, "Failed to load snoozes")
+		return
+	}
 	cursor, err := h.db.Snoozes().Find(ctx,
-		bson.M{"userId": userEmail, "status": status},
+		bson.M{"userId": userEmail, "generation": inGeneration(gen), "status": status},
 		options.Find().SetSort(bson.M{"wakeAt": 1}).SetLimit(200))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to load snoozes")
@@ -500,6 +519,22 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer session.Close()
+	if reportAdopted(s, session.generation(), session.account.CreatedAt) {
+		// A report of IMAP made before reports carried a generation, since
+		// the mailbox connected over IMAP was connected: that mailbox's.
+		if err := h.adoptReports(ctx, userEmail, session.generation(), session.account.CreatedAt); err != nil {
+			log.Printf("snooze: %s: %v", userEmail, err)
+			writeError(w, http.StatusBadGateway, "Ce mail n'a pas pu être ramené, réessayez dans un instant.")
+			return
+		}
+		s.Generation = session.generation()
+	}
+	if s.Generation != session.generation() {
+		// A report of a mailbox no longer connected: its number names, now,
+		// a mail of the one connected since, which it would touch.
+		writeError(w, http.StatusGone, reportGoneMessage)
+		return
+	}
 
 	var wakeErr error
 	if session.Transport == provider.TransportIMAP {
@@ -528,6 +563,10 @@ func (h *Handler) WakeSnooze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "Ce mail n'a pas pu être ramené, réessayez dans un instant.")
 	}
 }
+
+// reportGoneMessage is what the user reads for "Réactiver" on a report of a
+// mailbox no longer connected (see generation.go).
+const reportGoneMessage = "Ce report concerne une boîte débranchée depuis."
 
 // wakeGmail is "Réactiver" over the Gmail API: back to the inbox, unread, the
 // snooze label stripped (restoreSnoozed). Claimed like every return
@@ -644,7 +683,7 @@ func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.S
 		return err
 	}
 
-	mb := mirroredIMAP{client: session.imapc, h: h, userEmail: s.UserID}
+	mb := mirroredIMAP{client: session.imapc, h: h, userEmail: s.UserID, gen: session.generation()}
 	wakeErr := mb.bringBack(ctx, s.MessageID, s.Folder, s.FolderUID, s.HeaderMessageID)
 	outcome := snooze.Woken
 	switch {
@@ -686,10 +725,15 @@ func (h *Handler) wakeIMAP(ctx context.Context, session *mailSession, s models.S
 // mark unread a mail already back. The report is claimed before the move
 // (claimReport): while the sweep holds it, nothing moves and errWakeBusy says
 // so; a move that fails leaves it scheduled. No return is journaled for the
-// report: the undo writes its own line.
-func (h *Handler) endReportOnReturn(ctx context.Context, userEmail, messageID string, back func() error) error {
+// report: the undo writes its own line. Only a report of the mailbox the undo
+// acts on (gen): another's names another mail by that number.
+// connected is when that mailbox was connected (adoptReports).
+func (h *Handler) endReportOnReturn(ctx context.Context, userEmail, gen string, connected time.Time, messageID string, back func() error) error {
+	if err := h.adoptReports(ctx, userEmail, gen, connected); err != nil {
+		return err
+	}
 	var s models.Snooze
-	err := h.db.Snoozes().FindOne(ctx, bson.M{"userId": userEmail, "messageId": messageID, "status": snooze.StatusScheduled}).Decode(&s)
+	err := h.db.Snoozes().FindOne(ctx, bson.M{"userId": userEmail, "generation": inGeneration(gen), "messageId": messageID, "status": snooze.StatusScheduled}).Decode(&s)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return back()
 	}
@@ -752,8 +796,48 @@ func (h *Handler) settleWake(ctx context.Context, s models.Snooze, filter bson.M
 		log.Printf("snooze: report %s of %s not updated (%v): %v", s.ID, s.UserID, outcome, err)
 	}
 	if outcome == snooze.Woken {
-		h.logActionMeta(ctx, s.UserID, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
+		h.logActionMeta(ctx, s.UserID, s.Generation, s.MessageID, "unarchive", SourceSnooze, s.Subject, s.From)
 	}
+}
+
+// endOtherGenerations ends, without moving anything, the reports among due
+// that are not of the session's mailbox (cancelled, logged), and answers the
+// others. One another request holds (claimReport) is left to it.
+//
+// A report of IMAP without a generation (made before reports carried one)
+// made since the IMAP mailbox connected now was connected is that mailbox's
+// (adoptReports); while that cannot be written, it is left for the next
+// pass, neither brought back nor ended. An older one ends like another
+// mailbox's.
+func (h *Handler) endOtherGenerations(ctx context.Context, session *mailSession, due []models.Snooze) []models.Snooze {
+	gen := session.generation()
+	connected := session.account.CreatedAt
+	adopted := true
+	if err := h.adoptReports(ctx, due[0].UserID, gen, connected); err != nil {
+		log.Printf("snooze: %v", err)
+		adopted = false
+	}
+	ours := due[:0:0]
+	for _, s := range due {
+		if reportAdopted(s, gen, connected) {
+			if !adopted {
+				continue
+			}
+			s.Generation = gen
+		}
+		if s.Generation == gen {
+			ours = append(ours, s)
+			continue
+		}
+		oid, err := primitive.ObjectIDFromHex(s.ID)
+		if err != nil {
+			continue
+		}
+		log.Printf("snooze: report %s of %s cancelled: it is of a mailbox no longer connected, message %s left where it waits", s.ID, s.UserID, s.MessageID)
+		h.settleWake(ctx, s, bson.M{"_id": oid, "status": snooze.StatusScheduled,
+			"wakingAt": bson.M{"$not": bson.M{"$gte": time.Now().Add(-moveInFlight)}}}, snooze.Gone)
+	}
+	return ours
 }
 
 // startSnoozeLoop launches the background sweeper that resurfaces due snoozes.
@@ -834,6 +918,12 @@ func (h *Handler) wakeAccount(ctx context.Context, due []models.Snooze) {
 		return
 	}
 	defer session.Close()
+
+	// A report of a mailbox no longer connected (one its own session wrote
+	// after the change, or one of Gmail's before an IMAP mailbox): its hour
+	// does not touch the mailbox connected now, whose mails have the same
+	// numbers. It ends (cancelled), its mail left where it waits.
+	due = h.endOtherGenerations(ctx, session, due)
 
 	if session.Transport == provider.TransportIMAP {
 		// The session is bound to bounded (imap.Connect): past it, the

@@ -229,7 +229,7 @@ function RequireAuth({ children }) {
 // failed request, which says nothing about the mailbox.
 function RequireMailbox({ children, redirect = true }) {
   const navigate = useNavigate();
-  const { mailbox, known, settled } = useMailbox();
+  const { mailbox, known, settled, generation } = useMailbox();
   const remembered = Boolean(localStorage.getItem('hasMailbox'));
   const missing = redirect && known && !mailbox && !remembered;
 
@@ -250,7 +250,10 @@ function RequireMailbox({ children, redirect = true }) {
     );
   }
 
-  return missing ? null : children;
+  // Keyed on the mailbox's generation: once another mailbox is connected (a
+  // 409 mailboxChanged, a connection from /connect), the screen starts again
+  // and loads what it shows of the new one, rather than keep the other's.
+  return missing ? null : <React.Fragment key={generation ?? 'none'}>{children}</React.Fragment>;
 }
 
 // The page under the header. The hotel leaves it transparent so the striped

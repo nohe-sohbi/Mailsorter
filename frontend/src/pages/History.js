@@ -109,10 +109,16 @@ const HAS_INVERSE = new Set(['archive', 'delete', 'trash', 'read', 'markRead']);
 
 const hasInverse = (e, folders) => HAS_INVERSE.has(e.action) || (folders && e.action === 'label');
 
-const finalLabel = (e, folders, none = 'Définitif') => (hasInverse(e, folders) ? 'Plus annulable' : none);
+// An action on another mailbox than the one connected now (`mailboxGone`: one
+// disconnected or replaced since) is final: its mail number names a mail of
+// the mailbox connected now.
+const finalLabel = (e, folders, none = 'Définitif') =>
+  e.mailboxGone ? 'Définitif' : hasInverse(e, folders) ? 'Plus annulable' : none;
 
 const finalHint = (e, folders) =>
-  hasInverse(e, folders)
+  e.mailboxGone
+    ? 'Cette action concerne une boîte débranchée depuis.'
+    : hasInverse(e, folders)
     ? "Mailsorter ne peut plus annuler cette action d'ici : le mail a changé de place depuis, ou elle est trop ancienne."
     : "Cette action n'a pas d'inverse automatique.";
 

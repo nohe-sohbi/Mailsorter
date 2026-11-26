@@ -98,6 +98,88 @@ func EffectiveActions(rule models.SortingRule) []models.RuleAction {
 	return []models.RuleAction{{Type: rule.Action, LabelName: rule.LabelName}}
 }
 
+// ApplyOrder returns a rule's actions in the order they are performed on a
+// mail: first what changes the mail where it is (mark read, star, label), in
+// the order written, then what moves it out of the inbox (archive, trash).
+// The order written is how the editor shows the rule, not what it does: over
+// IMAP a mail that changes folders takes a new number there, so an action
+// written after the move would name nothing, and a rule "archive, then star"
+// would archive without starring. On the Gmail API the order changes nothing.
+func ApplyOrder(actions []models.RuleAction) []models.RuleAction {
+	out := make([]models.RuleAction, 0, len(actions))
+	var moves []models.RuleAction
+	for _, a := range actions {
+		if a.Type == ActionArchive || a.Type == ActionTrash {
+			moves = append(moves, a)
+			continue
+		}
+		out = append(out, a)
+	}
+	return append(out, moves...)
+}
+
+// ApplyOrderOnFolders is ApplyOrder for a mailbox made of folders (IMAP),
+// where a label is the folder of that name and labelling files the mail
+// there, out of the inbox: a move, like archive and trash. A mail is in one
+// folder, so a rule moves it once, the move chosen by what it means, not by
+// where it is written: the flags first (mark read, star), in the order
+// written, then the trash if the rule deletes; else the folder if it labels
+// (the first label written); else the archive. So "Étiqueter Factures, puis
+// Archiver", the Gmail way of filing a mail out of the inbox, files it in
+// Factures. The other moves are not done.
+func ApplyOrderOnFolders(actions []models.RuleAction) []models.RuleAction {
+	out := make([]models.RuleAction, 0, len(actions))
+	var trash, label, archive *models.RuleAction
+	for i, a := range actions {
+		switch a.Type {
+		case ActionTrash:
+			if trash == nil {
+				trash = &actions[i]
+			}
+		case ActionLabel:
+			if label == nil {
+				label = &actions[i]
+			}
+		case ActionArchive:
+			if archive == nil {
+				archive = &actions[i]
+			}
+		default:
+			out = append(out, a)
+		}
+	}
+	for _, move := range []*models.RuleAction{trash, label, archive} {
+		if move != nil {
+			return append(out, *move)
+		}
+	}
+	return out
+}
+
+// ReadsText says whether a ruleset reads the text of a mail: an enabled rule
+// with a condition on the body or the snippet that can match. A listing that
+// does not carry the text (the stored copy of an IMAP inbox keeps none) has
+// to read it for such a ruleset, and only for one: without it, "the body
+// contains" would match nothing and "the body does not contain" everything.
+// A temporal condition reads the received date whatever its field.
+func ReadsText(ruleset []models.SortingRule) bool {
+	for _, rule := range ruleset {
+		if !rule.Enabled {
+			continue
+		}
+		for _, c := range rule.Conditions {
+			if temporalOperators[c.Operator] || strings.TrimSpace(c.Value) == "" {
+				continue
+			}
+			switch strings.ToLower(c.Field) {
+			case FieldBody, FieldSnippet:
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // primaryAction returns the type and label of the first action, used to populate
 // the legacy single-action fields for back-compat. Empty for an empty list.
 func primaryAction(acts []models.RuleAction) (action, labelName string) {
@@ -277,6 +359,20 @@ func Preview(emails []models.Email, ruleset []models.SortingRule) ([]PreviewItem
 // PreviewAt is Preview evaluated at reference time `now`, so temporal rules can
 // be forecast deterministically.
 func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Time) ([]PreviewItem, []RuleHits) {
+	return previewAt(emails, ruleset, now, nil)
+}
+
+// PreviewOnFolders is Preview for a mailbox made of folders (IMAP): each item
+// and tally carries the actions applying the rule does there
+// (ApplyOrderOnFolders: the flags, then one move), the primary action being
+// the first of them.
+func PreviewOnFolders(emails []models.Email, ruleset []models.SortingRule) ([]PreviewItem, []RuleHits) {
+	return previewAt(emails, ruleset, time.Now(), ApplyOrderOnFolders)
+}
+
+// previewAt is the preview at now, the actions of each matched rule as
+// performed (performed nil: as written).
+func previewAt(emails []models.Email, ruleset []models.SortingRule, now time.Time, performed func([]models.RuleAction) []models.RuleAction) ([]PreviewItem, []RuleHits) {
 	items := make([]PreviewItem, 0)
 	hits := make([]RuleHits, 0)
 	idx := map[string]int{} // rule name -> position in hits
@@ -287,6 +383,9 @@ func PreviewAt(emails []models.Email, ruleset []models.SortingRule, now time.Tim
 			continue
 		}
 		acts := EffectiveActions(*match)
+		if performed != nil {
+			acts = performed(acts)
+		}
 		primary, primaryLabel := primaryAction(acts)
 		items = append(items, PreviewItem{
 			MessageID: email.MessageID,

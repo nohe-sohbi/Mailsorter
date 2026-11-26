@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/attachment"
@@ -16,7 +17,9 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/protect"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/rules"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	gmailapi "google.golang.org/api/gmail/v1"
@@ -69,7 +72,22 @@ type mailSession struct {
 // connected, and in the hosted edition it is the only one on offer. Its absence
 // means the Google OAuth path, which is how every account worked before this
 // existed and how every self-hosted account still works.
+//
+// A request from a screen loaded on another mailbox than this one is refused
+// here (errMailboxChanged, see generation.go), before anything reads or acts.
 func (h *Handler) transportFor(ctx context.Context, userEmail string) (provider.Transport, models.MailAccount, error) {
+	transport, account, err := h.connectedMailbox(ctx, userEmail)
+	if err != nil {
+		return "", models.MailAccount{}, err
+	}
+	if err := checkScreenMailbox(ctx, transport, account); err != nil {
+		return "", models.MailAccount{}, err
+	}
+	return transport, account, nil
+}
+
+// connectedMailbox is transportFor without the check of the screen's mailbox.
+func (h *Handler) connectedMailbox(ctx context.Context, userEmail string) (provider.Transport, models.MailAccount, error) {
 	var account models.MailAccount
 	err := h.db.MailAccounts().FindOne(ctx, bson.M{"userId": userEmail}).Decode(&account)
 	switch {
@@ -111,7 +129,9 @@ func (h *Handler) openSession(ctx context.Context, userEmail string) (*mailSessi
 
 	switch transport {
 	case provider.TransportIMAP:
-		client, err := h.openMailbox(ctx, userEmail)
+		// The row read above, not read again: a mailbox connected in its
+		// place meanwhile is another generation.
+		client, err := h.openMailbox(ctx, account)
 		if err != nil {
 			return nil, err
 		}
@@ -137,7 +157,7 @@ func (s *mailSession) Close() {
 // Mailbox is what mutations go through.
 func (s *mailSession) Mailbox() mailbox.Mailbox {
 	if s.Transport == provider.TransportIMAP {
-		return mirroredIMAP{client: s.imapc, h: s.h, userEmail: s.userEmail}
+		return mirroredIMAP{client: s.imapc, h: s.h, userEmail: s.userEmail, gen: s.generation()}
 	}
 	return gmailMailbox{svc: s.h.gmailService, client: s.gmail}
 }
@@ -160,7 +180,7 @@ func (s *mailSession) RefFor(ctx context.Context, messageID string) mailbox.Ref 
 	}
 	folder := string(mailbox.FolderInbox)
 	var stored models.Email
-	err := s.h.db.Emails().FindOne(ctx, bson.M{"userId": s.userEmail, "messageId": messageID}).Decode(&stored)
+	err := s.h.db.Emails().FindOne(ctx, bson.M{"userId": s.userEmail, "generation": inGeneration(s.generation()), "messageId": messageID}).Decode(&stored)
 	if err == nil && stored.Folder != "" {
 		folder = stored.Folder
 	}
@@ -177,19 +197,56 @@ func writeTransportError(w http.ResponseWriter) {
 }
 
 // syncInboxIMAP is the IMAP half of syncInbox: read a page of the inbox and
-// mirror it into Mongo.
+// mirror it into Mongo, then, when the user turned on "appliquer mes règles
+// automatiquement", apply the rules to the mails that arrived.
 //
-// It does NOT apply rules. The rule engine mutates through a Gmail client and
-// has not been ported, so running it here would either do nothing or do it to
-// the wrong mailbox. Returning a rulesApplied of zero is the honest answer, and
-// the sync still does the thing the user is waiting for.
-func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *mailSession) (synced, total int, err error) {
+// The rules a sync applies on its own judge the mails that ARRIVE, where over
+// the Gmail API they judge every mail listed (see syncRules.arrival): a mail
+// this sync stores for the first time, received since the option counts, and
+// not one the copy holds under another number. So turning the option on, or
+// connecting a mailbox with the option on, leaves alone the mails already in
+// the inbox ("Appliquer maintenant" is how those are sorted), and a mail put
+// back by "Annuler" after a rule is not sorted again at the next sync. An
+// arrival is marked (rulesDue) as it is stored, and judged until it is: a sync
+// that could not judge it says so (syncRulesDone.pending, a success all the
+// same: the mails were read and listed), and the next one judges it again.
+//
+// It reads and writes the copy of its own generation (session.generation):
+// still running once another mailbox is connected, it writes rows nobody
+// reads, which the next sync erases (clearMailboxCopy).
+func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *mailSession) (synced, total int, ruled syncRulesDone, err error) {
 	const folder = string(mailbox.FolderInbox)
+	gen := session.generation()
+
+	h.clearOtherGenerations(ctx, userEmail)
+	auto := h.syncRulesFor(ctx, userEmail, session.account)
+	// The very first sync of a mailbox judges nothing as arrived, whatever
+	// the dates: the mail server's clock and Mailsorter's may differ, and
+	// all it lists was there when it was connected.
+	first, firstErr := h.firstSync(ctx, userEmail, session.account)
+	if firstErr != nil {
+		log.Printf("imap sync: whether this is the first sync of the mailbox of %s is not known, no mail of it is marked for the rules: %v", userEmail, firstErr)
+	}
+	if first || firstErr != nil {
+		auto.markNone = true
+	}
 
 	listedAt := time.Now()
 	emails, err := session.imapc.List(ctx, folder, imapListLimit)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, syncRulesDone{}, err
+	}
+	// Before dropStaleInbox, which may drop the row of a mail that left and
+	// is coming back.
+	comingBack := map[string]bool{}
+	if auto.on() {
+		comingBack, err = h.comingBack(ctx, userEmail, gen, emails)
+		if err != nil {
+			// Not told apart, a mail the user put back could be sorted
+			// again: none of this sync's mails is marked for the rules.
+			log.Printf("imap sync: read which listed mails of %s the copy holds under another number, no mail of this sync is marked for the rules: %v", userEmail, err)
+			auto.markNone = true
+		}
 	}
 	// The listing reads the newest messages only; which of the older ones
 	// stored are still in the inbox, what another mail program changed on
@@ -198,7 +255,7 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	statesAt := time.Now()
 	states, err := session.imapc.States(folder)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 	present := make(map[string]bool, len(states))
 	for uid := range states {
@@ -207,7 +264,7 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	// Messages that left the inbox since the last sync (moved by Mailsorter,
 	// by the user's phone, by a filter on the server) must leave the copy the
 	// list is served from, or they show forever.
-	dropErr := h.dropStaleInbox(ctx, userEmail, present, listedAt)
+	dropErr := h.dropStaleInbox(ctx, userEmail, gen, present, listedAt)
 
 	// A message that cannot be stored is not on the user's screen, and nothing
 	// else will ever tell them it exists: the listing is served from this
@@ -220,13 +277,20 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 			// list it again until the next sync.
 			continue
 		}
-		if sErr := h.storeInboxMessage(ctx, userEmail, email); sErr != nil {
+		// Marked only if the row is new: a mail the copy knew is not one.
+		if sErr := h.storeInboxMessage(ctx, userEmail, gen, email, auto.arrival(email, comingBack)); sErr != nil {
 			failed++
 			log.Printf("imap sync: message uid %s in %s not stored: %v", email.MessageID, folder, sErr)
 			continue
 		}
 		synced++
 	}
+	if first {
+		h.markFirstSync(ctx, userEmail, session.account)
+	}
+	// Right after they are stored, before the phases that may lose the
+	// connection.
+	ruled = h.rulesOnArrivals(ctx, userEmail, session, auto)
 
 	// Each phase that reads by halves may open the connection again a few
 	// times, when a FETCH answer it cannot parse closes it
@@ -235,35 +299,403 @@ func (h *Handler) syncInboxIMAP(ctx context.Context, userEmail string, session *
 	// structures with none.
 	starredErr := h.storeStarredOutsideList(ctx, userEmail, session, states, h.sessionReopener(ctx, userEmail, session))
 	// After every message is stored, so it covers them all.
-	stateErr := h.refreshInboxState(ctx, userEmail, states, statesAt)
+	stateErr := h.refreshInboxState(ctx, userEmail, gen, states, statesAt)
 	structureErr := h.completeInboxStructure(ctx, userEmail, session, present, h.sessionReopener(ctx, userEmail, session))
 	if failed > 0 {
-		return synced, len(emails), fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
+		return synced, len(emails), ruled, fmt.Errorf("%w (%d sur %d)", errMessagesNotStored, failed, len(emails))
 	}
 	for _, err := range []error{dropErr, starredErr, stateErr, structureErr} {
 		if err != nil {
-			return synced, len(emails), err
+			return synced, len(emails), ruled, err
 		}
 	}
-	return synced, len(emails), nil
+	return synced, len(emails), ruled, nil
 }
 
 // imapListLimit is how many of the most recent inbox messages a sync reads.
 const imapListLimit = 100
 
+// syncRules is what a sync needs to apply the rules on its own: the enabled
+// rules and the protected senders, zero when the option is off or the user
+// has no enabled rule, and since which date a mail is an arrival.
+type syncRules struct {
+	ruleset   []models.SortingRule
+	protected protect.Shield
+	// since is the later of when the option was turned on and when the
+	// mailbox was connected, to the second (INTERNALDATE has no finer): a
+	// mail received before was already in the inbox.
+	since time.Time
+	// markNone: this sync cannot tell an arrival from a mail coming back, so
+	// it marks none (the ones marked before are still judged).
+	markNone bool
+}
+
+// on says whether the rules run at this sync.
+func (r syncRules) on() bool { return len(r.ruleset) > 0 }
+
+// arrival says whether a listed mail is one the rules judge on their own, if
+// this sync stores it for the first time (storeInboxMessage marks a new row
+// only): received (INTERNALDATE) since the option counts, and not a mail the
+// copy holds under another number (comingBack).
+func (r syncRules) arrival(email models.Email, comingBack map[string]bool) bool {
+	return r.on() && !r.markNone && !email.ReceivedDate.Before(r.since) && !comingBack[email.MessageID]
+}
+
+// syncRulesFor reads what a sync of this user needs to apply the rules on its
+// own, when the option "appliquer mes règles automatiquement" is on. A user
+// row that cannot be read runs no rule at this sync: the mails it does not
+// mark are left for "Appliquer maintenant", and the ones marked before wait
+// for the next sync.
+func (h *Handler) syncRulesFor(ctx context.Context, userEmail string, account models.MailAccount) syncRules {
+	var user struct {
+		AutoApplyRules      bool      `bson:"autoApplyRules"`
+		AutoApplyRulesSince time.Time `bson:"autoApplyRulesSince"`
+	}
+	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail},
+		options.FindOne().SetProjection(bson.M{"autoApplyRules": 1, "autoApplyRulesSince": 1}),
+	).Decode(&user); err != nil {
+		if !errors.Is(err, mongo.ErrNoDocuments) {
+			log.Printf("imap sync: read whether the rules of %s run at the sync, they do not this time: %v", userEmail, err)
+		}
+		return syncRules{}
+	}
+	if !user.AutoApplyRules {
+		return syncRules{}
+	}
+	ruleset := h.enabledRules(ctx, userEmail)
+	if len(ruleset) == 0 {
+		return syncRules{}
+	}
+	// A protected list that cannot be read runs no rule at this sync, as a
+	// user row that cannot be read: read as "nobody is protected", the rules
+	// would archive a protected sender's mail.
+	shield, err := h.protectedValues(ctx, userEmail)
+	if err != nil {
+		log.Printf("imap sync: no rule of %s runs at this sync: %v", userEmail, err)
+		return syncRules{}
+	}
+	return syncRules{ruleset: ruleset, protected: shield, since: arrivalsSince(user.AutoApplyRulesSince, account.CreatedAt)}
+}
+
+// arrivalsSince is from when a mail is an arrival: the later of when the
+// option was turned on and when the mailbox was connected (an option turned on
+// before Mailsorter stamped it is zero: the connection alone counts), to the
+// second, since INTERNALDATE has no finer.
+func arrivalsSince(optionOn, connected time.Time) time.Time {
+	since := optionOn
+	if connected.After(since) {
+		since = connected
+	}
+	return since.Truncate(time.Second)
+}
+
+// firstSync says whether this is the very first sync of the mailbox: none
+// ever completed its listing (firstSyncedAt unset on its row) and the copy
+// holds no row of its generation. Both: a mailbox synced before Mailsorter
+// stamped it has rows, and an empty inbox, once synced, is stamped though it
+// has none.
+func (h *Handler) firstSync(ctx context.Context, userEmail string, account models.MailAccount) (bool, error) {
+	if !account.FirstSyncedAt.IsZero() {
+		return false, nil
+	}
+	n, err := h.db.Emails().CountDocuments(ctx, inboxOf(userEmail, account.ID),
+		options.Count().SetLimit(1))
+	if err != nil {
+		return false, err
+	}
+	return n == 0, nil
+}
+
+// markFirstSync stamps the mailbox this sync opened as synced once
+// (firstSyncedAt), on its row, and no other: its next syncs judge the mails
+// that arrive. A mailbox connected in its place has a row of its own, which
+// this does not touch. A failure is logged: the next sync is then a first one
+// again only if the copy is still empty.
+func (h *Handler) markFirstSync(ctx context.Context, userEmail string, account models.MailAccount) {
+	oid, err := primitive.ObjectIDFromHex(account.ID)
+	if err != nil {
+		log.Printf("imap sync: the first sync of the mailbox of %s is not recorded, its row has no id: %v", userEmail, err)
+		return
+	}
+	filter := bson.M{"_id": oid, "userId": userEmail, "firstSyncedAt": bson.M{"$exists": false}}
+	if _, err := h.db.MailAccounts().UpdateOne(ctx, filter,
+		bson.M{"$set": bson.M{"firstSyncedAt": time.Now()}},
+	); err != nil {
+		log.Printf("imap sync: the first sync of the mailbox of %s is not recorded: %v", userEmail, err)
+	}
+}
+
+// comingBack is, among the listed mails, the ones whose Message-ID the copy of
+// the inbox holds under another number when the sync starts, whatever the
+// state of that row: still in the inbox, moved out by Mailsorter (kept 30
+// days for "Annuler"), put back by "Annuler" (restoredFrom), or moved out by
+// another mail program since the last sync (its row goes at this sync). Such a
+// mail is not one that arrives: it is coming back, put back by "Annuler" when
+// the server did not say its new number, or moved back by another mail
+// program. A mail moved out by another program, then back after a sync went
+// by, is not recognized: that sync dropped its row.
+func (h *Handler) comingBack(ctx context.Context, userEmail, gen string, listed []models.Email) (map[string]bool, error) {
+	out := map[string]bool{}
+	byHeader := map[string][]string{}
+	for _, e := range listed {
+		if e.HeaderMessageID != "" {
+			byHeader[e.HeaderMessageID] = append(byHeader[e.HeaderMessageID], e.MessageID)
+		}
+	}
+	if len(byHeader) == 0 {
+		return out, nil
+	}
+	ids := make([]string, 0, len(byHeader))
+	for id := range byHeader {
+		ids = append(ids, id)
+	}
+	filter := inboxOf(userEmail, gen)
+	filter["headerMessageId"] = bson.M{"$in": ids}
+	cur, err := h.db.Emails().Find(ctx, filter, options.Find().SetProjection(bson.M{"messageId": 1, "headerMessageId": 1}))
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		MessageID       string `bson:"messageId"`
+		HeaderMessageID string `bson:"headerMessageId"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		for _, uid := range byHeader[r.HeaderMessageID] {
+			if uid != r.MessageID {
+				out[uid] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+// maxRuleTries is how many syncs judge a marked mail before giving up on it
+// (logged, and told once): a failure that does not go away (a folder the
+// server refuses) must not be announced at every sync.
+const maxRuleTries = 3
+
+// syncRulesDone is what the rules did at a sync: the mails they acted on
+// (applied), the arrivals they could not judge, left marked for the next sync
+// (pending), and the ones given up after maxRuleTries syncs (givenUp), which
+// stay in the inbox.
+type syncRulesDone struct {
+	applied, pending, givenUp int
+}
+
+// rulesMessage is what the screen tells after a sync whose rules could not
+// judge every mail that arrived, as information: the sync itself worked, the
+// mails were read and are listed. Empty when there is nothing to tell.
+// pending is this sync's; givenUp is what the syncs since the screen last
+// asked gave up on (takeGivenUp), told once.
+func rulesMessage(pending, givenUp int) string {
+	var parts []string
+	switch {
+	case pending == 1:
+		parts = append(parts, "Vos règles n'ont pas pu être appliquées à 1 nouveau mail : la prochaine synchronisation réessaiera.")
+	case pending > 1:
+		parts = append(parts, fmt.Sprintf("Vos règles n'ont pas pu être appliquées à %d nouveaux mails : la prochaine synchronisation réessaiera.", pending))
+	}
+	switch {
+	case givenUp == 1:
+		parts = append(parts, "1 mail n'a pas pu être rangé par vos règles : laissé dans la boîte.")
+	case givenUp > 1:
+		parts = append(parts, fmt.Sprintf("%d mails n'ont pas pu être rangés par vos règles : laissés dans la boîte.", givenUp))
+	}
+	return strings.Join(parts, " ")
+}
+
+// rulesOnArrivals applies the rules to the mails marked for them (rulesDue):
+// the arrivals of this sync and of the syncs before that could not judge
+// them, still in the inbox and received since the option counts. Each action
+// is written in the history like those of "Appliquer maintenant" (runRules).
+//
+// What is tried again at the next sync (pending): a mail whose text read the
+// server stopped or that ran out of time, and a mail on which an action of its
+// rule failed (a move the server refused, for instance); the actions already
+// done on it are kept on its row (rulesDone) and not done again. What is not:
+// a mail judged, and a mail whose text cannot be read (unparseable, or
+// NotReached: logged by withTexts), left aside without a new try. After
+// maxRuleTries a mail is given up, and the user row keeps how many until the
+// screen is told (rulesGivenUp, takeGivenUp). A datastore that cannot be asked
+// which mails are marked is logged: they stay marked, and the next sync
+// judges them.
+func (h *Handler) rulesOnArrivals(ctx context.Context, userEmail string, session *mailSession, auto syncRules) syncRulesDone {
+	if !auto.on() {
+		return syncRulesDone{}
+	}
+	gen := session.generation()
+	due, already, claim, err := h.claimRulesDue(ctx, userEmail, gen, auto.since)
+	if err != nil {
+		log.Printf("imap sync: take the mails of %s marked for the rules, judged at the next sync: %v", userEmail, err)
+		return syncRulesDone{}
+	}
+	if len(due) == 0 {
+		return syncRulesDone{}
+	}
+	judged := due
+	if rules.ReadsText(auto.ruleset) {
+		withText, err := h.withTexts(ctx, userEmail, session, due)
+		if err != nil {
+			log.Printf("imap sync: the text of %d mails of %s marked for the rules could not be read, judged at the next sync: %v", len(due), userEmail, err)
+			failed := make(map[string][]string, len(due))
+			for _, e := range due {
+				failed[e.MessageID] = already[e.MessageID]
+			}
+			pending, givenUp := h.releaseRulesDue(ctx, userEmail, gen, claim, nil, failed)
+			return syncRulesDone{pending: pending, givenUp: givenUp}
+		}
+		judged = withText
+	}
+	done := h.runRules(ctx, session, userEmail, judged, auto.ruleset, auto.protected, already)
+	var ok []string
+	for _, e := range due {
+		if _, failed := done.progress[e.MessageID]; !failed {
+			ok = append(ok, e.MessageID)
+		}
+	}
+	pending, givenUp := h.releaseRulesDue(ctx, userEmail, gen, claim, ok, done.progress)
+	return syncRulesDone{applied: done.applied, pending: pending, givenUp: givenUp}
+}
+
+// claimRulesDue takes the mails this sync judges: marked for the rules, still
+// in the inbox, received since the option counts, and not held by another
+// sync (a claim lasts rulesClaimFor, longer than any sync: one older is one a
+// sync never released). Of two syncs at once, one judges each mail, and
+// "Appliquer maintenant" leaves the ones held alone. It answers them with the
+// actions already done on each (ruleRow.RulesDone).
+func (h *Handler) claimRulesDue(ctx context.Context, userEmail, gen string, since time.Time) ([]models.Email, map[string][]string, string, error) {
+	claim := primitive.NewObjectID().Hex()
+	now := time.Now()
+	due := inboxOf(userEmail, gen)
+	due["rulesDue"], due["leftInbox"] = true, notLeftInbox
+	due["receivedDate"] = bson.M{"$gte": since}
+	due["rulesClaimAt"] = notClaimedSince(now)
+	if _, err := h.db.Emails().UpdateMany(ctx, due, bson.M{"$set": bson.M{"rulesClaim": claim, "rulesClaimAt": now}}); err != nil {
+		return nil, nil, "", err
+	}
+	held := inboxOf(userEmail, gen)
+	held["rulesClaim"] = claim
+	cur, err := h.db.Emails().Find(ctx, held,
+		options.Find().SetSort(bson.D{{Key: "receivedDate", Value: -1}}))
+	if err != nil {
+		return nil, nil, "", err
+	}
+	rows := make([]ruleRow, 0)
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, nil, "", err
+	}
+	mails, already := splitRuleRows(rows)
+	return mails, already, claim, nil
+}
+
+// releaseRulesDue ends a claim. The mails judged are unmarked. The ones that
+// failed (by message, the actions done on it so far) keep their mark for the
+// next sync, with what was done (rulesDone) and one try more (pending), and
+// are unmarked once they reach maxRuleTries (givenUp), which the user row
+// keeps for the screen (rulesGivenUp, on the row of the mailbox of that
+// generation). A write that fails is logged: the mail is then judged once
+// more, or its claim expires (rulesClaimFor), and it counts as pending.
+func (h *Handler) releaseRulesDue(ctx context.Context, userEmail, gen, claim string, judged []string, failed map[string][]string) (pending, givenUp int) {
+	if len(judged) > 0 {
+		filter := inboxOf(userEmail, gen)
+		filter["rulesClaim"], filter["messageId"] = claim, bson.M{"$in": judged}
+		if _, err := h.db.Emails().UpdateMany(ctx, filter,
+			bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesDone": "", "rulesClaim": "", "rulesClaimAt": ""}},
+		); err != nil {
+			log.Printf("imap sync: %d mails of %s judged by the rules, not unmarked: %v", len(judged), userEmail, err)
+		}
+	}
+	if len(failed) == 0 {
+		return 0, 0
+	}
+	ids := make([]string, 0, len(failed))
+	writes := make([]mongo.WriteModel, 0, len(failed))
+	for id, progress := range failed {
+		ids = append(ids, id)
+		set := bson.M{"$unset": bson.M{"rulesClaim": "", "rulesClaimAt": ""}, "$inc": bson.M{"rulesTries": 1}}
+		if len(progress) > 0 {
+			set["$set"] = bson.M{"rulesDone": progress}
+		}
+		filter := inboxOf(userEmail, gen)
+		filter["rulesClaim"], filter["messageId"] = claim, id
+		writes = append(writes, mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(set))
+	}
+	if _, err := h.db.Emails().BulkWrite(ctx, writes, options.BulkWrite().SetOrdered(false)); err != nil {
+		log.Printf("imap sync: %d mails of %s the rules could not judge, not released for the next sync: %v", len(failed), userEmail, err)
+		return len(failed), 0
+	}
+	spent := inboxOf(userEmail, gen)
+	spent["messageId"], spent["rulesTries"] = bson.M{"$in": ids}, bson.M{"$gte": maxRuleTries}
+	res, err := h.db.Emails().UpdateMany(ctx, spent,
+		bson.M{"$unset": bson.M{"rulesDue": "", "rulesTries": "", "rulesDone": ""}},
+	)
+	if err != nil {
+		log.Printf("imap sync: give up the rules on mails of %s after %d tries: %v", userEmail, maxRuleTries, err)
+		return len(failed), 0
+	}
+	givenUp = int(res.ModifiedCount)
+	if givenUp > 0 {
+		log.Printf("imap sync: the rules gave up on %d mails of %s after %d tries (among %v)", givenUp, userEmail, maxRuleTries, ids)
+		// Kept until a sync from the screen that shows it asks for it
+		// (takeGivenUp): a background sync, or one whose answer nobody
+		// shows, must not use up the three tries without the user knowing.
+		// On the row of this generation: a mailbox connected in its place
+		// is not told about this one's mails.
+		oid, oidErr := primitive.ObjectIDFromHex(gen)
+		if oidErr != nil {
+			log.Printf("imap sync: the %d mails of %s the rules gave up on will not be told, the mailbox has no id: %v", givenUp, userEmail, oidErr)
+		} else if _, err := h.db.MailAccounts().UpdateOne(ctx, bson.M{"_id": oid, "userId": userEmail},
+			bson.M{"$inc": bson.M{"rulesGivenUp": givenUp}}); err != nil {
+			log.Printf("imap sync: the %d mails of %s the rules gave up on will not be told: %v", givenUp, userEmail, err)
+		}
+	}
+	return len(failed) - givenUp, givenUp
+}
+
+// takeGivenUp answers how many mails the rules gave up on since the screen was
+// last told (rulesGivenUp on the row of the mailbox connected), and clears it:
+// only a sync that
+// asks for it (SyncEmails with ?notice=1, sent where the screen shows the
+// answer) calls it, so it is told once, and shown. A datastore that cannot
+// answer is logged, and the count is told at a later sync.
+func (h *Handler) takeGivenUp(ctx context.Context, userEmail string) int {
+	var before struct {
+		RulesGivenUp int `bson:"rulesGivenUp"`
+	}
+	err := h.db.MailAccounts().FindOneAndUpdate(ctx,
+		bson.M{"userId": userEmail, "rulesGivenUp": bson.M{"$gt": 0}},
+		bson.M{"$unset": bson.M{"rulesGivenUp": ""}},
+		options.FindOneAndUpdate().SetReturnDocument(options.Before).SetProjection(bson.M{"rulesGivenUp": 1}),
+	).Decode(&before)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return 0
+	}
+	if err != nil {
+		log.Printf("sync: read the mails the rules of %s gave up on, told at a later sync: %v", userEmail, err)
+		return 0
+	}
+	return before.RulesGivenUp
+}
+
 // storeInboxMessage writes a message the sync read in full (its envelope)
-// into the stored copy of the inbox.
-func (h *Handler) storeInboxMessage(ctx context.Context, userEmail string, email models.Email) error {
+// into the stored copy of the inbox of its generation. rulesDue marks the row
+// for the rules, if the copy did not hold it until now (see syncRules.arrival).
+func (h *Handler) storeInboxMessage(ctx context.Context, userEmail, gen string, email models.Email, rulesDue bool) error {
 	email.UserID = userEmail
 	// The folder is stored with the message because on IMAP it is half of
-	// its identity: without it the UID names nothing in particular.
+	// its identity: without it the UID names nothing in particular. So is
+	// the generation: without it, nothing in particular in which mailbox.
 	email.Folder = string(mailbox.FolderInbox)
-	update, err := inboxUpsert(email)
+	email.Generation = gen
+	update, err := inboxUpsert(email, rulesDue)
 	if err != nil {
 		return err
 	}
 	res, err := h.db.Emails().UpdateOne(ctx,
-		bson.M{"messageId": email.MessageID, "userId": userEmail},
+		bson.M{"messageId": email.MessageID, "userId": userEmail, "generation": inGeneration(gen)},
 		update,
 		options.Update().SetUpsert(true),
 	)
@@ -290,8 +722,9 @@ func logSenderlessMail(userEmail string, email models.Email) {
 // ($setOnInsert). On a row already stored they are refreshInboxState's,
 // which leaves alone a row Mailsorter changed after the flags were read
 // (flagsAt): written here, a star put on during the sync would be taken off
-// again by a listing read just before it, until the next sync.
-func inboxUpsert(email models.Email) (bson.M, error) {
+// again by a listing read just before it, until the next sync. So is the mark
+// for the rules (rulesDue): a mail the copy already holds is not an arrival.
+func inboxUpsert(email models.Email, rulesDue bool) (bson.M, error) {
 	raw, err := bson.Marshal(email)
 	if err != nil {
 		return nil, fmt.Errorf("encode message %s: %w", email.MessageID, err)
@@ -302,9 +735,13 @@ func inboxUpsert(email models.Email) (bson.M, error) {
 	}
 	delete(set, "isRead")
 	delete(set, "isStarred")
+	onInsert := bson.M{"isRead": email.IsRead, "isStarred": email.IsStarred}
+	if rulesDue {
+		onInsert["rulesDue"] = true
+	}
 	return bson.M{
 		"$set":         set,
-		"$setOnInsert": bson.M{"isRead": email.IsRead, "isStarred": email.IsStarred},
+		"$setOnInsert": onInsert,
 		// syncedAt tells a sync running at the same time that this row was
 		// just written from a fresher listing than its own.
 		"$currentDate": bson.M{"syncedAt": true},
@@ -355,8 +792,9 @@ func (h *Handler) sessionReopener(ctx context.Context, userEmail string, session
 		}
 		left--
 		// The connection the failed FETCH ended: closing it only releases it.
+		// Opened again to the mailbox of the session's generation.
 		_ = session.imapc.Close()
-		client, err := h.openMailbox(ctx, userEmail)
+		client, err := h.openMailbox(ctx, session.account)
 		if err != nil {
 			return err
 		}
@@ -392,7 +830,8 @@ const starredPerSync = 500
 // one reopen of this phase's own budget, never the structures'.
 func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string, session *mailSession, states map[string]imap.State, reopen func() error) error {
 	folder := string(mailbox.FolderInbox)
-	stored, err := h.storedInboxUIDs(ctx, userEmail)
+	gen := session.generation()
+	stored, err := h.storedInboxUIDs(ctx, userEmail, gen)
 	if err != nil {
 		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
 		return errMirrorNotReconciled
@@ -426,7 +865,7 @@ func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string,
 	}
 	failed := false
 	for _, email := range got.Read {
-		if sErr := h.storeInboxMessage(ctx, userEmail, email); sErr != nil {
+		if sErr := h.storeInboxMessage(ctx, userEmail, gen, email, false); sErr != nil {
 			log.Printf("imap sync: starred message uid %s of %s not stored: %v", email.MessageID, userEmail, sErr)
 			failed = true
 		}
@@ -441,8 +880,8 @@ func (h *Handler) storeStarredOutsideList(ctx context.Context, userEmail string,
 }
 
 // storedInboxUIDs is the UID of every message the copy of the inbox holds.
-func (h *Handler) storedInboxUIDs(ctx context.Context, userEmail string) (map[string]bool, error) {
-	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox)},
+func (h *Handler) storedInboxUIDs(ctx context.Context, userEmail, gen string) (map[string]bool, error) {
+	cur, err := h.db.Emails().Find(ctx, inboxOf(userEmail, gen),
 		options.Find().SetProjection(bson.M{"messageId": 1}))
 	if err != nil {
 		return nil, err
@@ -489,9 +928,8 @@ type flagState struct {
 // age, and "Volumineux" knows the size of every stored mail. A row Mailsorter
 // changed after the flags were read (flagsAt, see mirrorFlags) keeps its read
 // state and its star: they are newer than the ones read.
-func (h *Handler) refreshInboxState(ctx context.Context, userEmail string, states map[string]imap.State, statesAt time.Time) error {
-	folder := string(mailbox.FolderInbox)
-	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder},
+func (h *Handler) refreshInboxState(ctx context.Context, userEmail, gen string, states map[string]imap.State, statesAt time.Time) error {
+	cur, err := h.db.Emails().Find(ctx, inboxOf(userEmail, gen),
 		options.Find().SetProjection(bson.M{"messageId": 1, "isRead": 1, "isStarred": 1, "sizeEstimate": 1}))
 	if err != nil {
 		log.Printf("imap sync: read the state stored for the inbox of %s: %v", userEmail, err)
@@ -517,16 +955,18 @@ func (h *Handler) refreshInboxState(ctx context.Context, userEmail string, state
 			changed[key] = append(changed[key], r.MessageID)
 		}
 		if now.Size > 0 && now.Size != r.SizeEstimate {
+			one := inboxOf(userEmail, gen)
+			one["messageId"] = r.MessageID
 			sizes = append(sizes, mongo.NewUpdateOneModel().
-				SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": r.MessageID}).
+				SetFilter(one).
 				SetUpdate(bson.M{"$set": bson.M{"sizeEstimate": now.Size}}))
 		}
 	}
 	failed := false
 	for state, ids := range changed {
-		if _, err := h.db.Emails().UpdateMany(ctx,
-			bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": ids},
-				"flagsAt": bson.M{"$not": bson.M{"$gte": statesAt}}},
+		filter := inboxOf(userEmail, gen)
+		filter["messageId"], filter["flagsAt"] = bson.M{"$in": ids}, bson.M{"$not": bson.M{"$gte": statesAt}}
+		if _, err := h.db.Emails().UpdateMany(ctx, filter,
 			bson.M{"$set": bson.M{"isRead": state.read, "isStarred": state.starred}},
 		); err != nil {
 			log.Printf("imap sync: carry the read state and the star of %d messages of %s into the copy: %v", len(ids), userEmail, err)
@@ -565,8 +1005,10 @@ const structurePerSync = 500
 // names nothing.
 func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, session *mailSession, present map[string]bool, reopen func() error) error {
 	folder := string(mailbox.FolderInbox)
-	cur, err := h.db.Emails().Find(ctx,
-		bson.M{"userId": userEmail, "folder": folder, "leftInbox": notLeftInbox, "hasAttachmentsRule": bson.M{"$ne": attachment.WithoutHTMLVersion}},
+	gen := session.generation()
+	unread := inboxOf(userEmail, gen)
+	unread["leftInbox"], unread["hasAttachmentsRule"] = notLeftInbox, bson.M{"$ne": attachment.WithoutHTMLVersion}
+	cur, err := h.db.Emails().Find(ctx, unread,
 		options.Find().
 			SetProjection(bson.M{"messageId": 1}).
 			SetSort(bson.D{{Key: "receivedDate", Value: -1}}).
@@ -598,15 +1040,20 @@ func (h *Handler) completeInboxStructure(ctx context.Context, userEmail string, 
 		func(batch []string) (map[string]bool, error) { return session.imapc.Attachments(folder, batch) },
 		reopen)
 	writes := make([]mongo.WriteModel, 0, len(got.Read)+len(got.Unreadable))
+	one := func(uid string) bson.M {
+		filter := inboxOf(userEmail, gen)
+		filter["messageId"] = uid
+		return filter
+	}
 	for uid, has := range got.Read {
 		writes = append(writes, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
+			SetFilter(one(uid)).
 			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": has, "hasAttachmentsRule": attachment.WithoutHTMLVersion}}))
 	}
 	for uid, rErr := range got.Unreadable {
 		log.Printf("imap sync: the structure of message uid %s of %s cannot be read, kept without an attachment: %v", uid, userEmail, rErr)
 		writes = append(writes, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"userId": userEmail, "folder": folder, "messageId": uid}).
+			SetFilter(one(uid)).
 			SetUpdate(bson.M{"$set": bson.M{"hasAttachments": false, "structureUnreadable": true, "hasAttachmentsRule": attachment.WithoutHTMLVersion}}))
 	}
 	if len(got.Left) > 0 {
@@ -669,9 +1116,8 @@ var errMirrorNotReconciled = errors.New("la liste n'a pas pu être remise à jou
 //   - A flagged message the inbox still holds is unflagged, but only when it
 //     was flagged before the listing started: one flagged after was moved
 //     after the server answered, and is not back.
-func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, present map[string]bool, listedAt time.Time) error {
-	folder := string(mailbox.FolderInbox)
-	cur, err := h.db.Emails().Find(ctx, bson.M{"userId": userEmail, "folder": folder},
+func (h *Handler) dropStaleInbox(ctx context.Context, userEmail, gen string, present map[string]bool, listedAt time.Time) error {
+	cur, err := h.db.Emails().Find(ctx, inboxOf(userEmail, gen),
 		options.Find().SetProjection(bson.M{"messageId": 1, "leftInbox": 1, "leftAt": 1, "movedTo": 1}))
 	if err != nil {
 		log.Printf("imap sync: read the inbox copy of %s: %v", userEmail, err)
@@ -691,12 +1137,13 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, present 
 	var failed bool
 	// A message kept hidden for "Annuler" is out of the inbox all the same:
 	// a pending AI proposal about it would invite tidying it a second time.
-	if len(hidden) > 0 && !h.markProposalsMoot(ctx, userEmail, hidden) {
+	if len(hidden) > 0 && !h.markProposalsMoot(ctx, userEmail, gen, hidden) {
 		failed = true
 	}
 	if len(back) > 0 {
-		if _, err := h.db.Emails().UpdateMany(ctx,
-			bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": back}, "leftAt": bson.M{"$lt": listedAt}},
+		filter := inboxOf(userEmail, gen)
+		filter["messageId"], filter["leftAt"] = bson.M{"$in": back}, bson.M{"$lt": listedAt}
+		if _, err := h.db.Emails().UpdateMany(ctx, filter,
 			bson.M{"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": ""}},
 		); err != nil {
 			log.Printf("imap sync: unflag messages still in the inbox of %s: %v", userEmail, err)
@@ -707,14 +1154,16 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, present 
 		// Only rows still as they were judged: one claimed for a move since is
 		// left to that move, and one another sync stored since this one
 		// started listing is left to that sync.
-		if _, err := h.db.Emails().DeleteMany(ctx, bson.M{"userId": userEmail, "folder": folder, "messageId": bson.M{"$in": gone},
-			"$or": []bson.M{
-				{"leftInbox": bson.M{"$ne": true}, "syncedAt": bson.M{"$not": bson.M{"$gte": listedAt}}},
-				{"leftInbox": true, "leftAt": bson.M{"$lt": listedAt}},
-			}}); err != nil {
+		filter := inboxOf(userEmail, gen)
+		filter["messageId"] = bson.M{"$in": gone}
+		filter["$or"] = []bson.M{
+			{"leftInbox": bson.M{"$ne": true}, "syncedAt": bson.M{"$not": bson.M{"$gte": listedAt}}},
+			{"leftInbox": true, "leftAt": bson.M{"$lt": listedAt}},
+		}
+		if _, err := h.db.Emails().DeleteMany(ctx, filter); err != nil {
 			log.Printf("imap sync: drop %d messages that left the inbox of %s: %v", len(gone), userEmail, err)
 			failed = true
-		} else if !h.markProposalsMoot(ctx, userEmail, gone) {
+		} else if !h.markProposalsMoot(ctx, userEmail, gen, gone) {
 			failed = true
 		}
 	}
@@ -730,11 +1179,11 @@ func (h *Handler) dropStaleInbox(ctx context.Context, userEmail string, present 
 // failed. The plan only lists pending proposals, so it leaves the plan.
 const proposalMoot = "moot"
 
-// markProposalsMoot sets the pending proposals about these messages moot,
-// and says whether it could.
-func (h *Handler) markProposalsMoot(ctx context.Context, userEmail string, messageIDs []string) bool {
+// markProposalsMoot sets the pending proposals about these messages of this
+// generation moot, and says whether it could.
+func (h *Handler) markProposalsMoot(ctx context.Context, userEmail, gen string, messageIDs []string) bool {
 	if _, err := h.db.AISuggestions().UpdateMany(ctx,
-		bson.M{"userId": userEmail, "status": "pending", "emailId": bson.M{"$in": messageIDs}},
+		bson.M{"userId": userEmail, "generation": inGeneration(gen), "status": "pending", "emailId": bson.M{"$in": messageIDs}},
 		bson.M{"$set": bson.M{"status": proposalMoot}},
 	); err != nil {
 		log.Printf("imap sync: set moot the proposals about %d messages of %s: %v", len(messageIDs), userEmail, err)
@@ -791,10 +1240,13 @@ const undoExpiredMessage = "Cette action est trop ancienne pour être annulée i
 //     once.
 //   - Anything else (read, unread, star, unstar) is a flag: it goes to the
 //     server, then into the row, so the list and its filters show it at once.
+//
+// It reads and writes the rows of its generation (gen) only.
 type mirroredIMAP struct {
 	client    *imap.Client
 	h         *Handler
 	userEmail string
+	gen       string
 }
 
 func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mutation) error {
@@ -822,7 +1274,7 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 		return nil
 	}
 	var row movedRow
-	findErr := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}).Decode(&row)
+	findErr := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": ref.ID}).Decode(&row)
 	if findErr != nil && !errors.Is(findErr, mongo.ErrNoDocuments) {
 		// Not "unknown message": the store could not answer. Moving on would
 		// lose where the message goes, or wrongly tell "Annuler" it is gone.
@@ -855,8 +1307,8 @@ func (m mirroredIMAP) Apply(ctx context.Context, ref mailbox.Ref, mut mailbox.Mu
 	// lands moves it; the other is told it already left. The claim also hides
 	// it from the list at once, and tells a sync running meanwhile that a
 	// move is on its way.
-	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}
-	claim := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID, "leftInbox": notLeftInbox}
+	filter := bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": ref.ID}
+	claim := bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": ref.ID, "leftInbox": notLeftInbox}
 	res, err := m.h.db.Emails().UpdateOne(ctx, claim, bson.M{
 		"$set":   bson.M{"leftInbox": true, "leftAt": time.Now()},
 		"$unset": bson.M{"movedTo": ""},
@@ -913,6 +1365,8 @@ type moveOutcome struct {
 // the claimed numbers move together (imap.Client.MoveMany), and where each
 // one landed is written in one BulkWrite. A message that is not a stored
 // inbox row, or one Mailsorter already moved out, takes Apply's own path.
+// Every row read or written is of this session's generation (m.gen): a number
+// of another mailbox names another mail.
 func (m mirroredIMAP) MoveOutMany(ctx context.Context, uids []string, mut mailbox.Mutation) moveOutcome {
 	out := moveOutcome{Failed: map[string]error{}}
 	op, err := mailbox.IMAPOpFor(mut)
@@ -930,7 +1384,7 @@ func (m mirroredIMAP) MoveOutMany(ctx context.Context, uids []string, mut mailbo
 		return out
 	}
 	inbox := string(mailbox.FolderInbox)
-	cur, err := m.h.db.Emails().Find(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": bson.M{"$in": uids}},
+	cur, err := m.h.db.Emails().Find(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": bson.M{"$in": uids}},
 		options.Find().SetProjection(bson.M{"messageId": 1, "headerMessageId": 1, "leftInbox": 1, "movedTo": 1}))
 	var rows []movedRow
 	if err == nil {
@@ -963,7 +1417,7 @@ func (m mirroredIMAP) MoveOutMany(ctx context.Context, uids []string, mut mailbo
 			continue
 		}
 		res, err := m.h.db.Emails().UpdateOne(ctx,
-			bson.M{"userId": m.userEmail, "folder": inbox, "messageId": uid, "leftInbox": notLeftInbox},
+			bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": uid, "leftInbox": notLeftInbox},
 			bson.M{"$set": bson.M{"leftInbox": true, "leftAt": time.Now()}, "$unset": bson.M{"movedTo": ""}})
 		switch {
 		case err != nil:
@@ -1006,13 +1460,13 @@ func (m mirroredIMAP) MoveOutMany(ctx context.Context, uids []string, mut mailbo
 		}
 		out.Moved = append(out.Moved, uid)
 		landed = append(landed, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"userId": m.userEmail, "folder": inbox, "messageId": uid}).
+			SetFilter(bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": uid}).
 			SetUpdate(bson.M{"$set": bson.M{"movedTo": bson.M{"folder": moved.Folder, "uid": to}}}))
 	}
 	if len(release) > 0 {
 		// Not moved: release the claims, so they are listed again.
 		if _, err := m.h.db.Emails().UpdateMany(ctx,
-			bson.M{"userId": m.userEmail, "folder": inbox, "messageId": bson.M{"$in": release}},
+			bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": bson.M{"$in": release}},
 			bson.M{"$unset": bson.M{"leftInbox": "", "leftAt": "", "movedTo": ""}}); err != nil {
 			log.Printf("imap: %d messages of %s not moved, and their claims not released: %v", len(release), m.userEmail, err)
 		}
@@ -1066,7 +1520,7 @@ func (m mirroredIMAP) mirrorFlags(ctx context.Context, ref mailbox.Ref, op mailb
 	}
 	set["flagsAt"] = time.Now()
 	if _, err := m.h.db.Emails().UpdateOne(ctx,
-		bson.M{"userId": m.userEmail, "folder": ref.Folder, "messageId": ref.ID},
+		bson.M{"userId": m.userEmail, "generation": m.gen, "folder": ref.Folder, "messageId": ref.ID},
 		bson.M{"$set": set},
 	); err != nil {
 		log.Printf("imap: message %s of %s changed on the server (%v), not in its copy: %v", ref.ID, m.userEmail, set, err)
@@ -1113,7 +1567,7 @@ func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedR
 	// Only over what was read: of two requests moving it on at once, the one
 	// that landed second does not overwrite where the first put it.
 	if res, err := m.h.db.Emails().UpdateOne(ctx,
-		bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID,
+		bson.M{"userId": m.userEmail, "generation": m.gen, "folder": string(mailbox.FolderInbox), "messageId": ref.ID,
 			"movedTo.folder": row.MovedTo.Folder, "movedTo.uid": row.MovedTo.UID},
 		bson.M{"$set": bson.M{"leftAt": time.Now(), "movedTo": bson.M{"folder": landed.Folder, "uid": landed.ID}}},
 	); err != nil {
@@ -1127,7 +1581,7 @@ func (m mirroredIMAP) moveAgain(ctx context.Context, ref mailbox.Ref, row movedR
 // recordedIn says whether the stored copy says the message is now in folder.
 func (m mirroredIMAP) recordedIn(ctx context.Context, ref mailbox.Ref, folder string) bool {
 	var now movedRow
-	err := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID}).Decode(&now)
+	err := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": string(mailbox.FolderInbox), "messageId": ref.ID}).Decode(&now)
 	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
 		log.Printf("imap: read the copy of message %s of %s again: %v", ref.ID, m.userEmail, err)
 	}
@@ -1147,7 +1601,7 @@ func (m mirroredIMAP) moveFrom(ctx context.Context, folder, uid, dest, headerMes
 // was read: a destination another request recorded meanwhile stays.
 func (m mirroredIMAP) forgetDestination(ctx context.Context, ref mailbox.Ref, row movedRow) {
 	if _, err := m.h.db.Emails().UpdateOne(ctx,
-		bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID,
+		bson.M{"userId": m.userEmail, "generation": m.gen, "folder": string(mailbox.FolderInbox), "messageId": ref.ID,
 			"movedTo.folder": row.MovedTo.Folder, "movedTo.uid": row.MovedTo.UID},
 		bson.M{"$unset": bson.M{"movedTo": "", "restoringAt": ""}},
 	); err != nil {
@@ -1182,7 +1636,7 @@ func (m mirroredIMAP) awaitOtherReturn(ctx context.Context, ref mailbox.Ref) err
 			return ctx.Err()
 		case <-time.After(250 * time.Millisecond):
 		}
-		n, err := m.h.db.Emails().CountDocuments(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "restoredFrom": ref.ID})
+		n, err := m.h.db.Emails().CountDocuments(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "restoredFrom": ref.ID})
 		if err != nil {
 			return fmt.Errorf("look for message %s put back: %w", ref.ID, err)
 		}
@@ -1190,7 +1644,7 @@ func (m mirroredIMAP) awaitOtherReturn(ctx context.Context, ref mailbox.Ref) err
 			return errAlreadyBack
 		}
 		var r movedRow
-		err = m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}).Decode(&r)
+		err = m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": ref.ID}).Decode(&r)
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			// Dropped by a sync: only a mark of the other "Annuler" says it
 			// brought the message back, and there is none.
@@ -1209,7 +1663,7 @@ func (m mirroredIMAP) awaitOtherReturn(ctx context.Context, ref mailbox.Ref) err
 // retryPutBack runs putBack once more, on the row as it is now.
 func (m mirroredIMAP) retryPutBack(ctx context.Context, ref mailbox.Ref) error {
 	var row movedRow
-	findErr := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "folder": string(mailbox.FolderInbox), "messageId": ref.ID}).Decode(&row)
+	findErr := m.h.db.Emails().FindOne(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": string(mailbox.FolderInbox), "messageId": ref.ID}).Decode(&row)
 	if findErr != nil && !errors.Is(findErr, mongo.ErrNoDocuments) {
 		return fmt.Errorf("read the stored copy of message %s: %w", ref.ID, findErr)
 	}
@@ -1221,7 +1675,7 @@ func (m mirroredIMAP) putBackOnce(ctx context.Context, ref mailbox.Ref, row move
 	if errors.Is(findErr, mongo.ErrNoDocuments) {
 		// Another "Annuler" may have brought it back a moment ago: the row
 		// then took its new number, and remembers the old one.
-		n, err := m.h.db.Emails().CountDocuments(ctx, bson.M{"userId": m.userEmail, "folder": inbox, "restoredFrom": ref.ID})
+		n, err := m.h.db.Emails().CountDocuments(ctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "restoredFrom": ref.ID})
 		if err != nil {
 			return fmt.Errorf("look for message %s put back: %w", ref.ID, err)
 		}
@@ -1271,10 +1725,10 @@ func (m mirroredIMAP) putBackOnce(ctx context.Context, ref mailbox.Ref, row move
 	// once (two tabs, or the button after the action and the history), only
 	// one moves the message; the other is told it is already back. A claim
 	// left by a crash expires.
-	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": ref.ID}
+	filter := bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": ref.ID}
 	now := time.Now()
 	res, err := m.h.db.Emails().UpdateOne(ctx, bson.M{
-		"userId": m.userEmail, "folder": inbox, "messageId": ref.ID, "leftInbox": true,
+		"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": ref.ID, "leftInbox": true,
 		"$or": []bson.M{{"restoringAt": bson.M{"$exists": false}}, {"restoringAt": bson.M{"$lt": now.Add(-moveInFlight)}}},
 	}, bson.M{"$set": bson.M{"restoringAt": now}})
 	if err != nil {
@@ -1437,7 +1891,7 @@ func (m mirroredIMAP) landedBack(ctx context.Context, inboxUID, folder string, l
 	// still goes over the connection, bound to ctx.
 	sctx, cancel := settleCtx(ctx)
 	defer cancel()
-	filter := bson.M{"userId": m.userEmail, "folder": inbox, "messageId": inboxUID, "movedTo.folder": folder}
+	filter := bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": inboxUID, "movedTo.folder": folder}
 	if landed.ID == "" {
 		// Back on the server, its number there unknown, so it cannot be
 		// marked unread: the next sync lists it under its new number and
@@ -1460,7 +1914,7 @@ func (m mirroredIMAP) landedBack(ctx context.Context, inboxUID, folder string, l
 		unread = false
 	}
 
-	stored, err := m.h.db.Emails().CountDocuments(sctx, bson.M{"userId": m.userEmail, "folder": inbox, "messageId": landed.ID})
+	stored, err := m.h.db.Emails().CountDocuments(sctx, bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": landed.ID})
 	if err != nil {
 		log.Printf("imap: reported message back in the inbox of %s, copy not read: %v", m.userEmail, err)
 		return
@@ -1468,7 +1922,7 @@ func (m mirroredIMAP) landedBack(ctx context.Context, inboxUID, folder string, l
 	if stored > 0 {
 		if unread {
 			if _, err := m.h.db.Emails().UpdateOne(sctx,
-				bson.M{"userId": m.userEmail, "folder": inbox, "messageId": landed.ID},
+				bson.M{"userId": m.userEmail, "generation": m.gen, "folder": inbox, "messageId": landed.ID},
 				bson.M{"$set": bson.M{"isRead": false, "flagsAt": time.Now()}},
 			); err != nil {
 				log.Printf("imap: reported message back in the inbox of %s, unread not copied: %v", m.userEmail, err)
@@ -1509,7 +1963,7 @@ var errMessagesNotStored = errors.New("des messages de la boîte n'ont pas pu ê
 // ledger renders as "sender unknown" rather than inventing one.
 func (h *Handler) identityIn(ctx context.Context, session *mailSession, userEmail, messageID string) models.Email {
 	if session.Transport == provider.TransportIMAP {
-		return h.emailIdentities(ctx, userEmail, []string{messageID})[messageID]
+		return h.emailIdentities(ctx, userEmail, session.generation(), []string{messageID})[messageID]
 	}
 	return h.emailIdentity(ctx, session.gmail, userEmail, messageID)
 }

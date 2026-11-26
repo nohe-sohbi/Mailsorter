@@ -234,6 +234,9 @@ type imapPerson struct {
 	// sending is the sending server next to the IMAP one, nil until
 	// withSendingServer (acceptance_smtp_test.go) gives the person one.
 	sending *fakeSMTP
+	// address is the address of the mailbox connected for this person,
+	// empty while it is their own (email): connectOtherMailbox sets it.
+	address string
 
 	// passwordMu guards newPassword, which the server's sessions read.
 	passwordMu sync.Mutex
@@ -241,6 +244,15 @@ type imapPerson struct {
 	// providerReplacesAppPassword changed it; empty while it is
 	// imapTestPassword, the one the person connected with.
 	newPassword string
+}
+
+// mailboxAddress is the address of the mailbox connected for this person:
+// the one their server knows them by, and the one they log in to it with.
+func (p *imapPerson) mailboxAddress() string {
+	if p.address != "" {
+		return p.address
+	}
+	return p.email
 }
 
 // appPasswordOnServer is the app password this person's provider accepts
@@ -271,26 +283,41 @@ func (p *imapPerson) providerReplacesAppPassword(password string) {
 // mailboxSession is a session of a person's server: the in-memory server's own
 // (imapmemserver), built the way it builds one (a UserSession embedded, Login
 // overridden), so the server offers exactly what it did, except that the
-// password is checked against the one the provider accepts now.
+// password is checked against the one the provider accepts now. Each server
+// keeps its own mailbox and address (startServer): a person who connected
+// another mailbox (connectOtherMailbox) still has the first one on its own
+// server, untouched.
 type mailboxSession struct {
 	*imapmemserver.UserSession // nil until the login
 	p                          *imapPerson
+	user                       *imapmemserver.User
+	address                    string
 }
 
 func (s *mailboxSession) Login(username, password string) error {
-	if username != s.p.email || password != s.p.appPasswordOnServer() {
+	if username != s.address || password != s.p.appPasswordOnServer() {
 		return imapserver.ErrAuthFailed
 	}
-	s.UserSession = imapmemserver.NewUserSession(s.p.mailbox)
+	s.UserSession = imapmemserver.NewUserSession(s.user)
 	return nil
 }
 
 // imapPerson signs a person up the way POST /api/auth/mailbox leaves them: a
 // users row, a mail_accounts row with the app password sealed by the handler's
-// own sealSecret, and a session. The row is written here rather than through
-// the connect route because that route only accepts the hosts of the provider
-// catalog, and this person's provider is a server on 127.0.0.1.
+// own sealSecret, and a session. That is imapAccount, then connectMailbox at
+// once.
 func (a *testApp) imapPerson(email string) *imapPerson {
+	a.t.Helper()
+	p := a.imapAccount(email)
+	p.connectMailbox()
+	return p
+}
+
+// imapAccount signs a person up with their mailbox on a server of its own, not
+// yet connected to Mailsorter: a users row and a session, no mail_accounts
+// row. connectMailbox connects it, at the moment the scenario chooses: what a
+// mailbox held before it was connected is not what arrives in it afterwards.
+func (a *testApp) imapAccount(email string) *imapPerson {
 	a.t.Helper()
 	if imapTLSErr != nil || imapServerTLS == nil {
 		a.fatalf("pas de serveur IMAP de test possible : %v", imapTLSErr)
@@ -298,27 +325,9 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 	p := &imapPerson{app: a, email: email}
 	p.startServer()
 
-	sealed, err := a.h.sealSecret(imapTestPassword)
-	if err != nil {
-		a.fatalf("chiffrement du mot de passe d'application de %s : %v", email, err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	now := time.Now()
-	if _, err := a.h.db.MailAccounts().InsertOne(ctx, models.MailAccount{
-		UserID:    email,
-		Provider:  provider.Detect(email).Key,
-		Transport: string(provider.TransportIMAP),
-		Username:  email,
-		Secret:    sealed,
-		Host:      "127.0.0.1",
-		Port:      p.port,
-		TLS:       string(provider.TLSImplicit),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		a.fatalf("enregistrement de la boîte IMAP de %s : %v", email, err)
-	}
 	if _, err := a.h.db.Users().InsertOne(ctx, bson.M{
 		"email": email, "createdAt": now, "updatedAt": now,
 	}); err != nil {
@@ -326,6 +335,74 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 	}
 	p.token = a.h.auth.IssueSession(email)
 	return p
+}
+
+// connectMailbox connects this person's mailbox to Mailsorter now: the
+// mail_accounts row with the app password sealed by the handler's own
+// sealSecret, created at this instant, which is when the mailbox was
+// connected. The row is written here rather than through the connect route
+// because that route only accepts the hosts of the provider catalog, and this
+// person's provider is a server on 127.0.0.1.
+func (p *imapPerson) connectMailbox() {
+	a := p.app
+	a.t.Helper()
+	sealed, err := a.h.sealSecret(imapTestPassword)
+	if err != nil {
+		a.fatalf("chiffrement du mot de passe d'application de %s : %v", p.email, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.MailAccounts().InsertOne(ctx, models.MailAccount{
+		UserID:    p.email,
+		Provider:  provider.Detect(p.mailboxAddress()).Key,
+		Transport: string(provider.TransportIMAP),
+		Username:  p.mailboxAddress(),
+		Secret:    sealed,
+		Host:      "127.0.0.1",
+		Port:      p.port,
+		TLS:       string(provider.TLSImplicit),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		a.fatalf("enregistrement de la boîte IMAP de %s : %v", p.email, err)
+	}
+}
+
+// disconnectMailbox is "Déconnecter" on the /connect screen, once its
+// confirmation is accepted (handleDisconnect in Connect.js): DELETE
+// /api/mailbox. It stops the scenario when the server does not take it: what
+// follows a disconnection proves nothing if the mailbox is still connected.
+func (p *imapPerson) disconnectMailbox() {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodDelete, "/api/mailbox", nil)
+	if code != http.StatusOK {
+		a.fatalf("« Déconnecter » la boîte %s du compte %s a répondu %d (attendu 200) : %v : le scénario ne prouve rien", p.mailboxAddress(), p.email, code, out)
+	}
+}
+
+// connectOtherMailbox connects another mailbox to this person's account, in
+// place of the one they disconnected: addr, on a server of its own, empty,
+// connected at this instant, as connectMailbox writes it. From then on
+// receive, arrive and another mail program act on that one; the first
+// server keeps running, untouched, as a mailbox nobody reads from Mailsorter
+// any more.
+func (p *imapPerson) connectOtherMailbox(addr string) {
+	a := p.app
+	a.t.Helper()
+	if strings.EqualFold(addr, p.mailboxAddress()) {
+		a.fatalf("la boîte %s est déjà celle de %s : en brancher une autre demande une autre adresse (à corriger dans le scénario)", addr, p.email)
+	}
+	p.address = addr
+	// The other mailbox has its own app password, the one connectMailbox
+	// seals: a password its provider replaced on the first one does not
+	// carry over (providerReplacesAppPassword).
+	p.passwordMu.Lock()
+	p.newPassword = ""
+	p.passwordMu.Unlock()
+	p.startServer()
+	p.connectMailbox()
 }
 
 // The folders every person's server has, by the names a mail program shows.
@@ -376,7 +453,7 @@ func (p *imapPerson) usualSpecialFolders() {
 func (p *imapPerson) startServer() {
 	a := p.app
 	a.t.Helper()
-	p.mailbox = imapmemserver.NewUser(p.email, imapTestPassword)
+	p.mailbox = imapmemserver.NewUser(p.mailboxAddress(), imapTestPassword)
 	for name, use := range map[string][]imapv2.MailboxAttr{
 		serverInbox:   nil,
 		serverArchive: {imapv2.MailboxAttrArchive},
@@ -390,9 +467,10 @@ func (p *imapPerson) startServer() {
 			a.fatalf("création du dossier %q sur le serveur IMAP de %s : %v", name, p.email, err)
 		}
 	}
+	user, address := p.mailbox, p.mailboxAddress()
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return &mailboxSession{p: p}, nil, nil
+			return &mailboxSession{p: p, user: user, address: address}, nil, nil
 		},
 		Caps: imapv2.CapSet{imapv2.CapIMAP4rev1: {}, imapv2.CapIMAP4rev2: {}},
 	})
@@ -407,15 +485,38 @@ func (p *imapPerson) startServer() {
 
 // receive delivers mails to this person's IMAP inbox, unread, oldest first,
 // and returns the UIDs their server gave them: the numbers Mailsorter knows
-// them by. It does not sync.
+// them by. Their server dated them a few minutes ago, one minute apart: the
+// order of several mails is what it gives, never their being newer than
+// anything the scenario did (see arrive). It does not sync.
 func (p *imapPerson) receive(mails ...incoming) []string {
-	a := p.app
-	a.t.Helper()
+	p.app.t.Helper()
 	uids := make([]string, 0, len(mails))
 	base := time.Now().Add(-time.Duration(len(mails)+1) * time.Minute)
 	for i, m := range mails {
 		uids = append(uids, p.deliver(m, i, base.Add(time.Duration(i)*time.Minute), nil, nil))
 	}
+	return uids
+}
+
+// arrive delivers mails to this person's IMAP inbox now, unread, and returns
+// their numbers: their server receives them after everything the scenario did
+// before the call, and before everything it does after. That date is the one
+// the server keeps (INTERNALDATE), and over IMAP it is what makes a mail one
+// that ARRIVES, after the option "appliquer mes règles automatiquement" was
+// turned on and after the mailbox was connected; receive dates its mails
+// minutes back, before both. The server's date has whole seconds, so arrive
+// waits for the next one, dates the mails with it, and returns only once
+// another second has begun: no mail is dated in the future, and nothing
+// before or after shares its second. It does not sync.
+func (p *imapPerson) arrive(mails ...incoming) []string {
+	p.app.t.Helper()
+	at := time.Now().Truncate(time.Second).Add(time.Second)
+	time.Sleep(time.Until(at))
+	uids := make([]string, 0, len(mails))
+	for i, m := range mails {
+		uids = append(uids, p.deliver(m, i, at, nil, nil))
+	}
+	time.Sleep(time.Until(at.Add(time.Second)))
 	return uids
 }
 
@@ -578,7 +679,7 @@ func (p *imapPerson) deliver(m incoming, i int, date time.Time, files []attached
 	}
 	var raw strings.Builder
 	fmt.Fprintf(&raw, "From: %s\r\n", from)
-	fmt.Fprintf(&raw, "To: %s\r\n", p.email)
+	fmt.Fprintf(&raw, "To: %s\r\n", p.mailboxAddress())
 	fmt.Fprintf(&raw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 	fmt.Fprintf(&raw, "Date: %s\r\n", date.Format(time.RFC1123Z))
 	fmt.Fprintf(&raw, "Message-ID: <%d.%d@scenarios.test>\r\n", date.UnixNano(), i)
@@ -1630,19 +1731,80 @@ func (p *imapPerson) twiceAtOnce(path string, body interface{}, what string) [2]
 // changes, Mailsorter can only learn from the server, which is what the
 // sentences about a mailbox used elsewhere are about. The caller closes it.
 func (p *imapPerson) otherProgram() *imapclient.Client {
+	p.app.t.Helper()
+	return p.programOn(p.port, p.mailboxAddress())
+}
+
+// programOn is otherProgram on the mailbox at this address, on the server
+// listening on port: the one connected now, or one connected before.
+func (p *imapPerson) programOn(port int, address string) *imapclient.Client {
 	a := p.app
 	a.t.Helper()
-	c, err := imapclient.DialTLS(net.JoinHostPort("127.0.0.1", fmt.Sprint(p.port)), &imapclient.Options{
+	c, err := imapclient.DialTLS(net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), &imapclient.Options{
 		TLSConfig: &tls.Config{ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12},
 	})
 	if err != nil {
-		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s : %v", p.email, err)
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s (%s) : %v", p.email, address, err)
 	}
-	if err := c.Login(p.email, p.appPasswordOnServer()).Wait(); err != nil {
+	if err := c.Login(address, p.appPasswordOnServer()).Wait(); err != nil {
 		_ = c.Close()
-		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP de %s : %v", p.email, err)
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP %s de %s : %v", address, p.email, err)
 	}
 	return c
+}
+
+// connectedBox is a mailbox of this person, as their mail program reaches
+// it: its server and its address. Kept while it is the one connected
+// (connectedNow), it is still there to look at once another one replaces it
+// (connectOtherMailbox leaves its server running, untouched), when
+// Mailsorter no longer reaches it.
+type connectedBox struct {
+	p       *imapPerson
+	address string
+	port    int
+	user    *imapmemserver.User
+}
+
+// connectedNow is the mailbox connected for this person now.
+func (p *imapPerson) connectedNow() connectedBox {
+	return connectedBox{p: p, address: p.mailboxAddress(), port: p.port, user: p.mailbox}
+}
+
+// connectAgain connects again a mailbox this person connected before and
+// disconnected since: the same server, holding what it holds, connected at
+// this instant, as connectMailbox writes it, with the app password it seals.
+// From then on receive, arrive and another mail program act on that one.
+func (p *imapPerson) connectAgain(b connectedBox) {
+	p.app.t.Helper()
+	if b.p != p {
+		p.app.fatalf("la boîte %s n'est pas une boîte de %s (à corriger dans le scénario)", b.address, p.email)
+	}
+	p.address, p.port, p.mailbox = b.address, b.port, b.user
+	if b.address == p.email {
+		p.address = ""
+	}
+	p.passwordMu.Lock()
+	p.newPassword = ""
+	p.passwordMu.Unlock()
+	p.connectMailbox()
+}
+
+// subjectsIn returns the subjects of the mails in this folder of the mailbox,
+// as the person's mail program lists them (opened read-only, read from the
+// envelopes, so looking marks nothing read), and whether the folder exists.
+func (b connectedBox) subjectsIn(folder string) ([]string, bool) {
+	p := b.p
+	p.app.t.Helper()
+	c := p.programOn(b.port, b.address)
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		return nil, false
+	}
+	var subjects []string
+	for _, m := range p.mailsIn(c, folder) {
+		subjects = append(subjects, m.subject)
+	}
+	return subjects, true
 }
 
 // serverUID reads back a number receive returned.
@@ -2642,4 +2804,86 @@ func (p *imapPerson) actionTakenDaysAgo(line historyLine, days int) {
 		bson.M{"$set": bson.M{"leftAt": then}}); err != nil {
 		a.fatalf("recul de %d jours de la sortie de la boîte de réception du mail n°%s de %s : %v", days, line.MessageID, p.email, err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The Règles screen, as this person
+// ---------------------------------------------------------------------------
+
+// rule saves a sorting rule as this person, the way the editor of the Règles
+// screen does: one condition, then the actions in order. testApp.rule does the
+// same for the person on Gmail. It stops the scenario when the server does not
+// take it: a sentence about what a rule does proves nothing about a rule that
+// was never saved.
+func (p *imapPerson) rule(name string, priority int, field, operator, value string, actions ...models.RuleAction) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/rules", models.SortingRuleInput{
+		Name:       name,
+		Enabled:    true,
+		MatchAll:   true,
+		Conditions: []models.RuleCondition{{Field: field, Operator: operator, Value: value}},
+		Actions:    actions,
+		Priority:   priority,
+	})
+	if code != http.StatusCreated && code != http.StatusOK {
+		a.fatalf("la règle %q de %s n'a pas pu être enregistrée : POST /api/rules a répondu %d (attendu 201) : %v : le scénario ne prouve rien", name, p.email, code, out)
+	}
+}
+
+// applyRules is "Appliquer maintenant" on the Règles screen (applyNow in
+// Rules.js), what the sentences call « Appliquer mes règles », as this person.
+// It returns the answer, whatever it is.
+func (p *imapPerson) applyRules() answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/rules/apply", nil)
+	return answer{code: code, body: out}
+}
+
+// previewRules is "Aperçu" on the Règles screen (runPreview in Rules.js), as
+// this person. It returns the answer, whatever it is.
+func (p *imapPerson) previewRules() answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/rules/preview", nil)
+	return answer{code: code, body: out}
+}
+
+// autoApplyRulesOn is whether the Règles screen shows the option "appliquer
+// mes règles automatiquement" on ("Appliquer à chaque synchronisation"), as
+// the screen loads it (GET /api/account/settings).
+func (p *imapPerson) autoApplyRulesOn() bool {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/account/settings", nil)
+	if code != http.StatusOK {
+		a.fatalf("les réglages de %s ne s'affichent pas : GET /api/account/settings a répondu %d : %v", p.email, code, out)
+	}
+	on, ok := out["autoApplyRules"].(bool)
+	if !ok {
+		a.fatalf("réponse de GET /api/account/settings illisible pour %s : pas d'option autoApplyRules dans %v", p.email, out)
+	}
+	return on
+}
+
+// setAutoApplyRules flips that option as this person (toggleAutoApply in
+// Rules.js), then reads it back the way the screen loads it: a sentence about
+// the option on proves nothing if it did not stay on.
+func (p *imapPerson) setAutoApplyRules(on bool) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPut, "/api/account/settings", map[string]bool{"autoApplyRules": on})
+	if code != http.StatusOK {
+		a.fatalf("l'option « appliquer mes règles automatiquement » de %s n'a pas pu être réglée : PUT /api/account/settings a répondu %d : %v : le scénario ne prouve rien", p.email, code, out)
+	}
+	if got := p.autoApplyRulesOn(); got != on {
+		a.fatalf("l'option « appliquer mes règles automatiquement » de %s devrait être %s, l'écran Règles la montre %s : le scénario ne prouve rien", p.email, onOff(on), onOff(got))
+	}
+}
+
+// onOff is an option's state in a failure message.
+func onOff(on bool) string {
+	if on {
+		return "activée"
+	}
+	return "coupée"
 }

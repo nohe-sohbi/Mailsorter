@@ -356,6 +356,7 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 
 	msg.UserID = userEmail
 	msg.Folder = ref.Folder
+	msg.Generation = session.generation()
 	if markRead && !msg.IsRead {
 		if err := h.applyVerb(ctx, session.Mailbox(), ref, "read", ""); err == nil {
 			msg.IsRead = true
@@ -364,7 +365,7 @@ func (h *Handler) getEmailIMAP(ctx context.Context, w http.ResponseWriter, sessi
 
 	opts := options.Update().SetUpsert(true)
 	h.db.Emails().UpdateOne(ctx,
-		bson.M{"userId": userEmail, "messageId": messageID},
+		bson.M{"userId": userEmail, "generation": msg.Generation, "messageId": messageID},
 		bson.M{"$set": msg.Email},
 		opts,
 	)
