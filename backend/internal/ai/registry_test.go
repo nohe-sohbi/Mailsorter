@@ -153,13 +153,13 @@ func TestNewAnalyzerGuardsUserSuppliedProviders(t *testing.T) {
 		cfg     ProviderConfig
 		wantErr bool
 	}{
-		{"user openai-compatible on a public https host", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "https://api.example.com/v1/chat/completions", UserSupplied: true}, false},
-		{"user openai-compatible on loopback", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "https://127.0.0.1/v1", UserSupplied: true}, true},
-		{"user openai-compatible over http", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "http://api.example.com/v1", UserSupplied: true}, true},
-		{"user mistral pointed at metadata", ProviderConfig{Name: "mistral", APIKey: ***, BaseURL: "https://169.254.169.254/", UserSupplied: true}, true},
+		{"user openai-compatible on a public https host", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "https://api.example.com/v1/chat/completions", UserSupplied: true}, false},
+		{"user openai-compatible on loopback", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "https://127.0.0.1/v1", UserSupplied: true}, true},
+		{"user openai-compatible over http", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "http://api.example.com/v1", UserSupplied: true}, true},
+		{"user mistral pointed at metadata", ProviderConfig{Name: "mistral", APIKey: "",BaseURL: "https://169.254.169.254/", UserSupplied: true}, true},
 		{"user ollama without address", ProviderConfig{Name: "ollama", UserSupplied: true}, true},
 		{"operator ollama without address", ProviderConfig{Name: "ollama"}, false},
-		{"operator openai-compatible on the docker network", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "http://10.0.0.5:8000/v1"}, false},
+		{"operator openai-compatible on the docker network", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "http://10.0.0.5:8000/v1"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -176,9 +176,9 @@ func TestNewAnalyzerGuardsUserSuppliedProviders(t *testing.T) {
 func TestNewRegistryOrdersByPriority(t *testing.T) {
 	r := NewRegistry([]ProviderConfig{
 		{Name: "ollama", Model: "m", BaseURL: "http://127.0.0.1:1", Priority: 30, Enabled: true},
-		{Name: "openai", APIKey: ***, Priority: 10, Enabled: true},
+		{Name: "openai", APIKey: "",Priority: 10, Enabled: true},
 		{Name: "ollama", Model: "fallback", BaseURL: "http://127.0.0.1:2", Priority: 5, Enabled: true},
-		{Name: "mistral", APIKey: ***, Priority: 0, Enabled: true},
+		{Name: "mistral", APIKey: "",Priority: 0, Enabled: true},
 	})
 	got := r.ProviderNames()
 	want := []string{"mistral", "ollama", "openai", "ollama"}
@@ -189,7 +189,5 @@ func TestNewRegistryOrdersByPriority(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("ProviderNames() = %v, want %v", got, want)
 		}
-	}
-}
 	}
 }

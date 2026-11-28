@@ -144,10 +144,7 @@ func (h *Handler) UpdateAISettings(w http.ResponseWriter, r *http.Request) {
 
 	if msg := baseURLProblem(req.Provider, req.BaseURL); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
-	} else if !isValidBaseURL(req.BaseURL) {
-		writeError(w, http.StatusBadRequest, "Adresse refusée : seule une adresse HTTPS publique est acceptée ici. Un modèle sur votre réseau se règle dans le .env de l'instance.")
-	}
-	return
+		return
 	}
 
 	// Encrypt the API key
@@ -232,10 +229,7 @@ func (h *Handler) TestAISettings(w http.ResponseWriter, r *http.Request) {
 
 	if msg := baseURLProblem(req.Provider, req.BaseURL); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
-	} else if !isValidBaseURL(req.BaseURL) {
-		writeError(w, http.StatusBadRequest, "Adresse refusée : seule une adresse HTTPS publique est acceptée ici. Un modèle sur votre réseau se règle dans le .env de l'instance.")
-	}
-	return
+		return
 	}
 	// Build a one-off analyzer from the provided credentials
 	cfg := ai.ProviderConfig{

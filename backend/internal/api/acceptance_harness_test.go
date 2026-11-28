@@ -880,6 +880,16 @@ func (a *testApp) callRaw(method, path string, body interface{}) (int, string) {
 // mustCall is call with an expected status; any other status fails the
 // scenario with the response body, which usually says why.
 func (a *testApp) mustCall(method, path string, body interface{}, want ...int) map[string]interface{} {
+	a.t.Helper()
+	code, out := a.call(method, path, body)
+	for _, w := range want {
+		if code == w {
+			return out
+		}
+	}
+	a.fatalf(""%s %s a répondu %d (attendu %v) : %v", method, path, code, want, out)
+	return nil
+}
 func (a *testApp) callAs(token, method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
 	return a.send(method, path, body, map[string]string{"Authorization": "Bearer " + token})
