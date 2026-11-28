@@ -212,9 +212,9 @@ in its package doc:
 | `mailer` | The recap as an RFC 5322 multipart message (bodies in quoted-printable, so no line a sending server may refuse; a `Message-ID` on the domain of the sending address, its unique part drawn by the caller), its base64url encoding for Gmail's send API, and daily-due arithmetic | `Message`, `Build`, `MessageID`, `ForGmail`, `DueAt` |
 | `account` | The single catalog of user-owned data driving BOTH export and erasure, and which of its fields are secrets | `Dataset*`, `SecretFields`, `RedactUser` |
 | `metrics` | In-process bounded request meter (method x status class, latency) | `Registry` |
-| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses. `SendingServer` is where a connected IMAP mailbox sends from: the server recorded on its row, or that route's in the catalog for a row from before | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `SendingServer`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
-| `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `IMAPIsStarred`, `Folder*`, `Flag*`, and `MatchLabel` / `LabelKey`: a label the model proposed matched with one the user has (case, accents and a plural aside, never a part of a name) |
-| `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
+|| `provider` | The mailbox catalog: which provider is reachable by which transport, with which credential, in which EDITION, and what can block it. Routes are ordered best first; `PickIMAP` is the route an address and a password can connect to (the first IMAP route of the edition that names its server), which is what connecting a mailbox uses. `SendingServer` is where a connected IMAP mailbox sends from: the server recorded on its row, or that route's in the catalog for a row from before | `All`, `ForEdition`, `Lookup`, `Detect`, `PickIMAP`, `SendingServer`, `Edition*`, `Transport*`, `Auth*`, `Cap*`, `Blocker*` |
+|| `mailbox` | The provider-neutral verb vocabulary, how a message is NAMED on each transport, and the translation per transport. The ONLY place that knows Gmail's system label ids, and IMAP's flags and special folders | `Action*`, `Parse`, `Destructive`, `Mutation`, `Ref`, `OnAccount`, `InFolder`, `Mailbox`, `GmailLabels`, `GmailLabelsFor`, `GmailIsRead`, `GmailAfter`, `IMAPOpFor`, `IMAPOpsFor`, `IMAPIsRead`, `Folder*`, `Flag*`, and `MatchLabel` / `LabelKey`: a label the model proposed matched with one the user has (case, accents and a plural aside, never a part of a name) |
+|| `egress` | Where the server may send a request of its own. Guards the one-click unsubscribe, the only outbound URL a stranger chooses | `Parse`, `Allowed`, `AllowedIP`, `ErrNotHTTPS`, `ErrNoHost`, `ErrPrivateAddress` |
 | `unsubscribe` | The `List-Unsubscribe` (RFC 2369) and `List-Unsubscribe-Post` (RFC 8058) headers. Shared by both transports: the headers belong to the message, not to how it was fetched | `Parse`, `SplitAngleList`, `Links` |
 | `attachment` | Which parts of a mail the reader lists as its files, and under which name, on both transports: a named part, an unnamed one declared an attachment (`piece-jointe`) or a forwarded mail (`message.eml`), except an image the mail's HTML shows through `cid:`. And the cleaning of a file name (no directory, control or bidirectional control character), which the list and the download's `Content-Disposition` share. `InlineImage` is a picture an `<img src="cid:...">` of the HTML draws (raster types only, never SVG), which the reader returns as `inlineImages` and the download serves so the screen can draw it, the `MaxDrawn` (30) first in the HTML (`Shown.FirstDrawn`): no other is served. `ListedWithoutHTML` is the rule read off a `BODYSTRUCTURE`, for the filter "Pièces jointes" (`imap/state.go`): an inline image with a `Content-ID` is taken for a picture the HTML draws; `WithoutHTMLVersion` is stored with each count, and a count made with another version is made again by the sync | `Listed`, `InlineImage`, `ListedWithoutHTML`, `WithoutHTMLVersion`, `Part`, `ShownBy`, `Shown`, `SafeName`, `DispositionType`, `Unnamed`, `UnnamedMail` |
 
@@ -893,6 +893,20 @@ Do not duplicate these into this file. Point at them.
   `GMAIL_*` set offers Google sign-in, and with it a Gmail API transport, whatever its
   `EDITION`.
 - **Any outbound request whose URL is not a constant goes through `internal/egress`.**
+  There are two today. The RFC 8058 one-click unsubscribe (a URL a stranger chooses). And a
+  personal AI provider (bring your own key): its base URL is typed by the user, so
+  `ai.ProviderConfig.UserSupplied` routes it through `egress.NewClient`, refuses a
+  user's Ollama without an address (the operator's defaults to localhost, the
+  server itself), and is judged at save time AND at every connection, since a name
+  can resolve elsewhere later. Unguarded, either is a server-side request forgery:
+  the server sends to its own loopback API, to the datastore on the Docker bridge,
+  or to 169.254.169.254 for the host's credentials. The scheme check must be
+  https-only, the address check must run from the dialer's `Control` hook (not
+  before the lookup, or DNS rebinding walks past it), and every redirect hop must
+  be re-judged: use `egress.GuardedTransport`, never a second dialer. The
+  operator's providers (env vars), Mistral's default and Stripe are left unguarded
+  for one reason only: their base URL is a constant the operator chose.
+=======
   The fully guarded one is the RFC 8058 one-click unsubscribe, whose address
   comes from the `List-Unsubscribe` header of a received email, so a stranger picks
   it. Unguarded, that is a server-side request forgery: the server POSTs to its own
@@ -906,6 +920,7 @@ Do not duplicate these into this file. Point at them.
   name that resolves to a private address is not caught. The instance's own base
   URLs (`OPENAI_BASE_URL`, `OLLAMA_BASE_URL`) are operator configuration, and the
   default Mistral, OpenAI, Anthropic and Stripe URLs are constants.
+>>>>>>> origin/main
 - **An IMAP UID is NOT a message id, and `mailbox.Ref` is how the two stay apart.**
   Over the Gmail API a message id names a message on the account and never
   changes. Over IMAP a UID names a message inside one folder, so a move ends its

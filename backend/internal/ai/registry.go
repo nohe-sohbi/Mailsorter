@@ -1,12 +1,16 @@
 package ai
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/egress"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 )
 
@@ -19,6 +23,40 @@ type ProviderConfig struct {
 	MaxRetries int    `json:"maxRetries" bson:"maxRetries"` // extra attempts on transient failures
 	Priority   int    `json:"priority" bson:"priority"`     // lower = tried first
 	Enabled    bool   `json:"enabled" bson:"enabled"`
+
+	// UserSupplied marks a provider a USER configured (bring your own key), as
+	// opposed to one the operator set through env vars. The operator's base URL
+	// is a constant they chose and may well be internal (an Ollama on the
+	// Docker network). A user's is not: anyone with an account picks it, so it
+	// goes through internal/egress like every other URL a stranger chooses,
+	// at save time and again at every connection. Never stored.
+	UserSupplied bool `json:"-" bson:"-"`
+}
+
+// userHTTPTimeout bounds one call to a user's own provider, as the operator's
+// clients are bounded (60 s), with the slack a self-hosted model needs.
+const userHTTPTimeout = 120 * time.Second
+
+// ErrBaseURLRequired is a user-supplied Ollama with no address. The operator's
+// Ollama defaults to localhost, which is the server itself: a user must say
+// where theirs is.
+var ErrBaseURLRequired = errors.New("ai: this provider needs the address of your server")
+
+// checkUserSupplied refuses, before any client exists, a user's provider the
+// server must not call: a base URL egress rejects, or an Ollama with none.
+func checkUserSupplied(cfg ProviderConfig) error {
+	if !cfg.UserSupplied {
+		return nil
+	}
+	if cfg.Name == "ollama" && cfg.BaseURL == "" {
+		return ErrBaseURLRequired
+	}
+	if cfg.BaseURL != "" {
+		if _, err := egress.Parse(cfg.BaseURL); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Registry holds an ordered list of AI providers and handles automatic
@@ -191,6 +229,17 @@ func (r *Registry) ProviderName() string {
 
 // newAnalyzer creates the right Analyzer for a ProviderConfig.
 func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
+	if err := checkUserSupplied(cfg); err != nil {
+		return nil, err
+	}
+	// A user's provider connects only where egress allows, judged on the
+	// address actually dialled and on every redirect: the base URL was checked
+	// above, but a name can resolve somewhere else by the time it is called.
+	var guarded *http.Client
+	if cfg.UserSupplied {
+		guarded = egress.NewClient(userHTTPTimeout, 3)
+	}
+
 	switch cfg.Name {
 	case "mistral":
 		if cfg.APIKey == "" {
@@ -202,6 +251,9 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		}
 		if cfg.BaseURL != "" {
 			c.baseURL = cfg.BaseURL
+		}
+		if guarded != nil {
+			c.httpClient = guarded
 		}
 		return c, nil
 
@@ -221,6 +273,9 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		if cfg.MaxRetries > 0 {
 			c.SetMaxRetries(cfg.MaxRetries)
 		}
+		if guarded != nil {
+			c.httpClient = guarded
+		}
 		return c, nil
 
 	case "anthropic":
@@ -235,6 +290,9 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		if cfg.MaxRetries > 0 {
 			c.SetMaxRetries(cfg.MaxRetries)
 		}
+		if guarded != nil {
+			c.httpClient = guarded
+		}
 		return c, nil
 
 	case "ollama":
@@ -247,6 +305,9 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 			model = "qwen3.5:9b"
 		}
 		c := NewOllamaClient(model, baseURL)
+		if guarded != nil {
+			c.httpClient = guarded
+		}
 		return c, nil
 
 	default:

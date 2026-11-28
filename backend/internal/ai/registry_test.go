@@ -144,14 +144,41 @@ func TestRegistryWithUserOverride(t *testing.T) {
 	}
 }
 
+// A provider a user configured never gets a client that can reach the server's
+// own network: a refused base URL builds nothing, and Ollama needs an address.
+// The operator's providers are left alone, internal addresses included.
+func TestNewAnalyzerGuardsUserSuppliedProviders(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     ProviderConfig
+		wantErr bool
+	}{
+		{"user openai-compatible on a public https host", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "https://api.example.com/v1/chat/completions", UserSupplied: true}, false},
+		{"user openai-compatible on loopback", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "https://127.0.0.1/v1", UserSupplied: true}, true},
+		{"user openai-compatible over http", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "http://api.example.com/v1", UserSupplied: true}, true},
+		{"user mistral pointed at metadata", ProviderConfig{Name: "mistral", APIKey: "",BaseURL: "https://169.254.169.254/", UserSupplied: true}, true},
+		{"user ollama without address", ProviderConfig{Name: "ollama", UserSupplied: true}, true},
+		{"operator ollama without address", ProviderConfig{Name: "ollama"}, false},
+		{"operator openai-compatible on the docker network", ProviderConfig{Name: "openai-compatible", APIKey: "",BaseURL: "http://10.0.0.5:8000/v1"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := newAnalyzer(tc.cfg)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("newAnalyzer(%+v) error = %v, want error %v", tc.cfg, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // AI_FALLBACK_PROVIDER works by priority: the registry must try providers in
 // ascending Priority, whatever order the configs arrive in.
 func TestNewRegistryOrdersByPriority(t *testing.T) {
 	r := NewRegistry([]ProviderConfig{
 		{Name: "ollama", Model: "m", BaseURL: "http://127.0.0.1:1", Priority: 30, Enabled: true},
-		{Name: "openai", APIKey: "k", Priority: 10, Enabled: true},
+		{Name: "openai", APIKey: "",Priority: 10, Enabled: true},
 		{Name: "ollama", Model: "fallback", BaseURL: "http://127.0.0.1:2", Priority: 5, Enabled: true},
-		{Name: "mistral", APIKey: "k", Priority: 0, Enabled: true},
+		{Name: "mistral", APIKey: "",Priority: 0, Enabled: true},
 	})
 	got := r.ProviderNames()
 	want := []string{"mistral", "ollama", "openai", "ollama"}

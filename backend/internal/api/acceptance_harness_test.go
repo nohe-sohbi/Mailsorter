@@ -43,11 +43,9 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
-	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // scenarioUser is the account every scenario runs as.
@@ -126,23 +124,6 @@ func playScenarios(t *testing.T, theme string, list []scenario) {
 	}
 }
 
-func TestMain(m *testing.M) {
-	// First, before anything in the process verifies a certificate: Go reads
-	// the system roots once, so a CA trusted later is never seen and every
-	// IMAP scenario fails to reach its server.
-	cleanup := trustIMAPTestCertificate()
-	code := m.Run()
-	cleanup()
-	if path := os.Getenv("SCENARIO_REPORT"); path != "" {
-		if err := writeScenarioReport(path); err != nil {
-			fmt.Fprintf(os.Stderr, "scenario report: %v\n", err)
-			if code == 0 {
-				code = 1
-			}
-		}
-	}
-	os.Exit(code)
-}
 
 // writeScenarioReport renders the results as the French page Nohé reads: one
 // line per sentence, OK or KO, validated, rejected or only observed. The
@@ -374,43 +355,6 @@ type incoming struct {
 	// Unsubscribe is the List-Unsubscribe header, e.g. "<mailto:stop@boutique.com>".
 	// Use a mailto link: an https one makes the server POST to the internet.
 	Unsubscribe string
-	// HTML, when set, is the mail's HTML version: the mail is then
-	// multipart/alternative, Body being its text version, the way most
-	// newsletters are sent. That is two versions of one text, not an
-	// attachment.
-	HTML string
-	// Attachment, when set, is a file the mail carries as a real attachment:
-	// the mail is then multipart/mixed, its text first, then the file with
-	// Content-Disposition: attachment.
-	Attachment *attachedFile
-}
-
-// attachedFile is a file attached to a mail, in one of two uses:
-//
-//   - As incoming.Attachment, its content is filler of Size bytes: what a
-//     sentence about attachments or large mails looks at there is that the
-//     file is there and how much it weighs, never what it says. Data, NameAs
-//     and Transfer stay unset.
-//   - Given to receiveWithFiles (acceptance_imap_test.go), its content is
-//     Data, real bytes written the way the sender's mail program wrote them:
-//     what a sentence about opening or saving the file looks at is the file
-//     itself, byte for byte, under its name. Size stays unset.
-//
-// The harness stops a scenario that mixes the two.
-type attachedFile struct {
-	Name string // e.g. "facture.pdf"
-	Type string // e.g. "application/pdf"
-	Size int    // bytes, before the base64 a mail carries it in
-
-	Data []byte
-	// NameAs is how the program wrote the name: as an RFC 2047 encoded word
-	// inside the parameter, what Gmail and Outlook send, or as an RFC 2231
-	// parameter, what Thunderbird and Apple Mail send. Both are in every
-	// inbox, and only an accented name tells them apart.
-	NameAs nameEncoding
-	// Transfer is how it wrote the bytes: transferBase64, or
-	// transferQuotedPrintable for a text file.
-	Transfer string
 }
 
 // receive delivers mails to the Gmail inbox, unread, oldest first, and returns
@@ -428,12 +372,6 @@ func (a *testApp) receive(mails ...incoming) []string {
 		body := m.Body
 		if body == "" {
 			body = "Bonjour, ceci est le message " + subject + "."
-		}
-		// The fake Gmail keeps one text per message and no MIME parts. A mail
-		// delivered without its HTML version or its attachment would make a
-		// sentence about either pass or fail for a reason it does not name.
-		if m.HTML != "" || m.Attachment != nil {
-			a.fatalf("le faux Gmail ne sait pas déposer le mail %q avec sa version HTML ou sa pièce jointe : à ajouter dans acceptance_fakegmail_test.go avant d'écrire ce scénario", subject)
 		}
 		ids = append(ids, a.gmail.add(&fakeMessage{
 			from:            m.From,
@@ -477,20 +415,6 @@ func (a *testApp) act(id, action string) {
 // status and the decoded JSON body (nil when the body is not a JSON object).
 func (a *testApp) call(method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
-	return a.callAs(a.token, method, path, body)
-}
-
-// callAs is call, signed in as someone other than the scenario's user: the
-// scenarios with several people, each with their own session.
-func (a *testApp) callAs(token, method, path string, body interface{}) (int, map[string]interface{}) {
-	a.t.Helper()
-	return a.send(method, path, body, map[string]string{"Authorization": "Bearer " + token})
-}
-
-// send is call with the headers the caller chooses and no other: it is how a
-// visitor (below), who has no session, reaches the same router.
-func (a *testApp) send(method, path string, body interface{}, headers map[string]string) (int, map[string]interface{}) {
-	a.t.Helper()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -503,9 +427,7 @@ func (a *testApp) send(method, path string, body interface{}, headers map[string
 	if err != nil {
 		a.fatalf("requête %s %s : %v", method, path, err)
 	}
-	for name, value := range headers {
-		req.Header.Set(name, value)
-	}
+	req.Header.Set("Authorization", "Bearer "+a.token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -717,25 +639,6 @@ func (a *testApp) timeComesForSnoozes() {
 	a.h.wakeDueSnoozes()
 }
 
-// reportsHourPassesFor is the hour of every report of this account passing,
-// whatever became of them: each wake time moved into the past, then the
-// background sweep run once. timeComesForSnoozes moves only the reports still
-// scheduled; a sentence about a report ended before its hour needs that hour
-// to pass all the same, and a sweep that would still take an ended report
-// must find it due. An account with no report at all is not stopped: the
-// hour then passes over nothing, which is what such a sentence expects.
-func (a *testApp) reportsHourPassesFor(email string) {
-	a.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := a.h.db.Snoozes().UpdateMany(ctx,
-		bson.M{"userId": email},
-		bson.M{"$set": bson.M{"wakeAt": time.Now().Add(-time.Minute)}}); err != nil {
-		a.fatalf("avance de l'heure des reports de %s : %v", email, err)
-	}
-	a.h.wakeDueSnoozes()
-}
-
 // senderCard is one row of the Expediteurs screen: the sender key it holds
 // and the count it shows, which is also the count the "Tout supprimer" /
 // "Tout archiver" confirmation announces.
@@ -914,114 +817,181 @@ func (a *testApp) autopilot(from, action string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// "Annuler" right after an action, and the Historique screen
-//
-// Each helper ending in As acts or looks as whoever holds this session, like
-// callAs: the IMAP people of acceptance_imap_test.go go through them too, so
-// both transports are read the same way.
-// ---------------------------------------------------------------------------
-
-// undoRightAfter is "Annuler" in the message that follows "Archiver" or
-// "Supprimer" on a mail (undoToast in Inbox.js). It returns the answer,
-// whatever it is.
-func (a *testApp) undoRightAfter(id, action string) answer {
-	a.t.Helper()
-	return a.undoRightAfterAs(a.token, id, action)
-}
-
-// undoRightAfterAs is that "Annuler": the single-message action again, on the
-// id the mail had when it was acted on, with the verb that undoes action
-// ("unarchive" after "archive", "untrash" otherwise). It returns the answer,
-// whatever it is.
-func (a *testApp) undoRightAfterAs(token, id, action string) answer {
-	a.t.Helper()
-	inverse := "untrash"
-	if action == "archive" {
-		inverse = "unarchive"
+func TestMain(m *testing.M) {
+	// First, before anything in the process verifies a certificate: Go reads
+	// the system roots once, so a CA trusted later is never seen and every
+	// IMAP scenario fails to reach its server.
+	cleanup := trustIMAPTestCertificate()
+	code := m.Run()
+	cleanup()
+	if path := os.Getenv("SCENARIO_REPORT"); path != "" {
+		if err := writeScenarioReport(path); err != nil {
+			fmt.Fprintf(os.Stderr, "scenario report: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
 	}
-	code, out := a.callAs(token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": id, "action": inverse})
-	return answer{code: code, body: out}
+	os.Exit(code)
 }
-
-// historyLine is one line of the Historique screen, as GET /api/activity/log
-// hands it over: "undone" is what the screen shows as "Annulé", "undoable" is
-// what makes it offer "Annuler" (History.js).
-type historyLine struct {
-	ID        string `json:"id"`
-	MessageID string `json:"messageId"`
-	Action    string `json:"action"`
-	Source    string `json:"source"`
-	Subject   string `json:"subject"`
-	Undone    bool   `json:"undone"`
-	Undoable  bool   `json:"undoable"`
-}
-
-// historyScreenAs is the Historique screen: the first page it loads
-// (History.js, 50 lines), newest first. who names the person in a failure.
-func (a *testApp) historyScreenAs(token, who string) []historyLine {
+func (a *testApp) call(method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
-	code, out := a.callAs(token, http.MethodGet, "/api/activity/log?limit=50", nil)
-	if code != http.StatusOK {
-		a.fatalf("l'historique de %s ne s'affiche pas : GET /api/activity/log a répondu %d : %v", who, code, out)
+	code, raw := a.callRaw(method, path, body)
+	var out map[string]interface{}
+	_ = json.Unmarshal([]byte(raw), &out)
+	if out == nil && len(raw) > 0 {
+		out = map[string]interface{}{"_raw": raw}
 	}
-	raw, err := json.Marshal(out["entries"])
+	return code, out
+}
+
+// callRaw is call without the decoding: the status and the body exactly as the
+// screen receives it, for a sentence about what a response must never contain.
+func (a *testApp) callRaw(method, path string, body interface{}) (int, string) {
+	a.t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			a.fatalf("encodage de la requête %s %s : %v", method, path, err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, a.server.URL+path, reader)
 	if err != nil {
-		a.fatalf("réponse de GET /api/activity/log illisible pour %s : %v", who, err)
+		a.fatalf("requête %s %s : %v", method, path, err)
 	}
-	var lines []historyLine
-	if err := json.Unmarshal(raw, &lines); err != nil {
-		a.fatalf("réponse de GET /api/activity/log illisible pour %s : %v", who, err)
+	req.Header.Set("Authorization", "Bearer "+a.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
-	return lines
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		a.fatalf("appel %s %s : %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		a.fatalf("lecture de la réponse à %s %s : %v", method, path, err)
+	}
+	return resp.StatusCode, string(raw)
 }
 
-// historyLineFor returns the newest line of the Historique screen for this
-// action on this mail, and stops the scenario when the screen shows none:
-// there is then nothing to look at once the action is undone.
-func (a *testApp) historyLineFor(id, action string) historyLine {
+// mustCall is call with an expected status; any other status fails the
+// scenario with the response body, which usually says why.
+func (a *testApp) mustCall(method, path string, body interface{}, want ...int) map[string]interface{} {
 	a.t.Helper()
-	for _, l := range a.historyScreenAs(a.token, scenarioUser) {
-		if l.MessageID == id && l.Action == action {
-			return l
+	code, out := a.call(method, path, body)
+	for _, w := range want {
+		if code == w {
+			return out
 		}
 	}
-	a.fatalf("l'historique de %s ne montre pas de ligne %q pour le mail %s : le scénario ne prouve rien", scenarioUser, action, a.describe(id))
-	return historyLine{}
+	a.fatalf(""%s %s a répondu %d (attendu %v) : %v", method, path, code, want, out)
+	return nil
 }
-
-// expectNoLongerUndoable checks, on the Historique screen as it loads again,
-// that this line shows "Annulé" and no longer offers "Annuler". what names
-// the line in a failure.
-func (a *testApp) expectNoLongerUndoable(line historyLine, what string) {
+func (a *testApp) callAs(token, method, path string, body interface{}) (int, map[string]interface{}) {
 	a.t.Helper()
-	a.expectNoLongerUndoableAs(a.token, scenarioUser, line, what)
+	return a.send(method, path, body, map[string]string{"Authorization": "Bearer " + token})
 }
-
-// expectNoLongerUndoableAs is that check. Both halves, because the screen
-// offers "Annuler" on any line marked undoable, even one marked undone (the
-// register of the hotel theme then shows the button and no "Annulé").
-func (a *testApp) expectNoLongerUndoableAs(token, who string, line historyLine, what string) {
+func (a *testApp) send(method, path string, body interface{}, headers map[string]string) (int, map[string]interface{}) {
 	a.t.Helper()
-	for _, l := range a.historyScreenAs(token, who) {
-		if l.ID != line.ID {
-			continue
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			a.fatalf("encodage de la requête %s %s : %v", method, path, err)
 		}
-		if !l.Undone {
-			a.failf("dans l'historique de %s, la ligne %s devrait être marquée annulée, elle ne l'est pas", who, what)
-		}
-		if l.Undoable {
-			a.failf("dans l'historique de %s, la ligne %s ne devrait plus proposer « Annuler », elle le propose encore", who, what)
-		}
-		return
+		reader = bytes.NewReader(raw)
 	}
-	a.failf("l'historique de %s ne montre plus la ligne %s", who, what)
+	req, err := http.NewRequest(method, a.server.URL+path, reader)
+	if err != nil {
+		a.fatalf("requête %s %s : %v", method, path, err)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		a.fatalf("appel %s %s : %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]interface{}
+	_ = json.Unmarshal(raw, &out)
+	if out == nil && len(raw) > 0 {
+		out = map[string]interface{}{"_raw": string(raw)}
+	}
+	return resp.StatusCode, out
+}
+type ownAIKey struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"apiKey"`
+	Model    string `json:"model"`
+	BaseURL  string `json:"baseUrl"`
 }
 
-// ---------------------------------------------------------------------------
-// The edition, and the month's analyses
-// ---------------------------------------------------------------------------
+// testOwnAIKey is "Tester la connexion" on that card. It returns the status and
+// the body exactly as received: the card shows the "error" field of a refusal
+// as is, so a sentence about what that message contains reads the whole body.
+func (a *testApp) testOwnAIKey(key ownAIKey) (int, string) {
+	a.t.Helper()
+	return a.callRaw(http.MethodPost, "/api/ai/settings/test", key)
+}
 
+// saveOwnAIKey is "Enregistrer" on that card. It returns the status and the
+// decoded body, whatever they are: a sentence about a refusal checks them.
+func (a *testApp) saveOwnAIKey(key ownAIKey) (int, map[string]interface{}) {
+	a.t.Helper()
+	return a.call(http.MethodPut, "/api/ai/settings", key)
+}
+
+// ownAIKeyShown is what the card shows after a reload: GET /api/ai/settings.
+func (a *testApp) ownAIKeyShown() map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodGet, "/api/ai/settings", nil, http.StatusOK)
+}
+
+// ownAIKeyPage is the same answer as ownAIKeyShown, undecoded: a sentence
+// about what the card must never show reads every byte the screen receives,
+// not only the fields it knows about.
+func (a *testApp) ownAIKeyPage() string {
+	a.t.Helper()
+	code, raw := a.callRaw(http.MethodGet, "/api/ai/settings", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/ai/settings a répondu %d : %s", code, raw)
+	}
+	return raw
+}
+
+// ownAIKeyAlreadySaved stores a personal AI key the way "Enregistrer" leaves it
+// (the key sealed, the rest as typed), straight in the datastore. A sentence
+// about a key ALREADY saved must not depend on the save accepting that address
+// today: the address a name leads to can change after it was saved, so what
+// matters is what the app does with the key it holds.
+func (a *testApp) ownAIKeyAlreadySaved(key ownAIKey) {
+	a.t.Helper()
+	sealed, err := a.h.encryptor.Encrypt(key.APIKey)
+	if err != nil {
+		a.fatalf("chiffrement de la clé IA personnelle : %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.AISettings().InsertOne(ctx, models.AIProviderSettings{
+		UserID:    scenarioUser,
+		Provider:  key.Provider,
+		APIKey:    sealed,
+		Model:     key.Model,
+		BaseURL:   key.BaseURL,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		a.fatalf("enregistrement de la clé IA personnelle : %v", err)
+	}
 // installedAtHome runs the scenario on a Mailsorter someone installed for
 // themselves: EDITION=self-hosted, what the server boots with by default.
 func (a *testApp) installedAtHome() {
@@ -1210,46 +1180,374 @@ func (a *testApp) accountWithPassword(email, password string) {
 	}
 }
 
-// expectLetIn checks that "Se connecter" or "Créer un compte" let the person
-// in: the status the route answers on success (want), a session for that
-// address, and that session opening that very account on the Compte screen
-// (GET /api/account/profile): the address, and the date the account was
-// created, which only an account on file has. who names the person in the
-// failure.
-func (v visitor) expectLetIn(who, email string, got answer, want int) {
-	v.app.t.Helper()
-	if got.code != want {
-		v.app.failf("%s (depuis %s) devrait entrer dans son compte %s du premier coup, le serveur a répondu %s", who, v.addr, email, got)
-		return
+// mustCall is call with an expected status; any other status fails the
+// scenario with the response body, which usually says why.
+func (a *testApp) mustCall(method, path string, body interface{}, want ...int) map[string]interface{} {
+	a.t.Helper()
+	code, out := a.call(method, path, body)
+	for _, w := range want {
+		if code == w {
+			return out
+		}
 	}
-	token, _ := got.body["accessToken"].(string)
-	if token == "" || got.body["userEmail"] != email {
-		v.app.failf("%s (depuis %s) devrait recevoir une session pour %s, la réponse est %v", who, v.addr, email, got.body)
-		return
+	a.fatalf("%s %s a répondu %d (attendu %v) : %v", method, path, code, want, out)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Looking at the outcome
+// ---------------------------------------------------------------------------
+
+func (a *testApp) describe(id string) string {
+	a.gmail.mu.Lock()
+	defer a.gmail.mu.Unlock()
+	if m, ok := a.gmail.messages[id]; ok {
+		return fmt.Sprintf("%s (de %q, %q)", id, m.from, m.subject)
 	}
-	profile := v.bearing(token).call(http.MethodGet, "/api/account/profile", nil)
-	if profile.code != http.StatusOK {
-		v.app.failf("la session reçue par %s devrait ouvrir l'écran Compte, le serveur a répondu %s", who, profile)
-		return
-	}
-	if profile.body["email"] != email {
-		v.app.failf("la session reçue par %s devrait ouvrir le compte %s, l'écran Compte montre %v", who, email, profile.body["email"])
-	}
-	created, _ := profile.body["createdAt"].(string)
-	if at, err := time.Parse(time.RFC3339, created); err != nil || at.Year() < 2020 {
-		v.app.failf("l'écran Compte de %s devrait montrer la date de création du compte %s, il reçoit %q : le compte n'est pas enregistré", who, email, created)
+	return id + " (inconnu du faux Gmail)"
+}
+
+func (a *testApp) expectInInbox(ids ...string) {
+	a.t.Helper()
+	for _, id := range ids {
+		if !a.gmail.inInbox(id) {
+			a.failf("le mail %s devrait être dans ta boîte de réception, il n'y est pas (libellés Gmail : %v)", a.describe(id), a.gmail.labelsOf(id))
+		}
 	}
 }
 
-// tooManyAttempts is the refusal the landing page shows when a visitor has
-// tried too often.
-const tooManyAttempts = "Trop de tentatives. Patientez quelques instants."
-
-// expectTooManyAttempts checks that a request was refused as one attempt too
-// many: 429 and the sentence the form shows. what names the attempt.
-func (a *testApp) expectTooManyAttempts(what string, got answer) {
+func (a *testApp) expectNotInInbox(ids ...string) {
 	a.t.Helper()
-	if got.code != http.StatusTooManyRequests || got.said() != tooManyAttempts {
-		a.failf("%s devrait être refusé avec %q, le serveur a répondu %s", what, tooManyAttempts, got)
+	for _, id := range ids {
+		if a.gmail.inInbox(id) {
+			a.failf("le mail %s ne devrait plus être dans ta boîte de réception, il y est encore (libellés Gmail : %v)", a.describe(id), a.gmail.labelsOf(id))
+		}
+	}
+}
+
+func (a *testApp) expectInTrash(ids ...string) {
+	a.t.Helper()
+	for _, id := range ids {
+		if !a.gmail.has(id, labelTrash) {
+			a.failf("le mail %s devrait être dans la corbeille, il n'y est pas (libellés Gmail : %v)", a.describe(id), a.gmail.labelsOf(id))
+		}
+	}
+}
+
+func (a *testApp) expectNotInTrash(ids ...string) {
+	a.t.Helper()
+	for _, id := range ids {
+		if a.gmail.has(id, labelTrash) {
+			a.failf("le mail %s ne devrait pas être dans la corbeille, il y est (libellés Gmail : %v)", a.describe(id), a.gmail.labelsOf(id))
+		}
+	}
+}
+
+func (a *testApp) expectUnread(ids ...string) {
+	a.t.Helper()
+	for _, id := range ids {
+		if !a.gmail.has(id, labelUnread) {
+			a.failf("le mail %s devrait être marqué non lu, il est marqué lu", a.describe(id))
+		}
+	}
+}
+
+func (a *testApp) expectLabel(id, name string) {
+	a.t.Helper()
+	labelID := a.gmail.labelID(name)
+	if labelID == "" || !a.gmail.has(id, labelID) {
+		a.failf("le mail %s devrait porter le libellé %q, il ne le porte pas (libellés Gmail : %v)", a.describe(id), name, a.gmail.labelsOf(id))
+	}
+}
+
+func (a *testApp) expectNoLabel(id, name string) {
+	a.t.Helper()
+	labelID := a.gmail.labelID(name)
+	if labelID != "" && a.gmail.has(id, labelID) {
+		a.failf("le mail %s ne devrait pas porter le libellé %q, il le porte", a.describe(id), name)
+	}
+}
+
+// history returns the action log for a message, oldest first: what the
+// Historique screen lists.
+func (a *testApp) history(id string) []models.ActionLog {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cur, err := a.h.db.ActionLog().Find(ctx, bson.M{"userId": scenarioUser, "messageId": id},
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}))
+	if err != nil {
+		a.fatalf("lecture de l'historique : %v", err)
+	}
+	var rows []models.ActionLog
+	if err := cur.All(ctx, &rows); err != nil {
+		a.fatalf("lecture de l'historique : %v", err)
+	}
+	return rows
+}
+
+// expectHistory checks that the message's last history entry is this action
+// from this source (the Source* constants in ledger.go).
+func (a *testApp) expectHistory(id, action, source string) {
+	a.t.Helper()
+	rows := a.history(id)
+	if len(rows) == 0 {
+		a.failf("l'historique devrait montrer %q (%s) pour le mail %s, il ne montre rien", action, source, a.describe(id))
+		return
+	}
+	last := rows[len(rows)-1]
+	if last.Action != action || last.Source != source {
+		a.failf("la dernière ligne d'historique du mail %s est %q (%s), attendu %q (%s)", a.describe(id), last.Action, last.Source, action, source)
+	}
+}
+
+func (a *testApp) expectNoHistory(id string) {
+	a.t.Helper()
+	if rows := a.history(id); len(rows) > 0 {
+		a.failf("l'historique ne devrait rien montrer pour le mail %s, il montre %d ligne(s), la dernière : %q (%s)", a.describe(id), len(rows), rows[len(rows)-1].Action, rows[len(rows)-1].Source)
+	}
+}
+
+func (a *testApp) number(out map[string]interface{}, key string) int {
+	a.t.Helper()
+	v, ok := out[key].(float64)
+	if !ok {
+		a.failf("la réponse ne contient pas de nombre %q : %v", key, out)
+		return -1
+	}
+	return int(v)
+}
+
+// ---------------------------------------------------------------------------
+// More of what the user does, one helper per screen action
+// ---------------------------------------------------------------------------
+
+// undoLast undoes the message's most recent history entry, the way the
+// "Annuler" button of the Historique screen does.
+func (a *testApp) undoLast(id string) {
+	a.t.Helper()
+	rows := a.history(id)
+	if len(rows) == 0 {
+		a.fatalf("rien à annuler dans l'historique du mail %s", a.describe(id))
+	}
+	a.mustCall(http.MethodPost, "/api/activity/undo", map[string]string{"id": rows[len(rows)-1].ID}, http.StatusOK)
+}
+
+// batchAction is the action bar on a selection of messages.
+func (a *testApp) batchAction(action string, ids ...string) map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/emails/batch-action",
+		map[string]interface{}{"messageIds": ids, "action": action}, http.StatusOK)
+}
+
+// batchUndo is the "Annuler" offered right after a batch action.
+func (a *testApp) batchUndo(action string, ids ...string) {
+	a.t.Helper()
+	a.mustCall(http.MethodPost, "/api/emails/batch-undo",
+		map[string]interface{}{"messageIds": ids, "action": action}, http.StatusOK)
+}
+
+// snooze reports one message to tomorrow morning.
+func (a *testApp) snooze(id string) {
+	a.t.Helper()
+	a.mustCall(http.MethodPost, "/api/emails/snooze",
+		map[string]string{"messageId": id, "preset": "tomorrow"}, http.StatusOK)
+}
+
+func (a *testApp) batchSnooze(ids ...string) map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/emails/batch-snooze",
+		map[string]interface{}{"messageIds": ids, "preset": "tomorrow"}, http.StatusOK)
+}
+
+// timeComesForSnoozes moves every scheduled wake time to the past, then runs
+// the background sweep once: what the 1 minute loop does when the time comes.
+func (a *testApp) timeComesForSnoozes() {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := a.h.db.Snoozes().UpdateMany(ctx,
+		bson.M{"userId": scenarioUser, "status": "scheduled"},
+		bson.M{"$set": bson.M{"wakeAt": time.Now().Add(-time.Minute)}}); err != nil {
+		a.fatalf("avance de l'heure des reports : %v", err)
+	}
+	a.h.wakeDueSnoozes()
+}
+
+// senderCard is one row of the Expediteurs screen: the sender key it holds
+// and the count it shows, which is also the count the "Tout supprimer" /
+// "Tout archiver" confirmation announces.
+type senderCard struct {
+	SenderEmail string `json:"senderEmail"`
+	EmailCount  int    `json:"emailCount"`
+}
+
+// senderCardFor returns the Expediteurs row for a sender, as GET /api/senders
+// lists it. It fails the scenario if the screen does not list that sender.
+func (a *testApp) senderCardFor(from string) senderCard {
+	a.t.Helper()
+	code, out := a.call(http.MethodGet, "/api/senders", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/senders a répondu %d : %v", code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var senders []senderCard
+	if err := json.Unmarshal([]byte(raw), &senders); err != nil {
+		a.fatalf("réponse de GET /api/senders illisible : %v", err)
+	}
+	for _, s := range senders {
+		if s.SenderEmail == from {
+			return s
+		}
+	}
+	a.fatalf("l'écran Expéditeurs ne liste pas %q (il liste %v)", from, senders)
+	return senderCard{}
+}
+
+// senderKey is the value the Expediteurs screen holds for a sender, and sends
+// back for a sender-wide action: the sender's raw From header, as grouped by
+// GET /api/senders.
+func (a *testApp) senderKey(from string) string {
+	a.t.Helper()
+	return a.senderCardFor(from).SenderEmail
+}
+
+// announcedCount is the number of mails the Expediteurs screen shows for a
+// sender, the one its "Tout supprimer" confirmation says will go to the trash.
+// A sentence about "what the screen announces" needs it read from the screen's
+// own endpoint rather than counted by the scenario.
+func (a *testApp) announcedCount(from string) int {
+	a.t.Helper()
+	return a.senderCardFor(from).EmailCount
+}
+
+// deleteAllFrom is "Tout supprimer" on the Expediteurs screen.
+func (a *testApp) deleteAllFrom(from string) map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/ai/apply-bulk",
+		map[string]string{"senderEmail": a.senderKey(from), "action": "delete"}, http.StatusOK)
+}
+
+// archiveAllFrom is "Tout archiver" on the Expediteurs screen: the same call as
+// "Tout supprimer", with the archive action.
+func (a *testApp) archiveAllFrom(from string) map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/ai/apply-bulk",
+		map[string]string{"senderEmail": a.senderKey(from), "action": "archive"}, http.StatusOK)
+}
+
+// expectUnsubscribed checks the "Désabonné" mark on the Abonnements tab: the
+// unsubscribed flag GET /api/subscriptions returns for that bare address. The
+// tab reloads from that endpoint, so it is what the user sees after a refresh.
+func (a *testApp) expectUnsubscribed(addr string) {
+	a.t.Helper()
+	code, out := a.call(http.MethodGet, "/api/subscriptions", nil)
+	if code != http.StatusOK {
+		a.fatalf("GET /api/subscriptions a répondu %d : %v", code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var subs []struct {
+		SenderEmail  string `json:"senderEmail"`
+		Unsubscribed bool   `json:"unsubscribed"`
+	}
+	if err := json.Unmarshal([]byte(raw), &subs); err != nil {
+		a.fatalf("réponse de GET /api/subscriptions illisible : %v", err)
+	}
+	for _, s := range subs {
+		if s.SenderEmail == addr {
+			if !s.Unsubscribed {
+				a.failf("l'onglet Abonnements devrait marquer %s \"Désabonné\", il ne le fait pas", addr)
+			}
+			return
+		}
+	}
+	a.failf("l'onglet Abonnements ne liste pas %s, il ne peut donc pas le marquer \"Désabonné\" (il liste %v)", addr, subs)
+}
+
+// unsubscribeAndArchive is "Se désabonner" with "et archiver ses mails".
+func (a *testApp) unsubscribeAndArchive(id string) map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/unsubscribe",
+		map[string]interface{}{"messageId": id, "alsoArchive": true}, http.StatusOK)
+}
+
+// rule creates a sorting rule: one condition, then the actions in order.
+func (a *testApp) rule(name string, priority int, field, operator, value string, actions ...models.RuleAction) {
+	a.t.Helper()
+	a.mustCall(http.MethodPost, "/api/rules", models.SortingRuleInput{
+		Name:       name,
+		Enabled:    true,
+		MatchAll:   true,
+		Conditions: []models.RuleCondition{{Field: field, Operator: operator, Value: value}},
+		Actions:    actions,
+		Priority:   priority,
+	}, http.StatusCreated, http.StatusOK)
+}
+
+// applyRules is the "Appliquer mes règles" button.
+func (a *testApp) applyRules() map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/rules/apply", nil, http.StatusOK)
+}
+
+// setAutoApplyRules flips "Appliquer mes règles automatiquement" in Réglages.
+func (a *testApp) setAutoApplyRules(on bool) {
+	a.t.Helper()
+	a.mustCall(http.MethodPut, "/api/account/settings", map[string]bool{"autoApplyRules": on}, http.StatusOK)
+}
+
+// analyze asks the AI about these messages, the way the inbox does.
+func (a *testApp) analyze(ids ...string) map[string]interface{} {
+	a.t.Helper()
+	return a.mustCall(http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": ids}, http.StatusOK)
+}
+
+// suggestionFor returns the AI suggestion stored for a message.
+func (a *testApp) suggestionFor(id string) models.AISuggestion {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var s models.AISuggestion
+	if err := a.h.db.AISuggestions().FindOne(ctx, bson.M{"userId": scenarioUser, "emailId": id}).Decode(&s); err != nil {
+		a.fatalf("aucune proposition de l'IA pour le mail %s : %v", a.describe(id), err)
+	}
+	return s
+}
+
+// applySuggestion is "Appliquer" on one proposal of the triage plan.
+func (a *testApp) applySuggestion(id string) {
+	a.t.Helper()
+	a.mustCall(http.MethodPost, "/api/ai/apply", map[string]string{"suggestionId": a.suggestionFor(id).ID}, http.StatusOK)
+}
+
+// applyAllSuggestions is "Tout ranger" on the triage plan.
+func (a *testApp) applyAllSuggestions(ids ...string) map[string]interface{} {
+	a.t.Helper()
+	sids := make([]string, 0, len(ids))
+	for _, id := range ids {
+		sids = append(sids, a.suggestionFor(id).ID)
+	}
+	return a.mustCall(http.MethodPost, "/api/ai/apply-batch", map[string]interface{}{"suggestionIds": sids}, http.StatusOK)
+}
+
+// autopilot stores what the Expediteurs screen saves when the user turns on
+// "Appliquer automatiquement" for a sender: its raw From header, the action,
+// autoApply on.
+func (a *testApp) autopilot(from, action string) {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.SenderPreferences().InsertOne(ctx, models.SenderPreference{
+		UserID:        scenarioUser,
+		SenderEmail:   from,
+		SenderDomain:  extractDomain(from),
+		SenderName:    extractSenderName(from),
+		AutoApply:     true,
+		DefaultAction: action,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		a.fatalf("activation du pilote automatique pour %q : %v", from, err)
 	}
 }
