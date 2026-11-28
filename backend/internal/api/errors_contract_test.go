@@ -53,6 +53,9 @@ func TestAPIErrorsAreAlwaysJSON(t *testing.T) {
 		{"bad id", http.MethodPost, "/api/snoozes/not-an-objectid/wake", "", true, http.StatusBadRequest},
 		// Handler: valid session and payload, but the datastore is down.
 		{"datastore down", http.MethodGet, "/api/rules", "", true, http.StatusInternalServerError},
+		// Routing: no such route, and a known route with the wrong method.
+		{"unknown route", http.MethodGet, "/api/does-not-exist", "", true, http.StatusNotFound},
+		{"wrong method", http.MethodPatch, "/api/rules", "", true, http.StatusMethodNotAllowed},
 	}
 
 	for _, tc := range cases {

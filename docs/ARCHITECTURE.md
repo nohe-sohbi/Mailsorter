@@ -1,233 +1,145 @@
-# Architecture Mailsorter
+# Architecture de Mailsorter
+
+Ce document donne la vue d'ensemble et les flux principaux. La carte détaillée du code (paquet par paquet, fichier par fichier), les conventions et les pièges connus sont dans [`CLAUDE.md`](../CLAUDE.md) ; chaque route et sa charge utile, dans [`API.md`](API.md). En cas de désaccord, le code fait foi.
 
 ## Vue d'ensemble
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Utilisateur                              │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTP
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Frontend (React)                             │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  - Interface utilisateur                                   │ │
-│  │  - Authentification Gmail                                  │ │
-│  │  - Gestion des emails                                      │ │
-│  │  - Configuration des règles de tri                        │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                      Port: 3000 (dev) / 80 (prod)               │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ REST API
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Backend (Go)                                │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  API Endpoints:                                            │ │
-│  │  - GET  /api/auth/url          (Get OAuth URL)            │ │
-│  │  - GET  /api/auth/callback     (Handle OAuth)             │ │
-│  │  - GET  /api/emails            (List emails)              │ │
-│  │  - POST /api/emails/sync       (Sync from Gmail)          │ │
-│  │  - GET  /api/rules             (List rules)               │ │
-│  │  - POST /api/rules             (Create rule)              │ │
-│  │  - PUT  /api/rules/:id         (Update rule)              │ │
-│  │  - DELETE /api/rules/:id       (Delete rule)              │ │
-│  │  - GET  /api/labels            (List labels)              │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                          Port: 8080                              │
-└─────────────────────────────────────────────────────────────────┘
-                    │                        │
-                    │                        │
-         ┌──────────▼──────────┐   ┌────────▼─────────┐
-         │   MongoDB           │   │  Gmail API       │
-         │                     │   │                  │
-         │  Collections:       │   │  - OAuth 2.0     │
-         │  - users            │   │  - Messages      │
-         │  - emails           │   │  - Labels        │
-         │  - sorting_rules    │   │  - Threads       │
-         │  - labels           │   │                  │
-         │  Port: 27017        │   │  Google Cloud    │
-         └─────────────────────┘   └──────────────────┘
+```mermaid
+flowchart LR
+  U([Navigateur]) --> N["frontend<br/>nginx : SPA React + proxy /api"]
+  N -->|"/api"| B["backend<br/>Go, net/http + gorilla/mux"]
+  B --> M[("MongoDB 7")]
+  B --> GA([API Gmail])
+  B --> IM([Serveur IMAP])
+  B --> AI([Fournisseur d'IA])
+  B --> ST([Stripe])
+  B --> UN([Lien de désabonnement])
 ```
 
-## Composants
+Trois conteneurs, décrits par `docker-compose.yml` : `mongodb`, `backend` (port 8080) et `frontend` (nginx, port 80). En production, Dokploy route le domaine vers `frontend`, et nginx relaie `/api` vers `backend:8080` : aucun appel inter-origines. Ce fichier ne publie aucun port ; en local, `make up` lui ajoute `compose.local.yml`, qui publie le frontend sur 3000, le backend sur 8080 et MongoDB sur `127.0.0.1:27017`.
 
-### 1. Frontend (React)
+## Briques
 
-**Technologies:**
-- React 18
-- React Router DOM (navigation)
-- Axios (API client)
-- CSS moderne
+**Backend (`backend/`).** `cmd/server` charge et valide la configuration, se connecte à MongoDB, crée les index, construit les clients (chiffrement, Gmail, IA, Stripe), monte les routes et sert, avec un arrêt propre sur SIGTERM. `internal/api` est la seule couche qui fait des entrées-sorties : gestionnaires HTTP, middlewares, boucles de fond. La logique de décision vit dans des paquets purs, sans I/O et testés à part : `rules`, `protect`, `snooze`, `search`, `schedule`, `activity`, `digest`, `mailer`, `account`, `metrics`, `provider`, `mailbox`, `egress`, `unsubscribe`. Les clients sortants sont `gmail`, `imap`, `smtpsend`, `ai` et `billing`.
 
-**Pages:**
-- `/` - Page de connexion
-- `/emails` - Liste des emails
-- `/rules` - Gestion des règles de tri
+**Frontend (`frontend/`).** Une SPA React 18 (Create React App et Tailwind), servie par nginx. Tous les appels HTTP passent par `src/services/api.js`. L'apparence (`UI_THEME`, "hotel" ou "classic") est lue au démarrage par `GET /api/config/status`.
 
-**Composants:**
-- `EmailList` - Affichage de la liste d'emails
-- `RuleForm` - Formulaire de création/édition de règle
-- `RuleList` - Affichage de la liste des règles
+**Données.** Une base MongoDB `mailsorter`, une collection par usage, toutes déclarées dans `internal/database/database.go`. Les index sont créés au démarrage du backend par `EnsureIndexes`, seule source de vérité ; `mongo-init/` ne crée rien. Tout est rattaché à `userId`, l'adresse du compte, sauf `users` et `waitlist` (indexés sur l'adresse), `gmail_config` (ancienne configuration, en lecture seule) et `analysis_cache`, partagé entre tous les comptes et indexé sur `sha256(version|expéditeur|sujet)` : au démarrage, `EnsureIndexes` efface les entrées d'une autre version.
 
-### 2. Backend (Go)
+**Transports.** Une boîte est jointe soit par l'API Gmail (OAuth, avec le client Google de l'instance), soit par IMAP (go-imap v2, TLS ou STARTTLS, jamais en clair ; la session, ouverture comprise (connexion, accueil, LOGIN et liste des dossiers), est liée à la requête ou à la boucle qui l'a ouverte et s'interrompt quand son temps est écoulé ; un LOGIN refusé n'est un mot de passe refusé que si le serveur le dit). Ce que l'écran dit alors, une seule phrase par cas, écrite une fois côté serveur et affichée telle quelle : un mot de passe refusé, « Identifiants refusés par le fournisseur. Vérifiez le mot de passe d'application. » (`401` à la connexion d'une boîte, écran Connecter, où il vient d'être saisi ; `428` partout ailleurs, « Synchroniser », Reporter, Réactiver, le lecteur, Annuler, les actions sur un mail, car un `401` déconnecterait de Mailsorter, et le message y porte « Mettre à jour », qui ouvre sur l'écran Connecter le formulaire « Changer le mot de passe d'application » : le nouveau mot de passe y est essayé avant d'être enregistré, et seule la boîte change de mot de passe, sa copie, ses propositions et son historique restent) ; pas de boîte branchée, « Aucune boîte mail n'est branchée à ce compte. » (`428`, avec « Brancher une boîte ») ; une boîte qui n'a pas répondu, « Votre boîte n'a pas répondu, réessayez dans un instant. » (`502`, à la connexion comme ailleurs). « Synchroniser » ne répond jamais en anglais, et la boîte de réception affiche sa phrase seule. « Annuler » (l'historique, le message juste après, l'Annuler groupé) qui trouve plusieurs copies du mail là où Mailsorter l'avait mis ne remet rien et le dit : « Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle remettre. Faites-le depuis votre messagerie. » ; « Réactiver » de même : « Plusieurs copies de ce mail sont dans votre boîte : Mailsorter ne sait pas laquelle ramener. Faites-le depuis votre messagerie. » (`409`). Le serveur IMAP n'est jamais fourni par le client : il est lu dans le catalogue `internal/provider` d'après le domaine de l'adresse, comme le serveur d'envoi (SMTP) de la même route, enregistré avec la boîte et par lequel part le récap. Le transport est résolu à chaque requête (`transportFor`) : une ligne `mail_accounts` décide ; sans ligne, des jetons Google sur le compte veulent dire API Gmail ; sans l'un ni l'autre, la requête répond `428`. Une erreur de base de données fait échouer la requête, elle ne retombe jamais sur Gmail. Microsoft Graph figure au catalogue mais n'est pas implémenté.
 
-**Technologies:**
-- Go 1.26
-- Gorilla Mux (routing)
-- MongoDB Driver
-- Google OAuth2 & Gmail API
-- CORS middleware
+## Entrer dans l'application
 
-**Structure:**
-```
-backend/
-├── cmd/server/          # Point d'entrée
-├── internal/
-│   ├── api/            # Handlers et routes HTTP
-│   ├── config/         # Configuration
-│   ├── database/       # Client MongoDB
-│   ├── gmail/          # Service Gmail API
-│   └── models/         # Structures de données
-└── pkg/                # Packages publics (vide pour l'instant)
-```
+1. **Compte.** `POST /api/auth/register` crée un compte par adresse et mot de passe (bcrypt), `POST /api/auth/login` s'y connecte. Les deux rendent un jeton de session.
+2. **Google.** `GET /api/auth/url` renvoie l'adresse du consentement Google, avec un `state` signé. Au retour, `GET /api/auth/callback` vérifie le `state`, échange le code, scelle les jetons et rend un jeton de session. Si l'appelant était déjà connecté, le `state` porte son adresse et la boîte Google est rattachée à ce compte ; sinon, le compte est celui de l'adresse Google.
+3. **Brancher une boîte.** Depuis l'écran Connecter : par Google (étape 2) quand l'instance a ses identifiants Google, ou par IMAP avec `POST /api/mailbox/connect`, qui essaie la connexion avant d'enregistrer quoi que ce soit. Une autre boîte branchée à la place de la précédente a sa propre ligne `mail_accounts`, donc sa propre génération : la copie, les propositions de l'IA et l'historique portent la génération de leur boîte, toute lecture ne voit que celle de la boîte branchée, et l'écran envoie la génération qu'il a chargée (`X-Mailbox-Generation`) pour qu'une page ouverte sur l'ancienne boîte n'agisse sur rien (409).
 
-**Modèles de données:**
-- `User` - Utilisateur avec tokens OAuth
-- `Email` - Email synchronisé depuis Gmail
-- `SortingRule` - Règle de tri automatique
-- `Label` - Libellé Gmail
+L'API offre aussi `POST /api/auth/mailbox`, que l'interface n'utilise pas : une adresse et l'identifiant de la boîte, acceptés par le fournisseur, ouvrent ou créent le compte.
 
-### 3. MongoDB
+## Flux d'une synchronisation
 
-**Collections:**
-- `users` - Stockage des utilisateurs et leurs tokens
-- `emails` - Cache des emails Gmail
-- `sorting_rules` - Règles de tri définies par l'utilisateur
-- `labels` - Libellés Gmail synchronisés
-
-**Index:**
-- `emails.messageId` - Unique
-- `emails.userId + receivedDate` - Performance
-- `sorting_rules.userId + priority` - Tri des règles
-- `users.email` - Unique
-
-## Flux d'authentification
+Déclenchée par `POST /api/emails/sync`, ou par la boucle de synchronisation de fond.
 
 ```
-1. Utilisateur clique sur "Se connecter avec Gmail"
-   ↓
-2. Frontend demande l'URL d'autorisation au Backend
-   GET /api/auth/url
-   ↓
-3. Backend génère l'URL OAuth Google et la retourne
-   ↓
-4. Frontend redirige l'utilisateur vers Google
-   ↓
-5. Utilisateur autorise l'application
-   ↓
-6. Google redirige vers Frontend avec le code
-   callback?code=XXXX
-   ↓
-7. Frontend envoie le code au Backend
-   GET /api/auth/callback?code=XXXX
-   ↓
-8. Backend échange le code contre des tokens
-   ↓
-9. Backend sauvegarde les tokens dans MongoDB
-   ↓
-10. Backend retourne les informations utilisateur
-    ↓
-11. Frontend stocke l'email et redirige vers /emails
+syncInbox(compte)
+  -> openSession : transportFor, puis un client Gmail ou une connexion IMAP
+  -> API Gmail : les 100 messages les plus récents de la boîte de réception, corps compris
+       -> upsert dans emails, clé (userId, messageId), sans génération
+       -> si autoApplyRules : première règle qui correspond, expéditeurs protégés épargnés,
+          action par internal/mailbox, entrée au journal (source "rule")
+  -> IMAP : les 100 messages les plus récents de INBOX, lus en PEEK (aucun \Seen posé)
+       -> un FETCH des drapeaux et de la taille de toute la boîte : le numéro de chaque
+          mail qui y est encore, lu ou non, en favori ou non, et sa taille
+       -> mirror.Judge sur la copie : un mail que la boîte n'a plus part, quel que soit
+          son âge ; un mail que Mailsorter a rangé reste caché 30 jours pour "Annuler" ;
+          un déplacement en cours ou postérieur à la lecture attend la synchro suivante
+       -> les propositions de l'IA sur ce qui est parti passent "moot" (hors du tri proposé)
+       -> upsert dans emails avec le dossier et la génération de la boîte (l'_id de sa
+          ligne mail_accounts), qui font partie de l'identité d'un UID : clé
+          (userId, messageId, generation) ; une synchro encore en cours sur une boîte
+          remplacée depuis n'écrit que des lignes que personne ne lit, et chaque
+          synchro commence par effacer ce qui n'est pas de la boîte branchée
+       -> si autoApplyRules : un mail qui arrive est marqué (rulesDue) à son upsert ;
+          il arrive si la copie ne le connaissait pas et si le serveur l'a reçu
+          (INTERNALDATE, à la seconde) après l'activation de l'option et après le
+          branchement de la boîte (une autre adresse ou un autre serveur branché a
+          une ligne à lui, datée du jour ; l'horloge du serveur et celle de
+          Mailsorter peuvent différer d'autant, et la toute première synchro d'une
+          boîte ne marque aucun mail) ; pas un mail dont la copie tient le Message-ID sous
+          un autre numéro au début de la synchro (remis par "Annuler" sans son nouveau
+          numéro, rangé par Mailsorter depuis moins de 30 jours puis remis par un autre
+          logiciel, ou sorti puis remis par un autre logiciel entre deux synchros ; pas
+          reconnu : sorti, une synchro passée, puis remis)
+       -> les règles jugent les mails marqués encore dans la boîte (réservés 10 minutes
+          par cette synchro, ni une autre ni "Appliquer maintenant" n'y touchent) ;
+          leur texte lu en PEEK si une règle le regarde ; lu et favori avant le
+          rangement, expéditeurs protégés épargnés, entrée au journal (source "rule")
+       -> rejugé à la synchro suivante, 3 fois en tout : un mail dont la lecture du
+          texte a été coupée par le serveur ou faute de temps, ou dont un déplacement
+          a échoué ; les actions déjà faites restent notées sur sa ligne (rulesDone) et
+          ne sont pas refaites. Pas rejugé, laissé de côté : un texte illisible, ou pas
+          lu en entier (au-delà des 256 Ko lus). Après 3 essais, abandonné, laissé
+          dans la boîte, et le compte le garde jusqu'à ce qu'une synchro lancée de
+          l'écran le dise
+       -> la synchro répond 200 quand même : rulesApplied (tout fait) ou rulesPending
+          (à refaire), et rulesMessage, que l'écran montre comme une information
+       -> les mails en favori que la copie n'a pas encore (un ancien favori), 500 au
+          plus par synchro, les plus récents d'abord
+       -> lu, favori et taille remis à jour sur chaque mail de la copie, ancien compris ;
+          lu et favori gardés tels quels sur un mail changé depuis Mailsorter après la
+          lecture des drapeaux (flagsAt) ; l'upsert ne les écrit qu'à la création
+       -> pièces jointes (BODYSTRUCTURE) des mails de la copie qui ne les ont pas encore,
+          500 au plus par synchro, les plus récents d'abord, lues par lots coupés en deux
+          quand la réponse d'un lot ne se lit pas (connexion rouverte, un budget par
+          phase) ; un mail illisible seul est noté structureUnreadable, sans pièce
+          jointe, et n'est plus redemandé ; un refus du serveur ou un délai ne conclut
+          rien sur aucun mail : la synchro répond une erreur, la suivante relit
+  -> { synced, total, rulesApplied }
 ```
 
-## Flux de synchronisation des emails
+Sur IMAP, la liste (`GET /api/emails`), ses filtres (non lus, aujourd'hui, favoris, pièces jointes, volumineux) et les compteurs (`GET /api/stats`) sont ensuite servis depuis ce miroir, sans rouvrir la boîte.
+
+## Flux d'une analyse
 
 ```
-1. Utilisateur clique sur "Synchroniser"
-   ↓
-2. Frontend envoie la requête
-   POST /api/emails/sync
-   Header: X-User-Email: user@gmail.com
-   ↓
-3. Backend récupère les tokens de l'utilisateur
-   ↓
-4. Backend vérifie et rafraîchit les tokens si nécessaire
-   ↓
-5. Backend appelle Gmail API pour lister les messages
-   ↓
-6. Pour chaque message, Backend :
-   - Récupère les détails complets
-   - Parse les headers
-   - Extrait le corps
-   - Sauvegarde dans MongoDB (upsert)
-   ↓
-7. Backend retourne le nombre d'emails synchronisés
-   ↓
-8. Frontend affiche le résultat et rafraîchit la liste
+POST /api/ai/analyze (200 ids au plus) ou POST /api/ai/analyze-async (500, file de 3 workers)
+  -> 503 si aucun fournisseur d'IA ; 402 si le quota gratuit du service géré est épuisé
+  -> runAnalysis
+       -> chaque message est lu dans le miroir, ou récupéré par la session s'il y manque
+       -> API Gmail : pilote automatique par expéditeur -> action appliquée tout de suite (source "ai-auto")
+       -> cache partagé -> suggestion sans appel au modèle
+       -> le reste par lots de 8 -> registre d'IA : la clé du compte d'abord, puis les fournisseurs
+          de l'instance par priorité ; erreur transitoire -> fournisseur suivant
+       -> un verdict destructeur sur un expéditeur protégé devient "garder"
+       -> une suggestion en attente par message ; le quota ne compte que les appels au modèle
+  -> POST /api/ai/apply ou /api/ai/apply-batch : application par la session, entrée au journal (source "ai")
 ```
 
-## Flux d'application des règles
-
-```
-1. Utilisateur crée une règle de tri
-   - Conditions: from contains "example.com"
-   - Actions: addLabel "Work"
-   ↓
-2. Lors de la synchronisation, Backend :
-   - Récupère toutes les règles actives de l'utilisateur
-   - Trie par priorité
-   - Pour chaque email :
-     a. Évalue toutes les conditions
-     b. Si toutes les conditions sont vraies :
-        - Applique toutes les actions
-        - Met à jour Gmail via API
-        - Met à jour MongoDB
-```
+Les règles déterministes ne font pas partie de ce flux : elles tournent à la synchronisation, ou à la demande par `POST /api/rules/apply`.
 
 ## Sécurité
 
-- **Authentification:** OAuth 2.0 avec Google.
-- **Protection CSRF du login:** le paramètre `state` OAuth est **signé (HMAC-SHA256)** et expirant : la callback rejette tout `state` forgé ou périmé, sans stockage serveur (stateless).
-- **Session signée:** à la connexion, le serveur émet un **token de session HMAC** (porte l'email + une expiration). Le frontend l'envoie via `Authorization: Bearer …`. Le **token d'accès Gmail n'est jamais exposé** au navigateur.
-- **Identité vérifiée:** un middleware valide le token de session et **réinjecte lui-même** `X-User-Email` après avoir supprimé toute valeur fournie par le client, donc il n'est plus possible d'usurper un utilisateur en falsifiant l'en-tête.
-- **Robustesse HTTP:** chaîne de middlewares : *recover* (anti-crash), *request-id* + journalisation structurée, *rate limiting* par client (token bucket). Le serveur applique des timeouts et un arrêt gracieux (SIGTERM).
-- **Tokens Gmail:** stockés (chiffrés) en base, jamais exposés au frontend.
-- **CORS:** origines autorisées explicitement (localhost en dev, domaine de prod).
-- **Secrets:** stockés dans des variables d'environnement; le `ClientSecret` Gmail est chiffré au repos (AES-256-GCM).
+- **Sessions.** Jeton HMAC-SHA256 maison, valable 30 jours, envoyé en `Authorization: Bearer`. Sa clé est dérivée d'`ENCRYPTION_KEY` par un label distinct de celle du `state` OAuth (valable 10 minutes), si bien que l'un ne se rejoue pas comme l'autre. Le middleware supprime tout `X-User-Email` venu du client, vérifie le jeton, puis pose lui-même l'en-tête que lisent les gestionnaires.
+- **Mots de passe des comptes.** bcrypt, entre 8 caractères et 72 octets.
+- **Identifiants stockés.** Chiffrés en AES-256-GCM avec une clé dérivée d'`ENCRYPTION_KEY` : jetons Google et mots de passe des boîtes par `internal/api/tokens.go`, clés d'IA personnelles par `internal/api/ai_settings.go`. Aucune route ne les renvoie, et l'export RGPD les retire.
+- **Tentatives de connexion.** Un limiteur bien plus strict que le global (environ une tentative toutes les 3 secondes, 5 d'avance) freine chaque route qui essaie un mot de passe, avant de l'essayer. `register`, `login` et `auth/mailbox` (publiques) le consultent par adresse du visiteur et par adresse email ; `POST /api/mailbox/connect` (connecté) par compte et par adresse essayée, partagée avec `auth/mailbox` ; `PUT /api/mailbox/password` par compte seulement, car l'adresse n'y est pas choisie (c'est celle de la boîte enregistrée) : sinon un inconnu pourrait, par la route publique, épuiser le compteur de cette adresse et bloquer le « Mettre à jour » de son propriétaire. Au-delà : `429` « Trop de tentatives. Patientez quelques instants. », et le fournisseur n'est pas sollicité. Le limiteur global est de 20 requêtes par seconde (40 d'avance), par compte ou par adresse du visiteur. Cette adresse vient de `X-Real-IP`, posé par nginx, et n'est crue que d'un pair privé ou local.
+- **Entrées.** Corps JSON plafonnés à 1 Mio, erreurs dans une enveloppe JSON unique, en-têtes de sécurité sur chaque réponse, origines CORS limitées à `ALLOWED_ORIGINS`.
+- **Requêtes sortantes.** Le désabonnement en un clic, dont l'adresse vient d'un email reçu, passe par `internal/egress` : `https` seulement, adresse publique vérifiée au moment de la connexion, chaque redirection rejugée. L'adresse d'un fournisseur d'IA saisie dans les Réglages n'est contrôlée que sur sa forme, à l'enregistrement et au test.
+- **Configuration.** Le serveur refuse de démarrer sans `ENCRYPTION_KEY`, sous 32 caractères ou sur une valeur d'exemple connue (celle d'une ancienne version du README est seulement signalée au démarrage : la refuser bloquerait les instances qui tournent déjà avec), et sur une valeur d'`EDITION` ou d'`UI_THEME` qu'il ne connaît pas.
 
-## Performance
+## Tâches de fond
 
-- **Cache:** Emails stockés dans MongoDB pour éviter les appels répétés à Gmail
-- **Indexes:** Index MongoDB pour des requêtes rapides
-- **Pagination:** Support de la pagination pour grandes listes
-- **Async:** Synchronisation asynchrone des emails
+Quatre boucles, lancées par `NewHandler` : des goroutines avec des tickers, relancées à chaque redéploiement.
+
+| Boucle | Cadence | Rôle |
+| --- | --- | --- |
+| Workers d'analyse | 3 workers, file de 256 jobs | Exécutent `analyze-async` ; une file pleine lance le job à part |
+| Réveil des reports | toutes les minutes | Ramène en boîte, non lus, les emails reportés arrivés à échéance, compte par compte : une session par compte (sur IMAP, une connexion pour tous ses mails, bornée à 30 s ouverture comprise, depuis le dossier "Plus tard" où ils attendaient : un serveur qui se tait au LOGIN ne retient que son compte) ; un échec est retenté au passage suivant, et après 5 échecs le report passe en échec ; un mail qu'un autre logiciel a sorti de "Plus tard" est d'abord cherché dans la boîte de réception (s'il y est, il est revenu : remis non lu) ; ailleurs, il reste où il est, et son report est annulé ; "Annuler" sur un report ramène le mail et annule le report tout de suite, et la boucle, "Annuler" et "Réactiver" réservent le report avant de déplacer le mail, pour qu'il ne soit déplacé qu'une fois |
+| Récap quotidien | toutes les 15 minutes, au plus un envoi par jour et par compte | Envoie le récap des 7 derniers jours à l'heure choisie (UTC, 0 = minuit ; sans choix, `DIGEST_HOUR_UTC`), de la boîte du compte à elle-même : par l'API Gmail, ou par le serveur d'envoi d'une boîte IMAP (`internal/smtpsend`, avec son mot de passe d'application) ; une semaine vide n'envoie rien ; quatre comptes à la fois, chacun avec ses 30 s, pour qu'un serveur d'envoi qui ne répond pas ne retienne que le sien |
+| Synchronisation de fond | passage toutes les 5 minutes, 30 minutes au moins entre deux synchronisations d'un compte | Synchronise les comptes qui l'ont activée, chacun borné à une minute : un serveur qui se tait ne retient que son compte |
 
 ## Observabilité
 
-- **`/health` (readiness):** ping MongoDB + build (`BUILD_VERSION`) + uptime ;
-  `503` si le datastore est injoignable.
-- **`/metrics`:** compteurs en mémoire alimentés par un middleware sur le
-  hot-path (requêtes par méthode et **classe** de statut, latence moyenne/max,
-  uptime). Cardinalité bornée, agrégats seuls, sans dépendance externe
-  (`internal/metrics`).
-
-## Tâches de fond (workers)
-
-- **Analyse asynchrone** : pool de workers drainant la file de jobs IA.
-- **Réveil des snoozes** : ticker 1 min qui ramène les emails reportés échus.
-- **Digest quotidien** : ticker 15 min qui envoie (scope `gmail.send`) le récap
-  des 7 derniers jours aux utilisateurs opté-in, au plus une fois par jour
-  (logique pure `internal/mailer`).
-
-## Extensibilité
-
-L'architecture permet facilement d'ajouter :
-- Support d'autres services email (Outlook, etc.)
-- Intelligence artificielle pour le tri automatique
-- Notifications en temps réel (WebSocket)
-- Analytics et statistiques
-- Export de données
-- Règles plus complexes avec conditions multiples
+- `GET /health` : ping MongoDB, version (`BUILD_VERSION`) et uptime ; `503` si MongoDB ne répond pas.
+- `GET /metrics` : compteurs en mémoire, par méthode et par classe de statut, latence moyenne et maximale, uptime. Cardinalité bornée, aucune donnée d'utilisateur (`internal/metrics`).
+- Journaux : une ligne par requête, avec son identifiant (`X-Request-ID`), sa méthode, son chemin, son statut et sa durée.

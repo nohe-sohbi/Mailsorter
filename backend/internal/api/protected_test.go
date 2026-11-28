@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
 func TestProtectAnalysisDowngradesDestructive(t *testing.T) {
 	protectedList := []string{"boss@corp.com", "acme.com"}
 
 	// A destructive verdict for a protected sender is forced to "keep".
-	got := protectAnalysis(ai.EmailAnalysis{Action: "archive", Confidence: 0.7}, "The Boss <boss@corp.com>", protectedList)
+	got := protectAnalysis(ai.EmailAnalysis{Action: "archive", Confidence: 0.7}, "The Boss <boss@corp.com>", protectedList, provider.TransportGmailAPI)
 	if got.Action != "keep" {
 		t.Errorf("archive on protected sender → %q, want keep", got.Action)
 	}
@@ -22,18 +23,29 @@ func TestProtectAnalysisDowngradesDestructive(t *testing.T) {
 	}
 
 	// A destructive verdict for a domain-protected sender is also kept.
-	if got := protectAnalysis(ai.EmailAnalysis{Action: "delete"}, "deals@mail.acme.com", protectedList); got.Action != "keep" {
+	if got := protectAnalysis(ai.EmailAnalysis{Action: "delete"}, "deals@mail.acme.com", protectedList, provider.TransportGmailAPI); got.Action != "keep" {
 		t.Errorf("delete on domain-protected sender → %q, want keep", got.Action)
 	}
 
-	// A non-destructive verdict passes through untouched.
-	label := protectAnalysis(ai.EmailAnalysis{Action: "label", LabelName: "Travail"}, "boss@corp.com", protectedList)
+	// A label passes through untouched over the Gmail API, where the mail
+	// stays in the inbox.
+	label := protectAnalysis(ai.EmailAnalysis{Action: "label", LabelName: "Travail"}, "boss@corp.com", protectedList, provider.TransportGmailAPI)
 	if label.Action != "label" || label.LabelName != "Travail" {
 		t.Errorf("label on protected sender should pass through, got %+v", label)
 	}
 
+	// Over IMAP a label files the mail in a folder, out of the inbox: the plan
+	// must not propose what "Tout ranger" would refuse.
+	filed := protectAnalysis(ai.EmailAnalysis{Action: "label", LabelName: "Travail", Confidence: 0.7}, "The Boss <boss@corp.com>", protectedList, provider.TransportIMAP)
+	if filed.Action != "keep" || filed.LabelName != "" || filed.Confidence < 0.9 {
+		t.Errorf("label on protected sender over IMAP = %+v, want a confident keep with no label", filed)
+	}
+	if got := protectAnalysis(ai.EmailAnalysis{Action: "label", LabelName: "Travail"}, "stranger@other.com", protectedList, provider.TransportIMAP); got.Action != "label" {
+		t.Errorf("label on unprotected sender over IMAP = %q, want label", got.Action)
+	}
+
 	// An unprotected sender's destructive verdict is left alone.
-	if got := protectAnalysis(ai.EmailAnalysis{Action: "archive"}, "stranger@other.com", protectedList); got.Action != "archive" {
+	if got := protectAnalysis(ai.EmailAnalysis{Action: "archive"}, "stranger@other.com", protectedList, provider.TransportGmailAPI); got.Action != "archive" {
 		t.Errorf("archive on unprotected sender → %q, want archive", got.Action)
 	}
 }
@@ -48,6 +60,25 @@ func TestAllowsWrapper(t *testing.T) {
 	}
 	if !allows("archive", "anyone@else.com", protectedList) {
 		t.Error("archive on unprotected sender should be allowed")
+	}
+}
+
+// Over IMAP a label files the mail into a folder, out of the inbox: the bulk
+// "Tout ranger" must not do that to a protected sender. Over the Gmail API the
+// mail stays in the inbox, and labelling stays allowed.
+func TestAllowsOnReadsALabelAsAMoveOverIMAP(t *testing.T) {
+	protectedList := []string{"vip@corp.com"}
+	if allowsOn(provider.TransportIMAP, "label", "VIP <vip@corp.com>", protectedList) {
+		t.Error("label on a protected sender over IMAP should not be allowed")
+	}
+	if !allowsOn(provider.TransportIMAP, "label", "anyone@else.com", protectedList) {
+		t.Error("label on an unprotected sender over IMAP should be allowed")
+	}
+	if !allowsOn(provider.TransportGmailAPI, "label", "vip@corp.com", protectedList) {
+		t.Error("label on a protected sender over the Gmail API should be allowed")
+	}
+	if allowsOn(provider.TransportGmailAPI, "archive", "vip@corp.com", protectedList) {
+		t.Error("archive on a protected sender over the Gmail API should not be allowed")
 	}
 }
 

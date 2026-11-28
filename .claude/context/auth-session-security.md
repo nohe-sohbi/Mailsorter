@@ -16,7 +16,6 @@ files:
   - backend/internal/api/routes.go
   - backend/internal/api/routes_integration_test.go
   - backend/cmd/server/main.go
-  - backend/cmd/test_decrypt/main.go
   - frontend/src/services/api.js
   - frontend/src/pages/Login.js
   - frontend/src/pages/AuthCallback.js
@@ -71,7 +70,6 @@ and vice versa (`auth.go:43-57`, asserted by `TestStateAndSessionUseDistinctKeys
 | `backend/internal/api/routes.go` | Middleware order and the CORS allow-list |
 | `backend/internal/api/routes_integration_test.go` | `TestProtectedRouteRejectsMissingSession`, `TestGmailCredentialsHaveNoHTTPSurface`, waitlist reachability |
 | `backend/cmd/server/main.go` | Wires `Validate` -> `NewEncryptor` -> Gmail credentials -> `auth.NewManager` |
-| `backend/cmd/test_decrypt/main.go` | One-off ops tool that decrypts the legacy `gmail_config` document |
 | `frontend/src/services/api.js` | Axios request interceptor attaching the Bearer token, response interceptor clearing it on 401 |
 | `frontend/src/pages/Login.js` | Starts the flow (`getAuthUrl` then `window.location.href`), and also handles a callback landing on `/` |
 | `frontend/src/pages/AuthCallback.js` | Reads `code` and `state` from the URL, exchanges them, writes `localStorage` |
@@ -312,9 +310,6 @@ Break one of these and the whole model is gone.
   `.env.example:17` says `ENCRYPTION_KEY` is "used to encrypt the Gmail OAuth tokens
   stored per user". Neither matches the code.** `handlers.go:191-192` writes them
   plaintext. Per the constitution, the code wins.
-- **`cmd/test_decrypt` prints the first 5 characters of the decrypted client secret to
-  stdout** (`main.go:44-47`) and never calls `cfg.Validate()`. Do not run it anywhere the
-  output is captured into logs.
 - **`Encrypt` produces a different ciphertext every call** (fresh GCM nonce, asserted by
   `TestEncryptIsNonDeterministic`). Never use an encrypted value as a lookup key or in a
   Mongo equality filter.

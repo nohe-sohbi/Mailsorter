@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
@@ -24,6 +25,16 @@ var defaultAllowedOrigins = []string{
 var insecureEncryptionKeys = map[string]bool{
 	"default-dev-key-change-in-production":          true,
 	"change-this-to-a-secure-random-string-32chars": true,
+	// The placeholder the README shows.
+	"collez-ici-une-cle-aleatoire-de-32-caracteres-minimum": true,
+}
+
+// publishedEncryptionKeys are examples an earlier README showed, which boot
+// accepted. An instance may well run on one, and refusing it now would stop
+// that instance with no good way out: a new key logs everyone out and makes
+// every stored secret unreadable. Boot accepts it and says so loudly.
+var publishedEncryptionKeys = map[string]bool{
+	"une-chaine-aleatoire-de-32-caracteres-minimum": true,
 }
 
 // minEncryptionKeyLen is the minimum master-key length we accept. The key is
@@ -87,15 +98,15 @@ func Load() *Config {
 		GmailClientID:       getEnv("GMAIL_CLIENT_ID", ""),
 		GmailClientSecret:   getEnv("GMAIL_CLIENT_SECRET", ""),
 		GmailRedirectURL:    getEnv("GMAIL_REDIRECT_URL", "http://localhost:3000/auth/callback"),
-		EncryptionKey:       getEnv("ENCRYPTION_KEY", "default-dev-key-change-in-production"),
+		EncryptionKey:       getEnv("ENCRYPTION_KEY", ""),
 		MistralAPIKey:       getEnv("MISTRAL_API_KEY", ""),
 		MistralModel:        getEnv("MISTRAL_MODEL", "mistral-small-latest"),
 		MistralMaxRetries:   getEnvInt("MISTRAL_MAX_RETRIES", 2),
 		OpenAIAPIKey:        getEnv("OPENAI_API_KEY", ""),
-		OpenAIModel:         getEnv("OPENAI_MODEL", "gpt-4o-mini"),
+		OpenAIModel:         getEnv("OPENAI_MODEL", "gpt-6-luna"),
 		OpenAIBaseURL:       getEnv("OPENAI_BASE_URL", ""),
 		AnthropicAPIKey:     getEnv("ANTHROPIC_API_KEY", ""),
-		AnthropicModel:      getEnv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+		AnthropicModel:      getEnv("ANTHROPIC_MODEL", "claude-haiku-5-5"),
 		OllamaModel:         getEnv("OLLAMA_MODEL", ""),
 		OllamaBaseURL:       getEnv("OLLAMA_BASE_URL", "http://localhost:11434"),
 		AIFallbackProvider:  getEnv("AI_FALLBACK_PROVIDER", ""),
@@ -115,6 +126,15 @@ func Load() *Config {
 		UITheme: UITheme(strings.ToLower(strings.TrimSpace(
 			getEnv("UI_THEME", string(UIThemeHotel))))),
 	}
+}
+
+// Warnings lists what boot accepts but the operator should fix.
+func (c *Config) Warnings() []string {
+	var w []string
+	if publishedEncryptionKeys[c.EncryptionKey] {
+		w = append(w, "ENCRYPTION_KEY is an example published in an earlier README: anyone who reads it can decrypt the secrets stored here. Changing it logs everyone out and makes the stored secrets unreadable (mailbox passwords, Google tokens, personal AI keys), so plan it: reconnect the mailboxes and re-enter the keys afterwards")
+	}
+	return w
 }
 
 // Validate enforces the invariants that must hold before the server starts.
@@ -187,27 +207,12 @@ func getEnvList(key string, defaultValue []string) []string {
 	return out
 }
 
-// AIProviderConfigs builds the ordered list of AI provider configs from
-// environment variables. The primary provider is Mistral (backward-compatible),
-// with optional fallback providers.
-func (c *Config) AIProviderConfigs() []struct {
-	Name       string
-	APIKey     string
-	Model      string
-	BaseURL    string
-	MaxRetries int
-	Priority   int
-	Enabled    bool
-} {
-	type pc = struct {
-		Name       string
-		APIKey     string
-		Model      string
-		BaseURL    string
-		MaxRetries int
-		Priority   int
-		Enabled    bool
-	}
+// AIProviderConfigs builds the AI provider configs from environment
+// variables, each with its priority: Mistral first (backward-compatible),
+// then OpenAI, Anthropic and Ollama, and AI_FALLBACK_PROVIDER moves the one it
+// names right after the primary. ai.NewRegistry orders them by priority.
+func (c *Config) AIProviderConfigs() []ai.ProviderConfig {
+	type pc = ai.ProviderConfig
 	var configs []pc
 
 	// Primary: Mistral (backward-compatible, priority 0)

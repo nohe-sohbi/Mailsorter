@@ -1,9 +1,21 @@
-import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
-import { emailService, aiService, senderService, subscriptionService } from '../services/api';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import {
+  emailService,
+  aiService,
+  senderService,
+  subscriptionService,
+  mailboxService,
+  reconnectAction,
+  whenMailboxChanged,
+} from '../services/api';
+import { setMailboxGeneration } from '../lib/session';
 
 const EmailContext = createContext(null);
 
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+// How long a screen left open waits before asking again which mailbox this is,
+// after GET /api/mailbox failed.
+const MAILBOX_RETRY_MS = 30 * 1000;
 export const DEFAULT_QUERY = 'in:inbox';
 
 export function EmailProvider({ children }) {
@@ -56,6 +68,10 @@ export function EmailProvider({ children }) {
         // "Boîte synchronisée" when nothing was fetched is a lie the UI told
         // every time the button was used twice within five minutes.
         sync = forceRefresh,
+        // Whether the caller shows what the sync has to say (syncNotice): only
+        // then does it ask for the mails the rules gave up on, which the
+        // server tells once.
+        notice = false,
       } = options;
 
       // Return cached data if valid, same query, and not forcing refresh.
@@ -75,16 +91,31 @@ export function EmailProvider({ children }) {
       setError('');
       setErrorRetryable(true);
 
+      // Set when the round-trip to the mailbox failed. The stored mailbox is
+      // still worth showing, so it does not stop the listing below, but it is
+      // handed back to the caller: the "Synchroniser" button used to announce
+      // "Boîte synchronisée" after a sync that had failed.
+      // syncSaid: the server's own sentence about it, which the inbox shows
+      // alone (syncSentence); syncReconnect: a 428, the way to connect the
+      // mailbox again (reconnectAction).
+      let syncError = '';
+      let syncSaid = false;
+      let syncReconnect = null;
+      // What a sync that worked has to say besides (over IMAP, rules that
+      // could not run on some new mails yet): information, never an error.
+      let syncNotice = '';
       try {
         const now = Date.now();
         if (sync || !lastSyncRef.current || now - lastSyncRef.current > CACHE_DURATION) {
           try {
-            await emailService.syncEmails();
+            const syncRes = await emailService.syncEmails(notice);
+            syncNotice = syncRes?.data?.rulesMessage || '';
             lastSyncRef.current = now;
           } catch (syncErr) {
-            // A failed sync is not fatal: the stored mailbox is still worth
-            // showing. It becomes visible only if the listing below also fails.
             console.warn('Sync failed:', syncErr);
+            syncError = errorMessage(syncErr, { sync: true });
+            syncSaid = Boolean(syncSentence(syncErr));
+            syncReconnect = reconnectAction(syncErr);
           }
         }
 
@@ -107,15 +138,25 @@ export function EmailProvider({ children }) {
           subscriptionService.getSubscriptions(),
         ]);
 
-        if (isStale()) return { emails, senders, suggestions, stats: newStats };
+        if (isStale()) return { emails, senders, suggestions, stats: newStats, syncError, syncSaid, syncReconnect, syncNotice };
 
         // The listing is the one call whose failure the user must see: without
         // it the screen falls back to an empty list, which the inbox used to
-        // celebrate as "Inbox Zero atteint 🎉", the exact opposite of the truth.
+        // celebrate as an empty inbox, the exact opposite of the truth.
         if (emailsRes.status === 'rejected') {
           reportError(emailsRes.reason);
           setLoading(false);
-          return { emails, senders, suggestions, stats: newStats };
+          return {
+            emails,
+            senders,
+            suggestions,
+            stats: newStats,
+            syncError,
+            syncSaid,
+            syncReconnect,
+            syncNotice,
+            listError: true,
+          };
         }
 
         let newEmails = [];
@@ -144,10 +185,19 @@ export function EmailProvider({ children }) {
         setSubscriptions(newSubscriptions);
         lastFetchRef.current = Date.now();
 
-        return { emails: newEmails, senders: newSenders, suggestions: newSuggestions, stats: newStats };
+        return {
+          emails: newEmails,
+          senders: newSenders,
+          suggestions: newSuggestions,
+          stats: newStats,
+          syncError,
+          syncSaid,
+          syncReconnect,
+          syncNotice,
+        };
       } catch (err) {
         if (!isStale()) reportError(err);
-        return { emails, senders, suggestions, stats };
+        return { emails, senders, suggestions, stats, syncError, syncSaid, syncReconnect, syncNotice, listError: true };
       } finally {
         if (!isStale()) setLoading(false);
       }
@@ -193,7 +243,7 @@ export function EmailProvider({ children }) {
   }, [pagination.nextPageToken, loadingMore, reportError]);
 
   // Optimistic removal: a triaged email must leave the list immediately, or
-  // burst keyboard triage (j, e, j, e…) works against a list that never moves.
+  // burst keyboard triage (j, e, j, e...) works against a list that never moves.
   const removeEmails = useCallback((ids) => {
     const set = new Set(Array.isArray(ids) ? ids : [ids]);
     setEmails((prev) => prev.filter((e) => !set.has(e.messageId)));
@@ -230,6 +280,96 @@ export function EmailProvider({ children }) {
     });
   }, []);
 
+  // The mailbox this account reads (GET /api/mailbox), fetched once and only
+  // when a screen asks for it through useMailbox(): this provider also sits
+  // above the public pages, where there is no session to ask with. `undefined`
+  // means not known yet, `null` means no mailbox.
+  //
+  // A failed call is NOT an answer. It used to set `null`, which read as "no
+  // mailbox, so not IMAP" for the rest of the session: one passing outage and
+  // an IMAP user got the Gmail-only controls back until the next reload. So a
+  // failure leaves the mailbox unknown and raises `mailboxFailed`, and the
+  // question is asked again by the next screen that needs it, or after
+  // MAILBOX_RETRY_MS on the one still open.
+  const [mailbox, setMailbox] = useState(undefined);
+  // The generation of the mailbox the screens show (GET /api/mailbox): the
+  // screens that need a mailbox start again from it when it changes
+  // (RequireMailbox in App.js), and load what they show of the new one.
+  const [generation, setGeneration] = useState(null);
+  const [mailboxFailed, setMailboxFailed] = useState(false);
+  const mailboxRequestRef = useRef(null);
+  const mailboxRetryRef = useRef(null);
+  // Only the latest request may answer: a forced reload (after a connect or a
+  // disconnect) must not be overwritten by a slower request about the mailbox
+  // as it was before.
+  const mailboxSeqRef = useRef(0);
+  // The mailbox what this provider holds was loaded from (its generation),
+  // which every request names (setMailboxGeneration).
+  const generationRef = useRef(null);
+  // Forgets what was loaded of a mailbox: the mails, the proposals and the
+  // rest were another mailbox's, and their numbers name, in the next one,
+  // other mails. A request still on its way answers into nothing
+  // (requestSeqRef), and the next screen loads everything again.
+  const forgetMailbox = useCallback(() => {
+    requestSeqRef.current += 1;
+    setEmails([]);
+    setSenders([]);
+    setSubscriptions([]);
+    setSuggestions([]);
+    setStats(null);
+    setPagination({ nextPageToken: null, resultSizeEstimate: 0 });
+    setLoading(false);
+    setError('');
+    lastFetchRef.current = null;
+    lastSyncRef.current = null;
+    lastStatsRef.current = null;
+  }, []);
+  const loadMailbox = useCallback(({ force = false, sameMailbox = false } = {}) => {
+    if (mailboxRequestRef.current && !force) return mailboxRequestRef.current;
+    clearTimeout(mailboxRetryRef.current);
+    // A forced reload follows a change of mailbox (a connection, a
+    // disconnection): until it answers, what was known is no longer true,
+    // and what was loaded of the mailbox before goes. Not after a new app
+    // password (sameMailbox): the same mailbox, the same generation; what
+    // was loaded goes only if the answer names another.
+    // The mailbox the screens held, to tell, once the answer is in, that it
+    // went away with none in its place.
+    const previous = generationRef.current;
+    if (force && !sameMailbox) {
+      setMailbox(undefined);
+      forgetMailbox();
+      generationRef.current = null;
+      setMailboxGeneration('');
+    }
+    const seq = ++mailboxSeqRef.current;
+    mailboxRequestRef.current = mailboxService
+      .get()
+      .then(({ data }) => {
+        if (seq !== mailboxSeqRef.current) return;
+        const generation = data?.generation || '';
+        if (generationRef.current !== null && generationRef.current !== generation) forgetMailbox();
+        // A mailbox the screens held is gone, none connected in its place: the
+        // screens that need one lead to /connect (RequireMailbox in App.js).
+        if (!data?.mailbox && previous) localStorage.removeItem('hasMailbox');
+        generationRef.current = generation;
+        setMailboxGeneration(generation);
+        setGeneration(generation);
+        setMailbox(data?.mailbox || null);
+        setMailboxFailed(false);
+      })
+      .catch(() => {
+        if (seq !== mailboxSeqRef.current) return;
+        mailboxRequestRef.current = null;
+        setMailboxFailed(true);
+        mailboxRetryRef.current = setTimeout(() => loadMailbox(), MAILBOX_RETRY_MS);
+      });
+    return mailboxRequestRef.current;
+  }, [forgetMailbox]);
+  useEffect(() => () => clearTimeout(mailboxRetryRef.current), []);
+  // A request refused because the mailbox changed since this was loaded
+  // (409, api.js): ask again which mailbox it is, and forget the other one's.
+  useEffect(() => whenMailboxChanged(() => loadMailbox({ force: true })), [loadMailbox]);
+
   const markUnsubscribed = useCallback((senderEmail) => {
     setSubscriptions((prev) =>
       prev.map((s) => (s.senderEmail === senderEmail ? { ...s, unsubscribed: true } : s))
@@ -259,6 +399,10 @@ export function EmailProvider({ children }) {
     restoreSuggestions,
     markUnsubscribed,
     isCacheValid,
+    mailbox,
+    mailboxFailed,
+    generation,
+    loadMailbox,
   };
 
   return <EmailContext.Provider value={value}>{children}</EmailContext.Provider>;
@@ -266,13 +410,24 @@ export function EmailProvider({ children }) {
 
 // The API returns plain-text errors for most failures; surface something a
 // French-speaking user can act on rather than a raw googleapi string.
-function errorMessage(err) {
+//
+// Only the listing, the sync and the counters come through here. The listing
+// and the counters never answer 502, 503 or 504, so a gateway status there is
+// the proxy in front of Mailsorter, with Mailsorter itself down or too slow,
+// and naming the mail provider for it sent people to check the wrong service.
+// The sync does answer 502, when the mailbox did not answer, but with its own
+// sentence, marked (syncSentence), which is shown instead.
+//
+// `sync` words the failure of a sync, which the inbox says after "La
+// synchronisation a échoué." while the list stays on screen: "Votre boîte n'a
+// pas pu être chargée" contradicted the emails right under it.
+function errorMessage(err, { sync = false } = {}) {
   const status = err?.response?.status;
   const raw = err?.response?.data;
   // writeError sends { error, status }; older routes send a bare string.
   const serverSaid = (typeof raw === 'string' ? raw : raw?.error)?.trim?.() || '';
 
-  if (status === 429) return 'Trop de requêtes vers Gmail. Patientez quelques instants.';
+  if (status === 429) return 'Trop de requêtes vers votre boîte mail. Patientez quelques instants.';
   if (status === 402) return 'Quota mensuel atteint.';
   if (status === 401) return 'Session expirée. Reconnectez-vous.';
   // 501 is checked BEFORE the 5xx catch-all, and it is the one 5xx whose message
@@ -282,10 +437,33 @@ function errorMessage(err) {
   if (status === 501) {
     return serverSaid || "Cette action n'est pas encore disponible sur cette boîte.";
   }
-  if (status >= 500 || status === 502) return 'Gmail est momentanément injoignable. Réessayez.';
+  // "Synchroniser" answers its failures with a French sentence for the user
+  // (SyncEmails), marked syncMessage, "Votre boîte n'a pas répondu" included:
+  // shown as is. Any other 5xx body (a crash, the proxy, a backend that is
+  // down) stays generic below.
+  if (sync && syncSentence(err)) return syncSentence(err);
+  if (status === 502 || status === 503 || status === 504) {
+    return "Le serveur ne répond pas pour le moment. Réessayez dans un instant.";
+  }
+  if (status >= 500) return sync ? 'Réessayez dans un instant.' : "Votre boîte n'a pas pu être chargée. Réessayez.";
   if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
   if (serverSaid) return serverSaid;
-  return err?.message || 'Une erreur inattendue est survenue.';
+  // axios's own message is English and technical ("Request failed with status
+  // code 400"): never shown as is.
+  return 'Une erreur inattendue est survenue.';
+}
+
+// The server's own sentence about a failed sync, to be shown alone, or "": a
+// sentence of SyncEmails (marked syncMessage, whatever its status), or the
+// one of a 4xx the user can act on (428: the mailbox to connect again; 409
+// marked mailboxChanged: the mailbox changed since the page was loaded, which
+// is being loaded again).
+export function syncSentence(err) {
+  const status = err?.response?.status;
+  const raw = err?.response?.data;
+  if (!raw || typeof raw !== 'object' || typeof raw.error !== 'string' || !raw.error.trim()) return '';
+  if (raw.syncMessage || status === 428 || (status === 409 && raw.mailboxChanged)) return raw.error.trim();
+  return '';
 }
 
 export function useEmails() {
@@ -294,4 +472,40 @@ export function useEmails() {
     throw new Error('useEmails must be used within an EmailProvider');
   }
   return context;
+}
+
+// The connected mailbox and what it can do, for the signed-in screens. One
+// request per session, shared by every screen that asks.
+//
+// `isImap` is true only once the server has said so: it is what a sentence
+// about IMAP checks ("pas encore disponible sur les boîtes IMAP").
+// `fullFeatures` is what a Gmail-only control checks (see GMAIL_ONLY in
+// components/landing/features.js): true once the answer is in and the mailbox
+// is not IMAP. While the answer is not in, or the request failed, it is false,
+// so a control the server may refuse is never offered on a guess.
+// `known` is the answer being in, `failed` the last request having failed,
+// and `settled` either of the two: what a screen waits for before drawing the
+// controls that depend on it (RequireMailbox in App.js), so they do not appear
+// or vanish under the user's eyes.
+export function useMailbox() {
+  const { mailbox, mailboxFailed, generation, loadMailbox } = useEmails();
+  useEffect(() => {
+    if (mailbox === undefined) loadMailbox();
+  }, [mailbox, loadMailbox]);
+  const known = mailbox !== undefined;
+  const isImap = mailbox?.transport === 'imap';
+  return {
+    mailbox: mailbox || null,
+    known,
+    failed: !known && mailboxFailed,
+    settled: known || mailboxFailed,
+    transport: mailbox?.transport || null,
+    isImap,
+    isGmail: mailbox?.transport === 'gmail',
+    fullFeatures: known && !isImap,
+    reload: () => loadMailbox({ force: true }),
+    // Which mailbox it is, for a screen to start again on another (null until
+    // known).
+    generation,
+  };
 }

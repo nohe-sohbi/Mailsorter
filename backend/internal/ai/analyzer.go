@@ -26,14 +26,14 @@ type SenderAnalysis struct {
 // fallback and per-user BYOK configuration.
 type Analyzer interface {
 	// AnalyzeEmail analyzes a single email and returns a suggested action.
-	AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error)
+	AnalyzeEmail(email models.Email) (*EmailAnalysis, error)
 
 	// AnalyzeBatch analyzes several emails in a single call (or multiple calls
 	// internally) and returns one analysis per email, in input order.
-	AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error)
+	AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error)
 
 	// AnalyzeSender analyzes a sender based on a sample of their emails.
-	AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error)
+	AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error)
 
 	// ProviderName returns a human/machine-readable identifier for the
 	// provider, e.g. "mistral", "openai", "anthropic", "ollama".
@@ -57,29 +57,29 @@ var KnownProviders = []ProviderInfo{
 		DisplayName:    "Mistral AI",
 		RequiresAPIKey: true,
 		DefaultModel:   "mistral-small-latest",
-		Models:         []string{"mistral-small-latest", "mistral-medium-latest", "mistral-large-latest", "open-mistral-nemo"},
+		Models:         []string{"mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"},
 	},
 	{
 		Name:           "openai",
 		DisplayName:    "OpenAI",
 		RequiresAPIKey: true,
-		DefaultModel:   "gpt-4o-mini",
-		Models:         []string{"gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1-nano"},
+		DefaultModel:   "gpt-6-luna",
+		Models:         []string{"gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"},
 	},
 	{
 		Name:           "anthropic",
 		DisplayName:    "Anthropic",
 		RequiresAPIKey: true,
-		DefaultModel:   "claude-sonnet-4-20250514",
-		Models:         []string{"claude-sonnet-4-20250514", "claude-haiku-4-20250514"},
+		DefaultModel:   "claude-haiku-5-5",
+		Models:         []string{"claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"},
 	},
 	{
 		Name:           "ollama",
 		DisplayName:    "Ollama (local)",
 		RequiresAPIKey: false,
 		RequiresURL:    true,
-		DefaultModel:   "llama3",
-		Models:         []string{"llama3", "llama3.1", "mistral", "gemma2", "phi3"},
+		DefaultModel:   "qwen3.5:9b",
+		Models:         []string{"qwen3.5:9b", "qwen3.5:4b", "qwen3.8:27b", "qwen3.6:35b-a3b"},
 	},
 	{
 		Name:           "openai-compatible",

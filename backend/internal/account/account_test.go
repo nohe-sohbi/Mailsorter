@@ -119,6 +119,7 @@ func hasBsonField(t reflect.Type, name string) bool {
 
 func TestRedactUserDropsSecrets(t *testing.T) {
 	now := time.Now()
+	nine := 9
 	u := models.User{
 		Email:                "alice@example.com",
 		AccessToken:          "ya29.secret-access",
@@ -128,14 +129,14 @@ func TestRedactUserDropsSecrets(t *testing.T) {
 		Plan:                 "pro",
 		AutoApplyRules:       true,
 		DigestEnabled:        true,
-		DigestHourUTC:        9,
+		DigestHourUTC:        &nine,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
 
 	p := RedactUser(u)
 
-	if p.Email != u.Email || p.Plan != "pro" || !p.AutoApplyRules || !p.DigestEnabled || p.DigestHourUTC != 9 {
+	if p.Email != u.Email || p.Plan != "pro" || !p.AutoApplyRules || !p.DigestEnabled || p.DigestHourUTC == nil || *p.DigestHourUTC != 9 {
 		t.Errorf("safe fields not carried through: %+v", p)
 	}
 

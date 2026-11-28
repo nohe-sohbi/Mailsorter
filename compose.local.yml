@@ -14,17 +14,23 @@ services:
   backend:
     ports:
       - "${BACKEND_PORT:-8080}:8080"
-    # A model you run yourself (Ollama, llama.cpp, LM Studio, vLLM). The main
-    # file never forwarded these, so an OLLAMA_MODEL set in .env silently never
+    # A model you run yourself (Ollama, llama.cpp, LM Studio, vLLM), and the
+    # other API providers. The main file never forwarded these, so an OLLAMA_MODEL set in .env silently never
     # reached the container. They live here, not in docker-compose.yml, so the
     # deployment keeps exactly the variables it had. See "IA locale" in the
     # README.
     environment:
+      # The container always listens on 8080: the healthcheck, the frontend
+      # proxy and the port mapping above all expect it. BACKEND_PORT only
+      # moves the HOST side, so a busy 8080 on your machine is one .env line.
+      PORT: "8080"
       OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-5-5}
       AI_FALLBACK_PROVIDER: ${AI_FALLBACK_PROVIDER:-}
     # Names the host machine host.docker.internal inside the container, on
     # Linux too (Docker Desktop already does it), so a model server running on

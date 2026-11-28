@@ -17,7 +17,7 @@ type mockAnalyzer struct {
 	senderRes *SenderAnalysis
 }
 
-func (m *mockAnalyzer) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
+func (m *mockAnalyzer) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -25,7 +25,7 @@ func (m *mockAnalyzer) AnalyzeEmail(email models.Email, existingLabels []string)
 	return m.result, nil
 }
 
-func (m *mockAnalyzer) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (m *mockAnalyzer) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -33,7 +33,7 @@ func (m *mockAnalyzer) AnalyzeBatch(emails []models.Email, existingLabels []stri
 	return m.batchRes, nil
 }
 
-func (m *mockAnalyzer) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
+func (m *mockAnalyzer) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
 	m.calls++
 	if m.err != nil {
 		return nil, m.err
@@ -66,7 +66,7 @@ func TestRegistryFallbackOn429(t *testing.T) {
 		},
 	}
 
-	res, err := reg.AnalyzeEmail(models.Email{Subject: "Promo"}, nil)
+	res, err := reg.AnalyzeEmail(models.Email{Subject: "Promo"})
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRegistryPermanentErrorFailsImmediately(t *testing.T) {
 		},
 	}
 
-	_, err := reg.AnalyzeEmail(models.Email{Subject: "Test"}, nil)
+	_, err := reg.AnalyzeEmail(models.Email{Subject: "Test"})
 	if err == nil {
 		t.Fatal("expected error on 401, got nil")
 	}
@@ -128,7 +128,7 @@ func TestRegistryWithUserOverride(t *testing.T) {
 	userCfg := ProviderConfig{
 		Name:    "openai",
 		APIKey:  "sk-test-user-key",
-		Model:   "gpt-4o-mini",
+		Model:   "gpt-6-luna",
 		Enabled: true,
 	}
 
@@ -153,13 +153,13 @@ func TestNewAnalyzerGuardsUserSuppliedProviders(t *testing.T) {
 		cfg     ProviderConfig
 		wantErr bool
 	}{
-		{"user openai-compatible on a public https host", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "https://api.example.com/v1/chat/completions", UserSupplied: true}, false},
-		{"user openai-compatible on loopback", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "https://127.0.0.1/v1", UserSupplied: true}, true},
-		{"user openai-compatible over http", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "http://api.example.com/v1", UserSupplied: true}, true},
-		{"user mistral pointed at metadata", ProviderConfig{Name: "mistral", APIKey: "k", BaseURL: "https://169.254.169.254/", UserSupplied: true}, true},
+		{"user openai-compatible on a public https host", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "https://api.example.com/v1/chat/completions", UserSupplied: true}, false},
+		{"user openai-compatible on loopback", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "https://127.0.0.1/v1", UserSupplied: true}, true},
+		{"user openai-compatible over http", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "http://api.example.com/v1", UserSupplied: true}, true},
+		{"user mistral pointed at metadata", ProviderConfig{Name: "mistral", APIKey: ***, BaseURL: "https://169.254.169.254/", UserSupplied: true}, true},
 		{"user ollama without address", ProviderConfig{Name: "ollama", UserSupplied: true}, true},
 		{"operator ollama without address", ProviderConfig{Name: "ollama"}, false},
-		{"operator openai-compatible on the docker network", ProviderConfig{Name: "openai-compatible", APIKey: "k", BaseURL: "http://10.0.0.5:8000/v1"}, false},
+		{"operator openai-compatible on the docker network", ProviderConfig{Name: "openai-compatible", APIKey: ***, BaseURL: "http://10.0.0.5:8000/v1"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,5 +168,28 @@ func TestNewAnalyzerGuardsUserSuppliedProviders(t *testing.T) {
 				t.Errorf("newAnalyzer(%+v) error = %v, want error %v", tc.cfg, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// AI_FALLBACK_PROVIDER works by priority: the registry must try providers in
+// ascending Priority, whatever order the configs arrive in.
+func TestNewRegistryOrdersByPriority(t *testing.T) {
+	r := NewRegistry([]ProviderConfig{
+		{Name: "ollama", Model: "m", BaseURL: "http://127.0.0.1:1", Priority: 30, Enabled: true},
+		{Name: "openai", APIKey: ***, Priority: 10, Enabled: true},
+		{Name: "ollama", Model: "fallback", BaseURL: "http://127.0.0.1:2", Priority: 5, Enabled: true},
+		{Name: "mistral", APIKey: ***, Priority: 0, Enabled: true},
+	})
+	got := r.ProviderNames()
+	want := []string{"mistral", "ollama", "openai", "ollama"}
+	if len(got) != len(want) {
+		t.Fatalf("ProviderNames() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ProviderNames() = %v, want %v", got, want)
+		}
+	}
+}
 	}
 }

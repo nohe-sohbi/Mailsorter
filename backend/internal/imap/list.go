@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net/mail"
 	"net/textproto"
 	"strconv"
 	"strings"
@@ -75,7 +74,22 @@ func (c *Client) List(ctx context.Context, folder string, limit int) ([]models.E
 		low = high - uint32(limit) + 1
 	}
 
-	messages, err := c.c.Fetch(imapv2.SeqSet{{Start: low, Stop: high}}, &imapv2.FetchOptions{
+	messages, err := c.c.Fetch(imapv2.SeqSet{{Start: low, Stop: high}}, listOptions()).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetch %q: %w", folder, err)
+	}
+
+	out := make([]models.Email, 0, len(messages))
+	for i := len(messages) - 1; i >= 0; i-- {
+		out = append(out, emailFrom(messages[i]))
+	}
+	return out, nil
+}
+
+// listOptions is what a listing reads of each message: the envelope, the
+// flags and the two unsubscribe headers, never the body.
+func listOptions() *imapv2.FetchOptions {
+	return &imapv2.FetchOptions{
 		UID:          true,
 		Flags:        true,
 		Envelope:     true,
@@ -89,14 +103,43 @@ func (c *Client) List(ctx context.Context, folder string, limit int) ([]models.E
 			// watches their unread count fall to zero for no reason they did.
 			Peek: true,
 		}},
-	}).Collect()
-	if err != nil {
-		return nil, fmt.Errorf("imap: fetch %q: %w", folder, err)
 	}
+}
 
-	out := make([]models.Email, 0, len(messages))
-	for i := len(messages) - 1; i >= 0; i-- {
-		out = append(out, emailFrom(messages[i]))
+// Envelopes reads these messages of folder, by UID, the way List reads a
+// page: envelope, flags and unsubscribe headers, peeked. It is how a sync
+// stores a message older than the page it lists, a favorite of years ago for
+// instance. A UID the folder no longer holds is simply not in the answer.
+func (c *Client) Envelopes(folder string, uids []string) (map[string]models.Email, error) {
+	out := make(map[string]models.Email, len(uids))
+	if len(uids) == 0 {
+		return out, nil
+	}
+	var set imapv2.UIDSet
+	asked := make(map[imapv2.UID]bool, len(uids))
+	for _, uid := range uids {
+		num, err := parseUID(uid)
+		if err != nil {
+			return nil, err
+		}
+		set.AddNum(num)
+		asked[num] = true
+	}
+	if err := c.selectFolder(folder); err != nil {
+		return nil, err
+	}
+	messages, err := c.c.Fetch(set, listOptions()).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetch %d messages of %q: %w", len(uids), folder, err)
+	}
+	for _, m := range messages {
+		// Only what was asked, with its envelope: a server may slip in news
+		// about another message (a flag changed elsewhere).
+		if !asked[m.UID] || m.Envelope == nil {
+			continue
+		}
+		email := emailFrom(m)
+		out[email.MessageID] = email
 	}
 	return out, nil
 }
@@ -125,14 +168,17 @@ func (c *Client) reselect(folder string) (*imapv2.SelectData, error) {
 // folder into a label list would make the Gmail-shaped code above believe it
 // can add a second one.
 func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
+	flags := flagNames(msg.Flags)
 	email := models.Email{
 		MessageID: strconv.FormatUint(uint64(msg.UID), 10),
-		IsRead:    isSeen(msg.Flags),
+		IsRead:    mailbox.IMAPIsRead(flags),
+		IsStarred: mailbox.IMAPIsStarred(flags),
 		CreatedAt: time.Now(),
 	}
 
 	if env := msg.Envelope; env != nil {
 		email.Subject = env.Subject
+		email.HeaderMessageID = env.MessageID
 		email.From = formatAddress(env.From)
 		email.To = addressList(env.To)
 		email.ReceivedDate = env.Date
@@ -153,12 +199,13 @@ func emailFrom(msg *imapclient.FetchMessageBuffer) models.Email {
 	return email
 }
 
-func isSeen(flags []imapv2.Flag) bool {
+// flagNames is a message's flags as internal/mailbox reads them.
+func flagNames(flags []imapv2.Flag) []string {
 	as := make([]string, 0, len(flags))
 	for _, f := range flags {
 		as = append(as, string(f))
 	}
-	return mailbox.IMAPIsRead(as)
+	return as
 }
 
 // formatAddress renders a sender the way the rest of the app expects to read
@@ -176,7 +223,14 @@ func formatAddress(addrs []imapv2.Address) string {
 	if addr == "" {
 		return a.Name
 	}
-	return (&mail.Address{Name: a.Name, Address: addr}).String()
+	// Written out by hand, not with net/mail's Address.String: that one
+	// re-encodes any non-ASCII name as RFC 2047 ("=?utf-8?q?R=C3=A9seau?="),
+	// which the screens and the history then showed as is. go-imap already
+	// decoded the name, in any charset go-message knows (Connect's
+	// WordDecoder); it is stored readable, quoted the way the Gmail path
+	// stores it.
+	name := strings.ReplaceAll(strings.ReplaceAll(a.Name, `\`, `\\`), `"`, `\"`)
+	return `"` + name + `" <` + addr + `>`
 }
 
 func addressList(addrs []imapv2.Address) []string {

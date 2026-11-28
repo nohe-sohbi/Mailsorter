@@ -3,8 +3,10 @@ package ai
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -35,8 +37,8 @@ func NewOllamaClient(model, baseURL string) *OllamaClient {
 
 func (c *OllamaClient) ProviderName() string { return "ollama" }
 
-func (c *OllamaClient) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
-	prompt := buildAnalyzeEmailPrompt(email, existingLabels)
+func (c *OllamaClient) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
+	prompt := buildAnalyzeEmailPrompt(email)
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("ollama error: %w", err)
@@ -44,11 +46,11 @@ func (c *OllamaClient) AnalyzeEmail(email models.Email, existingLabels []string)
 	return parseEmailAnalysis(response)
 }
 
-func (c *OllamaClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (c *OllamaClient) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	if len(emails) == 0 {
 		return nil, nil
 	}
-	prompt := buildBatchPrompt(emails, existingLabels)
+	prompt := buildBatchPrompt(emails)
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("ollama error: %w", err)
@@ -56,8 +58,8 @@ func (c *OllamaClient) AnalyzeBatch(emails []models.Email, existingLabels []stri
 	return parseBatchAnalysis(response, len(emails))
 }
 
-func (c *OllamaClient) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
-	prompt := buildSenderPrompt(senderEmail, emails, existingLabels)
+func (c *OllamaClient) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
+	prompt := buildSenderPrompt(senderEmail, emails)
 	response, err := c.chat(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("ollama error: %w", err)
@@ -75,7 +77,12 @@ func (c *OllamaClient) chat(prompt string) (string, error) {
 		Model    string `json:"model"`
 		Messages []msg  `json:"messages"`
 		Stream   bool   `json:"stream"`
-		Options  struct {
+		// Think false: triage needs a short JSON answer, not a reasoning trace.
+		// Thinking models (Qwen among them) think by default when this is unset,
+		// which multiplies the tokens of every batch and can outlast the client
+		// timeout. Ollama ignores false on a model that cannot think.
+		Think   bool `json:"think"`
+		Options struct {
 			Temperature float64 `json:"temperature"`
 		} `json:"options"`
 	}
@@ -100,7 +107,14 @@ func (c *OllamaClient) chat(prompt string) (string, error) {
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("ollama server unreachable: %w", err)
+		// A server that is up but slower than the client timeout is not
+		// unreachable: say which one it is, or the operator debugs the network
+		// instead of the model. "timeout" also marks it transient for fallback.
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return "", fmt.Errorf("ollama timeout: model %q at %s gave no answer within %s (still loading, or too slow for this batch): %w", c.model, c.baseURL, c.httpClient.Timeout, err)
+		}
+		return "", fmt.Errorf("ollama server unreachable at %s: %w", c.baseURL, err)
 	}
 	defer resp.Body.Close()
 

@@ -20,27 +20,52 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
+	"mime"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	imapv2 "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message/charset"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 )
 
 // ErrAuth means the server rejected the credentials. It is typed because it
 // maps to a different answer than anything else that can go wrong here: the
-// user has to supply a new app password, which is a 401 and a reconnect prompt,
-// not a 500 and a retry. It is the IMAP counterpart of errReauthRequired.
+// user has to supply a new app password, which is a reconnect prompt (a 401 on
+// the connect screen, where the password was just typed; a 428 everywhere
+// else, where a 401 would sign the person out of Mailsorter), not a 500 and a
+// retry. It is the IMAP counterpart of errReauthRequired.
 var ErrAuth = errors.New("imap: authentication rejected")
+
+// ErrUnreachable means the mailbox could not be opened for a reason other than
+// its credentials: the server could not be reached, did not answer in time,
+// dropped the connection, or said it was not available (NO [UNAVAILABLE], a
+// connection limit, BYE). Typed apart from ErrAuth because the user has
+// nothing to fix: telling them their password was refused would send them to
+// regenerate a good one. Trying again later may work.
+var ErrUnreachable = errors.New("imap: the mailbox could not be reached")
 
 // ErrNoSuchFolder means the server has no mailbox for a special folder the
 // action needs. Typed for the same reason: it is a fact about the account, not
 // a transient failure, and retrying cannot fix it.
 var ErrNoSuchFolder = errors.New("imap: no mailbox matches the required special folder")
+
+// ErrMessageGone means the message a reference names is no longer in its
+// folder: another mail client moved it elsewhere or deleted it.
+var ErrMessageGone = errors.New("imap: the message is no longer in its folder")
+
+// ErrNotOwnFolder means a mail was to be filed into a folder that is not one
+// of the user's own: the inbox, a special folder (the archive, the trash, sent
+// mail, drafts, junk), or one that cannot hold mail. Those have actions of
+// their own, and filing there would archive or trash a mail under another name
+// (or, for the inbox, move it nowhere while it is recorded as gone).
+var ErrNotOwnFolder = errors.New("imap: not a folder of the user's own")
 
 // dialTimeout bounds the connection itself. Mail servers under load are slow to
 // accept, but a user waiting on a screen is not, and every caller here is on a
@@ -68,9 +93,33 @@ type Client struct {
 	// once at connect, because it costs a LIST and cannot change mid-session in
 	// any way that matters.
 	folders map[mailbox.Folder]string
+	// listed is every folder the server listed at connect, plus those this
+	// session made since: what OwnFolders offers, and where filing looks for
+	// the folder it names before making it.
+	listed []folderInfo
+	// ns is where the user's own folders live on this server and how their
+	// names nest, read at connect.
+	ns namespace
+	// created counts the folders this connection made (maxNewFolders).
+	created int
 	// selected is the mailbox currently selected, so repeated actions in the
 	// same folder do not re-SELECT.
 	selected string
+	// unbind releases the binding of the connection to the context it was
+	// opened under (Connect). Nil for a client made otherwise.
+	unbind func() bool
+}
+
+// clientOptions are the connection options for a server named host.
+func clientOptions(host string) *imapclient.Options {
+	return &imapclient.Options{
+		Dialer:    &net.Dialer{Timeout: dialTimeout},
+		TLSConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
+		// Without it go-imap decodes only UTF-8, ISO-8859-1 and US-ASCII
+		// encoded words, and leaves a windows-1252 or ISO-8859-15 sender
+		// name or subject (common in French mail) as raw RFC 2047.
+		WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader},
+	}
 }
 
 // Connect opens, encrypts and authenticates a connection, then resolves the
@@ -82,29 +131,68 @@ type Client struct {
 // catalog carries the mode per route rather than leaving it to be sniffed here.
 // There is no third branch: an unencrypted connection would send the user's app
 // password in the clear and is not offered at all.
+//
+// The session is bound to ctx for its whole life, its opening included (the
+// dial, the TLS handshake, the greeting, STARTTLS, LOGIN and the listing of
+// the folders): when ctx ends, the connection is closed, which interrupts
+// whatever is waiting on it. During the opening, Connect then answers
+// ErrUnreachable; afterwards, the command under way fails and the client is
+// Closed. go-imap itself waits for an answer with no time limit, so without
+// this a server that greets and then says nothing, at LOGIN or at the first
+// SELECT, would hold its caller forever: a request, the background sync of
+// every account after it, or the sweep that brings every account's reports
+// back. Close releases the binding.
 func Connect(ctx context.Context, creds Credentials) (*Client, error) {
 	addr := net.JoinHostPort(creds.Endpoint.Host, fmt.Sprint(creds.Endpoint.Port))
-	options := &imapclient.Options{
-		Dialer:    &net.Dialer{Timeout: dialTimeout},
-		TLSConfig: &tls.Config{ServerName: creds.Endpoint.Host, MinVersion: tls.VersionTLS12},
-	}
+	options := clientOptions(creds.Endpoint.Host)
 
 	var (
-		raw *imapclient.Client
-		err error
+		conn net.Conn
+		err  error
 	)
 	switch creds.Endpoint.TLS {
 	case provider.TLSImplicit:
-		raw, err = imapclient.DialTLS(addr, options)
+		// As imapclient.DialTLS does, but under ctx (the dialer's timeout
+		// bounds the handshake too).
+		config := options.TLSConfig.Clone()
+		if config.NextProtos == nil {
+			config.NextProtos = []string{"imap"}
+		}
+		conn, err = (&tls.Dialer{NetDialer: options.Dialer, Config: config}).DialContext(ctx, "tcp", addr)
 	case provider.TLSSTARTTLS:
-		raw, err = imapclient.DialStartTLS(addr, options)
+		conn, err = options.Dialer.DialContext(ctx, "tcp", addr)
 	default:
 		return nil, fmt.Errorf("imap: unsupported TLS mode %q", creds.Endpoint.TLS)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("imap: dial %s: %w", addr, err)
+		return nil, fmt.Errorf("%w: dial %s: %w", ErrUnreachable, addr, err)
 	}
-	return newClient(raw, creds.Username, creds.Password)
+
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	client, err := func() (*Client, error) {
+		if creds.Endpoint.TLS == provider.TLSSTARTTLS {
+			raw, err := imapclient.NewStartTLS(conn, options)
+			if err != nil {
+				return nil, fmt.Errorf("%w: starttls with %s: %w", ErrUnreachable, addr, err)
+			}
+			return newClient(raw, creds.Username, creds.Password)
+		}
+		return newClient(imapclient.New(conn, options), creds.Username, creds.Password)
+	}()
+	if err != nil || ctx.Err() != nil {
+		if !stop() || ctx.Err() != nil {
+			// ctx ended during the opening: the connection is closed, and
+			// what came of the opening says nothing about the mailbox.
+			if client != nil {
+				client.Abort()
+			}
+			return nil, fmt.Errorf("%w: opening %s stopped: %w", ErrUnreachable, addr, ctx.Err())
+		}
+		return nil, err
+	}
+	// Open: the binding stays, until Close releases it.
+	client.unbind = stop
+	return client, nil
 }
 
 // newClient authenticates an already-connected socket and resolves its folders.
@@ -114,18 +202,58 @@ func Connect(ctx context.Context, creds Credentials) (*Client, error) {
 // not covered that way, because trusting a test certificate would mean giving
 // this package a way to relax its own TLS, and a seam that can weaken
 // production TLS is worth more than the coverage it buys.
+//
+// A LOGIN that fails is ErrAuth only when the server refused the credentials
+// (refusedCredentials); anything else is ErrUnreachable.
 func newClient(raw *imapclient.Client, username, password string) (*Client, error) {
 	if err := raw.Login(username, password).Wait(); err != nil {
 		raw.Close()
-		return nil, fmt.Errorf("%w: %v", ErrAuth, err)
+		if refusedCredentials(err) {
+			return nil, fmt.Errorf("%w: %v", ErrAuth, err)
+		}
+		return nil, fmt.Errorf("%w: login: %w", ErrUnreachable, err)
 	}
 
 	client := &Client{c: raw}
 	if err := client.resolveFolders(); err != nil {
-		client.Close()
-		return nil, err
+		client.Abort()
+		return nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
 	return client, nil
+}
+
+// refusedCredentials says whether a failed LOGIN is the server refusing the
+// address and the password, which only the user can fix, rather than the
+// server being unable to take it now.
+//
+// A tagged NO is a refusal when it says so ([AUTHENTICATIONFAILED], RFC 5530)
+// or says nothing more, which is how most servers word a wrong password. It is
+// not one when its code says the server is unavailable ([UNAVAILABLE],
+// [SERVERBUG], [LIMIT], [INUSE], [TOOMANY]), nor when its text speaks of too
+// many connections, which is how Gmail says it ("[ALERT] Too many simultaneous
+// connections"). Anything that is not a NO (a cut connection, a BYE, a BAD, a
+// time limit) is not a refusal either. Pure, so every wording is tested.
+func refusedCredentials(err error) bool {
+	var resp *imapv2.Error
+	if !errors.As(err, &resp) || resp.Type != imapv2.StatusResponseTypeNo {
+		return false
+	}
+	switch resp.Code {
+	case imapv2.ResponseCodeAuthenticationFailed:
+		return true
+	case imapv2.ResponseCodeUnavailable, imapv2.ResponseCodeServerBug, imapv2.ResponseCodeLimit,
+		imapv2.ResponseCodeInUse, imapv2.ResponseCodeTooMany:
+		return false
+	}
+	return !strings.Contains(strings.ToLower(resp.Text), "too many")
+}
+
+// SaysWhereMovesLand says whether this server answers a move with the number
+// the message takes in its new folder (COPYUID: UIDPLUS, which IMAP4rev2
+// includes). Without it, a message that carries no Message-ID header cannot
+// be named again once moved.
+func (c *Client) SaysWhereMovesLand() bool {
+	return c.c.Caps().Has(imapv2.CapUIDPlus)
 }
 
 // Close ends the session. Logout is attempted first so the server can release
@@ -135,8 +263,28 @@ func (c *Client) Close() error {
 	if c.c == nil {
 		return nil
 	}
+	if c.unbind != nil {
+		c.unbind()
+	}
 	_ = c.c.Logout().Wait()
 	return c.c.Close()
+}
+
+// Abort drops the connection at once, without the LOGOUT Close sends first:
+// for a caller whose time is up, when the server itself may be what does not
+// answer (go-imap waits for an answer with no time limit). A command waiting
+// on the connection returns an error, and Close afterwards returns at once.
+// Unlike every other method, it may be called from another goroutine.
+func (c *Client) Abort() {
+	if c.c != nil {
+		_ = c.c.Close()
+	}
+}
+
+// Closed says whether the connection is gone: closed here, or by go-imap
+// on an answer it could not read. Nothing more can be asked on it.
+func (c *Client) Closed() bool {
+	return c.c == nil || c.c.State() == imapv2.ConnStateLogout
 }
 
 // folderInfo is one mailbox as the server described it.
@@ -145,7 +293,8 @@ type folderInfo struct {
 	Attrs []string
 }
 
-// resolveFolders asks the server what it calls the folders the actions need.
+// resolveFolders asks the server what it calls the folders the actions need,
+// and where the user's own folders live (NAMESPACE, when the server has it).
 func (c *Client) resolveFolders() error {
 	listed, err := c.c.List("", "*", &imapv2.ListOptions{ReturnSpecialUse: true}).Collect()
 	if err != nil {
@@ -153,21 +302,210 @@ func (c *Client) resolveFolders() error {
 	}
 
 	infos := make([]folderInfo, 0, len(listed))
+	var listDelim rune
 	for _, data := range listed {
 		attrs := make([]string, 0, len(data.Attrs))
 		for _, a := range data.Attrs {
 			attrs = append(attrs, string(a))
 		}
 		infos = append(infos, folderInfo{Name: data.Mailbox, Attrs: attrs})
+		if listDelim == 0 || strings.EqualFold(data.Mailbox, string(mailbox.FolderInbox)) {
+			if data.Delim != 0 {
+				listDelim = data.Delim
+			}
+		}
 	}
 
+	var spaces imapv2.NamespaceData
+	if c.c.Caps().Has(imapv2.CapNamespace) {
+		data, err := c.c.Namespace().Wait()
+		if err != nil {
+			// The folders are still usable as listed: without the prefix,
+			// a folder Mailsorter makes lands at the top, as before.
+			log.Printf("imap: the server announces NAMESPACE but did not answer it: %v", err)
+		} else {
+			spaces = *data
+		}
+	}
+
+	c.ns = readNamespace(spaces, listDelim)
+	c.listed = infos
 	c.folders = map[mailbox.Folder]string{mailbox.FolderInbox: "INBOX"}
 	for _, want := range []mailbox.Folder{mailbox.FolderArchive, mailbox.FolderTrash} {
-		if name, ok := pickFolder(want, infos); ok {
+		if name, ok := pickFolder(want, infos, c.ns); ok {
 			c.folders[want] = name
 		}
 	}
 	return nil
+}
+
+// OwnFolders returns every folder of the user's own, sorted, by the name the
+// user reads: the folders a mail can be filed into ("Factures",
+// "Projets/Maison" for a folder inside another), which is what a label is over
+// IMAP. Without the personal prefix and with "/" between levels, whatever the
+// server's own ("INBOX.Projets.Maison" reads "Projets/Maison"). Not the inbox,
+// not a special folder, not a folder that cannot hold mail or lies outside the
+// user's namespace (notOwn).
+func (c *Client) OwnFolders() []string {
+	skip := notOwn(c.listed, c.ns)
+	names := make([]string, 0, len(c.listed))
+	for _, f := range c.listed {
+		if skip[f.Name] {
+			continue
+		}
+		if shown, ok := c.ns.display(f.Name); ok {
+			names = append(names, shown)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// maxNewFolders is how many folders one connection, so one request, makes at
+// most: "Tout ranger" files up to 200 mails, and a model that names a new
+// folder for each would otherwise strew the mailbox with them. Past it, the
+// filing answers ErrTooManyNewFolders and the mail stays where it is.
+const maxNewFolders = 10
+
+// ErrTooManyNewFolders is a filing that would make one folder more than
+// maxNewFolders in the same request. Nothing moves; another request can.
+var ErrTooManyNewFolders = errors.New("imap: too many new folders for one request")
+
+// Destination returns the server's name for where op moves a message: a
+// special folder by what it is (op.To), or one of the user's own folders by
+// the name the user reads (op.Into, as OwnFolders and FilingName give it),
+// made on the server when it does not exist yet, which is how filing into
+// "Factures" works the first time. It is made under the user's prefix, levels
+// split by the server's delimiter ("Projets/Maison" is "INBOX.Projets.Maison"
+// on Courier), and only under a name newFolderName accepts.
+//
+// The folder the user already has is found by its exact name first, then by
+// the same name in another case: names are case-sensitive on most servers, but
+// a user who keeps "factures" wants the mail there, not in a second folder
+// next to it. A name that is, or would be taken for, a folder that is not the
+// user's own answers ErrNotOwnFolder, and nothing is made.
+func (c *Client) Destination(op mailbox.IMAPOp) (string, error) {
+	if op.Into == "" {
+		name, ok := c.folders[op.To]
+		if !ok {
+			return "", fmt.Errorf("%w: %s", ErrNoSuchFolder, op.To)
+		}
+		return name, nil
+	}
+	want := strings.TrimSpace(op.Into)
+	if want == "" {
+		return "", mailbox.ErrLabelRequired
+	}
+	if found, err := c.existing(want); err != nil || found != "" {
+		return found, err
+	}
+	name, err := c.newFolderName(want)
+	if err != nil {
+		return "", err
+	}
+	if found, err := c.existing(name); err != nil || found != "" {
+		return found, err
+	}
+	if c.created >= maxNewFolders {
+		return "", fmt.Errorf("%w: %q would be folder %d", ErrTooManyNewFolders, name, c.created+1)
+	}
+	server := c.ns.serverName(name)
+	if err := c.c.Create(server, nil).Wait(); err != nil {
+		// Another connection may have made it a moment ago: the server then
+		// refuses, and the folder is there all the same.
+		again, lErr := c.c.List("", server, nil).Collect()
+		exists := false
+		for _, l := range again {
+			exists = exists || l.Mailbox == server
+		}
+		if lErr != nil || !exists {
+			return "", fmt.Errorf("imap: create folder %q: %w", server, err)
+		}
+	}
+	c.created++
+	// Most mail programs show only the folders the account subscribes to: a
+	// folder made without it holds mail the user's phone never shows. The
+	// folder is made either way, so a refusal here is only logged.
+	if err := c.c.Subscribe(server).Wait(); err != nil {
+		log.Printf("imap: folder %q made, but not subscribed: %v", server, err)
+	}
+	c.listed = append(c.listed, folderInfo{Name: server})
+	return server, nil
+}
+
+// FilingName is the name, as the user reads it, of the folder a label the
+// model proposed files into, and makes nothing: the analysis stores it on the
+// proposal, so the plan shows, "Appliquer" files into and the history records
+// the same folder. One of the user's own folders when one is named alike
+// (mailbox.MatchLabel: case, accents and a plural set aside, never a part of
+// a name), or else the name Destination would make, cleaned (cleanName).
+// ErrNotOwnFolder for a special folder, ErrBadFolderName for a name no folder
+// is made under.
+func (c *Client) FilingName(label string) (string, error) {
+	want := strings.TrimSpace(label)
+	if want == "" {
+		return "", mailbox.ErrLabelRequired
+	}
+	own := c.OwnFolders()
+	if name, ok := mailbox.MatchLabel(want, own); ok {
+		return name, nil
+	}
+	if _, err := c.existing(want); err != nil {
+		return "", err
+	}
+	name, err := c.newFolderName(want)
+	if err != nil {
+		return "", err
+	}
+	if mine, ok := mailbox.MatchLabel(name, own); ok {
+		return mine, nil
+	}
+	return name, nil
+}
+
+// existing is the server's name of the folder the user reads as want (the
+// exact name, then the same in another case), "" when there is none, and
+// ErrNotOwnFolder when it is not the user's own.
+func (c *Client) existing(want string) (string, error) {
+	skip := notOwn(c.listed, c.ns)
+	for _, exact := range []bool{true, false} {
+		for _, f := range c.listed {
+			shown, ok := c.ns.display(f.Name)
+			if !ok {
+				// Outside the user's namespace: the inbox, a shared
+				// folder. Matched by its own name, and refused below.
+				shown = f.Name
+			}
+			if (exact && shown == want) || (!exact && strings.EqualFold(shown, want)) {
+				if skip[f.Name] {
+					return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, f.Name)
+				}
+				return f.Name, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// newFolderName is the name, as the user reads it, of a folder Mailsorter may
+// make for the label want: cleaned (cleanName), and neither under a first
+// level that is not the user's own ("INBOX/Factures", "Trash/Factures",
+// "Sent/Old", a shared prefix) nor itself taken for one: the next listing
+// would leave it out, and filing there again would be refused.
+func (c *Client) newFolderName(want string) (string, error) {
+	name, err := c.ns.cleanName(want)
+	if err != nil {
+		return "", err
+	}
+	first := strings.SplitN(name, "/", 2)[0]
+	for _, candidate := range []string{first, name} {
+		server := c.ns.serverName(candidate)
+		withIt := append(append(make([]folderInfo, 0, len(c.listed)+1), c.listed...), folderInfo{Name: server})
+		if notOwn(withIt, c.ns)[server] {
+			return "", fmt.Errorf("%w: %q", ErrNotOwnFolder, candidate)
+		}
+	}
+	return name, nil
 }
 
 // Client is a mailbox.Mailbox, asserted here so the contract is checked by the
@@ -206,9 +544,9 @@ func (c *Client) Apply(ctx context.Context, ref mailbox.Ref, m mailbox.Mutation)
 	case mailbox.IMAPFlagChange:
 		return c.storeFlags(set, op)
 	case mailbox.IMAPMove:
-		name, ok := c.folders[op.To]
-		if !ok {
-			return fmt.Errorf("%w: %s", ErrNoSuchFolder, op.To)
+		name, err := c.Destination(op)
+		if err != nil {
+			return err
 		}
 		if name == c.selected {
 			// Moving a message into the folder it is already in is a no-op the
@@ -222,6 +560,198 @@ func (c *Client) Apply(ctx context.Context, ref mailbox.Ref, m mailbox.Mutation)
 		return nil
 	}
 	return fmt.Errorf("imap: unsupported operation kind %v", op.Kind)
+}
+
+// MoveTo moves one message into the folder the server calls dest
+// (Destination says which) and says where it landed: that folder, and the
+// message's new UID there.
+//
+// The new UID comes from the server's answer to MOVE (COPYUID, which UIDPLUS
+// and IMAP4rev2 servers send). A server that does not send it is asked again
+// by the message's Message-ID header, when the caller knows it. A UID still
+// unknown after that comes back empty: the move happened, but the message
+// cannot be named in its new folder.
+//
+// A message no longer in ref's folder answers ErrMessageGone, checked BEFORE
+// moving: a MOVE on a UID that does not exist answers OK and does nothing,
+// which is how undo used to "succeed" without anything coming back.
+func (c *Client) MoveTo(ctx context.Context, ref mailbox.Ref, dest, headerMessageID string) (mailbox.Ref, error) {
+	if !ref.Scoped() {
+		return mailbox.Ref{}, fmt.Errorf("%w: an imap uid needs its folder, got %s", mailbox.ErrWrongRefKind, ref)
+	}
+	num, err := parseUID(ref.ID)
+	if err != nil {
+		return mailbox.Ref{}, err
+	}
+	if dest == "" {
+		return mailbox.Ref{}, fmt.Errorf("%w: no destination", ErrNoSuchFolder)
+	}
+	if err := c.selectFolder(ref.Folder); err != nil {
+		return mailbox.Ref{}, err
+	}
+	set := imapv2.UIDSetNum(num)
+	found, err := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}, nil).Wait()
+	if err != nil {
+		return mailbox.Ref{}, fmt.Errorf("imap: look for uid %s in %q: %w", ref.ID, ref.Folder, err)
+	}
+	if len(found.AllUIDs()) == 0 {
+		return mailbox.Ref{}, ErrMessageGone
+	}
+	if dest == c.selected {
+		return ref, nil
+	}
+	data, err := c.c.Move(set, dest).Wait()
+	if err != nil {
+		// Another connection (a second click, another mail client) may have
+		// moved it between the check above and the MOVE: that is "gone",
+		// not a failure.
+		if again, sErr := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{set}}, nil).Wait(); sErr == nil && len(again.AllUIDs()) == 0 {
+			return mailbox.Ref{}, ErrMessageGone
+		}
+		return mailbox.Ref{}, fmt.Errorf("imap: move to %q: %w", dest, err)
+	}
+	landed := mailbox.InFolder(dest, "")
+	if data != nil {
+		if uids, ok := data.DestUIDs.(imapv2.UIDSet); ok {
+			if nums, ok := uids.Nums(); ok && len(nums) == 1 {
+				landed.ID = strconv.FormatUint(uint64(nums[0]), 10)
+			}
+		}
+	}
+	if landed.ID == "" && headerMessageID != "" {
+		// The move happened either way; a failed lookup only means the new
+		// UID stays unknown, which the caller handles.
+		id, err := c.FindByMessageID(dest, headerMessageID)
+		if err != nil {
+			log.Printf("imap: moved to %q, but could not find %s there again: %v", dest, headerMessageID, err)
+		}
+		landed.ID = id
+	}
+	return landed, nil
+}
+
+// MoveRecorded moves the message Mailsorter recorded as uid in folder into
+// the folder the server calls dest. When
+// its Message-ID is known, the number is checked first against the one the
+// server reports for it (IDAt): a server that renumbered its folders (a
+// migration, a rebuilt index) would otherwise hand back another mail. When
+// the number no longer names it, it is looked for by that Message-ID once;
+// not found, ErrMessageGone.
+func (c *Client) MoveRecorded(ctx context.Context, folder, uid, dest, headerMessageID string) (mailbox.Ref, error) {
+	if headerMessageID != "" {
+		id, exists, err := c.IDAt(folder, uid)
+		if err != nil {
+			return mailbox.Ref{}, err
+		}
+		if !exists || id != headerMessageID {
+			found, err := c.FindByMessageID(folder, headerMessageID)
+			if err != nil {
+				return mailbox.Ref{}, err
+			}
+			if found == "" {
+				return mailbox.Ref{}, ErrMessageGone
+			}
+			uid = found
+		}
+	}
+	return c.MoveTo(ctx, mailbox.InFolder(folder, uid), dest, headerMessageID)
+}
+
+// IDAt returns the Message-ID of the message numbered uid in folder, as the
+// listing stores it (the envelope's, parsed by the same code), and whether
+// that number names a message at all.
+func (c *Client) IDAt(folder, uid string) (string, bool, error) {
+	num, err := parseUID(uid)
+	if err != nil {
+		return "", false, err
+	}
+	c.selected = ""
+	if err := c.selectFolder(folder); err != nil {
+		return "", false, err
+	}
+	msgs, err := c.c.Fetch(imapv2.UIDSetNum(num), &imapv2.FetchOptions{UID: true, Envelope: true}).Collect()
+	if err != nil {
+		return "", false, fmt.Errorf("imap: read uid %s in %q: %w", uid, folder, err)
+	}
+	for _, m := range msgs {
+		if m.UID == num {
+			if m.Envelope == nil {
+				return "", true, nil
+			}
+			return m.Envelope.MessageID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// Has says whether the message ref names is in its folder now.
+func (c *Client) Has(ref mailbox.Ref) (bool, error) {
+	num, err := parseUID(ref.ID)
+	if err != nil {
+		return false, err
+	}
+	c.selected = ""
+	if err := c.selectFolder(ref.Folder); err != nil {
+		return false, err
+	}
+	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{imapv2.UIDSetNum(num)}}, nil).Wait()
+	if err != nil {
+		return false, fmt.Errorf("imap: look for uid %s in %q: %w", ref.ID, ref.Folder, err)
+	}
+	return len(res.AllUIDs()) > 0, nil
+}
+
+// ErrAmbiguous means several messages of a folder carry the Message-ID looked
+// for (a copy of the mail, a duplicate the server kept): which one Mailsorter
+// moved cannot be told, so none is taken.
+var ErrAmbiguous = errors.New("imap: several messages carry this Message-ID")
+
+// FindByMessageID returns the UID of the one message in folder whose
+// Message-ID header is id ("<a@b>" or "a@b"), "" when there is none,
+// ErrAmbiguous when there are several, and an error when the server could not
+// be asked. It is how a message is found again after a move when the server
+// did not say where it landed, or when its number no longer names it.
+//
+// SEARCH HEADER matches a part of the header, not the whole: "a@b" also finds
+// "xa@b" and "a@b.c". So the search asks for the id with its angle brackets,
+// and each message found is kept only when the Message-ID of its envelope,
+// read as the listing reads it, is id exactly. Taking the highest UID among
+// several would move a copy, or another mail, as if it were the one.
+func (c *Client) FindByMessageID(folder, id string) (string, error) {
+	id = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(id), "<"), ">")
+	if id == "" {
+		return "", nil
+	}
+	if err := c.selectFolder(folder); err != nil {
+		return "", err
+	}
+	res, err := c.c.UIDSearch(&imapv2.SearchCriteria{
+		Header: []imapv2.SearchCriteriaHeaderField{{Key: "Message-ID", Value: "<" + id + ">"}},
+	}, nil).Wait()
+	if err != nil {
+		return "", fmt.Errorf("imap: search %q by Message-ID: %w", folder, err)
+	}
+	uids := res.AllUIDs()
+	if len(uids) == 0 {
+		return "", nil
+	}
+	msgs, err := c.c.Fetch(imapv2.UIDSetNum(uids...), &imapv2.FetchOptions{UID: true, Envelope: true}).Collect()
+	if err != nil {
+		return "", fmt.Errorf("imap: read the Message-ID of %d messages in %q: %w", len(uids), folder, err)
+	}
+	var exact []imapv2.UID
+	for _, m := range msgs {
+		if m.Envelope != nil && m.Envelope.MessageID == id {
+			exact = append(exact, m.UID)
+		}
+	}
+	switch len(exact) {
+	case 0:
+		return "", nil
+	case 1:
+		return strconv.FormatUint(uint64(exact[0]), 10), nil
+	}
+	return "", fmt.Errorf("%w: %d messages in %q", ErrAmbiguous, len(exact), folder)
 }
 
 // storeFlags issues the add and the remove as separate STORE commands, because
@@ -301,6 +831,91 @@ var conventionalNames = map[mailbox.Folder][]string{
 		"Corbeille", // French, including Gmail in French
 		"Papierkorb", "Cestino", "Papelera",
 	},
+	// No action moves a message to the three below: they are here so that
+	// the folders a mail can be filed into leave them out (notOwn).
+	mailbox.FolderSent: {
+		"[Gmail]/Sent Mail", "[Google Mail]/Sent Mail",
+		"Sent", "Sent Items", "Sent Messages", "Sent Mail",
+		"Envoyés", "Messages envoyés", "Éléments envoyés",
+		"Gesendet", "Gesendete Objekte", "Posta inviata", "Enviados", "Elementos enviados",
+	},
+	mailbox.FolderDrafts: {
+		"[Gmail]/Drafts", "[Google Mail]/Drafts",
+		"Drafts", "Brouillons",
+		"Entwürfe", "Bozze", "Borradores",
+	},
+	mailbox.FolderJunk: {
+		"[Gmail]/Spam", "[Google Mail]/Spam",
+		"Junk", "Junk E-mail", "Junk Email", "Spam", "Bulk Mail",
+		"Courrier indésirable", "Indésirables", "Pourriels",
+		"Junk-E-Mail", "Posta indesiderata", "Correo no deseado",
+	},
+}
+
+// specialUses are the RFC 6154 attributes (and \Important, RFC 8457) of the
+// folders that are not the user's own. \All, \Flagged and \Important are
+// Gmail's views of all, starred and important mail: filing there would not
+// file anything.
+var specialUses = []string{
+	string(mailbox.FolderArchive), string(mailbox.FolderTrash),
+	string(mailbox.FolderSent), string(mailbox.FolderDrafts), string(mailbox.FolderJunk),
+	"\\All", "\\Flagged", "\\Important",
+}
+
+// notOwn returns, among the server's folders, the full names of those that are
+// not the user's own: the inbox; a folder outside the user's namespace (ns: a
+// shared one, on a server that keeps the user's under a prefix); a folder that
+// cannot hold mail (\Noselect, \NonExistent: a branch such as "[Gmail]"); a
+// folder the server marks with a special use; and, for a special folder the
+// server marks NOWHERE, every folder named like it (conventionalNames, matched
+// on the name the user reads, so "INBOX.Sent" is the sent mail under an
+// "INBOX." prefix), the way pickFolder finds the archive and the trash on a
+// server silent about special use. A name match does not count when the server
+// marks that special folder elsewhere: the server is telling the truth, and a
+// user's own "Archives" next to Gmail's All Mail is the user's.
+//
+// Pure, like pickFolder, because the choice is where the bugs live.
+func notOwn(infos []folderInfo, ns namespace) map[string]bool {
+	out := map[string]bool{}
+	marked := map[mailbox.Folder]bool{}
+	for _, f := range infos {
+		shown, inside := ns.display(f.Name)
+		if !inside || strings.EqualFold(f.Name, string(mailbox.FolderInbox)) || strings.EqualFold(shown, string(mailbox.FolderInbox)) {
+			out[f.Name] = true
+		}
+		for _, attr := range f.Attrs {
+			if strings.EqualFold(attr, string(imapv2.MailboxAttrNoSelect)) || strings.EqualFold(attr, string(imapv2.MailboxAttrNonExistent)) {
+				out[f.Name] = true
+			}
+			for _, use := range specialUses {
+				if strings.EqualFold(attr, use) {
+					out[f.Name] = true
+				}
+			}
+			for role := range conventionalNames {
+				if strings.EqualFold(attr, string(role)) {
+					marked[role] = true
+				}
+			}
+			// Gmail's All Mail stands for the archive (pickFolder).
+			if strings.EqualFold(attr, "\\All") {
+				marked[mailbox.FolderArchive] = true
+			}
+		}
+	}
+	for role, names := range conventionalNames {
+		if marked[role] {
+			continue
+		}
+		for _, f := range infos {
+			for _, name := range names {
+				if strings.EqualFold(ns.readName(f.Name), name) {
+					out[f.Name] = true
+				}
+			}
+		}
+	}
+	return out
 }
 
 // pickFolder chooses the real mailbox name for a wanted special folder.
@@ -309,8 +924,9 @@ var conventionalNames = map[mailbox.Folder][]string{
 // the bugs live: an attribute match must beat a name match (a server that says
 // which folder is the archive is telling the truth, while a name that merely
 // looks like one may be a folder the user created), and a name match must not
-// be case-sensitive.
-func pickFolder(want mailbox.Folder, candidates []folderInfo) (string, bool) {
+// be case-sensitive. A name is matched as the user reads it (ns), so under an
+// "INBOX." prefix "INBOX.Trash" is the trash.
+func pickFolder(want mailbox.Folder, candidates []folderInfo, ns namespace) (string, bool) {
 	for _, f := range candidates {
 		for _, attr := range f.Attrs {
 			if strings.EqualFold(attr, string(want)) {
@@ -331,7 +947,7 @@ func pickFolder(want mailbox.Folder, candidates []folderInfo) (string, bool) {
 	}
 	for _, name := range conventionalNames[want] {
 		for _, f := range candidates {
-			if strings.EqualFold(f.Name, name) {
+			if strings.EqualFold(ns.readName(f.Name), name) {
 				return f.Name, true
 			}
 		}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -42,6 +43,11 @@ func (h *Handler) processAnalysisJob(jobID string) {
 	}
 
 	h.updateJob(ctx, objectID, bson.M{"status": "running", "updatedAt": time.Now()})
+	if job.Mailbox != "" {
+		// Run on the mailbox the ids were chosen on, or not at all
+		// (errMailboxChanged, see generation.go).
+		ctx = context.WithValue(ctx, screenMailboxKey{}, job.Mailbox)
+	}
 
 	onProgress := func(p analysisProgress) {
 		h.updateJob(ctx, objectID, bson.M{
@@ -67,6 +73,9 @@ func (h *Handler) processAnalysisJob(jobID string) {
 	if runErr != nil {
 		final["status"] = "error"
 		final["error"] = runErr.Error()
+		if errors.Is(runErr, errMailboxChanged) {
+			final["error"] = mailboxChangedMessage
+		}
 		log.Printf("analysis job %s failed: %v", jobID, runErr)
 	} else {
 		final["status"] = "done"
@@ -88,7 +97,7 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.resolveAnalyzer(r.Context(), userEmail).Available() {
-		writeError(w, http.StatusServiceUnavailable, "AI service not configured")
+		writeError(w, http.StatusServiceUnavailable, "Aucune IA n'est configurée sur cette instance.")
 		return
 	}
 	if userEmail == "" {
@@ -116,11 +125,23 @@ func (h *Handler) EnqueueAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The mailbox the ids are of, which the job runs on (refused here for a
+	// screen loaded on another one).
+	stamp := ""
+	transport, account, err := h.transportFor(ctx, userEmail)
+	switch {
+	case err == nil:
+		stamp = mailboxStamp(transport, account)
+	case !errors.Is(err, errNoMailboxConnected):
+		writeAuthError(w, err)
+		return
+	}
 	job := models.AnalysisJob{
 		UserID:    userEmail,
 		Status:    "queued",
 		Total:     len(req.EmailIDs),
 		EmailIDs:  req.EmailIDs,
+		Mailbox:   stamp,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}

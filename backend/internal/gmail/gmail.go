@@ -3,7 +3,6 @@ package gmail
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -291,8 +290,9 @@ func (s *Service) ModifyMessage(gmailService *gmail.Service, messageID string, a
 	})
 }
 
-// SendMessage sends a pre-built RFC 2822, base64url-encoded message (see
-// internal/mailer.BuildRaw) as the authenticated user. Used for the daily digest.
+// SendMessage sends a pre-built RFC 5322, base64url-encoded message (see
+// internal/mailer.Build and ForGmail) as the authenticated user. Used for the
+// daily digest.
 func (s *Service) SendMessage(gmailService *gmail.Service, raw string) error {
 	return s.retryErr(func() error {
 		_, err := gmailService.Users.Messages.Send("me", &gmail.Message{Raw: raw}).Do()
@@ -314,6 +314,12 @@ func (s *Service) GetAttachment(gmailService *gmail.Service, messageID, attachme
 		return nil, err
 	}
 	return decodeAttachmentData(body.Data)
+}
+
+// DecodeAttachmentData decodes the bytes of a part as the Gmail API sends them,
+// behind an attachment id or with the message (MessagePartBody.Data).
+func DecodeAttachmentData(data string) ([]byte, error) {
+	return decodeAttachmentData(data)
 }
 
 // decodeAttachmentData decodes an attachment payload from the base64url alphabet
@@ -719,33 +725,6 @@ func (s *Service) OneClickUnsubscribe(rawURL string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("unsubscribe endpoint returned %d", resp.StatusCode)
-	}
-	return nil
-}
-
-func TokenToJSON(token *oauth2.Token) (string, error) {
-	data, err := json.Marshal(token)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-func TokenFromJSON(data string) (*oauth2.Token, error) {
-	var token oauth2.Token
-	err := json.Unmarshal([]byte(data), &token)
-	if err != nil {
-		return nil, err
-	}
-	return &token, nil
-}
-
-func ValidateToken(token *oauth2.Token) error {
-	if token.AccessToken == "" {
-		return fmt.Errorf("access token is empty")
-	}
-	if token.Expiry.Before(time.Now()) {
-		return fmt.Errorf("token expired")
 	}
 	return nil
 }

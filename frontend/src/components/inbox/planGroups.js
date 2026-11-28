@@ -112,18 +112,27 @@ export function keepOrder(groups, shownKeys = []) {
 const count = (groups) => groups.reduce((n, g) => n + g.items.length, 0);
 
 // The numbers the header and the bulk button state. `sure` is what "Ranger"
-// applies, `unsure` is what it leaves out and says so.
-export function planTotals({ moves, keeps }) {
+// applies, `unsure` is what it leaves out and says so. `canApply` says whether
+// a group's verdict can be applied now (a label waits until the mailbox is
+// known, canApplyVerdict in landing/features.js): such a group is never in the
+// bulk, nor counted as "à vérifier", nor in `byAction`, the "N à classer"
+// chips. It is counted apart, as `held`.
+export function planTotals({ moves, keeps }, canApply = () => true) {
+  const applicable = moves.filter(canApply);
   const byAction = {};
-  for (const g of moves) byAction[g.action] = (byAction[g.action] || 0) + g.items.length;
-  const sureGroups = moves.filter((g) => g.sure);
+  for (const g of applicable) byAction[g.action] = (byAction[g.action] || 0) + g.items.length;
+  const sureGroups = applicable.filter((g) => g.sure);
   return {
     moves: count(moves),
+    // What can be tidied now: the "à ranger" the header and the list
+    // announce, so they never promise more than "Ranger N" applies.
+    toTidy: count(applicable),
+    held: count(moves) - count(applicable),
     keeps: count(keeps),
     byAction,
     sureGroups,
     sure: count(sureGroups),
-    unsure: count(moves) - count(sureGroups),
+    unsure: count(applicable) - count(sureGroups),
   };
 }
 

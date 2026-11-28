@@ -8,6 +8,14 @@ import (
 
 func (h *Handler) SetupRoutes() http.Handler {
 	r := mux.NewRouter()
+	// The routing layer answers in the same JSON envelope as every handler:
+	// gorilla's defaults are a text/plain 404 and an empty 405.
+	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, "No such route")
+	})
+	r.MethodNotAllowedHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed on this route")
+	})
 
 	// Health check + ops metrics
 	r.HandleFunc("/health", h.HealthCheck).Methods("GET")
@@ -70,6 +78,9 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// internal/provider, so a caller cannot name the host the server connects to.
 	r.HandleFunc("/api/mailbox", h.GetMailbox).Methods("GET")
 	r.HandleFunc("/api/mailbox/connect", h.ConnectMailbox).Methods("POST")
+	// A new app password for the mailbox already connected, proved against
+	// the server it was connected on: nothing else of the mailbox changes.
+	r.HandleFunc("/api/mailbox/password", h.ChangeMailboxPassword).Methods("PUT")
 	r.HandleFunc("/api/mailbox", h.DisconnectMailbox).Methods("DELETE")
 
 	r.HandleFunc("/api/account/export", h.ExportAccount).Methods("GET")
@@ -141,7 +152,8 @@ func (h *Handler) SetupRoutes() http.Handler {
 	// have no account yet, so requiring a session would defeat the purpose.
 	r.HandleFunc("/api/waitlist", h.JoinWaitlist).Methods("POST")
 
-	// Boot probe: tells the frontend whether the instance has Gmail credentials.
+	// Boot probe: tells the frontend what this instance is (Gmail credentials,
+	// mailbox sign-in, billing, edition, UI theme).
 	// Public by design (the SPA calls it before any login) and deliberately the
 	// only /api/config/ route: the credentials themselves are set through
 	// environment variables, never over HTTP.
@@ -153,7 +165,7 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.HandleFunc("/api/providers", h.GetProviders).Methods("GET")
 
 	// Middleware chain (applied to every matched route, innermost last):
-	// securityHeaders → recover → request-id → metrics → logging → rate-limit → auth → handler.
+	// securityHeaders → recover → request-id → metrics → logging → rate-limit → auth → screen mailbox → handler.
 	rl := newRateLimiter(20, 40) // ~20 req/s sustained, burst 40, per client
 	r.Use(securityHeadersMiddleware)
 	r.Use(recoverMiddleware)
@@ -162,12 +174,13 @@ func (h *Handler) SetupRoutes() http.Handler {
 	r.Use(loggingMiddleware)
 	r.Use(rl.middlewareBy(h.rateKey))
 	r.Use(h.authMiddleware)
+	r.Use(screenMailboxMiddleware)
 
 	// Setup CORS (allow-list configurable via ALLOWED_ORIGINS at startup)
 	c := cors.New(cors.Options{
 		AllowedOrigins:   AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-User-Email"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-User-Email", mailboxGenerationHeader},
 		AllowCredentials: true,
 	})
 

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/ai"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/auth"
@@ -18,6 +20,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/crypto"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/imap"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/metrics"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
@@ -110,6 +113,10 @@ type Handler struct {
 	// unauthenticated caller and somebody else's mail provider.
 	signInOnce sync.Once
 	signIn     *rateLimiter
+	// The test-send limiter (digestTestLimiter), built on first use for the
+	// same reason.
+	digestTestOnce sync.Once
+	digestTest     *rateLimiter
 }
 
 // signInLimiter is the throttle on the public mailbox sign-in. See signInLimit
@@ -296,7 +303,12 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also record in mail_accounts that this user's active mailbox is Google Gmail
+	// Also record in mail_accounts that this user's active mailbox is Google Gmail.
+	// A mailbox connected over IMAP before is another mailbox: its row goes,
+	// and with it what Mailsorter kept of it (see generation.go).
+	if _, err := h.db.MailAccounts().DeleteOne(ctx, bson.M{"userId": accountOwner, "transport": bson.M{"$ne": "gmail"}}); err != nil {
+		log.Printf("auth callback: replace the mailbox of %s: %v", accountOwner, err)
+	}
 	now := time.Now()
 	_, _ = h.db.MailAccounts().UpdateOne(ctx,
 		bson.M{"userId": accountOwner},
@@ -314,6 +326,9 @@ func (h *Handler) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		},
 		options.Update().SetUpsert(true),
 	)
+	if err := h.clearMailboxCopy(ctx, accountOwner); err != nil {
+		log.Printf("auth callback: erase what was kept of the mailbox of %s before, done at the next connection: %v", accountOwner, err)
+	}
 
 	// Hand the browser our own signed session token, never the raw Gmail
 	// access token, which must stay server-side.
@@ -355,7 +370,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	// Get page token for pagination
 	pageToken := r.URL.Query().Get("pageToken")
 
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
@@ -363,7 +378,7 @@ func (h *Handler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	if transport == provider.TransportIMAP {
 		// Served from the stored mailbox rather than from the provider: see the
 		// file comment in mirror.go for why a listing does not open a socket.
-		page, err := h.listFromMirror(ctx, userEmail, query, maxResults, pageToken)
+		page, err := h.listFromMirror(ctx, userEmail, generationOf(transport, account), query, maxResults, pageToken)
 		if err != nil {
 			var unsupported errUnsupportedQuery
 			if errors.As(err, &unsupported) {
@@ -437,13 +452,13 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	transport, _, err := h.transportFor(ctx, userEmail)
+	transport, account, err := h.transportFor(ctx, userEmail)
 	if err != nil {
 		writeAuthError(w, err)
 		return
 	}
 	if transport == provider.TransportIMAP {
-		stats, err := h.statsFromMirror(ctx, userEmail)
+		stats, err := h.statsFromMirror(ctx, userEmail, generationOf(transport, account))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to get mailbox stats: "+err.Error())
 			return
@@ -470,62 +485,142 @@ func (h *Handler) GetMailboxStats(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SyncEmails(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
-		writeError(w, http.StatusUnauthorized, "User email required")
+		writeError(w, http.StatusUnauthorized, "Connexion requise.")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), syncRequestTimeout)
 	defer cancel()
 
-	synced, total, rulesApplied, err := h.syncInbox(ctx, userEmail)
+	synced, total, ruled, err := h.syncInbox(ctx, userEmail)
 	if err != nil {
-		if errors.Is(err, errReauthRequired) {
+		// Every answer here is a French sentence the inbox shows as is
+		// (errorMessage in EmailContext.js): what failed is logged.
+		switch {
+		case errors.Is(err, errReauthRequired), errors.Is(err, imap.ErrAuth), errors.Is(err, errMailboxChanged):
+			// A dead Google grant, and an IMAP password the provider
+			// refuses, in the words of the connect screen; a screen loaded
+			// on another mailbox (409).
 			writeAuthError(w, err)
-			return
+		case errors.Is(err, errMailboxNoAnswer):
+			writeSyncError(w, http.StatusBadGateway, mailboxNoAnswerMessage)
+		case errors.Is(err, errNoMailboxConnected):
+			// The mailbox to connect: the inbox says so, with the way there.
+			writeSyncError(w, http.StatusPreconditionRequired, noMailboxMessage)
+		default:
+			writeSyncError(w, http.StatusInternalServerError, syncFailureMessage(userEmail, err))
 		}
-		writeError(w, http.StatusInternalServerError, "Failed to sync emails: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	out := map[string]interface{}{
 		"synced":       synced,
 		"total":        total,
-		"rulesApplied": rulesApplied,
-	})
+		"rulesApplied": ruled.applied,
+		// Mails the rules could not judge at this sync, over IMAP: the sync
+		// worked all the same, so this is information, not an error.
+		"rulesPending": ruled.pending,
+	}
+	// The mails the rules gave up on, whichever sync gave them up (the
+	// background one included), are told once, to a sync that asks for it
+	// (?notice=1): the screen sends it from where it shows the answer, the
+	// "Synchroniser" button and the page load. A sync whose answer nobody
+	// shows (a refresh after "Annuler", a search) leaves the count for later.
+	givenUp := 0
+	if r.URL.Query().Get("notice") == "1" {
+		givenUp = h.takeGivenUp(ctx, userEmail)
+	}
+	if msg := rulesMessage(ruled.pending, givenUp); msg != "" {
+		out["rulesMessage"] = msg
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
-// syncInbox pulls the user's inbox into MongoDB and, when the user opted into
-// rule autopilot, applies their deterministic rules to each freshly synced email
-// (instant, AI-free, quota-free). It is shared by the manual SyncEmails handler
-// and the background auto-sync scheduler so both behave identically. It returns
-// how many emails were persisted, how many were seen, and how many had a rule
-// applied.
+// writeSyncError answers a failed "Synchroniser" with a sentence written for
+// the user, marked syncMessage: the inbox shows a 5xx sentence only when it
+// carries the mark, so the "Internal server error" of a panic (or anything
+// else a 5xx may say) never reaches the screen.
+func writeSyncError(w http.ResponseWriter, status int, sentence string) {
+	writeJSON(w, status, map[string]interface{}{"error": sentence, "status": status, "syncMessage": true})
+}
+
+// syncFailureMessage is what "Synchroniser" says of a failure: the sentence of
+// one the user is meant to read (errMailboxUnavailable, errMailboxLost,
+// errMirrorNotReconciled, errMessagesNotStored), or else a general one, the
+// detail logged rather than shown (it may be the English of a library).
+func syncFailureMessage(userEmail string, err error) string {
+	for _, said := range []error{errMailboxUnavailable, errMailboxLost, errMirrorNotReconciled, errMessagesNotStored} {
+		if errors.Is(err, said) {
+			return asSentence(err.Error())
+		}
+	}
+	log.Printf("sync: %s: %v", userEmail, err)
+	return "La synchronisation a échoué, réessayez dans un instant."
+}
+
+// asSentence starts s with a capital letter and ends it with a period: the
+// errors of a sync are written to follow another sentence.
+func asSentence(s string) string {
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError {
+		return s
+	}
+	s = string(unicode.ToUpper(r)) + s[size:]
+	if !strings.HasSuffix(s, ".") {
+		s += "."
+	}
+	return s
+}
+
+// syncRequestTimeout is how long "Synchroniser" waits for the mailbox. An
+// IMAP session is bound to it (imap.Connect): past it, the connection is
+// dropped and the sync answers errMailboxNoAnswer. A variable, so a test can
+// shorten it.
+var syncRequestTimeout = 30 * time.Second
+
 // syncInbox mirrors the caller's inbox into Mongo, through whichever transport
-// their mailbox is reached by.
+// their mailbox is reached by, and, when the user opted into rule autopilot
+// (autoApplyRules), applies their deterministic rules (instant, AI-free,
+// quota-free). It is shared by the manual SyncEmails handler and the
+// background auto-sync scheduler so both behave identically. It returns how
+// many emails were persisted, how many were seen, and how many had a rule
+// applied, could not be judged yet, or were given up (syncRulesDone).
 //
 // This is the fork the whole edition split was for. Everything above it (the
 // handler, the auto-sync loop) asks for a sync and gets one; only this function
-// knows there are two ways to perform it.
-func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total, rulesApplied int, err error) {
+// knows there are two ways to perform it. The rules do not judge the same
+// messages on both: every message listed over the Gmail API, only the ones
+// that arrive over IMAP (see syncInboxIMAP).
+func (h *Handler) syncInbox(ctx context.Context, userEmail string) (synced, total int, ruled syncRulesDone, err error) {
 	session, err := h.openSession(ctx, userEmail)
+	if errors.Is(err, imap.ErrUnreachable) {
+		// Not a password refused: the mailbox did not answer, or not in
+		// time. Logged with what it was; the user is told to try again.
+		log.Printf("sync: the mailbox of %s could not be opened: %v", userEmail, err)
+		return 0, 0, syncRulesDone{}, errMailboxNoAnswer
+	}
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 	defer session.Close()
 
 	if session.Transport == provider.TransportIMAP {
-		// Rules do not run on this half yet, so the count is zero rather than a
-		// number the user cannot trust. See syncInboxIMAP.
-		synced, total, err = h.syncInboxIMAP(ctx, userEmail, session)
-		return synced, total, 0, err
+		synced, total, ruled, err = h.syncInboxIMAP(ctx, userEmail, session)
+		if err != nil && ctx.Err() != nil {
+			// Its time ran out (the session is bound to ctx): the mailbox
+			// did not answer in time, whatever the command it stopped in.
+			log.Printf("sync: the mailbox of %s did not answer in time: %v", userEmail, err)
+			return synced, total, ruled, errMailboxNoAnswer
+		}
+		return synced, total, ruled, err
 	}
-	return h.syncInboxGmail(ctx, userEmail, session.gmail)
+	return h.syncInboxGmail(ctx, userEmail, session)
 }
 
-func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailClient *gmailapi.Service) (synced, total, rulesApplied int, err error) {
-	messages, err := h.gmailService.ListMessages(gmailClient, "in:inbox", 100)
+func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, session *mailSession) (synced, total int, ruled syncRulesDone, err error) {
+	messages, err := h.gmailService.ListMessages(session.gmail, "in:inbox", 100)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, syncRulesDone{}, err
 	}
 
 	// Autopilot: when the user opted in, run their deterministic rules over each
@@ -571,31 +666,36 @@ func (h *Handler) syncInboxGmail(ctx context.Context, userEmail string, gmailCli
 
 		if len(autoRules) > 0 {
 			if match := rules.FirstMatch(email, autoRules); match != nil {
-				appliedActs, _ := h.applyRuleToMessage(ctx, gmailClient, userEmail, msg.Id, email.From, *match, protectedList, labelCache)
+				appliedActs, _, _ := h.applyRuleToMessage(ctx, session, userEmail, email, *match, protectedList, labelCache, nil)
 				if len(appliedActs) > 0 {
-					rulesApplied++
+					ruled.applied++
 					byRule[match.Name]++
 					for _, act := range appliedActs {
-						h.logActionMeta(ctx, userEmail, msg.Id, act, SourceRule, email.Subject, email.From)
+						h.logActionFiled(ctx, userEmail, "", msg.Id, act.Type, SourceRule, email.Subject, email.From, act.LabelName)
 					}
 				}
 			}
 		}
 	}
 
-	// Persist per-rule application counts (best-effort).
-	for name, n := range byRule {
-		h.db.SortingRules().UpdateOne(ctx,
-			bson.M{"userId": userEmail, "name": name},
-			bson.M{"$inc": bson.M{"appliedCount": n}},
-		)
-	}
+	h.countRuleHits(ctx, userEmail, byRule)
 
-	return synced, len(messages), rulesApplied, nil
+	return synced, len(messages), ruled, nil
 }
 
-// EmailAction performs a direct action on a single Gmail message
-// (archive, trash, mark read/unread) without going through AI suggestions.
+// reversedBy names, for each inverse a client sends right after an action, the
+// action as the ledger recorded it ("trash" is recorded as "delete"). "unlabel"
+// is what "Annuler" sends after a proposal filed a mail in a folder over IMAP.
+var reversedBy = map[string]string{"unarchive": "archive", "untrash": "delete", "unlabel": "label"}
+
+// labelRequiredMessage is what POST /api/emails/action answers for "label"
+// (and, over the Gmail API, "unlabel"), which need the name of a folder or a
+// label that route does not carry.
+const labelRequiredMessage = "Cette action demande le nom d'un dossier ou d'une étiquette, que cette route ne reçoit pas."
+
+// EmailAction performs a direct action on a single message, over whichever
+// transport the mailbox uses (archive, trash, mark read/unread), without going
+// through AI suggestions.
 func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -631,20 +731,73 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 	// The reference is built by the session rather than here, because what a
 	// message id MEANS depends on the transport and this handler has no opinion
 	// about that: it holds a string the client sent.
-	err = h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
+	back := func() error {
+		return h.applyVerb(ctx, session.Mailbox(), session.RefFor(ctx, req.MessageID), req.Action, "")
+	}
+	if returnsToInbox(req.Action, session.Transport) {
+		// "Annuler" right after a move out: on a reported mail, it ends the
+		// report (endReportOnReturn).
+		err = h.endReportOnReturn(ctx, userEmail, session.generation(), session.account.CreatedAt, req.MessageID, back)
+	} else {
+		err = back()
+	}
+	if errors.Is(err, errWakeBusy) {
+		writeError(w, http.StatusLocked, wakeBusyMessage)
+		return
+	}
+	if errors.Is(err, imap.ErrAmbiguous) {
+		writeSeveralCopies(w)
+		return
+	}
 	if errors.Is(err, mailbox.ErrUnknownAction) {
 		writeError(w, http.StatusBadRequest, "Unsupported action")
 		return
 	}
-	if errors.Is(err, mailbox.ErrNoIMAPEquivalent) {
-		// A capability the connection does not have, not a failure. Saying so
-		// with 501 keeps it apart from "your request was wrong".
-		writeTransportError(w)
+	if errors.Is(err, mailbox.ErrLabelRequired) {
+		// This route takes no label nor folder name: classifying a mail goes
+		// through an AI proposal or the batch route, which carry one.
+		writeError(w, http.StatusBadRequest, labelRequiredMessage)
 		return
+	}
+	if errors.Is(err, errNotWhereLeft) {
+		writeError(w, http.StatusNotFound, notWhereLeftMessage)
+		return
+	}
+	if errors.Is(err, errUndoExpired) {
+		writeError(w, http.StatusNotFound, undoExpiredMessage)
+		return
+	}
+	if errors.Is(err, errLeftInbox) {
+		writeError(w, http.StatusNotFound, leftInboxMessage)
+		return
+	}
+	if errors.Is(err, errAlreadyOut) {
+		// It had already left the inbox (moved there by Mailsorter, or by
+		// another mail client): nothing happened, so nothing is recorded, and
+		// the screen is told so rather than announce a move.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already", "action": req.Action})
+		return
+	}
+	if errors.Is(err, errUndoBusy) {
+		writeError(w, http.StatusLocked, undoBusyMessage)
+		return
+	}
+	if errors.Is(err, errAlreadyBack) {
+		// Another "Annuler" brought it back a moment ago and recorded it.
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})
+		return
+	}
+	if err == nil {
+		// "Annuler" right after an action sends its inverse here. Mark the
+		// action it reverses undone, as the history and batch-undo do, or the
+		// history keeps offering "Annuler" on work already reversed.
+		if forward, ok := reversedBy[req.Action]; ok {
+			h.recordUndo(ctx, userEmail, session.generation(), req.MessageID, forward, req.Action)
+		}
 	}
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to apply action: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "L'action n'a pas pu être appliquée : "+err.Error())
 		return
 	}
 
@@ -659,13 +812,27 @@ func (h *Handler) EmailAction(w http.ResponseWriter, r *http.Request) {
 			action = "delete"
 		}
 		meta := h.identityIn(ctx, session, userEmail, req.MessageID)
-		h.logActionMeta(ctx, userEmail, req.MessageID, action, SourceDirect, meta.Subject, meta.From)
+		h.logActionMeta(ctx, userEmail, session.generation(), req.MessageID, action, SourceDirect, meta.Subject, meta.From)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": req.Action})
 }
 
+// folderLabel is one of the user's own folders of an IMAP mailbox, in the
+// shape of a Gmail label, which is what every screen offering one reads: over
+// IMAP the folder stands for the label, so its full name is both its id and
+// its name, and it is the user's ("user"), never a system one.
+type folderLabel struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
 // Labels endpoints
+//
+// GetLabels lists the labels a mail can be filed under: the Gmail labels, or
+// over IMAP the user's own folders (not the inbox nor a special folder,
+// imap.Client.OwnFolders), a folder inside another by its full name.
 func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.Header.Get("X-User-Email")
 	if userEmail == "" {
@@ -675,6 +842,22 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+
+	if transport, _, err := h.transportFor(ctx, userEmail); err == nil && transport == provider.TransportIMAP {
+		session, err := h.openSession(ctx, userEmail)
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		defer session.Close()
+		folders := session.imapc.OwnFolders()
+		labels := make([]folderLabel, 0, len(folders))
+		for _, name := range folders {
+			labels = append(labels, folderLabel{ID: name, Name: name, Type: "user"})
+		}
+		writeJSON(w, http.StatusOK, labels)
+		return
+	}
 
 	gmailClient, err := h.gmailClientFor(ctx, userEmail)
 	if err != nil {
@@ -693,7 +876,8 @@ func (h *Handler) GetLabels(w http.ResponseWriter, r *http.Request) {
 
 // Config endpoints
 
-// GetConfigStatus reports whether the instance holds usable Gmail credentials.
+// GetConfigStatus reports what this instance is: whether it holds usable Gmail
+// credentials, whether a mailbox can sign in, billing, edition and UI theme.
 //
 // It answers from the live OAuth client rather than from the database, so it
 // reflects what the server is actually able to do, whichever source those
@@ -729,15 +913,6 @@ func mailboxSignInAvailable() bool {
 }
 
 // Helper functions
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
 func parseInt64(s string) (int64, error) {
 	var n int64
 	_, err := fmt.Sscanf(s, "%d", &n)

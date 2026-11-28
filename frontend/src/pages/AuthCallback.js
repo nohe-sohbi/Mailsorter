@@ -61,7 +61,7 @@ function AuthCallback() {
           </div>
           <div className="flex items-center gap-3 text-ink-500">
             <Spinner size={18} className="text-brand-500" />
-            <span className="text-sm font-medium">Finalisation de la connexion Google…</span>
+            <span className="text-sm font-medium">Finalisation de la connexion Google...</span>
           </div>
         </>
       )}

@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -48,8 +49,8 @@ func (c *AnthropicClient) SetMaxRetries(n int) {
 
 func (c *AnthropicClient) ProviderName() string { return "anthropic" }
 
-func (c *AnthropicClient) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
-	prompt := buildAnalyzeEmailPrompt(email, existingLabels)
+func (c *AnthropicClient) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
+	prompt := buildAnalyzeEmailPrompt(email)
 	response, err := c.chat(prompt, 500)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic API error: %w", err)
@@ -57,11 +58,11 @@ func (c *AnthropicClient) AnalyzeEmail(email models.Email, existingLabels []stri
 	return parseEmailAnalysis(response)
 }
 
-func (c *AnthropicClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (c *AnthropicClient) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	if len(emails) == 0 {
 		return nil, nil
 	}
-	prompt := buildBatchPrompt(emails, existingLabels)
+	prompt := buildBatchPrompt(emails)
 	maxTokens := 120*len(emails) + 200
 	if maxTokens > 4000 {
 		maxTokens = 4000
@@ -73,8 +74,8 @@ func (c *AnthropicClient) AnalyzeBatch(emails []models.Email, existingLabels []s
 	return parseBatchAnalysis(response, len(emails))
 }
 
-func (c *AnthropicClient) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
-	prompt := buildSenderPrompt(senderEmail, emails, existingLabels)
+func (c *AnthropicClient) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
+	prompt := buildSenderPrompt(senderEmail, emails)
 	response, err := c.chat(prompt, 500)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic API error: %w", err)
@@ -82,24 +83,44 @@ func (c *AnthropicClient) AnalyzeSender(senderEmail string, emails []models.Emai
 	return parseSenderAnalysis(response)
 }
 
+// anthropicThinkingModels names the Claude models that accept an effort
+// level: the 4.6 generation onward, and the Fable and Mythos lines. The 5.x
+// models (Haiku 5.5, Sonnet 5.5, Opus 5.5) think before they answer unless
+// told otherwise; the 4.6 to 4.8 ones do not, and the low effort and the room
+// below cost them nothing. Older models (Haiku 4.5, Sonnet 4.5, ...) refuse
+// `output_config.effort` with a 400, so they get the plain request.
+var anthropicThinkingModels = regexp.MustCompile(`^claude-(?:(?:haiku|sonnet|opus)-(?:[5-9]|4-[6-9])|fable|mythos)`)
+
+// thinkingRoom is what a thinking model may spend before its answer. The
+// thinking counts toward max_tokens: a cap sized for the short JSON answer
+// alone can be used up before any text, and the reply ends with
+// stop_reason "max_tokens" and nothing to read.
+const thinkingRoom = 2048
+
 func (c *AnthropicClient) chat(prompt string, maxTokens int) (string, error) {
-	type content struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
 	type msg struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	}
+	type outputConfig struct {
+		Effort string `json:"effort"`
+	}
 	type req struct {
-		Model     string `json:"model"`
-		MaxTokens int    `json:"max_tokens"`
-		Messages  []msg  `json:"messages"`
+		Model        string        `json:"model"`
+		MaxTokens    int           `json:"max_tokens"`
+		Messages     []msg         `json:"messages"`
+		OutputConfig *outputConfig `json:"output_config,omitempty"`
 	}
 	body := req{
 		Model:     c.model,
 		MaxTokens: maxTokens,
 		Messages:  []msg{{Role: "user", Content: prompt}},
+	}
+	if anthropicThinkingModels.MatchString(c.model) {
+		// A short classification: the lowest effort keeps the thinking (and
+		// the wait) small, and the room above keeps the answer whole.
+		body.OutputConfig = &outputConfig{Effort: "low"}
+		body.MaxTokens = maxTokens + thinkingRoom
 	}
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -148,10 +169,22 @@ func (c *AnthropicClient) doChat(jsonBody []byte) (string, bool, error) {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
+			StopReason string `json:"stop_reason"`
 		}
 		if err := json.Unmarshal(respBody, &result); err != nil {
 			return "", false, err
 		}
+		switch result.StopReason {
+		case "refusal":
+			// A safety classifier declined: asking again gets the same answer.
+			return "", false, fmt.Errorf("anthropic declined to answer (stop_reason refusal)")
+		case "max_tokens":
+			// The JSON answer is cut, or was never started after the
+			// thinking: either way there is nothing whole to parse.
+			return "", false, fmt.Errorf("anthropic answer cut off at max_tokens")
+		}
+		// A thinking model answers with thinking blocks first: the answer is
+		// the text block, wherever it sits.
 		for _, c := range result.Content {
 			if c.Type == "text" {
 				return c.Text, false, nil

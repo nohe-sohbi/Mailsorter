@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { signOut } from '../lib/session';
+import { mailboxGeneration, signOut } from '../lib/session';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
 
@@ -10,6 +10,17 @@ const apiClient = axios.create({
   },
 });
 
+// What the screen does when the server says the mailbox changed since it was
+// loaded (a 409 with `mailboxChanged`): EmailContext asks again which mailbox
+// this is and forgets what it held of the other one. One at a time.
+let mailboxChangedHandler = null;
+export function whenMailboxChanged(handler) {
+  mailboxChangedHandler = handler;
+  return () => {
+    if (mailboxChangedHandler === handler) mailboxChangedHandler = null;
+  };
+}
+
 // Authenticate requests with the signed session token issued at login.
 // The server derives the user identity from this token, so we no longer send a
 // (spoofable) X-User-Email header.
@@ -17,6 +28,13 @@ apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('accessToken');
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`;
+  }
+  // The mailbox the screen loaded (lib/session.js): a request from a screen
+  // loaded on another one than the one connected now is refused (409), its
+  // message numbers naming that one's mails.
+  const generation = mailboxGeneration();
+  if (generation) {
+    config.headers['X-Mailbox-Generation'] = generation;
   }
   return config;
 });
@@ -30,15 +48,49 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && !error.config?.optional) {
+    // mailboxRejected: the mail provider refused the password just typed
+    // (connect, new password), which is not a dead Mailsorter session.
+    if (error.response?.status === 401 && !error.config?.optional && !error.response?.data?.mailboxRejected) {
       signOut();
       if (window.location.pathname !== '/') {
         window.location.assign('/');
       }
     }
+    // The mailbox changed since the screen was loaded (409 mailboxChanged),
+    // or the one it loaded is no longer connected at all (a 428 other than a
+    // refused password, to a request that named it): it is loaded again
+    // (EmailContext), which empties what the screens hold of the other one,
+    // and the request's own screen shows the server's sentence. A request
+    // that named no mailbox (the reload's own) never triggers it again.
+    const named = error.config?.headers?.['X-Mailbox-Generation'];
+    if (
+      isMailboxChanged(error) ||
+      (named && error.response?.status === 428 && !error.response?.data?.passwordRefused)
+    ) {
+      mailboxChangedHandler?.();
+    }
     return Promise.reject(error);
   }
 );
+
+// Whether a request was refused because the screen was loaded on another
+// mailbox than the one connected now (409 marked mailboxChanged). The screen
+// shows the server's sentence and nothing else: what it held of the other
+// mailbox is being loaded again (whenMailboxChanged), so it neither puts back
+// what it took out optimistically nor reloads its own list.
+export function isMailboxChanged(err) {
+  return err?.response?.status === 409 && Boolean(err.response.data?.mailboxChanged);
+}
+
+// Where a 428 leads, the mailbox to connect again: the new password form when
+// the provider refuses the one on file (passwordRefused), the connect screen
+// when no mailbox is connected. null for any other failure.
+export function reconnectAction(err) {
+  if (err?.response?.status !== 428) return null;
+  return err.response.data?.passwordRefused
+    ? { label: 'Mettre à jour', to: '/connect?motdepasse=1' }
+    : { label: 'Brancher une boîte', to: '/connect' };
+}
 
 // The API answers errors in two shapes: writeError produces {error, status},
 // while the older handlers use http.Error and produce bare text. Reading only
@@ -50,6 +102,15 @@ export function apiError(err, fallback = 'Une erreur est survenue.') {
   if (data && typeof data.error === 'string' && data.error.trim()) return data.error.trim();
   if (err?.code === 'ERR_NETWORK') return 'Connexion au serveur impossible.';
   return fallback;
+}
+
+// The analysis routes answer 503 when the instance runs no AI at all. Said in
+// one French sentence everywhere, rather than the server's raw text or a
+// "réessayez" that cannot help.
+export const NO_AI_MESSAGE = "Aucune IA n'est configurée sur cette instance.";
+
+export function aiError(err, fallback) {
+  return err?.response?.status === 503 ? NO_AI_MESSAGE : fallback;
 }
 
 export const authService = {
@@ -93,12 +154,17 @@ export const emailService = {
   // The attachment bytes, as a Blob. Gmail keeps them behind a second call, and
   // the route needs the session header, so a plain <a href> cannot fetch them:
   // the reader downloads through axios and hands the browser an object URL.
-  downloadAttachment: (messageId, attachmentId) =>
+  // options passes an AbortController's signal, for a download the screen
+  // may give up (a picture of a mail the reader has left).
+  downloadAttachment: (messageId, attachmentId, options = {}) =>
     apiClient.get(
       `/api/emails/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
-      { responseType: 'blob' }
+      { responseType: 'blob', ...options }
     ),
-  syncEmails: () => apiClient.post('/api/emails/sync'),
+  // `notice` asks for the mails the rules gave up on, which the server tells
+  // once and then forgets: only a caller that shows the answer sends it.
+  syncEmails: (notice = false) =>
+    apiClient.post('/api/emails/sync', null, notice ? { params: { notice: 1 } } : undefined),
   action: (messageId, action) => apiClient.post('/api/emails/action', { messageId, action }),
   // One action over a whole selection, server-side: N Gmail mutations behind a
   // single request, with the protected-sender shield applied per message.
@@ -228,7 +294,7 @@ export const ruleService = {
   updateRule: (id, rule) => apiClient.put(`/api/rules/${id}`, rule),
   deleteRule: (id) => apiClient.delete(`/api/rules/${id}`),
   apply: () => apiClient.post('/api/rules/apply'),
-  // Dry run: report what the rules WOULD do, without touching Gmail.
+  // Dry run: report what the rules WOULD do, without touching the mailbox.
   preview: () => apiClient.post('/api/rules/preview'),
   // Order is the engine's semantics (first match wins), so it is edited as a
   // whole list rather than one number at a time.
@@ -259,7 +325,10 @@ export const configService = {
 // carries the password back.
 export const mailboxService = {
   get: () => apiClient.get('/api/mailbox'),
+  // A password the provider refuses answers 401 marked mailboxRejected, which
+  // the interceptor above does not take for a dead session.
   connect: (address, password) => apiClient.post('/api/mailbox/connect', { address, password }),
+  changePassword: (password) => apiClient.put('/api/mailbox/password', { password }),
   disconnect: () => apiClient.delete('/api/mailbox'),
 };
 

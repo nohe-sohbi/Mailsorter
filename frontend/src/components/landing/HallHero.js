@@ -8,11 +8,12 @@ import './HallHero.css';
 
 // The hall: the unread figure, the hotel in cross-section, three plain lines on
 // what happens, and the form. The lines only promise what this instance can do
-// (features.js): without Google there is no label, no snooze and no undo to
-// offer, so the second line names only the verbs this instance can perform.
+// (features.js): without Google there is no label and no undo to offer, so the
+// second line names only the verdicts the model gives here. Putting a mail off
+// until later is the user's own gesture, never a verdict of the model.
 export default function HallHero({ count, auth, isConfigured, night }) {
   const undo = canPromise('undo', isConfigured);
-  const verbs = ['archiver', canPromise('label', isConfigured) && 'classer', canPromise('snooze', isConfigured) && 'reporter'].filter(Boolean);
+  const verbs = ['archiver', canPromise('label', isConfigured) && 'classer', 'supprimer', 'garder'].filter(Boolean);
   return (
     <section className="hl-hall" id="hall" data-floor="">
       <div className="hl-wrap">
@@ -27,18 +28,11 @@ export default function HallHero({ count, auth, isConfigured, night }) {
         <div className="hl-tri">
           <div className="hl-tri__lines">
             <Plaque n="I">
-              <strong>Il lit</strong> l'expéditeur, l'objet et le début du message. Pas plus.
+              <strong>Il lit</strong> l'expéditeur, l'objet et au plus 200 caractères du message. Pas plus.
             </Plaque>
             <Plaque n="II">
-              {verbs.length === 1 ? (
-                <>
-                  <strong>Il propose</strong> d'archiver ce qui traîne. Vous dites oui ou non.
-                </>
-              ) : (
-                <>
-                  <strong>Il propose</strong> : {verbs.join(', ')}. Vous dites oui ou non.
-                </>
-              )}
+              <strong>Il propose</strong> : {verbs.slice(0, -1).join(', ')} ou {verbs[verbs.length - 1]}. Vous dites oui ou
+              non.
             </Plaque>
             {undo ? (
               <Plaque n="III">

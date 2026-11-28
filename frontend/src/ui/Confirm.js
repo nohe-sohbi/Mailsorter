@@ -6,7 +6,7 @@ const ConfirmContext = createContext(null);
 
 // A promise-shaped confirmation, so a caller reads as ordinary control flow:
 //
-//   if (!(await confirm({ title: '…', danger: true }))) return;
+//   if (!(await confirm({ title: '...', danger: true }))) return;
 //
 // It exists because the destructive paths had nothing in front of them: one
 // click on a sender's trash icon deleted every email that sender ever sent, the

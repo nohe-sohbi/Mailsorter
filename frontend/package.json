@@ -1,6 +1,8 @@
 {
   "name": "mailsorter-frontend",
   "version": "1.0.0",
+  "description": "Interface web de Mailsorter : l'IA lit votre boîte mail, propose un tri, et vous validez.",
+  "license": "MIT",
   "private": true,
   "dependencies": {
     "axios": "^1.6.5",

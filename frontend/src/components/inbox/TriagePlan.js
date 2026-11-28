@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useEmails } from '../../contexts/EmailContext';
-import { aiService, emailService, senderService, apiError } from '../../services/api';
+import { useEmails, useMailbox } from '../../contexts/EmailContext';
+import { useInstance } from '../../contexts/InstanceContext';
+import { canApplyVerdict } from '../landing/features';
+import { aiService, emailService, senderService, apiError, isMailboxChanged } from '../../services/api';
 import { useToast } from '../../ui/Toast';
 import { useConfirm } from '../../ui/Confirm';
 import { track } from '../../lib/analytics';
-import { actionMeta, canonicalAction, pastParticiple, plural } from '../../ui/actions';
+import { actionMeta, canonicalAction, labelPlace, pastParticiple, plural } from '../../ui/actions';
 import { toneFor } from '../../ui/avatar';
 import { useHotel } from '../../ui/hotel/HotelTheme';
 import { hotelTone, initials } from '../hotel/avatar';
@@ -30,6 +32,9 @@ const VERB_ORDER = ['archive', 'label', 'delete'];
 
 const COLLAPSED_KEY = 'mailsorter_plan_collapsed';
 
+// What a verdict that waits for the mailbox to be known says (canApplyVerdict).
+const HELD = 'Indisponible pour le moment';
+
 const readCollapsed = () => {
   try {
     return localStorage.getItem(COLLAPSED_KEY) === '1';
@@ -47,16 +52,20 @@ const chunks = (list) => {
 const emailsCount = (n) => `${n} email${plural(n)}`;
 
 // "6 emails archivés", "8 emails gardés dans la boîte", "2 emails étiquetés
-// « Factures »", and "15 emails rangés" only when the verbs were mixed.
-function appliedMessage(groups, applied) {
+// « Factures »" (over IMAP "2 emails classés dans « Factures »"), and "15
+// emails rangés" only when the verbs were mixed.
+// The place named is the one the server filed under (labelNames, by
+// suggestion id): over IMAP it settles the folder when applying, and a
+// proposal stored as « Facture » can land in « Factures ».
+function appliedMessage(groups, applied, folders, labelNames = {}) {
   const n = applied.length;
   const verbs = new Set(groups.map((g) => g.action));
   if (verbs.size > 1) return `${emailsCount(n)} rangé${plural(n)}`;
   const [verb] = verbs;
   if (verb === 'keep') return `${emailsCount(n)} gardé${plural(n)} dans la boîte`;
-  const g = groups[0];
-  const where = groups.length === 1 && verb === 'label' && g.labelName ? ` « ${g.labelName} »` : '';
-  return `${emailsCount(n)} ${pastParticiple(verb, n).toLowerCase()}${where}`;
+  const places = new Set(applied.map((s) => labelNames[idOf(s)] || s.labelName));
+  const where = verb === 'label' && places.size === 1 ? labelPlace([...places][0], { folders }) : '';
+  return `${emailsCount(n)} ${pastParticiple(verb, n, { folders }).toLowerCase()}${where}`;
 }
 
 // useTriagePlan owns everything the plan DOES: grouping, applying, ignoring,
@@ -67,6 +76,13 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   const toast = useToast();
   const confirm = useConfirm();
   const { suggestions, removeSuggestions, restoreSuggestions, removeEmails, fetchData } = useEmails();
+  // Every verdict applies on both transports: over IMAP a label is a folder,
+  // so it reads "Classer" there (`isImap`). A label waits until the mailbox is
+  // known (canApplyVerdict). Rules run on both transports too, so a sender
+  // becomes a rule on either once the mailbox is known (`known`), a rule that
+  // labels included: over IMAP it files in the folder, as the verdict does.
+  const { isImap, known } = useMailbox();
+  const canApply = useCallback((g) => canApplyVerdict(g.action, known), [known]);
   const [applyingAll, setApplyingAll] = useState(false);
   const [ruling, setRuling] = useState(null);
   // Group keys a rule was created from in this visit, so the button says it is
@@ -85,7 +101,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   useEffect(() => {
     shown.current = { moves: groups.moves.map((g) => g.key), keeps: groups.keeps.map((g) => g.key) };
   }, [groups]);
-  const totals = useMemo(() => planTotals(groups), [groups]);
+  const totals = useMemo(() => planTotals(groups, canApply), [groups, canApply]);
 
   // `settle` is called from handlers the Inbox memoizes, so it reads the list
   // through a ref: a closure would settle against the list as it was when that
@@ -108,15 +124,27 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       byVerb.get(key).ids.push(s.emailId);
     }
     try {
+      // A mail another mail client moved meanwhile does not come back: the
+      // server says so, and the screen does not announce a full undo.
+      let reason = '';
+      let missing = 0;
       for (const { action, labelName, ids } of byVerb.values()) {
-        for (const chunk of chunks(ids)) await emailService.batchUndo(chunk, action, labelName);
+        for (const chunk of chunks(ids)) {
+          const { data } = await emailService.batchUndo(chunk, action, labelName);
+          if (data?.message) reason = data.message;
+          missing += Math.max(0, (data?.total || 0) - (data?.restored || 0));
+        }
       }
-      toast.success('Tri annulé');
+      if (reason) toast.error(reason);
+      else if (missing) toast.error(`${emailsCount(missing)} n'${missing > 1 ? 'ont' : 'a'} pas pu être remis.`);
+      else toast.success('Tri annulé');
     } catch (err) {
       toast.error(apiError(err, "Impossible d'annuler."));
-    } finally {
-      refresh();
+      // A mailbox changed since the page was loaded is loaded again as a
+      // whole (whenMailboxChanged): nothing of this one to refresh.
+      if (isMailboxChanged(err)) return;
     }
+    refresh();
   };
 
   // Optimistic, like the single apply always was: the rows and the emails leave
@@ -143,24 +171,43 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
 
       const protectedSkipped = data?.protectedSkipped || 0;
       const failed = data?.failed || 0;
+      // Proposals about a mailbox no longer connected: not applied, and the
+      // server's message says how many.
+      const gone = data?.mailboxGone || 0;
       if (applied.length === 0) {
+        if (!protectedSkipped && !failed && !gone) {
+          // Nothing applied and nothing failed: every mail had already left
+          // the inbox (tidied by hand, or from another device).
+          toast.success(items.length > 1 ? 'Ces mails étaient déjà rangés.' : 'Ce mail était déjà rangé.');
+          return;
+        }
         toast.error(
-          protectedSkipped
+          protectedSkipped && !gone
             ? 'Rien appliqué : ces expéditeurs sont protégés.'
-            : "Le tri n'a pas pu être appliqué. Réessayez."
+            : // The server says why when trying again would not help (a
+              // folder Mailsorter does not file into, too many new folders,
+              // a mailbox no longer connected).
+              data?.message || "Le tri n'a pas pu être appliqué. Réessayez."
         );
         return;
       }
-      let message = appliedMessage(targets, applied);
+      let message = appliedMessage(targets, applied, isImap, data?.labelNames);
       if (protectedSkipped) message += ` · ${protectedSkipped} protégé${plural(protectedSkipped)} laissé${plural(protectedSkipped)} en place`;
       const movedSomething = applied.some((s) => canonicalAction(s.action) !== 'keep');
       // Only offered where batch-undo can actually do it (the server says so):
       // an "Annuler" that fails once pressed is worse than none.
       if (movedSomething && data?.reversible) toast.action(message, 'Annuler', () => undo(applied));
       else toast.success(message);
-      if (failed) toast.error(`${emailsCount(failed)} n'${failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(failed)}.`);
+      if (failed) {
+        // The server says why when the user can do something about it (too
+        // many new folders at once over IMAP).
+        const why = data?.message ? ` ${data.message}` : '';
+        toast.error(`${emailsCount(failed)} n'${failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(failed)}.${why}`);
+      } else if (gone && data?.message) {
+        toast.error(data.message);
+      }
     } catch (err) {
-      refresh();
+      if (!isMailboxChanged(err)) refresh();
       toast.error(apiError(err, "Le tri n'a pas pu être appliqué. Réessayez."));
     }
   };
@@ -184,7 +231,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
       const ok = await confirm({
         title: `Ranger ${emailsCount(n)} ?`,
         message: `Dont ${d} suppression${plural(d)} : ${names}${more}.`,
-        detail: 'Les suppressions partent à la corbeille et y restent récupérables 30 jours.',
+        detail: 'Les suppressions partent dans la corbeille de votre fournisseur (30 jours chez Gmail).',
         confirmLabel: `Ranger ${emailsCount(n)}`,
         danger: true,
       });
@@ -211,7 +258,7 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
         toast.info(`${ids.length} suggestion${plural(ids.length)} ignorée${plural(ids.length)}`, { duration: 2500 });
       }
     } catch (err) {
-      restoreSuggestions(items);
+      if (!isMailboxChanged(err)) restoreSuggestions(items);
       toast.error(apiError(err, 'Impossible de les ignorer. Réessayez.'));
     }
   };
@@ -261,6 +308,10 @@ export function useTriagePlan({ onTriaged, onMoved } = {}) {
   return {
     groups,
     totals,
+    canApply,
+    rulesAvailable: known,
+    // A label is a folder on this mailbox (IMAP): the verdicts say "Classer".
+    folders: isImap,
     applyingAll,
     ruling,
     ruled,
@@ -293,7 +344,9 @@ function Avatar({ group }) {
 }
 
 function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
-  const meta = actionMeta(group.action);
+  const { selfHosted } = useInstance();
+  const meta = actionMeta(group.action, { folders: plan.folders });
+  const applicable = plan.canApply(group);
   const n = group.items.length;
   const single = n === 1;
   const isKeep = group.action === 'keep';
@@ -301,7 +354,12 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
   const verb = single ? meta.label : `${meta.label} les ${n}`;
   const where = group.action === 'label' && group.labelName ? ` dans « ${group.labelName} »` : '';
   const ruleAction = RULE_ACTION[group.action];
-  const canRule = Boolean(ruleAction && group.address && (group.action !== 'label' || group.labelName));
+  const canRule = Boolean(
+    plan.rulesAvailable &&
+      ruleAction &&
+      group.address &&
+      (group.action !== 'label' || group.labelName)
+  );
   const ruled = plan.ruled.has(group.key);
 
   return (
@@ -332,14 +390,15 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
               <span className="mt-0.5 block truncate text-sm text-ink-800">{group.items[0].subject || '(Sans sujet)'}</span>
             )}
             {group.reasoning && <span className="mt-0.5 block text-sm text-muted line-clamp-2">{group.reasoning}</span>}
-            {(where || !group.sure) && (
+            {(where || !group.sure || !applicable) && (
               <span className="mt-1.5 flex flex-wrap gap-1.5">
                 {where && (
                   <span className={cn('chip py-0.5', meta.chip)}>
                     <Tag size={12} /> {group.labelName}
                   </span>
                 )}
-                {!group.sure && (
+                {!applicable && <span className="chip bg-ink-100 py-0.5 text-ink-600">{HELD}.</span>}
+                {applicable && !group.sure && (
                   <span className="chip bg-caution-50 py-0.5 text-caution-700" title="L'IA n'est pas sûre d'elle sur au moins un de ces emails">
                     <Alert size={12} /> À vérifier
                   </span>
@@ -363,16 +422,18 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
               Ignorer
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => plan.applyGroup(group)}
-            disabled={plan.applyingAll}
-            className={cn('btn h-10 rounded-lg px-3 sm:h-9', meta.quiet || 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
-            aria-label={`${meta.label} ${single ? "l'email" : `les ${n} emails`} de ${group.name}${where}`}
-          >
-            <meta.Icon size={15} />
-            {verb}
-          </button>
+          {applicable && (
+            <button
+              type="button"
+              onClick={() => plan.applyGroup(group)}
+              disabled={plan.applyingAll}
+              className={cn('btn h-10 rounded-lg px-3 sm:h-9', meta.quiet || 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
+              aria-label={`${meta.label} ${single ? "l'email" : `les ${n} emails`} de ${group.name}${where}`}
+            >
+              <meta.Icon size={15} />
+              {verb}
+            </button>
+          )}
         </div>
         {expanded && (
           <div id={bodyId} className="order-2 pl-12 sm:order-3 sm:basis-full">
@@ -417,10 +478,11 @@ function GroupRow({ group, plan, expanded, onToggle, onOpenEmail }) {
                   onClick={() => plan.createRule(group)}
                   disabled={plan.ruling === group.key}
                   className="mt-2 inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-50 disabled:opacity-50"
-                  title="Les règles trient sans IA ni quota"
+                  title={selfHosted ? 'Les règles trient sans IA' : 'Les règles trient sans IA ni quota'}
                 >
                   {plan.ruling === group.key ? <Spinner size={14} /> : <Bolt size={14} />}
-                  Toujours {meta.label.toLowerCase()} ses emails{where ? ` « ${group.labelName} »` : ''}
+                  Toujours {meta.label.toLowerCase()} ses emails
+                  {group.action === 'label' ? labelPlace(group.labelName, { folders: plan.folders }) : ''}
                 </button>
               ))}
           </div>
@@ -452,6 +514,7 @@ function TriagePlan({ plan, onOpenEmail }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const [allMoves, setAllMoves] = useState(false);
   const [allKeeps, setAllKeeps] = useState(false);
+  const [allHeld, setAllHeld] = useState(false);
 
   if (groups.moves.length === 0 && groups.keeps.length === 0) return null;
 
@@ -474,7 +537,12 @@ function TriagePlan({ plan, onOpenEmail }) {
       return next;
     });
 
-  const moves = allMoves ? groups.moves : groups.moves.slice(0, VISIBLE_MOVES);
+  // The moves this mailbox can apply now, then the ones that wait for it to be
+  // known (a label), each under its own count.
+  const tidy = groups.moves.filter(plan.canApply);
+  const held = groups.moves.filter((g) => !plan.canApply(g));
+  const moves = allMoves ? tidy : tidy.slice(0, VISIBLE_MOVES);
+  const heldShown = allHeld ? held : held.slice(0, VISIBLE_KEEPS);
   const keeps = allKeeps ? groups.keeps : groups.keeps.slice(0, VISIBLE_KEEPS);
   const reviewed = totals.moves + totals.keeps;
 
@@ -529,7 +597,7 @@ function TriagePlan({ plan, onOpenEmail }) {
             250px and stacked one per line. */}
         <ul className="mt-3 flex flex-wrap gap-1.5 sm:pl-12" aria-label="Répartition du tri proposé">
           {chips.map(({ action, n }) => {
-            const meta = actionMeta(action);
+            const meta = actionMeta(action, { folders: plan.folders });
             return (
               <li key={action} className={cn('chip', meta.chip)}>
                 <meta.Icon size={13} aria-hidden />
@@ -544,24 +612,41 @@ function TriagePlan({ plan, onOpenEmail }) {
         <div id="triage-plan-body">
           {groups.moves.length > 0 && (
             <div className="border-t border-hairline">
-              {groups.keeps.length > 0 && (
-                <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
-                  À ranger · {totals.moves}
-                </h3>
+              {tidy.length > 0 && (
+                <>
+                  {(groups.keeps.length > 0 || held.length > 0) && (
+                    <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
+                      À ranger · {totals.toTidy}
+                    </h3>
+                  )}
+                  <ul className="divide-y divide-[rgb(var(--hairline))]">{moves.map(row)}</ul>
+                  {moves.length < tidy.length && (
+                    <ShowMore hidden={tidy.length - moves.length} onClick={() => setAllMoves(true)} />
+                  )}
+                </>
               )}
-              <ul className="divide-y divide-[rgb(var(--hairline))]">{moves.map(row)}</ul>
-              {moves.length < groups.moves.length && (
-                <ShowMore hidden={groups.moves.length - moves.length} onClick={() => setAllMoves(true)} />
+              {held.length > 0 && (
+                <div className={cn(tidy.length > 0 && 'border-t border-hairline')}>
+                  <h3 className="px-4 pt-3 text-xs font-bold uppercase tracking-wider text-muted sm:px-5">
+                    {HELD} · {totals.held}
+                  </h3>
+                  <ul className="divide-y divide-[rgb(var(--hairline))]">{heldShown.map(row)}</ul>
+                  {heldShown.length < held.length && (
+                    <ShowMore hidden={held.length - heldShown.length} onClick={() => setAllHeld(true)} />
+                  )}
+                </div>
               )}
               <div className="flex flex-col gap-2 border-t border-hairline bg-surface-sunken/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-                <p className="text-xs text-muted">
-                  {totals.unsure === 0
-                    ? "Chaque rangement est journalisé dans l'historique."
-                    : totals.sure === 0
-                    ? "L'IA hésite sur ceux-ci : à vérifier un par un."
-                    : `${emailsCount(totals.unsure)} à vérifier ${totals.unsure > 1 ? 'restent' : 'reste'} hors du tri groupé.`}
-                </p>
-                <div className="flex items-center justify-end gap-2">
+                {totals.toTidy > 0 && (
+                  <p className="text-xs text-muted">
+                    {totals.unsure === 0
+                      ? "Chaque rangement est journalisé dans l'historique."
+                      : totals.sure === 0
+                      ? "L'IA hésite sur ceux-ci : à vérifier un par un."
+                      : `${emailsCount(totals.unsure)} à vérifier ${totals.unsure > 1 ? 'restent' : 'reste'} hors du tri groupé.`}
+                  </p>
+                )}
+                <div className="flex items-center justify-end gap-2 sm:ml-auto">
                   <button
                     type="button"
                     onClick={plan.ignoreMoves}

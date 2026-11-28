@@ -24,6 +24,9 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo 'Run gofmt -w on the files above.'; exit 1; }
+
       - name: Vet
         run: go vet ./...
 
@@ -70,6 +73,11 @@ jobs:
       - name: Scenarios
         run: scripts/scenarios.sh
 
+      # Tests on the same harness that prove wiring rather than a sentence
+      # (TestAcceptance_*): not in the report, so scenarios.sh does not run them.
+      - name: Wiring tests on the acceptance harness
+        run: go test -tags acceptance -count=1 -run '^TestAcceptance' ./internal/api/
+
       - name: Publish the report
         if: always()
         run: |
@@ -87,10 +95,13 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        # The lockfile is committed: CI installs exactly what it pins.
+        run: npm ci --no-audit --no-fund
 
       - name: Build
         run: CI=false npm run build

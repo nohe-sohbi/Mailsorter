@@ -19,6 +19,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -30,6 +31,9 @@ func main() {
 	// vulnerable state (e.g. the default encryption key).
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
+	}
+	for _, w := range cfg.Warnings() {
+		log.Printf("WARNING: %s", w)
 	}
 
 	// Initialize database
@@ -95,19 +99,7 @@ func main() {
 
 	// Initialize AI provider registry (multi-provider with fallback).
 	// Backward compatible: MISTRAL_API_KEY still works as the primary.
-	var providerConfigs []ai.ProviderConfig
-	for _, pc := range cfg.AIProviderConfigs() {
-		providerConfigs = append(providerConfigs, ai.ProviderConfig{
-			Name:       pc.Name,
-			APIKey:     pc.APIKey,
-			Model:      pc.Model,
-			BaseURL:    pc.BaseURL,
-			MaxRetries: pc.MaxRetries,
-			Priority:   pc.Priority,
-			Enabled:    pc.Enabled,
-		})
-	}
-	aiRegistry := ai.NewRegistry(providerConfigs)
+	aiRegistry := ai.NewRegistry(cfg.AIProviderConfigs())
 	if aiRegistry.Available() {
 		log.Printf("AI providers initialized: %s", aiRegistry.ProviderName())
 	} else {
@@ -123,7 +115,7 @@ func main() {
 	if cfg.StripeSecretKey != "" {
 		billingCfg.Client = billing.New(cfg.StripeSecretKey)
 		log.Println("Stripe billing initialized")
-	} else {
+	} else if cfg.Edition == provider.EditionHosted {
 		log.Println("Warning: STRIPE_SECRET_KEY not set - billing disabled")
 	}
 
@@ -169,7 +161,7 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
-	log.Println("Shutdown signal received, draining connections…")
+	log.Println("Shutdown signal received, draining connections...")
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancelShutdown()

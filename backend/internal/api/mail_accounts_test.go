@@ -11,6 +11,7 @@ import (
 	"github.com/nohe-sohbi/mailsorter/backend/internal/account"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // The one keystroke between this struct and a leaked credential is the json
@@ -213,8 +214,10 @@ func TestConnectMailboxRefusesAnOversizedPassword(t *testing.T) {
 
 // A provider the running edition does not reach over IMAP has to be refused
 // before any connection is attempted, and with a status that says "this cannot
-// work here" rather than "your password is wrong". In self-hosted, Gmail is the
-// API route, so it has no IMAP endpoint to pick.
+// work here" rather than "your password is wrong". Outlook.com only routes
+// through Microsoft Graph, so there is no IMAP endpoint to pick. (Gmail is not
+// such a provider: its catalog entry offers IMAP in both editions, see
+// provider.PickIMAP.)
 func TestConnectMailboxRefusesAProviderTheEditionReachesAnotherWay(t *testing.T) {
 	previous := Edition
 	Edition = provider.EditionSelfHosted
@@ -223,7 +226,7 @@ func TestConnectMailboxRefusesAProviderTheEditionReachesAnotherWay(t *testing.T)
 	srv := newRoutedTestServer(t)
 	token := newTestAuth(t).IssueSession("someone@example.com")
 
-	body, err := json.Marshal(models.ConnectMailboxRequest{Address: "someone@gmail.com", Password: "app-password"})
+	body, err := json.Marshal(models.ConnectMailboxRequest{Address: "someone@outlook.com", Password: "app-password"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -240,6 +243,170 @@ func TestConnectMailboxRefusesAProviderTheEditionReachesAnotherWay(t *testing.T)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Errorf("connecting Gmail over IMAP on a self-hosted instance = %d, want 422", resp.StatusCode)
+		t.Errorf("connecting Outlook.com over IMAP = %d, want 422", resp.StatusCode)
+	}
+}
+
+// applyUpsert is what MongoDB makes of update over prev (nil: no row yet), for
+// the operators mailboxRow writes.
+func applyUpsert(t *testing.T, prev bson.M, update bson.M) bson.M {
+	t.Helper()
+	row := bson.M{}
+	for k, v := range prev {
+		row[k] = v
+	}
+	for op, fields := range update {
+		m, ok := fields.(bson.M)
+		if !ok {
+			t.Fatalf("update %s is a %T, want a bson.M", op, fields)
+		}
+		switch op {
+		case "$set":
+			for k, v := range m {
+				row[k] = v
+			}
+		case "$setOnInsert":
+			if prev == nil {
+				for k, v := range m {
+					row[k] = v
+				}
+			}
+		case "$unset":
+			for k := range m {
+				delete(row, k)
+			}
+		default:
+			t.Fatalf("update has the operator %s, which applyUpsert does not know", op)
+		}
+	}
+	return row
+}
+
+// readRow decodes a stored row through the model, the way sendThroughBox
+// reads it back: a field name the update and the model spell differently
+// comes back empty.
+func readRow(t *testing.T, row bson.M) models.MailAccount {
+	t.Helper()
+	raw, err := bson.Marshal(row)
+	if err != nil {
+		t.Fatalf("bson.Marshal(%v): %v", row, err)
+	}
+	var account models.MailAccount
+	if err := bson.Unmarshal(raw, &account); err != nil {
+		t.Fatalf("bson.Unmarshal into MailAccount: %v", err)
+	}
+	return account
+}
+
+// Connecting a mailbox writes the sending server of the route its IMAP server
+// was proved on, and a route without one clears the server a previous
+// connection left: the recap must never leave from another provider's server
+// with this mailbox's password.
+func TestMailboxRowWritesTheSendingServerOfTheRoute(t *testing.T) {
+	now := time.Date(2026, 11, 24, 7, 0, 0, 0, time.UTC)
+	imapServer := &provider.Endpoint{Host: "imap.exemple.fr", Port: 993, TLS: provider.TLSImplicit}
+	withSMTP := provider.Route{Transport: provider.TransportIMAP, IMAP: imapServer,
+		SMTP: &provider.Endpoint{Host: "smtp.exemple.fr", Port: 587, TLS: provider.TLSSTARTTLS}}
+	withoutSMTP := provider.Route{Transport: provider.TransportIMAP, IMAP: imapServer}
+	previous := bson.M{"userId": "moi@exemple.fr", "username": "ancien@ailleurs.fr", "secret": "old-sealed",
+		"smtpHost": "smtp.ailleurs.fr", "smtpPort": 465, "smtpTls": "implicit", "createdAt": now.Add(-time.Hour)}
+
+	cases := []struct {
+		name  string
+		prev  bson.M
+		route provider.Route
+		want  provider.Endpoint
+	}{
+		{"a first connection, on a route with a sending server", nil, withSMTP,
+			provider.Endpoint{Host: "smtp.exemple.fr", Port: 587, TLS: provider.TLSSTARTTLS}},
+		{"over a previous connection, on a route with a sending server", previous, withSMTP,
+			provider.Endpoint{Host: "smtp.exemple.fr", Port: 587, TLS: provider.TLSSTARTTLS}},
+		{"over a previous connection, on a route without one", previous, withoutSMTP, provider.Endpoint{}},
+		{"a first connection, on a route without one", nil, withoutSMTP, provider.Endpoint{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", tc.route, "sealed", now)
+
+			answered := provider.Endpoint{Host: account.SMTPHost, Port: account.SMTPPort, TLS: provider.TLSMode(account.SMTPTLS)}
+			if answered != tc.want {
+				t.Errorf("mailboxRow answers the sending server %+v, want %+v", answered, tc.want)
+			}
+
+			stored := readRow(t, applyUpsert(t, tc.prev, update))
+			got := provider.Endpoint{Host: stored.SMTPHost, Port: stored.SMTPPort, TLS: provider.TLSMode(stored.SMTPTLS)}
+			if got != tc.want {
+				t.Errorf("the stored row has the sending server %+v, want %+v", got, tc.want)
+			}
+			if stored.Username != "moi@exemple.fr" || stored.Secret != "sealed" || stored.UserID != "moi@exemple.fr" {
+				t.Errorf("the stored row is %q / %q / user %q, want the new address, its sealed password and the account", stored.Username, stored.Secret, stored.UserID)
+			}
+			if stored.Host != imapServer.Host || stored.Port != imapServer.Port || stored.TLS != string(imapServer.TLS) {
+				t.Errorf("the stored row has the IMAP server %s:%d %s, want %+v", stored.Host, stored.Port, stored.TLS, *imapServer)
+			}
+			if account.Secret != "" {
+				t.Errorf("mailboxRow answers an account carrying the secret %q, want none", account.Secret)
+			}
+		})
+	}
+}
+
+// The moment a mailbox was connected (createdAt) is when the rules a sync
+// applies on its own start judging its mails, and the mark of its first sync
+// (firstSyncedAt) is what makes the next ones judge them: connecting the same
+// mailbox again (a new app password) writes over its row and keeps both;
+// another mailbox gets a row of its own (connectAndStore deletes the previous
+// one), so both start anew.
+func TestMailboxRowKeepsTheMomentOfTheRowItWritesOver(t *testing.T) {
+	now := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
+	before := now.Add(-48 * time.Hour)
+	server := &provider.Endpoint{Host: "imap.exemple.fr", Port: 993, TLS: provider.TLSImplicit}
+	route := provider.Route{Transport: provider.TransportIMAP, IMAP: server}
+	synced := before.Add(time.Hour)
+	prev := bson.M{"userId": "moi@exemple.fr", "username": "moi@exemple.fr", "host": "imap.exemple.fr", "port": 993, "createdAt": before, "firstSyncedAt": synced}
+
+	for _, tc := range []struct {
+		name       string
+		prev       bson.M
+		want       time.Time
+		wantSynced time.Time // zero: the next sync is a first one
+	}{
+		{"the same mailbox again", prev, before, synced},
+		{"a new row", nil, now, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, update := mailboxRow("moi@exemple.fr", "exemple", "moi@exemple.fr", route, "sealed", now)
+			row := readRow(t, applyUpsert(t, tc.prev, update))
+			if !row.CreatedAt.Equal(tc.want) {
+				t.Errorf("createdAt = %v, want %v", row.CreatedAt, tc.want)
+			}
+			if !row.FirstSyncedAt.Equal(tc.wantSynced) {
+				t.Errorf("firstSyncedAt = %v, want %v", row.FirstSyncedAt, tc.wantSynced)
+			}
+		})
+	}
+}
+
+func TestSameMailbox(t *testing.T) {
+	server := &provider.Endpoint{Host: "imap.exemple.fr", Port: 993, TLS: provider.TLSImplicit}
+	route := provider.Route{Transport: provider.TransportIMAP, IMAP: server}
+	prev := models.MailAccount{Username: "Moi@Exemple.fr", Host: "imap.exemple.fr", Port: 993}
+	for _, tc := range []struct {
+		name    string
+		prev    models.MailAccount
+		address string
+		route   provider.Route
+		want    bool
+	}{
+		{"same address, same server", prev, "moi@exemple.fr", route, true},
+		{"another address", prev, "autre@exemple.fr", route, false},
+		{"another server", prev, "moi@exemple.fr", provider.Route{Transport: provider.TransportIMAP, IMAP: &provider.Endpoint{Host: "imap.ailleurs.fr", Port: 993}}, false},
+		{"another port", prev, "moi@exemple.fr", provider.Route{Transport: provider.TransportIMAP, IMAP: &provider.Endpoint{Host: "imap.exemple.fr", Port: 143}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameMailbox(tc.prev, tc.address, tc.route); got != tc.want {
+				t.Errorf("sameMailbox(%+v, %q, %+v) = %v, want %v", tc.prev, tc.address, tc.route.IMAP, got, tc.want)
+			}
+		})
 	}
 }

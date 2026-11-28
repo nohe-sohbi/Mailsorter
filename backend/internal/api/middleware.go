@@ -109,7 +109,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("[panic] %s %s: %v", r.Method, r.URL.Path, rec)
-				writeError(w, http.StatusInternalServerError, "Internal server error")
+				writeError(w, http.StatusInternalServerError, "Une erreur inattendue est survenue, réessayez dans un instant.")
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -298,7 +298,6 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
-
 
 		next.ServeHTTP(w, r)
 	})

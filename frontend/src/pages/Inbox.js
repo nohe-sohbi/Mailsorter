@@ -1,7 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useEmails, DEFAULT_QUERY } from '../contexts/EmailContext';
-import { aiService, senderService, emailService, subscriptionService, protectService, labelService, searchService, apiError } from '../services/api';
+import { useEmails, useMailbox, DEFAULT_QUERY } from '../contexts/EmailContext';
+import { useInstance } from '../contexts/InstanceContext';
+import {
+  aiService,
+  senderService,
+  emailService,
+  subscriptionService,
+  protectService,
+  labelService,
+  searchService,
+  apiError,
+  aiError,
+  isMailboxChanged,
+} from '../services/api';
+import { canApplyVerdict, canPromise } from '../components/landing/features';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { track } from '../lib/analytics';
@@ -9,11 +22,12 @@ import { recordTriage, getStreakState } from '../ui/streak';
 import EmailReader from '../components/EmailReader';
 import TriagePlan, { useTriagePlan } from '../components/inbox/TriagePlan';
 import SnoozeButton from '../ui/SnoozeMenu';
+import { useMailboxErrorToast } from '../ui/mailboxError';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { EmptyState, ErrorState, Progress, LiveAnnouncer } from '../ui/primitives';
 import { useScrollLock } from '../ui/scrollLock';
-import { actionMeta, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
+import { actionMeta, labelPlace, pastParticiple, plural, BULK_ACTIONS } from '../ui/actions';
 import { cn } from '../ui/cn';
 import { toneFor } from '../ui/avatar';
 import { useHotel } from '../ui/hotel/HotelTheme';
@@ -26,7 +40,12 @@ import {
   Users, Bolt, Check, X, Mail, Shield, Flame, Keyboard, BellOff, Star, Filter,
 } from '../ui/icons';
 
-const isReversible = (a) => a === 'archive' || a === 'delete';
+// The verb "Annuler" sends right after an action, for each action it can
+// undo. A label is one only over IMAP, where it filed the mail in a folder:
+// "unlabel" brings it back to the inbox from there. Over the Gmail API the
+// single-message route has no label to take off.
+const UNDO_VERB = { archive: 'unarchive', delete: 'untrash', label: 'unlabel' };
+const isReversible = (a, folders = false) => a === 'archive' || a === 'delete' || (folders && a === 'label');
 
 // The four non-removing actions and how each one shows in the list before the
 // server has answered. Their inverses double as the rollback when it refuses.
@@ -37,6 +56,12 @@ const FLAG_PATCH = {
   unstar: { isStarred: false },
 };
 const FLAG_INVERSE = { read: 'unread', unread: 'read', star: 'unstar', unstar: 'star' };
+
+// Whether a flag change takes the mail out of the list on screen: "Retirer
+// des favoris" under the filter "Favoris" (is:starred) does, the way
+// archiving takes a mail out of the inbox. Left in place, the row would stay
+// in a list of favorites until the next load.
+const leavesList = (action, query) => action === 'unstar' && /(^|\s)is:starred(\s|$)/i.test(query || '');
 
 // Mirrors maxBatchActionSize in backend/internal/api/batch.go.
 const BATCH_LIMIT = 200;
@@ -49,7 +74,8 @@ const SHORTCUTS = [
   ['Suppr / Retour arrière', 'Supprimer'],
   ['C', "Conserver l'email (en mode tri)"],
   ['U', 'Marquer comme lu'],
-  ['S', 'Mettre en favori'],
+  // Once the mailbox is known, like the reader's star (see flagAction).
+  ['S', 'Mettre en favori', 'mailbox'],
   ['A', 'Ranger les suggestions sûres'],
   ['I', "Demander un tri IA (dans l'email)"],
   ['R', 'Synchroniser'],
@@ -60,14 +86,18 @@ const SHORTCUTS = [
 
 // Saved searches, expressed in the Gmail query language the backend already
 // speaks. They exist because the search box asked people to know that language:
-// the placeholder literally read "from:amazon, is:unread…".
+// the placeholder literally read "from:amazon, is:unread...".
+// Every one is answered on both transports: over IMAP from the stored copy,
+// which keeps the star, the size and whether a mail carries a file.
+// `needsMailbox` marks a filter offered once the mailbox is known, as these
+// three always were: it appears with that answer, never on a guess.
 const QUICK_FILTERS = [
   { id: 'inbox', label: 'Tout', query: DEFAULT_QUERY, Icon: InboxIcon },
   { id: 'unread', label: 'Non lus', query: 'in:inbox is:unread', Icon: Mail },
   { id: 'today', label: "Aujourd'hui", query: 'in:inbox newer_than:1d', Icon: Bolt },
-  { id: 'starred', label: 'Favoris', query: 'in:inbox is:starred', Icon: Star },
-  { id: 'attach', label: 'Pièces jointes', query: 'in:inbox has:attachment', Icon: Tag },
-  { id: 'big', label: 'Volumineux', query: 'in:inbox larger:5M', Icon: Archive },
+  { id: 'starred', label: 'Favoris', query: 'in:inbox is:starred', Icon: Star, needsMailbox: true },
+  { id: 'attach', label: 'Pièces jointes', query: 'in:inbox has:attachment', Icon: Tag, needsMailbox: true },
+  { id: 'big', label: 'Volumineux', query: 'in:inbox larger:5M', Icon: Archive, needsMailbox: true },
 ];
 
 // Mirrors internal/search.SuggestName: the save dialog opens on the query's
@@ -152,23 +182,67 @@ function senderLabel(from) {
   return from.split('<')[0].replace(/"/g, '').trim() || from;
 }
 
-// The four levers of the first-run dialog, on the hotel's numbered plaques.
-const WELCOME_PLAQUES = [
-  ['I', "Il lit l'expéditeur, l'objet et le début du message.", 'Pour chaque e-mail, il propose : archiver, ranger, reporter. Vous validez ou vous ignorez.'],
-  ['II', 'Vos évidences deviennent des règles.', "Elles trient sans IA, sans quota, et un aperçu montre ce qu'elles feraient avant de toucher à quoi que ce soit."],
-  ['III', 'Les newsletters se coupent ici.', "L'onglet Abonnements les repère et vous désabonne, souvent en un clic."],
-  ['IV', 'Rien ne se perd.', 'Chaque action est notée et annulable, et vos expéditeurs protégés ne sont jamais touchés.'],
-];
+// The levers of the first-run dialog, in both themes. Each one is promised
+// only when this mailbox has it (`can`, from features.js: a Gmail-only feature
+// is not offered to a mailbox connected over IMAP), and the quota only where
+// there is one. The model proposes, the user validates: nothing here says the
+// mailbox sorts itself.
+const ROMAN = ['I', 'II', 'III', 'IV'];
 
+function welcomeLevers({ can, selfHosted }) {
+  const verbs = ['archiver', can('label') && 'classer', 'supprimer', 'garder'].filter(Boolean);
+  return [
+    {
+      Icon: Sparkles,
+      t: "Trier avec l'IA",
+      d: "L'IA lit vos emails et propose une action pour chacun. Vous validez, en un clic ou tout d'un coup.",
+      lead: "Il lit l'expéditeur, l'objet et au plus 200 caractères du message.",
+      rest: `Pour chaque e-mail, il propose : ${verbs.slice(0, -1).join(', ')} ou ${verbs[verbs.length - 1]}. Vous validez ou vous ignorez.`,
+    },
+    can('rules') && {
+      Icon: Bolt,
+      t: 'Encoder vos évidences en règles',
+      d: selfHosted
+        ? "Les règles trient sans IA. Un aperçu montre d'abord ce qu'elles feraient, sans rien modifier."
+        : "Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre d'abord ce qu'elles feraient, sans rien modifier.",
+      lead: 'Vos évidences deviennent des règles.',
+      rest: selfHosted
+        ? "Elles trient sans IA, et un aperçu montre ce qu'elles feraient avant de toucher à quoi que ce soit."
+        : "Elles trient sans IA, sans quota, et un aperçu montre ce qu'elles feraient avant de toucher à quoi que ce soit.",
+    },
+    can('unsubscribe') && {
+      Icon: BellOff,
+      t: 'Couper le robinet',
+      d: "L'onglet Abonnements repère vos newsletters et vous désabonne, souvent en un clic.",
+      lead: 'Les newsletters se coupent ici.',
+      rest: "L'onglet Abonnements les repère et vous désabonne, souvent en un clic.",
+    },
+    {
+      Icon: Shield,
+      t: 'Ne rien perdre',
+      d: can('undo')
+        ? 'Chaque action est journalisée et annulable, et vos expéditeurs protégés ne sont jamais touchés.'
+        : "Rien ne bouge sans votre accord, chaque action est journalisée, et vos expéditeurs protégés ne sont jamais touchés.",
+      lead: 'Rien ne se perd.',
+      rest: can('undo')
+        ? 'Chaque action est notée et annulable, et vos expéditeurs protégés ne sont jamais touchés.'
+        : "Rien ne bouge sans votre accord, chaque action est notée, et vos expéditeurs protégés ne sont jamais touchés.",
+    },
+  ].filter(Boolean);
+}
+
+// `gmailOnly`: a stored IMAP mailbox has no spam folder, and its total is its
+// inbox, so these two counters would only repeat or invent a number there.
 const STAT_CARDS = [
   { key: 'inboxCount', label: 'Boîte de réception', tone: 'text-brand-600', Icon: InboxIcon, query: DEFAULT_QUERY },
   { key: 'unreadCount', label: 'Non lus', tone: 'text-caution-700', Icon: Mail, query: 'in:inbox is:unread' },
-  { key: 'totalMessages', label: 'Total', tone: 'text-ink-700', Icon: Archive, query: 'in:anywhere' },
-  { key: 'spamCount', label: 'Spam', tone: 'text-danger-600', Icon: Shield, query: 'in:spam' },
+  { key: 'totalMessages', label: 'Total', tone: 'text-ink-700', Icon: Archive, query: 'in:anywhere', gmailOnly: true },
+  { key: 'spamCount', label: 'Spam', tone: 'text-danger-600', Icon: Shield, query: 'in:spam', gmailOnly: true },
 ];
 
 function Inbox() {
   const navigate = useNavigate();
+  const showMailboxError = useMailboxErrorToast();
   const toast = useToast();
   const hotel = useHotel();
   const confirm = useConfirm();
@@ -177,6 +251,20 @@ function Inbox() {
     loading, loadingMore, errorRetryable, fetchData, loadMoreEmails, removeEmails, patchEmail,
     addSuggestion, removeSuggestion, restoreSuggestions, markUnsubscribed,
   } = useEmails();
+  const { selfHosted } = useInstance();
+  // Over IMAP reading, archiving, deleting, read and the star on one mail, the
+  // quick filters, the AI's proposals (a label proposal files the mail in its
+  // folder there), reporting (one mail or a selection) and undo work today.
+  // Every control the server would answer "not available" to is hidden, not
+  // disabled: one rule everywhere.
+  // `fullFeatures` waits for the answer, so an IMAP user never sees them flash,
+  // and stays false when that answer failed: a guess offers nothing the server
+  // may refuse. `known` is for what works on both transports once the mailbox
+  // is known. `isImap` is only for what is said about IMAP.
+  const { isImap, known, fullFeatures } = useMailbox();
+  const can = (feature) => canPromise(feature, fullFeatures);
+  const quickFilters = QUICK_FILTERS.filter((f) => known || !f.needsMailbox);
+  const statCards = STAT_CARDS.filter((c) => fullFeatures || !c.gmailOnly);
   // The AI's proposals, grouped by sender. Held here rather than inside the
   // panel because the "a" shortcut applies it and every hand-made action below
   // settles the verdicts it made moot.
@@ -221,12 +309,21 @@ function Inbox() {
   // Switch to the async worker beyond this many emails so the UI never blocks.
   const ASYNC_THRESHOLD = 10;
 
+  // What a sync that worked has to say besides (over IMAP, rules that could
+  // not run on some new mails, or gave up on some): shown as information,
+  // whichever sync brought it, the page load's included. The server tells a
+  // mail given up once, to the first sync from the screen after it.
+  const showSyncNotice = (result) => {
+    if (result?.syncNotice) toast.info(result.syncNotice);
+  };
+  const syncAgain = () => fetchData({ forceRefresh: true, sync: true, notice: true }).then(showSyncNotice);
+
   useEffect(() => {
     if (!localStorage.getItem('userEmail')) {
       navigate('/');
       return;
     }
-    fetchData();
+    fetchData({ notice: true }).then(showSyncNotice);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
@@ -265,9 +362,12 @@ function Inbox() {
   const readerIsOverlay = Boolean(selectedEmail) && isNarrow;
   useScrollLock(readerIsOverlay);
 
+  // Opened once the mailbox is known, not at mount: its levers depend on it,
+  // and a dialog opened on a guess grew from two levers to four, renumbering
+  // the hotel's plaques under the reader's eyes.
   useEffect(() => {
-    if (!localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
-  }, []);
+    if (known && !localStorage.getItem('mailsorter_onboarded')) setShowWelcome(true);
+  }, [known]);
 
   // A selection is scoped to the list that produced it. Keeping it across a
   // query change meant "Archiver la sélection" could act on messages that were
@@ -317,14 +417,15 @@ function Inbox() {
 
   // The hotel also puts each proposal on the row of the message it is about.
   // Not "keep": the plan has stopped treating it as a task (it moves nothing),
-  // and a row offering to validate it would bring that task back.
+  // and a row offering to validate it would bring that task back. Nor a label
+  // while the mailbox is not known: the plan says it waits.
   const suggestionByEmail = useMemo(() => {
     const map = new Map();
     suggestions.forEach((s) => {
-      if (s.action !== 'keep') map.set(s.emailId, s);
+      if (s.action !== 'keep' && canApplyVerdict(s.action, known)) map.set(s.emailId, s);
     });
     return map;
-  }, [suggestions]);
+  }, [suggestions, known]);
 
   // Avatars: the classic fills, or the hotel's inked discs with initials.
   const avatarTone = (seed) => (hotel ? hotelTone(seed) : toneFor(seed));
@@ -351,14 +452,30 @@ function Inbox() {
   };
 
   // --- Undo helper ---------------------------------------------------------
+  // Works on both transports: over IMAP the server fetches the message back
+  // from where it put it, by the number it had here, and says so when another
+  // mail client moved it meanwhile. Not while the mailbox is not known yet.
   const undoToast = (messageId, action, message) => {
+    if (!known) {
+      toast.success(message);
+      return;
+    }
     toast.action(message, 'Annuler', async () => {
       try {
-        await emailService.action(messageId, action === 'archive' ? 'unarchive' : 'untrash');
+        await emailService.action(messageId, UNDO_VERB[action]);
         toast.success('Action annulée');
         fetchData({ forceRefresh: true, sync: false });
       } catch (err) {
-        toast.error("Impossible d'annuler");
+        // The failures the server words for the user: another mail client
+        // moved the mail meanwhile (404), several copies of it (409), its
+        // report being brought back (423), the mailbox to connect again
+        // (428, with the way there), or not answering (502). Anything else
+        // stays generic.
+        if ([404, 409, 423, 428, 502].includes(err?.response?.status)) {
+          showMailboxError(err, "Impossible d'annuler.");
+        } else {
+          toast.error("Impossible d'annuler");
+        }
       }
     });
   };
@@ -423,13 +540,36 @@ function Inbox() {
 
   const handleSync = async () => {
     setSyncing(true);
-    // sync: true forces the Gmail round-trip. Previously this button reused the
-    // five-minute sync throttle, so pressing it twice in a row reported
-    // "Boîte synchronisée" without having synchronised anything.
-    await fetchData({ forceRefresh: true, sync: true });
+    // sync: true forces the round-trip to the mailbox. Previously this button
+    // reused the five-minute sync throttle, so pressing it twice in a row
+    // reported "Boîte synchronisée" without having synchronised anything.
+    const result = await fetchData({ forceRefresh: true, sync: true, notice: true });
     setSyncing(false);
     track('inbox_sync');
-    toast.success('Boîte synchronisée');
+    // Success only on success. A failed sync used to be swallowed and
+    // announced as done; a failed listing is already on screen as an error.
+    // The list of an IMAP mailbox is the stored copy, so it is the last sync's.
+    // Over the Gmail API the list is read live, and saying so would be false.
+    if (result?.syncReconnect) {
+      // The mailbox to connect again: the server's sentence, and the way
+      // (the new password form, or the connect screen).
+      const { label, to } = result.syncReconnect;
+      toast.action(result.syncError, label, () => navigate(to), { variant: 'error' });
+    } else if (result?.syncSaid) {
+      // The server's own sentence says it all: alone, one sentence.
+      toast.error(result.syncError);
+    } else if (result?.syncError) {
+      toast.error(
+        `La synchronisation a échoué. ${result.syncError}${
+          isImap ? ' Les emails affichés sont ceux de la dernière synchronisation réussie.' : ''
+        }`
+      );
+    } else if (!result?.listError) {
+      // Rules that could not run on some new mails do not make the sync a
+      // failure: the mails were read and are listed. Told as information.
+      if (result?.syncNotice) toast.info(`Boîte synchronisée. ${result.syncNotice}`);
+      else toast.success('Boîte synchronisée');
+    }
   };
 
   const handleSearch = (e) => {
@@ -505,7 +645,7 @@ function Inbox() {
       });
       setSelectedEmails([]);
     } catch (err) {
-      if (!handleQuotaError(err)) toast.error("L'analyse a échoué. Réessayez.");
+      if (!handleQuotaError(err)) toast.error(aiError(err, "L'analyse a échoué. Réessayez."));
     } finally {
       setAnalyzing(false);
     }
@@ -519,7 +659,7 @@ function Inbox() {
       setSelectedEmails([]);
       pollJob(data.jobId);
     } catch (err) {
-      if (!handleQuotaError(err)) toast.error("Impossible de lancer l'analyse");
+      if (!handleQuotaError(err)) toast.error(aiError(err, "Impossible de lancer l'analyse."));
       setJob(null);
       setAnalyzing(false);
     }
@@ -556,28 +696,54 @@ function Inbox() {
     const act = suggestion.action;
     removeSuggestion(id);
     try {
-      await aiService.applySuggestion(id);
+      const { data } = await aiService.applySuggestion(id);
+      if (data?.status === 'already') {
+        // It had already left the inbox (tidied by hand, or from another
+        // device): nothing was done, so nothing to count or undo.
+        removeEmails(suggestion.emailId);
+        setSelectedEmail((prev) => (prev?.messageId === suggestion.emailId ? null : prev));
+        toast.success('Ce mail était déjà rangé.');
+        return;
+      }
       track('suggestion_applied', { action: act });
       bumpGamify(1);
       if (act !== 'keep') {
         removeEmails(suggestion.emailId);
         setSelectedEmail((prev) => (prev?.messageId === suggestion.emailId ? null : prev));
       }
-      const msg = `${actionMeta(act).past}`;
-      if (isReversible(act)) undoToast(suggestion.emailId, act, msg);
+      // Over IMAP a label is a folder: "Classé dans « Factures »".
+      const msg = `${actionMeta(act, { folders: isImap }).past}${
+        act === 'label' ? labelPlace(data?.labelName || suggestion.labelName, { folders: isImap }) : ''
+      }`;
+      if (isReversible(act, isImap)) undoToast(suggestion.emailId, act, msg);
       else toast.success(msg);
     } catch (err) {
       // Undo the optimism. Without this the suggestion vanished for good while
-      // the email stayed exactly where it was.
+      // the email stayed exactly where it was. A 422 says why in the user's
+      // words (a folder Mailsorter does not file into); anything else stays
+      // generic.
+      // A mailbox changed since the page was loaded: the proposal was the
+      // other one's, and the plan is being loaded again.
+      if (isMailboxChanged(err)) {
+        showMailboxError(err);
+        return;
+      }
       restoreSuggestions([suggestion]);
-      toast.error("Action impossible. L'email reste en place.");
+      toast.error(
+        [410, 422].includes(err?.response?.status)
+          ? apiError(err, "Action impossible. L'email reste en place.")
+          : "Action impossible. L'email reste en place."
+      );
     }
   };
 
   const handleRejectSuggestion = async (suggestion) => {
     const id = suggestion.id || suggestion._id;
     removeSuggestion(id);
-    aiService.rejectSuggestion(id).catch(() => restoreSuggestions([suggestion]));
+    aiService.rejectSuggestion(id).catch((err) => {
+      if (isMailboxChanged(err)) showMailboxError(err);
+      else restoreSuggestions([suggestion]);
+    });
   };
 
   const handleAiAnalyzeSingle = async (emailToAnalyze) => {
@@ -604,7 +770,7 @@ function Inbox() {
       }
     } catch (err) {
       if (!handleQuotaError(err)) {
-        toast.error(apiError(err, "L'analyse IA a échoué. Réessayez."));
+        toast.error(aiError(err, apiError(err, "L'analyse IA a échoué. Réessayez.")));
       }
     } finally {
       setAiAnalyzingId(null);
@@ -663,8 +829,9 @@ function Inbox() {
       if (meta.destructive) {
         const ok = await confirm({
           title: `Supprimer ${ids.length} email${ids.length > 1 ? 's' : ''} ?`,
-          message: 'Ils partent à la corbeille Gmail.',
-          detail: 'Récupérables pendant 30 jours, et annulables immédiatement depuis la notification.',
+          message: 'Ils partent dans la corbeille de votre boîte.',
+          detail:
+            'Récupérables dans la corbeille de votre fournisseur (30 jours chez Gmail), et annulables tout de suite depuis la notification.',
           confirmLabel: 'Supprimer',
           danger: true,
         });
@@ -713,7 +880,11 @@ function Inbox() {
         } else if (action === 'read') applied.forEach((id) => patchEmail(id, { isRead: true }));
         else if (action === 'unread') applied.forEach((id) => patchEmail(id, { isRead: false }));
         else if (action === 'star') applied.forEach((id) => patchEmail(id, { isStarred: true }));
-        else if (action === 'unstar') applied.forEach((id) => patchEmail(id, { isStarred: false }));
+        else if (action === 'unstar') {
+          // Under "Favoris" they leave the list, as one mail does (leavesList).
+          if (leavesList(action, activeQuery)) removeEmails(applied);
+          else applied.forEach((id) => patchEmail(id, { isStarred: false }));
+        }
 
         setSelectedEmails([]);
 
@@ -725,7 +896,7 @@ function Inbox() {
         if (applied.length === 0) {
           toast.error(
             hardError
-              ? hardError.response?.data?.trim?.() || "L'action groupée a échoué."
+              ? apiError(hardError, "L'action groupée a échoué.")
               : data.protectedSkipped
               ? 'Aucun email traité : tous sont protégés.'
               : "Aucun email n'a pu être traité."
@@ -736,13 +907,21 @@ function Inbox() {
               // Same cap as the forward path: undoing 400 archives is two calls.
               // The label name travels back too: taking a label off needs to
               // know which one, and only this closure still remembers.
+              // A mail another mail client moved meanwhile does not come back:
+              // the server says so, and the screen does not claim a full undo.
+              let reason = '';
+              let missing = 0;
               for (let i = 0; i < applied.length; i += BATCH_LIMIT) {
-                await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
+                const { data: undone } = await emailService.batchUndo(applied.slice(i, i + BATCH_LIMIT), action, labelName);
+                if (undone?.message) reason = undone.message;
+                missing += Math.max(0, (undone?.total || 0) - (undone?.restored || 0));
               }
-              toast.success('Action annulée');
+              if (reason) toast.error(reason);
+              else if (missing) toast.error(`${missing} email${plural(missing)} n'${missing > 1 ? 'ont' : 'a'} pas pu être remis.`);
+              else toast.success('Action annulée');
               fetchData({ forceRefresh: true, sync: false });
-            } catch {
-              toast.error("Impossible d'annuler");
+            } catch (err) {
+              showMailboxError(err, "Impossible d'annuler.");
             }
           });
         } else {
@@ -752,13 +931,13 @@ function Inbox() {
           toast.error(`${data.failed} email${plural(data.failed)} n'${data.failed > 1 ? 'ont' : 'a'} pas pu être traité${plural(data.failed)}`);
         }
       } catch (err) {
-        toast.error(err.response?.data?.trim?.() || "L'action groupée a échoué.");
+        showMailboxError(err, "L'action groupée a échoué.");
       } finally {
         setBulkBusy(false);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedEmails, confirm]
+    [selectedEmails, confirm, activeQuery]
   );
 
   // Snooze the whole selection to one wake time. Same chunking as runBulk (the
@@ -774,6 +953,7 @@ function Inbox() {
         const snoozed = [];
         let failed = 0;
         let protectedSkipped = 0;
+        let hardError = null;
         for (let i = 0; i < ids.length; i += BATCH_LIMIT) {
           const chunk = ids.slice(i, i + BATCH_LIMIT);
           try {
@@ -783,6 +963,7 @@ function Inbox() {
             protectedSkipped += data.protectedSkipped || 0;
           } catch (err) {
             failed += chunk.length;
+            hardError = err;
           }
         }
 
@@ -793,11 +974,11 @@ function Inbox() {
         setSelectedEmails([]);
 
         if (snoozed.length === 0) {
-          toast.error(
-            protectedSkipped
-              ? 'Aucun email reporté : tous sont protégés.'
-              : "Aucun email n'a pu être reporté."
-          );
+          if (hardError) showMailboxError(hardError, "Aucun email n'a pu être reporté.");
+          else
+            toast.error(
+              protectedSkipped ? 'Aucun email reporté : tous sont protégés.' : "Aucun email n'a pu être reporté."
+            );
           return;
         }
         const parts = [`${snoozed.length} email${plural(snoozed.length)} reporté${plural(snoozed.length)}`];
@@ -821,13 +1002,22 @@ function Inbox() {
     removeEmails(email.messageId);
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
-      await emailService.action(email.messageId, action);
+      const { data } = await emailService.action(email.messageId, action);
       plan.settle(email.messageId);
+      if (data?.status === 'already') {
+        // It had already left the inbox (from another device, or a click
+        // just before): nothing moved, so nothing to count or undo.
+        toast.success('Ce mail avait déjà quitté la boîte de réception.');
+        return;
+      }
       bumpGamify(1);
       undoToast(email.messageId, action, action === 'archive' ? 'Email archivé' : 'Email déplacé vers la corbeille');
     } catch (err) {
-      toast.error("L'action a échoué");
-      fetchData({ forceRefresh: true, sync: false });
+      // The server's sentence. A mailbox changed since the page was loaded is
+      // loaded again as a whole (whenMailboxChanged): this list is not
+      // refreshed nor the row put back, they are the other mailbox's.
+      showMailboxError(err, "L'action a échoué");
+      if (!isMailboxChanged(err)) fetchData({ forceRefresh: true, sync: false });
     }
   };
 
@@ -838,6 +1028,32 @@ function Inbox() {
     const optimistic = FLAG_PATCH[action];
     const rollback = FLAG_PATCH[FLAG_INVERSE[action]];
     if (optimistic) patchEmail(email.messageId, optimistic);
+    // Once the server agreed. The reader, if open on it, stays open: it reads
+    // the mail it was opened on once the row is gone, so that one is patched.
+    const settle = () => {
+      toast.success(actionMeta(action).past, { duration: 1800 });
+      if (!leavesList(action, activeQuery)) return;
+      removeEmails(email.messageId);
+      setSelectedEmail((prev) => (prev && prev.messageId === email.messageId ? { ...prev, ...optimistic } : prev));
+    };
+    // Over IMAP the batch route does not exist yet (501), while the single
+    // action does read, unread and the star: that one is used there, and
+    // whenever the mailbox is not known, since it works on both transports.
+    // The stored copy of an IMAP inbox keeps the star, so it stays at the next
+    // listing.
+    if (!fullFeatures) {
+      try {
+        await emailService.action(email.messageId, action);
+        settle();
+      } catch (err) {
+        if (rollback && !isMailboxChanged(err)) patchEmail(email.messageId, rollback);
+        showMailboxError(err, "L'action a échoué");
+        // 404: it is no longer in the inbox (moved from another device):
+        // the row goes, as it would at the next sync.
+        if (err?.response?.status === 404) removeEmails(email.messageId);
+      }
+      return;
+    }
     try {
       const { data } = await emailService.batchAction([email.messageId], action);
       // The endpoint answers 200 while counting per-message failures, so a
@@ -849,10 +1065,10 @@ function Inbox() {
         toast.error(data.protectedSkipped ? 'Expéditeur protégé : action ignorée.' : "L'action a échoué");
         return;
       }
-      toast.success(actionMeta(action).past, { duration: 1800 });
-    } catch {
-      if (rollback) patchEmail(email.messageId, rollback);
-      toast.error("L'action a échoué");
+      settle();
+    } catch (err) {
+      if (rollback && !isMailboxChanged(err)) patchEmail(email.messageId, rollback);
+      showMailboxError(err, "L'action a échoué");
     }
   };
 
@@ -866,16 +1082,23 @@ function Inbox() {
     removeEmails(email.messageId);
     setSelectedEmails((prev) => prev.filter((id) => id !== email.messageId));
     try {
-      await emailService.snooze(email.messageId, choice);
+      const { data } = await emailService.snooze(email.messageId, choice);
       plan.settle(email.messageId);
+      // Over IMAP the mail had already left the inbox (reported a moment ago,
+      // or moved by another mail program): nothing was reported, so the
+      // screen does not say it was.
+      if (data?.status === 'already') {
+        toast.info("Ce mail n'est plus dans votre boîte de réception.");
+        return;
+      }
       // `custom` rather than the instant itself: an exact wake time is personal
       // data and product analytics only needs to know the affordance was used.
       track('snooze', { preset: choice.preset || 'custom' });
       bumpGamify(1);
       toast.success('Email reporté, il reviendra au bon moment');
     } catch (err) {
-      toast.error(apiError(err, 'Report impossible. Réessayez.'));
-      fetchData({ forceRefresh: true, sync: false });
+      showMailboxError(err, 'Report impossible. Réessayez.');
+      if (!isMailboxChanged(err)) fetchData({ forceRefresh: true, sync: false });
     }
   };
 
@@ -1034,7 +1257,7 @@ function Inbox() {
       if (alsoArchive || data.archived) fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
       if (err.response?.status === 422) toast.error("Cet expéditeur ne propose pas de désabonnement automatique");
-      else toast.error('Désabonnement impossible. Réessayez.');
+      else showMailboxError(err, 'Désabonnement impossible. Réessayez.');
     } finally {
       setUnsubscribing(null);
     }
@@ -1080,7 +1303,7 @@ function Inbox() {
       title: `${meta.label} tous les emails de ${who} ?`,
       message: `${sender.emailCount} email${sender.emailCount > 1 ? 's' : ''} déjà reçu${sender.emailCount > 1 ? 's' : ''} ${meta.destructive ? 'partiront à la corbeille' : 'seront archivés'}.`,
       detail: meta.destructive
-        ? 'Cette action porte sur tout l’historique de cet expéditeur, pas seulement les emails affichés.'
+        ? "Cette action porte sur tout l'historique de cet expéditeur, pas seulement les emails affichés."
         : 'Les futurs emails ne sont pas concernés : pour cela, créez une règle.',
       confirmLabel: meta.label,
       danger: meta.destructive,
@@ -1095,7 +1318,7 @@ function Inbox() {
       toast.success(`${response.data.applied} email${response.data.applied > 1 ? 's' : ''} traité${response.data.applied > 1 ? 's' : ''}`);
       fetchData({ forceRefresh: true, sync: false });
     } catch (err) {
-      toast.error('Traitement en masse impossible');
+      showMailboxError(err, 'Traitement en masse impossible');
     }
   };
 
@@ -1219,7 +1442,7 @@ function Inbox() {
           if (cur) flagAction(cur, 'read');
           break;
         case 's':
-          if (cur) flagAction(cur, 'star');
+          if (cur && known) flagAction(cur, 'star');
           break;
         // '#' is Gmail's delete key but needs Alt+3 on a French AZERTY layout,
         // and Alt-modified events are filtered out above, so it was simply
@@ -1236,20 +1459,23 @@ function Inbox() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail]);
+  }, [emails, focusedIndex, view, plan, selectedEmail, selectedEmails, triageMode, triageIndex, triageIds, openEmail, fullFeatures, known]);
 
   const allSelected = emails.length > 0 && selectedEmails.length === emails.length;
   const goalHit = gamify.today >= gamify.goal;
   const hasSelection = selectedEmails.length > 0;
   rowRefs.current = [];
 
-  const activeFilter = QUICK_FILTERS.find((f) => f.query === activeQuery);
+  const activeFilter = quickFilters.find((f) => f.query === activeQuery);
 
 
 
   const openEmailSuggestion = openEmail
     ? suggestions.find((s) => s.emailId === openEmail.messageId)
     : null;
+  // A label waits until the mailbox is known: shown with its reason and
+  // "Ignorer", without the button.
+  const openSuggestionApplicable = !openEmailSuggestion || canApplyVerdict(openEmailSuggestion.action, known);
 
   // One element, rendered into whichever of the two containers the breakpoint
   // shows. Only one is ever visible, so React mounts a single EmailReader.
@@ -1263,15 +1489,23 @@ function Inbox() {
       onRead={(id) => patchEmail(id, { isRead: true })}
       onArchive={() => (triageMode ? handleTriageAction('archive') : handleReaderAction(openEmail, 'archive'))}
       onDelete={() => (triageMode ? handleTriageAction('delete') : handleReaderAction(openEmail, 'delete'))}
-      onSnooze={(choice) => (triageMode ? handleTriageSnooze(choice) : handleSnooze(openEmail, choice))}
+      onSnooze={
+        can('snooze') ? (choice) => (triageMode ? handleTriageSnooze(choice) : handleSnooze(openEmail, choice)) : undefined
+      }
       onFlag={(action) => flagAction(openEmail, action)}
+      canStar={known}
+      hasLabels={fullFeatures}
       onProtect={() => handleProtect(openEmail)}
-      onUnsubscribe={() => handleUnsubscribe({ messageId: openEmail.messageId })}
+      onUnsubscribe={can('unsubscribe') ? () => handleUnsubscribe({ messageId: openEmail.messageId }) : undefined}
       unsubscribing={unsubscribing === openEmail.messageId}
       aiSuggestion={openEmailSuggestion}
       onAiAnalyze={handleAiAnalyzeSingle}
       aiAnalyzing={aiAnalyzingId === openEmail.messageId}
-      onApplySuggestion={triageMode ? handleTriageApplySuggestion : handleApplySuggestion}
+      folders={isImap}
+      suggestionHeld={!openSuggestionApplicable}
+      onApplySuggestion={
+        openSuggestionApplicable ? (triageMode ? handleTriageApplySuggestion : handleApplySuggestion) : undefined
+      }
       onRejectSuggestion={handleRejectSuggestion}
       triage={
         triageMode && triageIds.length > 0
@@ -1283,7 +1517,10 @@ function Inbox() {
               onPrev: handleTriagePrev,
               onNext: handleTriageNext,
               onKeep: handleTriageKeep,
-              onLabel: () => setTriageLabeling(true),
+              // Labelling by hand goes through the batch route, Gmail API
+              // only: closed over IMAP, where only the AI's proposal files a
+              // mail in a folder so far.
+              onLabel: fullFeatures ? () => setTriageLabeling(true) : undefined,
             }
           : null
       }
@@ -1299,7 +1536,7 @@ function Inbox() {
         ref={searchRef}
         value={searchQuery}
         onChange={(e) => setSearchQuery(e.target.value)}
-        placeholder={hotel ? 'Rechercher ( / )' : 'Rechercher…  ( / )'}
+        placeholder={hotel ? 'Rechercher ( / )' : 'Rechercher...  ( / )'}
         aria-label="Rechercher dans la boîte de réception"
         className="input w-full pl-10 pr-9 sm:w-64"
       />
@@ -1339,7 +1576,7 @@ function Inbox() {
             stats
               ? [
                   `${formatNumber(stats.unreadCount)} non lu${stats.unreadCount > 1 ? 's' : ''}`,
-                  plan.totals.moves > 0 && `${plan.totals.moves} à ranger`,
+                  plan.totals.toTidy > 0 && `${plan.totals.toTidy} à ranger`,
                 ]
                   .filter(Boolean)
                   .join(', ')
@@ -1371,10 +1608,10 @@ function Inbox() {
       {/* Stats: each one is also the filter it describes */}
       {stats &&
         (hotel ? (
-          <HotelStats stats={stats} cards={STAT_CARDS} activeQuery={activeQuery} onPick={runQuery} formatNumber={formatNumber} />
+          <HotelStats stats={stats} cards={statCards} activeQuery={activeQuery} onPick={runQuery} formatNumber={formatNumber} />
         ) : (
-            <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-              {STAT_CARDS.map(({ key, label, tone, Icon, query }) => (
+            <div className={cn('mb-4 grid grid-cols-2 gap-2.5', statCards.length > 2 ? 'sm:grid-cols-4' : 'sm:grid-cols-2')}>
+              {statCards.map(({ key, label, tone, Icon, query }) => (
                 <button
                   key={key}
                   onClick={() => runQuery(query)}
@@ -1423,11 +1660,14 @@ function Inbox() {
             layout viewport to match: every fixed toast, "Annuler" included, was
             laid out off the bottom of the screen. */}
         <div className="inline-flex max-w-full overflow-x-auto rounded-xl border border-hairline bg-surface p-1 shadow-soft" role="tablist">
+          {/* The Abonnements tab exists to unsubscribe, which an IMAP mailbox
+              cannot do yet: the tab is hidden there rather than left as a list
+              with nothing to press. */}
           {[
             { id: 'emails', label: 'Emails', Icon: InboxIcon },
             { id: 'senders', label: `Expéditeurs · ${localSenders.length}`, Icon: Users },
-            { id: 'subs', label: `Abonnements · ${activeSubs.length}`, Icon: BellOff },
-          ].map(({ id, label, Icon }) => (
+            can('unsubscribe') && { id: 'subs', label: `Abonnements · ${activeSubs.length}`, Icon: BellOff },
+          ].filter(Boolean).map(({ id, label, Icon }) => (
             <button
               key={id}
               role="tab"
@@ -1446,7 +1686,7 @@ function Inbox() {
         {view === 'emails' && (
           <button onClick={handleAnalyze} disabled={analyzing} className="btn-primary ml-auto">
             {analyzing ? <Spinner size={18} /> : <Sparkles size={18} />}
-            {analyzing ? 'Analyse…' : hasSelection ? `Trier avec l'IA · ${selectedEmails.length}` : 'Trier ma boîte'}
+            {analyzing ? 'Analyse...' : hasSelection ? `Trier avec l'IA · ${selectedEmails.length}` : 'Trier ma boîte'}
           </button>
         )}
       </div>
@@ -1455,7 +1695,7 @@ function Inbox() {
       {view === 'emails' &&
         (hotel ? (
           <HotelFilters
-            filters={QUICK_FILTERS}
+            filters={quickFilters}
             saved={savedSearches}
             activeQuery={activeQuery}
             activeFilter={activeFilter}
@@ -1470,7 +1710,7 @@ function Inbox() {
         ) : (
             <div className="mb-4 flex flex-wrap items-center gap-1.5">
               <Filter size={14} className="text-subtle" aria-hidden />
-              {QUICK_FILTERS.map(({ id, label, query }) => (
+              {quickFilters.map(({ id, label, query }) => (
                 <button
                   key={id}
                   onClick={() => { setSearchQuery(''); runQuery(query); }}
@@ -1555,7 +1795,7 @@ function Inbox() {
             </span>
             <div>
               <div className="text-sm font-bold text-ink-900">
-                {job.status === 'queued' ? 'Analyse en file…' : "L'IA trie votre boîte…"}
+                {job.status === 'queued' ? 'Analyse en file...' : "L'IA trie votre boîte..."}
               </div>
               <div className="text-xs text-muted">
                 {job.processed || 0}/{job.total || 0} traités
@@ -1647,8 +1887,12 @@ function Inbox() {
                       <Sparkles size={14} />
                       <span>Trier un par un</span>
                     </button>
-                    <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />
-                  {BULK_ACTIONS.map((key) => {
+                    {/* The actions over a selection go through the batch
+                        route, which an IMAP mailbox cannot use yet: there, the
+                        selection is for "Trier un par un", the AI and
+                        "Reporter", which has a route of its own. */}
+                    {known && <div className="h-4 w-px bg-hairline mx-1 hidden sm:block" />}
+                  {fullFeatures && BULK_ACTIONS.map((key) => {
                     const meta = actionMeta(key);
                     return (
                       <button
@@ -1667,7 +1911,10 @@ function Inbox() {
                     );
                   })}
                   {/* Snooze is the one bulk action that needs a "until when",
-                      so it carries its own menu instead of a flat button. */}
+                      so it carries its own menu instead of a flat button. It
+                      works on both transports (over IMAP the mails wait in
+                      the folder « Plus tard »), once the mailbox is known. */}
+                  {known && (
                   <SnoozeButton
                     onSnooze={runBulkSnooze}
                     disabled={bulkBusy}
@@ -1677,6 +1924,7 @@ function Inbox() {
                     className="btn-ghost btn-sm"
                     iconSize={15}
                   />
+                  )}
                   <button onClick={() => setSelectedEmails([])} className="btn-ghost btn-sm btn-icon" aria-label="Vider la sélection">
                     <X size={15} />
                   </button>
@@ -1704,7 +1952,7 @@ function Inbox() {
                     : error}
                 </span>
                 {errorRetryable ? (
-                  <button onClick={() => fetchData({ forceRefresh: true, sync: true })} className="btn-secondary btn-sm">
+                  <button onClick={syncAgain} className="btn-secondary btn-sm">
                     Réessayer
                   </button>
                 ) : (
@@ -1738,20 +1986,20 @@ function Inbox() {
               <ErrorState
                 title="Impossible de charger votre boîte"
                 message={error}
-                onRetry={() => fetchData({ forceRefresh: true, sync: true })}
+                onRetry={syncAgain}
               />
             ) : emails.length === 0 ? (
               <EmptyState
                 Icon={Check}
                 tone="positive"
                 scene={activeQuery === DEFAULT_QUERY ? { prop: 'dnd', color: '#2F6F73' } : { prop: 'signpost', color: '#7A2E3B' }}
-                hotelTitle={activeQuery === DEFAULT_QUERY ? 'Inbox zéro. Respect.' : 'Rien sous ce filtre.'}
+                hotelTitle={activeQuery === DEFAULT_QUERY ? 'Boîte vide. Respect.' : 'Rien sous ce filtre.'}
                 hotelDescription={
                   activeQuery === DEFAULT_QUERY
                     ? 'Rien à trier ici. Synchronisez pour relever le nouveau courrier.'
                     : 'Essayez un autre filtre, ou revenez à la boîte complète.'
                 }
-                title={activeQuery === DEFAULT_QUERY ? 'Inbox Zero atteint 🎉' : 'Aucun email pour ce filtre'}
+                title={activeQuery === DEFAULT_QUERY ? 'Boîte de réception vide 🎉' : 'Aucun email pour ce filtre'}
                 description={
                   activeQuery === DEFAULT_QUERY
                     ? 'Plus rien à trier ici. Synchronisez pour récupérer de nouveaux emails.'
@@ -1866,7 +2114,9 @@ function Inbox() {
                             <span className="text-xs text-muted">{formatDate(email.receivedDate)}</span>
                           </span>
                         </span>
-                        <span className={cn('block truncate text-sm', email.isRead ? 'text-ink-600' : 'font-semibold text-ink-800')}>
+                        <span
+                          className={cn('block truncate text-sm', email.isRead ? 'font-bold text-ink-900 border-l-2 border-brand-500 pl-3' : 'font-semibold text-ink-800')}
+                        >
                           {email.subject || '(Sans sujet)'}
                         </span>
                         <span className="block truncate text-xs text-muted">{email.snippet}</span>
@@ -1898,7 +2148,7 @@ function Inbox() {
                   <li className="p-3">
                     <button onClick={loadMoreEmails} disabled={loadingMore} className="btn-secondary w-full">
                       {loadingMore ? <Spinner size={18} /> : null}
-                      {loadingMore ? 'Chargement…' : "Charger plus d'emails"}
+                      {loadingMore ? 'Chargement...' : "Charger plus d'emails"}
                     </button>
                   </li>
                 )}
@@ -1913,7 +2163,7 @@ function Inbox() {
                 <input
                   value={senderFilter}
                   onChange={(e) => setSenderFilter(e.target.value)}
-                  placeholder="Filtrer les expéditeurs…"
+                  placeholder="Filtrer les expéditeurs..."
                   aria-label="Filtrer les expéditeurs"
                   className="input pl-10"
                 />
@@ -1951,14 +2201,18 @@ function Inbox() {
                           <prefMeta.Icon size={13} />
                           {prefMeta.label}
                         </span>
+                        {/* Applying by sender, by hand or at each sort, is
+                            Gmail-only for now: hidden over IMAP. */}
+                        {fullFeatures && (
                         <button
                           onClick={() => handleToggleAutoApply(sender)}
                           aria-pressed={Boolean(pref.autoApply)}
                           className={cn('chip transition-colors', pref.autoApply ? 'bg-positive-100 text-positive-700' : 'bg-ink-100 text-ink-700 hover:bg-ink-200')}
                           title="Appliquer automatiquement à chaque tri"
                         >
-                          <Bolt size={13} /> Auto-pilote {pref.autoApply ? 'ON' : 'OFF'}
+                          <Bolt size={13} /> Auto-pilote {pref.autoApply ? 'activé' : 'désactivé'}
                         </button>
+                        )}
                       </>
                     ) : (
                       <button
@@ -1970,6 +2224,7 @@ function Inbox() {
                         Analyser
                       </button>
                     )}
+                    {fullFeatures && (
                     <div className="flex items-center gap-0.5">
                       <button
                         onClick={() => handleCreateSenderRule(sender)}
@@ -1996,6 +2251,7 @@ function Inbox() {
                         <Trash size={17} />
                       </button>
                     </div>
+                    )}
                   </div>
                 );
               })
@@ -2142,7 +2398,7 @@ function Inbox() {
         onClose={dismissWelcome}
         size="lg"
         title={hotel ? 'Bienvenue dans Mailsorter' : 'Bienvenue dans Mailsorter 👋'}
-        description="Votre boîte va enfin se ranger toute seule. Voici les quatre leviers."
+        description="L'IA propose le tri, vous validez. Voici l'essentiel."
         footer={
           <>
             <button onClick={dismissWelcome} className="btn-secondary w-full sm:w-auto">Explorer d'abord</button>
@@ -2157,20 +2413,15 @@ function Inbox() {
       >
         {hotel ? (
           <div className="space-y-4">
-            {WELCOME_PLAQUES.map(([n, lead, rest]) => (
-              <Plaque key={n} n={n}>
+            {welcomeLevers({ can, selfHosted }).map(({ lead, rest }, i) => (
+              <Plaque key={lead} n={ROMAN[i]}>
                 <strong>{lead}</strong> {rest}
               </Plaque>
             ))}
           </div>
         ) : (
           <div className="space-y-4">
-            {[
-              { Icon: Sparkles, t: 'Trier avec l’IA', d: "L'IA lit vos emails et propose une action pour chacun. Vous validez, en un clic ou tout d'un coup." },
-              { Icon: Bolt, t: 'Encoder vos évidences en règles', d: 'Les règles trient sans IA, gratuitement et sans quota. Un aperçu montre ce qu’elles feraient avant de rien toucher.' },
-              { Icon: BellOff, t: 'Couper le robinet', d: "L'onglet Abonnements repère vos newsletters et vous désabonne, souvent en un clic." },
-              { Icon: Shield, t: 'Ne rien perdre', d: 'Chaque action est journalisée et annulable, et vos expéditeurs protégés ne sont jamais touchés.' },
-            ].map(({ Icon, t, d }, i) => (
+            {welcomeLevers({ can, selfHosted }).map(({ Icon, t, d }, i) => (
               <div key={i} className="flex gap-3">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
                   <Icon size={18} />
@@ -2188,7 +2439,7 @@ function Inbox() {
       {/* Keyboard shortcuts */}
       <Modal open={showShortcuts} onClose={() => setShowShortcuts(false)} title="Raccourcis clavier" size="md">
         <div className="space-y-1">
-          {SHORTCUTS.map(([keys, desc]) => (
+          {SHORTCUTS.filter(([, , needs]) => !needs || known).map(([keys, desc]) => (
             <div key={keys} className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-sunken">
               <span className="text-ink-700">{desc}</span>
               <kbd className="shrink-0 rounded-md border border-hairline bg-surface-sunken px-2 py-0.5 font-mono text-xs font-semibold text-ink-800">
@@ -2258,7 +2509,7 @@ function LabelPicker({ open, count, onClose, onPick }) {
           onKeyDown={(e) => {
             if (e.key === 'Enter' && trimmed) onPick(trimmed);
           }}
-          placeholder={labels === null ? 'Chargement…' : 'Choisir ou créer…'}
+          placeholder={labels === null ? 'Chargement...' : 'Choisir ou créer...'}
           autoComplete="off"
         />
         <datalist id="mailsorter-labels">
@@ -2269,7 +2520,7 @@ function LabelPicker({ open, count, onClose, onPick }) {
       </label>
       {isNew && (
         <p className="mt-2 text-xs text-muted">
-          <span className="font-semibold text-caution-700">Nouveau libellé</span> : « {trimmed} » sera créé dans Gmail.
+          <span className="font-semibold text-caution-700">Nouveau libellé</span> : « {trimmed} » sera créé dans votre boîte.
         </p>
       )}
       {labels && labels.length > 0 && (

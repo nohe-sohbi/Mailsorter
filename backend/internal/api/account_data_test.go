@@ -18,13 +18,13 @@ var collectionAccessor = regexp.MustCompile(`\.DB\.Collection\("([^"]+)"\)`)
 // notUserScoped are the collections the catalog must NOT name, each for a stated
 // reason. Erasure in DeleteAccount is a DeleteMany on userId, so a collection
 // keyed any other way can only be handled by hand, and pretending otherwise would
-// report a deletion count of zero as a success. Expected to stay at four: a wrong
-// entry is the one failure no test can catch.
+// report a deletion count of zero as a success. Expected to stay at three: a wrong
+// entry is the one failure no test can catch. (waitlist left this list: a signup
+// made while signed in carries the account's userId, so the catalog covers it.)
 var notUserScoped = map[string]string{
 	"users":          "keyed by email, erased separately as the account record itself",
 	"gmail_config":   "instance-wide legacy fallback, one document for every user",
 	"analysis_cache": "shared across all users on purpose, keyed by sender and subject",
-	"waitlist":       "logged-out visitors, the email address is the identity",
 }
 
 // The inverse of TestEveryDatasetHasABackingCollection, which walks Datasets() and
@@ -94,7 +94,7 @@ func TestAISettingsAreErasableButTheirKeyIsNotExportable(t *testing.T) {
 
 func TestRedactRowsStripsTheNamedFields(t *testing.T) {
 	rows := []bson.M{
-		{"userId": "me@example.com", "provider": "openai", "apiKey": "enc:v1:cipher", "model": "gpt-4o-mini"},
+		{"userId": "me@example.com", "provider": "openai", "apiKey": "enc:v1:cipher", "model": "gpt-6-luna"},
 		{"userId": "me@example.com", "provider": "orange", "secret": "enc:v1:cipher", "username": "me@orange.fr"},
 	}
 
@@ -114,7 +114,7 @@ func TestRedactRowsStripsTheNamedFields(t *testing.T) {
 		want  string
 	}{
 		{got[0], "provider", "openai"},
-		{got[0], "model", "gpt-4o-mini"},
+		{got[0], "model", "gpt-6-luna"},
 		{got[1], "username", "me@orange.fr"},
 		{got[0], "userId", "me@example.com"},
 	} {

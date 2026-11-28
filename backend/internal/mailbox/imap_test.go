@@ -11,30 +11,35 @@ import (
 // files would silently invert the user's mailbox.
 func TestIMAPOpForTranslatesEveryAction(t *testing.T) {
 	cases := []struct {
-		action Action
-		want   IMAPOp
-		why    string
+		action  Action
+		labelID string
+		want    IMAPOp
+		why     string
 	}{
-		{ActionMarkRead, IMAPOp{Kind: IMAPFlagChange, AddFlags: []string{FlagSeen}},
+		{ActionMarkRead, "", IMAPOp{Kind: IMAPFlagChange, AddFlags: []string{FlagSeen}},
 			"over IMAP read is the PRESENCE of \\Seen, the opposite convention from the Gmail API"},
-		{ActionMarkUnread, IMAPOp{Kind: IMAPFlagChange, DropFlags: []string{FlagSeen}}, ""},
-		{ActionStar, IMAPOp{Kind: IMAPFlagChange, AddFlags: []string{FlagFlagged}}, ""},
-		{ActionUnstar, IMAPOp{Kind: IMAPFlagChange, DropFlags: []string{FlagFlagged}}, ""},
-		{ActionArchive, IMAPOp{Kind: IMAPMove, To: FolderArchive},
+		{ActionMarkUnread, "", IMAPOp{Kind: IMAPFlagChange, DropFlags: []string{FlagSeen}}, ""},
+		{ActionStar, "", IMAPOp{Kind: IMAPFlagChange, AddFlags: []string{FlagFlagged}}, ""},
+		{ActionUnstar, "", IMAPOp{Kind: IMAPFlagChange, DropFlags: []string{FlagFlagged}}, ""},
+		{ActionArchive, "", IMAPOp{Kind: IMAPMove, To: FolderArchive},
 			"archiving is a MOVE here, not the removal of a label"},
-		{ActionTrash, IMAPOp{Kind: IMAPMove, To: FolderTrash}, ""},
-		{ActionUnarchive, IMAPOp{Kind: IMAPMove, To: FolderInbox}, ""},
-		{ActionUntrash, IMAPOp{Kind: IMAPMove, To: FolderInbox},
+		{ActionTrash, "", IMAPOp{Kind: IMAPMove, To: FolderTrash}, ""},
+		{ActionUnarchive, "", IMAPOp{Kind: IMAPMove, To: FolderInbox}, ""},
+		{ActionUntrash, "", IMAPOp{Kind: IMAPMove, To: FolderInbox},
 			"one move back to the inbox, where the Gmail API needs both an add and a remove"},
+		{ActionLabel, "Factures", IMAPOp{Kind: IMAPMove, Into: "Factures"},
+			"a label is the folder of that name here: labelling files the mail there, out of the inbox"},
+		{ActionUnlabel, "Factures", IMAPOp{Kind: IMAPMove, To: FolderInbox},
+			"a message sits in one folder, so leaving the label's folder is going back to the inbox"},
 	}
 
 	for _, tc := range cases {
-		got, err := IMAPOpFor(Mutation{Action: tc.action})
+		got, err := IMAPOpFor(Mutation{Action: tc.action, LabelID: tc.labelID})
 		if err != nil {
 			t.Errorf("IMAPOpFor(%q) returned %v", tc.action, err)
 			continue
 		}
-		if got.Kind != tc.want.Kind || got.To != tc.want.To ||
+		if got.Kind != tc.want.Kind || got.To != tc.want.To || got.Into != tc.want.Into ||
 			!equal(got.AddFlags, tc.want.AddFlags) || !equal(got.DropFlags, tc.want.DropFlags) {
 			msg := ""
 			if tc.why != "" {
@@ -49,16 +54,16 @@ func TestIMAPOpForTranslatesEveryAction(t *testing.T) {
 // would mean silently doing nothing (flagging when a move was meant) or losing
 // the message from view (moving when a flag was meant).
 func TestIMAPOpForNeverConfusesAMoveWithAFlag(t *testing.T) {
-	moves := map[Action]bool{ActionArchive: true, ActionTrash: true, ActionUnarchive: true, ActionUntrash: true}
+	moves := map[Action]bool{
+		ActionArchive: true, ActionTrash: true, ActionUnarchive: true, ActionUntrash: true,
+		ActionLabel: true, ActionUnlabel: true,
+	}
 	for verb := range aliases {
 		action, err := Parse(verb)
 		if err != nil {
 			t.Fatalf("Parse(%q): %v", verb, err)
 		}
-		op, err := IMAPOpFor(Mutation{Action: action})
-		if errors.Is(err, ErrNoIMAPEquivalent) {
-			continue
-		}
+		op, err := IMAPOpFor(Mutation{Action: action, LabelID: "Factures"})
 		if err != nil {
 			t.Errorf("IMAPOpFor(%q): %v", action, err)
 			continue
@@ -67,8 +72,8 @@ func TestIMAPOpForNeverConfusesAMoveWithAFlag(t *testing.T) {
 			if op.Kind != IMAPMove {
 				t.Errorf("IMAPOpFor(%q).Kind = %v, want IMAPMove", action, op.Kind)
 			}
-			if op.To == "" {
-				t.Errorf("IMAPOpFor(%q) is a move with no destination", action)
+			if (op.To == "") == (op.Into == "") {
+				t.Errorf("IMAPOpFor(%q) = %+v, want a move with exactly one destination", action, op)
 			}
 			if len(op.AddFlags)+len(op.DropFlags) != 0 {
 				t.Errorf("IMAPOpFor(%q) is a move that also changes flags: %+v", action, op)
@@ -81,21 +86,17 @@ func TestIMAPOpForNeverConfusesAMoveWithAFlag(t *testing.T) {
 		if len(op.AddFlags)+len(op.DropFlags) == 0 {
 			t.Errorf("IMAPOpFor(%q) changes nothing, so the action would silently no-op", action)
 		}
-		if op.To != "" {
+		if op.To != "" || op.Into != "" {
 			t.Errorf("IMAPOpFor(%q) is a flag change with a destination: %+v", action, op)
 		}
 	}
 }
 
-// Labelling is not a failure here, it is a capability plain IMAP does not have.
-// The distinct error is what lets a caller tell "this connection cannot" from
-// "this went wrong", and internal/provider already records which routes can.
-func TestIMAPOpForReportsLabellingAsUnsupported(t *testing.T) {
-	for _, action := range []Action{ActionLabel, ActionUnlabel} {
-		_, err := IMAPOpFor(Mutation{Action: action, LabelID: "Label_42"})
-		if !errors.Is(err, ErrNoIMAPEquivalent) {
-			t.Errorf("IMAPOpFor(%q) = %v, want ErrNoIMAPEquivalent", action, err)
-		}
+// Labelling names its folder, and one without a name is a caller bug, as on
+// the Gmail side: filing into "" would be filing nowhere.
+func TestIMAPOpForRequiresTheLabelsFolder(t *testing.T) {
+	if _, err := IMAPOpFor(Mutation{Action: ActionLabel}); !errors.Is(err, ErrLabelRequired) {
+		t.Errorf("IMAPOpFor(label without a name) = %v, want ErrLabelRequired", err)
 	}
 }
 
@@ -125,8 +126,8 @@ func TestIMAPOpsForKeepsOrder(t *testing.T) {
 }
 
 func TestIMAPOpsForPropagatesAnError(t *testing.T) {
-	if _, err := IMAPOpsFor([]Mutation{{Action: ActionArchive}, {Action: ActionLabel, LabelID: "x"}}); !errors.Is(err, ErrNoIMAPEquivalent) {
-		t.Errorf("a label action inside a compound = %v, want ErrNoIMAPEquivalent", err)
+	if _, err := IMAPOpsFor([]Mutation{{Action: ActionArchive}, {Action: ActionLabel}}); !errors.Is(err, ErrLabelRequired) {
+		t.Errorf("a label action without a name inside a compound = %v, want ErrLabelRequired", err)
 	}
 }
 
@@ -158,5 +159,24 @@ func TestIMAPIsReadIsTheOppositeConventionFromGmail(t *testing.T) {
 	}
 	if GmailIsRead([]string{"INBOX"}) != IMAPIsRead([]string{FlagSeen}) {
 		t.Error("a read message reads differently across the two transports")
+	}
+}
+
+// The star is \Flagged and nothing else: a read message is not a favorite.
+func TestIMAPIsStarredReadsFlagged(t *testing.T) {
+	cases := []struct {
+		flags []string
+		want  bool
+	}{
+		{[]string{FlagFlagged}, true},
+		{[]string{FlagSeen, FlagFlagged}, true},
+		{[]string{FlagSeen}, false},
+		{[]string{}, false},
+		{nil, false},
+	}
+	for _, tc := range cases {
+		if got := IMAPIsStarred(tc.flags); got != tc.want {
+			t.Errorf("IMAPIsStarred(%v) = %v, want %v", tc.flags, got, tc.want)
+		}
 	}
 }

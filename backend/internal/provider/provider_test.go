@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+// bestRoute is the route an edition would use for a provider when everything
+// is configured: the first one it offers, since routes are ordered best first.
+func bestRoute(key string, e Edition) (Route, error) {
+	p, err := Lookup(key)
+	if err != nil {
+		return Route{}, err
+	}
+	for _, r := range p.Routes {
+		if r.Offers(e) {
+			return r, nil
+		}
+	}
+	return Route{}, ErrNotInEdition
+}
+
 // THE invariant. A shared OAuth client is capped by Google at 100
 // authorizations for the lifetime of the Cloud project, and the cap cannot be
 // reset. The hosted edition therefore must never resolve to the Gmail API,
@@ -21,12 +36,12 @@ func TestHostedEditionNeverReachesTheGmailAPI(t *testing.T) {
 
 	// And the two Google providers must still be reachable there, by IMAP.
 	for _, key := range []string{KeyGmail, KeyWorkspace} {
-		route, err := Pick(key, EditionHosted)
+		route, err := bestRoute(key, EditionHosted)
 		if err != nil {
-			t.Fatalf("Pick(%q, hosted) = %v, want a usable route: the hosted edition must still serve Google users", key, err)
+			t.Fatalf("bestRoute(%q, hosted) = %v, want a usable route: the hosted edition must still serve Google users", key, err)
 		}
 		if route.Transport != TransportIMAP || route.Auth != AuthAppPassword {
-			t.Errorf("Pick(%q, hosted) = %s/%s, want imap/app-password", key, route.Transport, route.Auth)
+			t.Errorf("bestRoute(%q, hosted) = %s/%s, want imap/app-password", key, route.Transport, route.Auth)
 		}
 	}
 }
@@ -34,22 +49,22 @@ func TestHostedEditionNeverReachesTheGmailAPI(t *testing.T) {
 // The self-hosted edition exists to unlock what the hosted one cannot do. If
 // these two stop being true, it has no reason to exist.
 func TestSelfHostedUnlocksTheGmailAPIAndProton(t *testing.T) {
-	route, err := Pick(KeyGmail, EditionSelfHosted)
+	route, err := bestRoute(KeyGmail, EditionSelfHosted)
 	if err != nil {
-		t.Fatalf("Pick(gmail, self-hosted) = %v, want the full API route", err)
+		t.Fatalf("bestRoute(gmail, self-hosted) = %v, want the full API route", err)
 	}
 	if route.Transport != TransportGmailAPI {
-		t.Errorf("Pick(gmail, self-hosted) transport = %s, want %s: the user's own Cloud project is what buys full fidelity", route.Transport, TransportGmailAPI)
+		t.Errorf("bestRoute(gmail, self-hosted) transport = %s, want %s: the user's own Cloud project is what buys full fidelity", route.Transport, TransportGmailAPI)
 	}
 	if !route.Caps.Has(CapLabels | CapProviderSearch | CapStableIDs) {
 		t.Error("the Gmail API route must declare labels, provider search and stable ids: they are the reason to prefer it")
 	}
 
-	if _, err := Pick(KeyProton, EditionSelfHosted); err != nil {
-		t.Errorf("Pick(proton, self-hosted) = %v, want a route: Bridge runs on the same machine", err)
+	if _, err := bestRoute(KeyProton, EditionSelfHosted); err != nil {
+		t.Errorf("bestRoute(proton, self-hosted) = %v, want a route: Bridge runs on the same machine", err)
 	}
-	if _, err := Pick(KeyProton, EditionHosted); !errors.Is(err, ErrNotInEdition) {
-		t.Errorf("Pick(proton, hosted) = %v, want ErrNotInEdition: Bridge binds to 127.0.0.1 and no remote server can dial it", err)
+	if _, err := bestRoute(KeyProton, EditionHosted); !errors.Is(err, ErrNotInEdition) {
+		t.Errorf("bestRoute(proton, hosted) = %v, want ErrNotInEdition: Bridge binds to 127.0.0.1 and no remote server can dial it", err)
 	}
 }
 
@@ -264,8 +279,8 @@ func TestLookupRejectsAnUnknownKey(t *testing.T) {
 	if _, err := Lookup("nope"); !errors.Is(err, ErrUnknownProvider) {
 		t.Errorf("Lookup(nope) = %v, want ErrUnknownProvider", err)
 	}
-	if _, err := Pick("nope", EditionHosted); !errors.Is(err, ErrUnknownProvider) {
-		t.Errorf("Pick(nope) = %v, want ErrUnknownProvider", err)
+	if _, err := bestRoute("nope", EditionHosted); !errors.Is(err, ErrUnknownProvider) {
+		t.Errorf("bestRoute(nope) = %v, want ErrUnknownProvider", err)
 	}
 }
 
@@ -273,9 +288,9 @@ func TestLookupRejectsAnUnknownKey(t *testing.T) {
 // domain, so its absence would turn a miss into a provider with no routes.
 func TestGenericFallbackExistsInBothEditions(t *testing.T) {
 	for _, e := range []Edition{EditionSelfHosted, EditionHosted} {
-		r, err := Pick(KeyGeneric, e)
+		r, err := bestRoute(KeyGeneric, e)
 		if err != nil {
-			t.Fatalf("Pick(generic, %s) = %v, want the IMAP fallback", e, err)
+			t.Fatalf("bestRoute(generic, %s) = %v, want the IMAP fallback", e, err)
 		}
 		if r.Transport != TransportIMAP {
 			t.Errorf("the generic fallback is %s, want imap", r.Transport)
@@ -296,5 +311,98 @@ func TestCapabilityHas(t *testing.T) {
 	}
 	if (Capability(0)).Has(CapLabels) {
 		t.Error("the empty capability set has nothing")
+	}
+}
+
+// PickIMAP answers what an address and an app password can connect to, in
+// each edition: the IMAP route with a server address, never the Gmail API,
+// Graph, or a route that would still have to discover its server.
+func TestPickIMAPFindsTheRouteAPasswordCanUse(t *testing.T) {
+	for _, e := range []Edition{EditionSelfHosted, EditionHosted} {
+		for _, key := range []string{KeyGmail, KeyOrange, KeyLaPoste, KeyICloud, KeyFastmail, KeyInfomaniak} {
+			route, err := PickIMAP(key, e)
+			if err != nil {
+				t.Errorf("PickIMAP(%q, %s) = %v, want an IMAP route", key, e, err)
+				continue
+			}
+			if route.Transport != TransportIMAP || route.IMAP == nil || route.IMAP.Host == "" {
+				t.Errorf("PickIMAP(%q, %s) = %s with endpoint %v, want IMAP with a host", key, e, route.Transport, route.IMAP)
+			}
+		}
+		for _, key := range []string{KeyOutlook, KeyMicrosoft} {
+			if _, err := PickIMAP(key, e); err == nil {
+				t.Errorf("PickIMAP(%q, %s) succeeded, want an error: it routes through Graph only", key, e)
+			}
+		}
+	}
+	// Installed at home, Gmail's best route is the API, yet a password still
+	// connects over IMAP: that is the whole point of PickIMAP.
+	if best, _ := bestRoute(KeyGmail, EditionSelfHosted); best.Transport != TransportGmailAPI {
+		t.Fatalf("bestRoute(gmail, self-hosted) = %s, want gmail-api (test premise)", best.Transport)
+	}
+	if r, err := PickIMAP(KeyGmail, EditionSelfHosted); err != nil || r.IMAP.Host != "imap.gmail.com" {
+		t.Errorf("PickIMAP(gmail, self-hosted) = %v / %v, want imap.gmail.com", r.IMAP, err)
+	}
+	// Proton goes through the local Bridge, offered only at home.
+	if _, err := PickIMAP(KeyProton, EditionHosted); err == nil {
+		t.Error("PickIMAP(proton, hosted) succeeded, want an error")
+	}
+	if _, err := PickIMAP(KeyProton, EditionSelfHosted); err != nil {
+		t.Errorf("PickIMAP(proton, self-hosted) = %v, want the Bridge route", err)
+	}
+	// Every route that only autodiscovers its server is refused.
+	for _, p := range catalog {
+		for _, r := range p.Routes {
+			if r.Transport != TransportIMAP || r.IMAP != nil {
+				continue
+			}
+			for _, e := range r.Editions {
+				if got, err := PickIMAP(p.Key, e); err == nil && got.IMAP == nil {
+					t.Errorf("PickIMAP(%q, %s) returned a route without a server", p.Key, e)
+				}
+			}
+		}
+	}
+}
+
+func TestSendingServerOfAConnectedMailbox(t *testing.T) {
+	recorded := Endpoint{Host: "smtp.example.net", Port: 465, TLS: TLSImplicit}
+	orange := Endpoint{Host: "smtp.orange.fr", Port: 465, TLS: TLSImplicit}
+	gmail := Endpoint{Host: "smtp.gmail.com", Port: 587, TLS: TLSSTARTTLS}
+	bridge := Endpoint{Host: "127.0.0.1", Port: 1025, TLS: TLSSTARTTLS}
+
+	cases := []struct {
+		name     string
+		recorded Endpoint
+		key      string
+		edition  Edition
+		want     Endpoint
+		wantErr  bool
+	}{
+		{"the recorded server wins over the catalog", recorded, KeyOrange, EditionHosted, recorded, false},
+		{"the recorded server, for a provider the catalog has none for", recorded, KeyGeneric, EditionHosted, recorded, false},
+		{"a row from before: the catalog, by provider", Endpoint{}, KeyOrange, EditionHosted, orange, false},
+		{"a row from before: Gmail installed at home sends from its IMAP route", Endpoint{}, KeyGmail, EditionSelfHosted, gmail, false},
+		{"a row from before: Proton through Bridge, at home", Endpoint{}, KeyProton, EditionSelfHosted, bridge, false},
+		{"a row from before: Proton is not offered by the hosted edition", Endpoint{}, KeyProton, EditionHosted, Endpoint{}, true},
+		{"a row from before: the generic entry has no server", Endpoint{}, KeyGeneric, EditionHosted, Endpoint{}, true},
+		{"a row from before: an unknown provider", Endpoint{}, "nope", EditionHosted, Endpoint{}, true},
+		{"a recorded server without a port is no server", Endpoint{Host: "smtp.example.net", TLS: TLSImplicit}, KeyOrange, EditionHosted, orange, false},
+		{"a recorded server without a TLS mode is no server", Endpoint{Host: "smtp.example.net", Port: 465}, KeyGeneric, EditionHosted, Endpoint{}, true},
+		{"a recorded server with an unknown TLS mode is no server", Endpoint{Host: "smtp.example.net", Port: 25, TLS: "none"}, KeyGeneric, EditionHosted, Endpoint{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SendingServer(tc.recorded, tc.key, tc.edition)
+			if tc.wantErr {
+				if !errors.Is(err, ErrNoSendingServer) {
+					t.Errorf("SendingServer(%+v, %q, %s) = %+v, %v, want ErrNoSendingServer", tc.recorded, tc.key, tc.edition, got, err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("SendingServer(%+v, %q, %s) = %+v, %v, want %+v", tc.recorded, tc.key, tc.edition, got, err, tc.want)
+			}
+		})
 	}
 }

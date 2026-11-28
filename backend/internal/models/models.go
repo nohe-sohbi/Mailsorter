@@ -20,6 +20,12 @@ type User struct {
 	// automatically over every freshly synced inbox: no extra click, no AI, no
 	// quota. Off by default so syncing never mutates Gmail unexpectedly.
 	AutoApplyRules bool `json:"autoApplyRules" bson:"autoApplyRules,omitempty"`
+	// AutoApplyRulesSince is when AutoApplyRules was last turned on (from
+	// off). Over IMAP a sync applies the rules on its own only to the mails
+	// received after it and after the mailbox was connected: the ones already
+	// in the inbox are "Appliquer maintenant"'s. Zero when it was turned on
+	// before Mailsorter stamped it.
+	AutoApplyRulesSince time.Time `json:"-" bson:"autoApplyRulesSince,omitempty"`
 	// AutoSyncEnabled, when true, lets a background scheduler periodically sync the
 	// user's inbox (and, if AutoApplyRules is on, run their rules) with no manual
 	// click, the hands-free path to "Inbox Zero, forever". LastAutoSyncAt stamps
@@ -28,10 +34,11 @@ type User struct {
 	AutoSyncEnabled bool      `json:"autoSyncEnabled" bson:"autoSyncEnabled,omitempty"`
 	LastAutoSyncAt  time.Time `json:"-" bson:"lastAutoSyncAt,omitempty"`
 	// Daily digest. When DigestEnabled is true, a background scheduler emails a
-	// recap of the last 7 days once a day at DigestHourUTC (0-23, UTC).
+	// recap of the last 7 days once a day at DigestHourUTC (0-23, UTC; nil
+	// when the user never picked one, which means the server default).
 	// DigestLastSentAt stamps the last attempt so we send at most once per day.
 	DigestEnabled    bool      `json:"digestEnabled" bson:"digestEnabled,omitempty"`
-	DigestHourUTC    int       `json:"digestHourUTC" bson:"digestHourUTC,omitempty"`
+	DigestHourUTC    *int      `json:"digestHourUTC,omitempty" bson:"digestHourUTC,omitempty"`
 	DigestLastSentAt time.Time `json:"-" bson:"digestLastSentAt,omitempty"`
 	CreatedAt        time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt" bson:"updatedAt"`
@@ -73,23 +80,46 @@ type Email struct {
 	// IMAP transport, where it is half of the message's identity: a UID means
 	// nothing without the folder it is a UID in. Empty on the Gmail API, whose
 	// message ids name a message on the account.
-	Folder       string    `json:"folder,omitempty" bson:"folder,omitempty"`
-	ReceivedDate time.Time `json:"receivedDate" bson:"receivedDate"`
-	IsRead       bool      `json:"isRead" bson:"isRead"`
+	Folder string `json:"folder,omitempty" bson:"folder,omitempty"`
+	// HeaderMessageID is the message's Message-ID header, set on the IMAP
+	// transport: the one name a message keeps when it moves to another folder
+	// and gets a new UID there, used to find it again when the server does not
+	// say where it landed.
+	HeaderMessageID string    `json:"-" bson:"headerMessageId,omitempty"`
+	ReceivedDate    time.Time `json:"receivedDate" bson:"receivedDate"`
+	IsRead          bool      `json:"isRead" bson:"isRead"`
+	// Generation is the mailbox a row of the IMAP copy belongs to: the _id of
+	// the mail_accounts row it was read through (see api/generation.go).
+	// Every read of the copy asks for the generation connected now, and every
+	// write carries the one its operation opened, so what an operation on a
+	// mailbox since replaced writes is never read. Empty on the Gmail API.
+	Generation string `json:"-" bson:"generation,omitempty"`
+	// IsStarred is the star ("Favori"), set on the IMAP transport only, where
+	// it is the \Flagged flag; over the Gmail API the star is the STARRED
+	// label in LabelIDs. Omitted from JSON when false, and that is
+	// load-bearing: the reader reads `isStarred ?? labelIds.includes('STARRED')`,
+	// and a false sent with every Gmail message would hide its star. Stored even
+	// when false, so a star taken off clears the stored one.
+	IsStarred bool `json:"isStarred,omitempty" bson:"isStarred"`
+	// SizeEstimate is the size of the whole message in bytes (RFC822.SIZE) and
+	// HasAttachments whether it carries a file, both set on the IMAP transport
+	// only, by the sync (see syncInboxIMAP), which stores false too once it has
+	// read the structure: a stored message without hasAttachments has not been
+	// read for it yet. Both are omitted when empty here, so writing a message
+	// back from a listing or from the reader, which do not read them, never
+	// erases what the sync stored.
+	SizeEstimate   int64 `json:"sizeEstimate,omitempty" bson:"sizeEstimate,omitempty"`
+	HasAttachments bool  `json:"hasAttachments,omitempty" bson:"hasAttachments,omitempty"`
+	// HasAttachmentsRule is the version of the rule HasAttachments was read
+	// with (attachment.WithoutHTMLVersion), stored beside it by the sync. A
+	// row without the current one is read again: the filter follows the
+	// rule, not the one it was first counted with.
+	HasAttachmentsRule int `json:"-" bson:"hasAttachmentsRule,omitempty"`
 	// Unsubscribe affordances parsed from RFC 2369 / RFC 8058 headers.
 	UnsubURL      string    `json:"unsubUrl,omitempty" bson:"unsubUrl,omitempty"`
 	UnsubMailto   string    `json:"unsubMailto,omitempty" bson:"unsubMailto,omitempty"`
 	UnsubOneClick bool      `json:"unsubOneClick,omitempty" bson:"unsubOneClick,omitempty"`
 	CreatedAt     time.Time `json:"createdAt" bson:"createdAt"`
-}
-
-type Label struct {
-	ID        string    `json:"id" bson:"_id,omitempty"`
-	UserID    string    `json:"userId" bson:"userId"`
-	GmailID   string    `json:"gmailId" bson:"gmailId"`
-	Name      string    `json:"name" bson:"name"`
-	Color     string    `json:"color" bson:"color"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 }
 
 // RegisterRequest is the body for POST /api/auth/register.
@@ -266,10 +296,26 @@ type Snooze struct {
 	From      string    `json:"from" bson:"from"`
 	Subject   string    `json:"subject" bson:"subject"`
 	WakeAt    time.Time `json:"wakeAt" bson:"wakeAt"`
-	Status    string    `json:"status" bson:"status"` // "scheduled", "done", "cancelled", "failed"
+	Status    string    `json:"status" bson:"status"` // snooze.Status*: "scheduled", "done", "cancelled", "failed"
 	Attempts  int       `json:"attempts,omitempty" bson:"attempts,omitempty"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+	// Where the mail waits, set on the IMAP transport only (over the Gmail
+	// API a reported message keeps its id and its place): the folder it was
+	// moved into, "Plus tard", by the server's name for it; its number there;
+	// and its Message-ID header, which finds it again when that number is
+	// unknown or no longer names it. MessageID stays the number it had in the
+	// inbox, which the stored copy and the history know it by. The wake moves
+	// it back from here, whether or not the stored copy still remembers the
+	// move.
+	Folder          string    `json:"-" bson:"folder,omitempty"`
+	FolderUID       string    `json:"-" bson:"folderUid,omitempty"`
+	HeaderMessageID string    `json:"-" bson:"headerMessageId,omitempty"`
+	CreatedAt       time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt" bson:"updatedAt"`
+	// Generation is the mailbox the report was made on (see
+	// Email.Generation), empty on the Gmail API: only that mailbox's hour,
+	// "Réactiver" or "Annuler" brings it back, and it is listed only while
+	// that mailbox is connected.
+	Generation string `json:"-" bson:"generation,omitempty"`
 }
 
 // MailAccount is the mailbox a user connected, and how to reach it again.
@@ -284,6 +330,11 @@ type Snooze struct {
 // Its `json:"-"` is load-bearing: this struct is returned by GET /api/mailbox,
 // and a tag change would put a credential on the wire. The tag is enforced by a
 // test, not by attention.
+//
+// SMTPHost, SMTPPort and SMTPTLS are the mailbox's sending server, where the
+// daily recap leaves from, recorded at connect time from the same catalog
+// route as Host, Port and TLS. A row connected before they were recorded has
+// none of them, and the catalog answers for it (provider.SendingServer).
 type MailAccount struct {
 	ID        string    `json:"id,omitempty" bson:"_id,omitempty"`
 	UserID    string    `json:"-" bson:"userId"`
@@ -294,8 +345,22 @@ type MailAccount struct {
 	Host      string    `json:"host" bson:"host"`
 	Port      int       `json:"port" bson:"port"`
 	TLS       string    `json:"tls" bson:"tls"`
+	SMTPHost  string    `json:"smtpHost,omitempty" bson:"smtpHost,omitempty"`
+	SMTPPort  int       `json:"smtpPort,omitempty" bson:"smtpPort,omitempty"`
+	SMTPTLS   string    `json:"smtpTls,omitempty" bson:"smtpTls,omitempty"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
+	// FirstSyncedAt is when Mailsorter first synced this mailbox (IMAP). The
+	// very first sync of a mailbox judges no mail as one that arrives,
+	// whatever its date: the mail server's clock and Mailsorter's may differ.
+	// Another mailbox connected in its place has a row of its own.
+	FirstSyncedAt time.Time `json:"-" bson:"firstSyncedAt,omitempty"`
+	// RulesGivenUp counts the mails the rules gave up on at this mailbox's
+	// syncs (after three tries) that the screen has not been told of yet: a
+	// sync from the screen tells it once and clears it, so one given up by a
+	// background sync is not lost, and one of a mailbox since replaced is not
+	// told about the next.
+	RulesGivenUp int `json:"-" bson:"rulesGivenUp,omitempty"`
 }
 
 // ConnectMailboxRequest is the body of POST /api/mailbox/connect. The provider,
@@ -304,6 +369,13 @@ type MailAccount struct {
 // a host of their choosing.
 type ConnectMailboxRequest struct {
 	Address  string `json:"address"`
+	Password string `json:"password"`
+}
+
+// MailboxPasswordRequest is the body for PUT /api/mailbox/password: the new
+// app password of the mailbox already connected, and nothing else (not even
+// its address: the mailbox is the one on file).
+type MailboxPasswordRequest struct {
 	Password string `json:"password"`
 }
 
@@ -368,11 +440,20 @@ type ActionLog struct {
 	// holds it, and resolved from the emails collection at read time otherwise.
 	Subject string `json:"subject,omitempty" bson:"subject,omitempty"`
 	From    string `json:"from,omitempty" bson:"from,omitempty"`
+	// LabelName is where a "label" entry filed the mail, so the history can
+	// say it: the label, or over IMAP the folder that stands for it. Absent
+	// on every other action, and on entries a path wrote without it.
+	LabelName string `json:"labelName,omitempty" bson:"labelName,omitempty"`
 	// Undone is set when the user reverses this entry from the action history
 	// (e.g. un-archiving a mail a rule archived). UndoneAt stamps when.
-	Undone    bool      `json:"undone,omitempty" bson:"undone,omitempty"`
-	UndoneAt  time.Time `json:"undoneAt,omitempty" bson:"undoneAt,omitempty"`
-	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	Undone   bool      `json:"undone,omitempty" bson:"undone,omitempty"`
+	UndoneAt time.Time `json:"undoneAt,omitempty" bson:"undoneAt,omitempty"`
+	// Generation is the mailbox the action was done on (see Email.Generation),
+	// empty on the Gmail API. "Annuler" only acts on an entry of the mailbox
+	// connected now: on another, its message number names, from then on, a
+	// mail of the mailbox connected since.
+	Generation string    `json:"-" bson:"generation,omitempty"`
+	CreatedAt  time.Time `json:"createdAt" bson:"createdAt"`
 }
 
 // ============================================
@@ -389,9 +470,12 @@ type AISuggestion struct {
 	LabelID    string    `json:"labelId" bson:"labelId"`       // Gmail label ID (after creation/matching)
 	Confidence float64   `json:"confidence" bson:"confidence"` // 0.0 to 1.0
 	Reasoning  string    `json:"reasoning" bson:"reasoning"`   // AI explanation
-	Status     string    `json:"status" bson:"status"`         // "pending", "applied", "rejected"
+	Status     string    `json:"status" bson:"status"`         // "pending", "applied", "rejected", "moot" (the mail left the inbox some other way)
 	CreatedAt  time.Time `json:"createdAt" bson:"createdAt"`
 	AppliedAt  time.Time `json:"appliedAt,omitempty" bson:"appliedAt,omitempty"`
+	// Generation is the mailbox the proposal is about (see Email.Generation),
+	// empty on the Gmail API: only the one connected now lists or applies it.
+	Generation string `json:"-" bson:"generation,omitempty"`
 }
 
 // SenderPreference stores learned preferences for a specific sender
@@ -424,25 +508,32 @@ type SmartLabel struct {
 
 // AnalysisJob tracks an asynchronous batch-analysis run.
 type AnalysisJob struct {
-	ID                 string    `json:"id" bson:"_id,omitempty"`
-	UserID             string    `json:"userId" bson:"userId"`
-	Status             string    `json:"status" bson:"status"` // queued, running, done, error
-	Total              int       `json:"total" bson:"total"`
-	Processed          int       `json:"processed" bson:"processed"`
-	AutoApplied        int       `json:"autoApplied" bson:"autoApplied"`
-	SuggestionsCreated int       `json:"suggestionsCreated" bson:"suggestionsCreated"`
-	CachedHits         int       `json:"cachedHits" bson:"cachedHits"`
-	Error              string    `json:"error,omitempty" bson:"error,omitempty"`
-	EmailIDs           []string  `json:"-" bson:"emailIds"`
-	CreatedAt          time.Time `json:"createdAt" bson:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt" bson:"updatedAt"`
+	ID                 string   `json:"id" bson:"_id,omitempty"`
+	UserID             string   `json:"userId" bson:"userId"`
+	Status             string   `json:"status" bson:"status"` // queued, running, done, error
+	Total              int      `json:"total" bson:"total"`
+	Processed          int      `json:"processed" bson:"processed"`
+	AutoApplied        int      `json:"autoApplied" bson:"autoApplied"`
+	SuggestionsCreated int      `json:"suggestionsCreated" bson:"suggestionsCreated"`
+	CachedHits         int      `json:"cachedHits" bson:"cachedHits"`
+	Error              string   `json:"error,omitempty" bson:"error,omitempty"`
+	EmailIDs           []string `json:"-" bson:"emailIds"`
+	// Mailbox is the mailbox the ids were chosen on, as the screen names it
+	// (api mailboxStamp): the job does not run on another one connected
+	// since, whose mails have the same numbers.
+	Mailbox   string    `json:"-" bson:"mailbox,omitempty"`
+	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt" bson:"updatedAt"`
 }
 
 // AnalysisCacheEntry memoizes an AI verdict for a (from, subject) fingerprint
 // so identical emails are never analyzed twice. Content-based, not user-scoped.
 type AnalysisCacheEntry struct {
-	ID         string    `bson:"_id,omitempty"`
-	Key        string    `bson:"key"`
+	ID  string `bson:"_id,omitempty"`
+	Key string `bson:"key"`
+	// Version is database.AnalysisCacheVersion when the verdict was written:
+	// an entry of another version is deleted at boot.
+	Version    string    `bson:"version"`
 	Action     string    `bson:"action"`
 	LabelName  string    `bson:"labelName"`
 	Confidence float64   `bson:"confidence"`
@@ -568,8 +659,8 @@ type WaitlistInput struct {
 // The APIKey is encrypted at rest via the instance's Encryptor.
 type AIProviderSettings struct {
 	UserID    string    `json:"userId" bson:"userId"`
-	Provider  string    `json:"provider" bson:"provider"`     // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
-	APIKey    string    `json:"-" bson:"apiKey"`               // encrypted, never in JSON responses
+	Provider  string    `json:"provider" bson:"provider"` // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
+	APIKey    string    `json:"-" bson:"apiKey"`          // encrypted, never in JSON responses
 	Model     string    `json:"model" bson:"model"`
 	BaseURL   string    `json:"baseUrl" bson:"baseUrl"`
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`

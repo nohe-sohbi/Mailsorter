@@ -1,0 +1,4 @@
+# Not needed to build the server binary. Docker matches a bare pattern at the
+# root of the context only: the ** reaches the test files in every package.
+**/*_test.go
+scripts/

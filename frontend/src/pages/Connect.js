@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { mailboxService, configService, authService } from '../services/api';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { mailboxService, configService, authService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
 import { useInstance } from '../contexts/InstanceContext';
@@ -11,7 +11,8 @@ import Spinner from '../ui/Spinner';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import KeyTag from '../ui/hotel/KeyTag';
 import PageHead from '../components/hotel/PageHead';
-import { canConnect } from '../components/landing/features';
+import { canConnectByPassword, imapLegend, joinFr } from '../components/landing/features';
+import { useEmails } from '../contexts/EmailContext';
 
 const TILTS = [-3, 2, -1, 3, -2, 2, -3, 1];
 
@@ -28,19 +29,20 @@ function KeyGlyph() {
 }
 
 // The key board of the landing, small: the catalog the server returned, a key
-// per provider, muted when no transport the server knows reaches it yet.
-function HotelKeyBoard({ providers, isConfigured }) {
+// per provider, muted when the address-and-password form beside it cannot
+// connect it yet (the one rule, canConnectRoute in landing/features.js).
+function HotelKeyBoard({ providers }) {
   return (
     <div className="hd-keys-card animate-fade-up">
-      <h3 className="hd-keys-card__t">Ça marche avec votre boîte.</h3>
+      <h3 className="hd-keys-card__t">Les boîtes qu'on branche ici.</h3>
       <p>
-        Saisissez l'adresse : Mailsorter reconnaît le fournisseur et vous dit comment obtenir le mot de passe
-        d'application. Une minute, en général.
+        Saisissez l'adresse : Mailsorter reconnaît le fournisseur, vous dit s'il se branche ici et ce qu'il faut
+        savoir avant de créer le mot de passe d'application.
       </p>
       {providers.length > 0 && (
         <div className="hd-keys">
           {providers.map((p, i) => {
-            const soon = !canConnect(p, isConfigured);
+            const soon = !canConnectByPassword(p);
             return <KeyTag key={p.key} name={p.name} note={soon ? 'bientôt' : 'IMAP'} soon={soon} tilt={TILTS[i % TILTS.length]} />;
           })}
         </div>
@@ -49,8 +51,100 @@ function HotelKeyBoard({ providers, isConfigured }) {
   );
 }
 
-function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
+// What the connect screen says when connecting, or saving a new password,
+// failed: the server's sentence, the same one every screen shows for the case
+// (a password refused, a mailbox that did not answer, an address with no IMAP
+// route), written once, server-side. A body too large (413, which a proxy may
+// answer in HTML) and a malformed one (400) get a French sentence of their
+// own if the server's is missing.
+function connectFailure(err, fallback) {
+  const status = err?.response?.status;
+  if (status === 413) return 'Mot de passe trop long.';
+  if (status === 400) return apiError(err, "Saisissez l'adresse de la boîte et son mot de passe d'application.");
+  return apiError(err, fallback);
+}
+
+// "Changer le mot de passe d'application": the mailbox stays as it is, only
+// its password changes, proved by the server before it is stored (PUT
+// /api/mailbox/password). `refused` is the way here from "Mettre à jour",
+// after the provider refused the password on file: the form is open, and
+// says why.
+function ChangePassword({ mailbox, providers, refused, onSaved }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(refused);
+  const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const provider = useMemo(() => detectProvider(providers, mailbox.username), [providers, mailbox.username]);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!password) return;
+    setSaving(true);
+    try {
+      const { data } = await mailboxService.changePassword(password);
+      setPassword('');
+      setOpen(false);
+      track('mailbox_password_changed');
+      toast.success('Mot de passe mis à jour.');
+      onSaved(data);
+    } catch (err) {
+      toast.error(connectFailure(err, "Le mot de passe n'a pas pu être mis à jour."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="btn-secondary">
+        <Refresh size={16} /> Changer le mot de passe d'application
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-6 grid w-full gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+      <form onSubmit={handleSave} className="rounded-2xl border border-hairline/70 p-6">
+        {refused && (
+          <p className="mb-4 rounded-xl bg-caution-50 p-3 text-sm leading-relaxed text-caution-700">
+            Votre fournisseur a refusé le mot de passe d'application enregistré. Collez-en un nouveau.
+          </p>
+        )}
+        <label htmlFor="mailbox-new-password" className="block text-xs font-bold text-ink-700">
+          Nouveau mot de passe d'application
+        </label>
+        <input
+          id="mailbox-new-password"
+          type="password"
+          required
+          autoComplete="new-password"
+          className="input mt-1.5 w-full text-sm"
+          placeholder="xxxx xxxx xxxx xxxx"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={saving}
+        />
+        <p className="mt-2 text-xs leading-relaxed text-muted">
+          Mailsorter l'essaie sur votre boîte avant de l'enregistrer. La boîte, son historique et ce qu'on peut encore
+          annuler restent tels quels.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button type="submit" disabled={saving || !password} className="btn-primary">
+            {saving ? <Spinner size={16} /> : <Check size={16} />} Enregistrer
+          </button>
+          <button type="button" onClick={() => setOpen(false)} disabled={saving} className="btn-ghost">
+            Annuler
+          </button>
+        </div>
+      </form>
+      {provider && <ProviderBriefing provider={provider} />}
+    </div>
+  );
+}
+
+function ConnectedMailbox({ mailbox, providers, refused, onPasswordSaved, onDisconnect, disconnecting }) {
   const isGmail = mailbox.transport === 'gmail' || mailbox.provider === 'google';
+  const isImap = mailbox.transport === 'imap';
 
   return (
     <div className="card animate-fade-up p-8">
@@ -64,7 +158,7 @@ function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
               {isGmail ? 'Boîte Gmail connectée' : 'Boîte mail connectée (IMAP)'}
             </h2>
             <p className="text-xs text-muted">
-              {isGmail ? 'Authentifiée via Google OAuth sécurisé' : 'Reconnue et joignable'}
+              {isGmail ? 'Authentifiée via Google OAuth sécurisé' : 'Branchée en IMAP'}
             </p>
           </div>
         </div>
@@ -84,14 +178,23 @@ function ConnectedMailbox({ mailbox, onDisconnect, disconnecting }) {
         </div>
       </dl>
 
+      {isImap && <p className="mt-4 text-sm leading-relaxed text-muted">{imapLegend()}</p>}
+
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <Link to="/inbox" className="btn-primary">
           <Inbox size={16} /> Accéder à ma boîte
         </Link>
+        {isImap && !refused && (
+          <ChangePassword mailbox={mailbox} providers={providers} refused={false} onSaved={onPasswordSaved} />
+        )}
         <button onClick={onDisconnect} disabled={disconnecting} className="btn-danger">
           {disconnecting ? <Spinner size={16} /> : <Trash size={16} />} Déconnecter cette boîte
         </button>
       </div>
+
+      {isImap && refused && (
+        <ChangePassword mailbox={mailbox} providers={providers} refused onSaved={onPasswordSaved} />
+      )}
 
       <p className="mt-3 text-xs leading-relaxed text-muted">
         Déconnecter efface l'accès de Mailsorter à cette boîte sans toucher à vos emails ni à votre compte Mailsorter.
@@ -105,7 +208,14 @@ function Connect() {
   const hotel = useHotel();
   const confirm = useConfirm();
   const navigate = useNavigate();
+  // ?motdepasse=1: "Mettre à jour" after the provider refused the password on
+  // file, which opens the new password form at once.
+  const [params, setParams] = useSearchParams();
+  const passwordRefused = params.get('motdepasse') === '1';
   const { isConfigured } = useInstance();
+  // The shared answer to "which mailbox is this", refreshed after a connect or
+  // a disconnect so every screen hides or shows the Gmail-only controls again.
+  const { loadMailbox } = useEmails();
 
   const [loading, setLoading] = useState(true);
   const [mailbox, setMailbox] = useState(null);
@@ -138,6 +248,13 @@ function Connect() {
   }, []);
 
   const detected = useMemo(() => detectProvider(providers, address), [providers, address]);
+  // The examples under the form's title are the providers it can connect,
+  // read from the catalog: a name written here by hand promised Outlook, which
+  // goes through an API Mailsorter does not use yet.
+  const examples = useMemo(
+    () => providers.filter((p) => p.key !== 'imap' && canConnectByPassword(p)).map((p) => p.name),
+    [providers]
+  );
 
   const handleConnectGmail = async () => {
     setGoogleBusy(true);
@@ -159,6 +276,7 @@ function Connect() {
       const { data } = await mailboxService.connect(address.trim(), password);
       setMailbox(data);
       localStorage.setItem('hasMailbox', 'true');
+      loadMailbox({ force: true });
       setPassword('');
       setAddress('');
       track('mailbox_connected', { provider: data.provider });
@@ -167,25 +285,22 @@ function Connect() {
     } catch (err) {
       const status = err.response?.status;
       track('mailbox_connect_failed', { status: status || 0 });
-      if (status === 401) {
-        toast.error("Identifiants refusés. Vérifiez qu'il s'agit d'un mot de passe d'application, pas de celui du compte.");
-      } else if (status === 422) {
-        toast.error("Cette boîte ne se branche pas en IMAP sur cette instance.");
-      } else if (status === 502) {
-        toast.error('Le serveur de mail ne répond pas. Réessayez dans un instant.');
-      } else {
-        toast.error("La connexion n'a pas pu être enregistrée.");
-      }
+      toast.error(connectFailure(err, "La connexion n'a pas pu être enregistrée."));
     } finally {
       setConnecting(false);
     }
   };
 
   const handleDisconnect = async () => {
+    // Over IMAP a mail is named by a number the next mailbox gives to its own
+    // mails: what Mailsorter kept of this one goes, and its history is final.
+    const message =
+      mailbox?.transport === 'imap'
+        ? "L'accès de Mailsorter à cette boîte sera retiré. Les suggestions de tri en attente seront effacées, les reports en cours seront annulés (leurs mails restent dans le dossier « Plus tard » de la boîte), et les actions de l'historique ne pourront plus être annulées. Vos règles, protections et historique Mailsorter restent conservés."
+        : "L'accès de Mailsorter à cette boîte sera retiré. Vos règles, protections et historique Mailsorter restent conservés.";
     const confirmed = await confirm({
       title: 'Déconnecter cette boîte ?',
-      message:
-        "L'accès de Mailsorter à cette boîte sera retiré. Vos règles, protections et historique Mailsorter restent conservés.",
+      message,
       confirmLabel: 'Déconnecter',
       danger: true,
     });
@@ -196,6 +311,7 @@ function Connect() {
       await mailboxService.disconnect();
       setMailbox(null);
       localStorage.removeItem('hasMailbox');
+      loadMailbox({ force: true });
       track('mailbox_disconnected');
       toast.success('Boîte déconnectée.');
     } catch (err) {
@@ -231,7 +347,7 @@ function Connect() {
             Définir la boîte mail à ranger
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-            Choisissez l'adresse email sur laquelle Mailsorter doit opérer le tri. Vos emails restent hébergés chez votre fournisseur, Mailsorter ne fait que les lire et les ranger selon vos règles.
+            Choisissez l'adresse email sur laquelle Mailsorter doit opérer le tri. Vos emails restent hébergés chez votre fournisseur : Mailsorter les lit, propose un tri, et ne range rien sans votre accord.
           </p>
         </div>
       )}
@@ -239,6 +355,14 @@ function Connect() {
       {mailbox ? (
         <ConnectedMailbox
           mailbox={mailbox}
+          providers={providers}
+          refused={passwordRefused}
+          onPasswordSaved={(data) => {
+            setMailbox(data);
+            // The same mailbox, a new password: what the screens hold of it stays.
+            loadMailbox({ force: true, sameMailbox: true });
+            if (passwordRefused) setParams({}, { replace: true });
+          }}
           onDisconnect={handleDisconnect}
           disconnecting={disconnecting}
         />
@@ -299,9 +423,9 @@ function Connect() {
                 <h2 className="text-base font-bold text-ink-900">
                   Connecter une boîte IMAP
                 </h2>
-                <p className="mt-1 text-xs text-muted">
-                  Orange, Outlook, Yahoo, iCloud, Free, messagerie professionnelle...
-                </p>
+                {examples.length > 0 && (
+                  <p className="mt-1 text-xs text-muted">{joinFr(examples)}.</p>
+                )}
               </div>
 
               <label htmlFor="mailbox-address" className="block text-xs font-bold text-ink-700">
@@ -313,7 +437,7 @@ function Connect() {
                 required
                 autoComplete="email"
                 className="input mt-1.5 w-full text-sm"
-                placeholder="vous@orange.fr ou vous@outlook.com"
+                placeholder="vous@exemple.fr"
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 disabled={connecting}
@@ -360,15 +484,15 @@ function Connect() {
             </form>
 
             {detected ? (
-              <ProviderBriefing provider={detected} />
+              <ProviderBriefing provider={detected} googleOn={isConfigured} />
             ) : hotel ? (
-              <HotelKeyBoard providers={providers} isConfigured={isConfigured} />
+              <HotelKeyBoard providers={providers} />
             ) : (
               <div className="animate-fade-up rounded-2xl border border-hairline/70 bg-surface/60 p-6">
                 <span className="chip mb-3 bg-brand-50 text-brand-700">Aide fournisseur</span>
                 <h3 className="text-sm font-bold text-ink-900">Assistance en direct</h3>
                 <p className="mt-2 text-xs leading-relaxed text-muted">
-                  Saisissez l'adresse de votre messagerie : Mailsorter identifiera automatiquement votre opérateur (Orange, Microsoft, Yahoo, etc.) et vous indiquera la marche à suivre pour obtenir votre mot de passe d'application en 1 minute.
+                  Saisissez l'adresse de votre messagerie : Mailsorter reconnaît votre fournisseur, vous dit s'il se branche ici et ce qu'il faut savoir avant d'obtenir votre mot de passe d'application.
                 </p>
               </div>
             )}

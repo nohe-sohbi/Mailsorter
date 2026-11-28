@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,12 +16,12 @@ import (
 
 // ProviderConfig describes how to reach one AI backend.
 type ProviderConfig struct {
-	Name       string `json:"name" bson:"name"`           // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
-	APIKey     string `json:"apiKey" bson:"apiKey"`        // encrypted at rest when stored in DB
-	Model      string `json:"model" bson:"model"`          // e.g. "gpt-4o-mini"
-	BaseURL    string `json:"baseUrl" bson:"baseUrl"`      // custom endpoint (Ollama, Azure, etc.)
+	Name       string `json:"name" bson:"name"`             // "mistral", "openai", "anthropic", "ollama", "openai-compatible"
+	APIKey     string `json:"apiKey" bson:"apiKey"`         // encrypted at rest when stored in DB
+	Model      string `json:"model" bson:"model"`           // e.g. "gpt-6-luna"
+	BaseURL    string `json:"baseUrl" bson:"baseUrl"`       // custom endpoint (Ollama, Azure, etc.)
 	MaxRetries int    `json:"maxRetries" bson:"maxRetries"` // extra attempts on transient failures
-	Priority   int    `json:"priority" bson:"priority"`    // lower = tried first
+	Priority   int    `json:"priority" bson:"priority"`     // lower = tried first
 	Enabled    bool   `json:"enabled" bson:"enabled"`
 
 	// UserSupplied marks a provider a USER configured (bring your own key), as
@@ -71,12 +72,16 @@ type providerEntry struct {
 	analyzer Analyzer
 }
 
-// NewRegistry builds a registry from provider configs. Each config is turned
-// into a concrete Analyzer via newAnalyzer. Configs with Enabled=false or
-// missing credentials are silently skipped.
+// NewRegistry builds a registry from provider configs, tried in ascending
+// Priority (ties keep their given order). Each config is turned into a
+// concrete Analyzer via newAnalyzer. A config with Enabled=false is skipped;
+// one that cannot be built (missing key, unknown name) is skipped with a log
+// line.
 func NewRegistry(configs []ProviderConfig) *Registry {
+	ordered := append([]ProviderConfig(nil), configs...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Priority < ordered[j].Priority })
 	r := &Registry{}
-	for _, cfg := range configs {
+	for _, cfg := range ordered {
 		if !cfg.Enabled {
 			continue
 		}
@@ -90,7 +95,6 @@ func NewRegistry(configs []ProviderConfig) *Registry {
 	return r
 }
 
-// Available reports whether at least one provider is configured.
 // WithUserOverride returns a new Registry that prioritizes the user's custom
 // provider configuration (BYOK), falling back to the instance providers if
 // transient errors occur.
@@ -116,20 +120,11 @@ func (r *Registry) WithUserOverride(userCfg ProviderConfig) *Registry {
 	}
 }
 
+// Available reports whether at least one provider is configured.
 func (r *Registry) Available() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.providers) > 0
-}
-
-// Primary returns the highest-priority analyzer, or nil.
-func (r *Registry) Primary() Analyzer {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if len(r.providers) == 0 {
-		return nil
-	}
-	return r.providers[0].analyzer
 }
 
 // ProviderNames returns the names of all active providers, in priority order.
@@ -147,7 +142,7 @@ func (r *Registry) ProviderNames() []string {
 
 // AnalyzeEmail tries each provider in priority order, falling back on transient
 // errors. Permanent errors (auth, bad request) fail immediately.
-func (r *Registry) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
+func (r *Registry) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
 	r.mu.RLock()
 	providers := r.providers
 	r.mu.RUnlock()
@@ -158,7 +153,7 @@ func (r *Registry) AnalyzeEmail(email models.Email, existingLabels []string) (*E
 
 	var lastErr error
 	for _, p := range providers {
-		result, err := p.analyzer.AnalyzeEmail(email, existingLabels)
+		result, err := p.analyzer.AnalyzeEmail(email)
 		if err == nil {
 			return result, nil
 		}
@@ -172,7 +167,7 @@ func (r *Registry) AnalyzeEmail(email models.Email, existingLabels []string) (*E
 }
 
 // AnalyzeBatch tries each provider in priority order with fallback.
-func (r *Registry) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (r *Registry) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	r.mu.RLock()
 	providers := r.providers
 	r.mu.RUnlock()
@@ -183,7 +178,7 @@ func (r *Registry) AnalyzeBatch(emails []models.Email, existingLabels []string) 
 
 	var lastErr error
 	for _, p := range providers {
-		result, err := p.analyzer.AnalyzeBatch(emails, existingLabels)
+		result, err := p.analyzer.AnalyzeBatch(emails)
 		if err == nil {
 			return result, nil
 		}
@@ -197,7 +192,7 @@ func (r *Registry) AnalyzeBatch(emails []models.Email, existingLabels []string) 
 }
 
 // AnalyzeSender tries each provider in priority order with fallback.
-func (r *Registry) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
+func (r *Registry) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
 	r.mu.RLock()
 	providers := r.providers
 	r.mu.RUnlock()
@@ -208,7 +203,7 @@ func (r *Registry) AnalyzeSender(senderEmail string, emails []models.Email, exis
 
 	var lastErr error
 	for _, p := range providers {
-		result, err := p.analyzer.AnalyzeSender(senderEmail, emails, existingLabels)
+		result, err := p.analyzer.AnalyzeSender(senderEmail, emails)
 		if err == nil {
 			return result, nil
 		}
@@ -272,7 +267,7 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "gpt-4o-mini"
+			model = "gpt-6-luna"
 		}
 		c := NewOpenAIClient(cfg.APIKey, model, baseURL)
 		if cfg.MaxRetries > 0 {
@@ -289,7 +284,7 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "claude-sonnet-4-20250514"
+			model = "claude-haiku-5-5"
 		}
 		c := NewAnthropicClient(cfg.APIKey, model)
 		if cfg.MaxRetries > 0 {
@@ -307,7 +302,7 @@ func newAnalyzer(cfg ProviderConfig) (Analyzer, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "llama3"
+			model = "qwen3.5:9b"
 		}
 		c := NewOllamaClient(model, baseURL)
 		if guarded != nil {

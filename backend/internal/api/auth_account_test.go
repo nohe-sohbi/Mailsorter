@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 func TestRegisterAndLoginValidation(t *testing.T) {
@@ -101,5 +103,15 @@ func TestWriteAuthErrorPreconditionRequired(t *testing.T) {
 	writeAuthError(rec, errNoMailboxConnected)
 	if rec.Code != http.StatusPreconditionRequired {
 		t.Errorf("writeAuthError(errNoMailboxConnected) = %d, want %d", rec.Code, http.StatusPreconditionRequired)
+	}
+}
+
+func TestRegisterRaceAnswersConflict(t *testing.T) {
+	dup := mongo.WriteException{WriteErrors: []mongo.WriteError{{Code: 11000, Message: "E11000 duplicate key error collection: mailsorter.users index: email_1"}}}
+	if status, _ := insertUserFailure(dup); status != http.StatusConflict {
+		t.Errorf("duplicate email on insert answers %d, want %d like the existence check", status, http.StatusConflict)
+	}
+	if status, _ := insertUserFailure(errors.New("connection reset")); status != http.StatusInternalServerError {
+		t.Errorf("another insert failure answers %d, want %d", status, http.StatusInternalServerError)
 	}
 }

@@ -37,10 +37,9 @@ const (
 	// mail in the database indefinitely, under a screen promising erasure.
 	DatasetEmails Dataset = "emails"
 	// DatasetLabels is the per-user label cache. Nothing writes it today, so it
-	// exports as an empty list, but the collection and its unique index exist in
-	// every deployment: listing it here means the day something does start
-	// writing it, export and erasure already cover it instead of silently
-	// drifting apart.
+	// exports as an empty list (older deployments may still hold the collection):
+	// listing it here means the day something does start writing it, export and
+	// erasure already cover it instead of silently drifting apart.
 	DatasetLabels Dataset = "labels"
 	// DatasetMailAccounts is the mailbox connection: which provider, over which
 	// transport, under which username. It is listed here because erasure must
@@ -51,6 +50,11 @@ const (
 	// DatasetAISettings is the per-user AI provider override (BYOK), sealed key
 	// included. It missed this catalog, so a deleted account kept its key on disk.
 	DatasetAISettings Dataset = "aiSettings"
+	// DatasetWaitlist is a Pro waitlist signup made while signed in: the row
+	// then carries the account's userId. A visitor's signup carries none and
+	// stays out of reach, keyed by an address with no account behind it; a
+	// member's must leave with the account, as the deletion screen promises.
+	DatasetWaitlist Dataset = "waitlist"
 )
 
 // Datasets returns the canonical, stable list of user-owned data categories. The
@@ -71,6 +75,7 @@ func Datasets() []Dataset {
 		DatasetSavedSearches,
 		DatasetMailAccounts,
 		DatasetAISettings,
+		DatasetWaitlist,
 		// Last, because they are the bulkiest: the settings a user recognizes
 		// should come first in an export they open themselves.
 		DatasetLabels,
@@ -111,7 +116,7 @@ type Profile struct {
 	AutoApplyRules  bool      `json:"autoApplyRules"`
 	AutoSyncEnabled bool      `json:"autoSyncEnabled"`
 	DigestEnabled   bool      `json:"digestEnabled"`
-	DigestHourUTC   int       `json:"digestHourUTC"`
+	DigestHourUTC   *int      `json:"digestHourUTC,omitempty"` // nil: never picked, the server default applies
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }

@@ -26,26 +26,37 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/mail"
+	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	imapv2 "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/database"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/provider"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -121,7 +132,8 @@ func (a *testApp) setEmailsValidator(validator bson.M) {
 // ---------------------------------------------------------------------------
 
 var (
-	// imapServerTLS is what every fake IMAP server presents.
+	// imapServerTLS is what every fake IMAP server presents, and every fake
+	// sending server of acceptance_smtp_test.go: both live on 127.0.0.1.
 	imapServerTLS *tls.Config
 	// imapTLSErr is why imapServerTLS is missing, reported by the first
 	// scenario that needs a server rather than by every scenario.
@@ -219,14 +231,93 @@ type imapPerson struct {
 	token   string
 	mailbox *imapmemserver.User
 	port    int
+	// sending is the sending server next to the IMAP one, nil until
+	// withSendingServer (acceptance_smtp_test.go) gives the person one.
+	sending *fakeSMTP
+	// address is the address of the mailbox connected for this person,
+	// empty while it is their own (email): connectOtherMailbox sets it.
+	address string
+
+	// passwordMu guards newPassword, which the server's sessions read.
+	passwordMu sync.Mutex
+	// newPassword is the app password the provider accepts, once
+	// providerReplacesAppPassword changed it; empty while it is
+	// imapTestPassword, the one the person connected with.
+	newPassword string
+}
+
+// mailboxAddress is the address of the mailbox connected for this person:
+// the one their server knows them by, and the one they log in to it with.
+func (p *imapPerson) mailboxAddress() string {
+	if p.address != "" {
+		return p.address
+	}
+	return p.email
+}
+
+// appPasswordOnServer is the app password this person's provider accepts
+// now: the only one their server lets in.
+func (p *imapPerson) appPasswordOnServer() string {
+	p.passwordMu.Lock()
+	defer p.passwordMu.Unlock()
+	if p.newPassword != "" {
+		return p.newPassword
+	}
+	return imapTestPassword
+}
+
+// providerReplacesAppPassword is the person making a new app password on
+// their provider's side, the old one revoked: from then on their server lets
+// in this one only, Mailsorter's stored one included. Another mail program of
+// theirs uses the new one (otherProgram).
+func (p *imapPerson) providerReplacesAppPassword(password string) {
+	p.app.t.Helper()
+	if password == "" || password == p.appPasswordOnServer() {
+		p.app.fatalf("le nouveau mot de passe d'application de %s doit être un autre que celui accepté jusque-là (à corriger dans le scénario)", p.email)
+	}
+	p.passwordMu.Lock()
+	p.newPassword = password
+	p.passwordMu.Unlock()
+}
+
+// mailboxSession is a session of a person's server: the in-memory server's own
+// (imapmemserver), built the way it builds one (a UserSession embedded, Login
+// overridden), so the server offers exactly what it did, except that the
+// password is checked against the one the provider accepts now. Each server
+// keeps its own mailbox and address (startServer): a person who connected
+// another mailbox (connectOtherMailbox) still has the first one on its own
+// server, untouched.
+type mailboxSession struct {
+	*imapmemserver.UserSession // nil until the login
+	p                          *imapPerson
+	user                       *imapmemserver.User
+	address                    string
+}
+
+func (s *mailboxSession) Login(username, password string) error {
+	if username != s.address || password != s.p.appPasswordOnServer() {
+		return imapserver.ErrAuthFailed
+	}
+	s.UserSession = imapmemserver.NewUserSession(s.user)
+	return nil
 }
 
 // imapPerson signs a person up the way POST /api/auth/mailbox leaves them: a
 // users row, a mail_accounts row with the app password sealed by the handler's
-// own sealSecret, and a session. The row is written here rather than through
-// the connect route because that route only accepts the hosts of the provider
-// catalog, and this person's provider is a server on 127.0.0.1.
+// own sealSecret, and a session. That is imapAccount, then connectMailbox at
+// once.
 func (a *testApp) imapPerson(email string) *imapPerson {
+	a.t.Helper()
+	p := a.imapAccount(email)
+	p.connectMailbox()
+	return p
+}
+
+// imapAccount signs a person up with their mailbox on a server of its own, not
+// yet connected to Mailsorter: a users row and a session, no mail_accounts
+// row. connectMailbox connects it, at the moment the scenario chooses: what a
+// mailbox held before it was connected is not what arrives in it afterwards.
+func (a *testApp) imapAccount(email string) *imapPerson {
 	a.t.Helper()
 	if imapTLSErr != nil || imapServerTLS == nil {
 		a.fatalf("pas de serveur IMAP de test possible : %v", imapTLSErr)
@@ -234,27 +325,9 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 	p := &imapPerson{app: a, email: email}
 	p.startServer()
 
-	sealed, err := a.h.sealSecret(imapTestPassword)
-	if err != nil {
-		a.fatalf("chiffrement du mot de passe d'application de %s : %v", email, err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	now := time.Now()
-	if _, err := a.h.db.MailAccounts().InsertOne(ctx, models.MailAccount{
-		UserID:    email,
-		Provider:  provider.Detect(email).Key,
-		Transport: string(provider.TransportIMAP),
-		Username:  email,
-		Secret:    sealed,
-		Host:      "127.0.0.1",
-		Port:      p.port,
-		TLS:       string(provider.TLSImplicit),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		a.fatalf("enregistrement de la boîte IMAP de %s : %v", email, err)
-	}
 	if _, err := a.h.db.Users().InsertOne(ctx, bson.M{
 		"email": email, "createdAt": now, "updatedAt": now,
 	}); err != nil {
@@ -264,16 +337,127 @@ func (a *testApp) imapPerson(email string) *imapPerson {
 	return p
 }
 
+// connectMailbox connects this person's mailbox to Mailsorter now: the
+// mail_accounts row with the app password sealed by the handler's own
+// sealSecret, created at this instant, which is when the mailbox was
+// connected. The row is written here rather than through the connect route
+// because that route only accepts the hosts of the provider catalog, and this
+// person's provider is a server on 127.0.0.1.
+func (p *imapPerson) connectMailbox() {
+	a := p.app
+	a.t.Helper()
+	sealed, err := a.h.sealSecret(imapTestPassword)
+	if err != nil {
+		a.fatalf("chiffrement du mot de passe d'application de %s : %v", p.email, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if _, err := a.h.db.MailAccounts().InsertOne(ctx, models.MailAccount{
+		UserID:    p.email,
+		Provider:  provider.Detect(p.mailboxAddress()).Key,
+		Transport: string(provider.TransportIMAP),
+		Username:  p.mailboxAddress(),
+		Secret:    sealed,
+		Host:      "127.0.0.1",
+		Port:      p.port,
+		TLS:       string(provider.TLSImplicit),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		a.fatalf("enregistrement de la boîte IMAP de %s : %v", p.email, err)
+	}
+}
+
+// disconnectMailbox is "Déconnecter" on the /connect screen, once its
+// confirmation is accepted (handleDisconnect in Connect.js): DELETE
+// /api/mailbox. It stops the scenario when the server does not take it: what
+// follows a disconnection proves nothing if the mailbox is still connected.
+func (p *imapPerson) disconnectMailbox() {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodDelete, "/api/mailbox", nil)
+	if code != http.StatusOK {
+		a.fatalf("« Déconnecter » la boîte %s du compte %s a répondu %d (attendu 200) : %v : le scénario ne prouve rien", p.mailboxAddress(), p.email, code, out)
+	}
+}
+
+// connectOtherMailbox connects another mailbox to this person's account, in
+// place of the one they disconnected: addr, on a server of its own, empty,
+// connected at this instant, as connectMailbox writes it. From then on
+// receive, arrive and another mail program act on that one; the first
+// server keeps running, untouched, as a mailbox nobody reads from Mailsorter
+// any more.
+func (p *imapPerson) connectOtherMailbox(addr string) {
+	a := p.app
+	a.t.Helper()
+	if strings.EqualFold(addr, p.mailboxAddress()) {
+		a.fatalf("la boîte %s est déjà celle de %s : en brancher une autre demande une autre adresse (à corriger dans le scénario)", addr, p.email)
+	}
+	p.address = addr
+	// The other mailbox has its own app password, the one connectMailbox
+	// seals: a password its provider replaced on the first one does not
+	// carry over (providerReplacesAppPassword).
+	p.passwordMu.Lock()
+	p.newPassword = ""
+	p.passwordMu.Unlock()
+	p.startServer()
+	p.connectMailbox()
+}
+
+// The folders every person's server has, by the names a mail program shows.
+// The in-memory server drops the special use startServer asks for (go-imap
+// v2.0.0-beta.8 ignores CreateOptions.SpecialUse), so, as on a server without
+// the SPECIAL-USE extension, Mailsorter knows the last two by these names.
+const (
+	serverInbox   = "INBOX"
+	serverArchive = "Archive"
+	serverTrash   = "Trash"
+)
+
+// The other special folders a real mailbox comes with, by the names a mail
+// program shows. Only usualSpecialFolders makes them, and the server says
+// which is which by these names alone, as it does for the archive and the
+// trash.
+const (
+	serverSent   = "Sent"
+	serverDrafts = "Drafts"
+	serverJunk   = "Junk"
+)
+
+// usualSpecialFolders gives this person's server the special folders a real
+// mailbox has besides the inbox, the archive and the trash: sent mail, drafts
+// and junk, empty. Made on the server itself, as the provider makes them, not
+// by a mail program. For the sentences about which folders are the person's
+// own: a server with only an inbox, an archive and a trash cannot tell a list
+// that leaves out every special folder from one that leaves out those three.
+func (p *imapPerson) usualSpecialFolders() {
+	a := p.app
+	a.t.Helper()
+	for _, f := range []struct {
+		name string
+		use  imapv2.MailboxAttr
+	}{
+		{serverSent, imapv2.MailboxAttrSent},
+		{serverDrafts, imapv2.MailboxAttrDrafts},
+		{serverJunk, imapv2.MailboxAttrJunk},
+	} {
+		if err := p.mailbox.Create(f.name, &imapv2.CreateOptions{SpecialUse: []imapv2.MailboxAttr{f.use}}); err != nil {
+			a.fatalf("création du dossier %q sur le serveur IMAP de %s : %v", f.name, p.email, err)
+		}
+	}
+}
+
 // startServer runs this person's own IMAP server, over implicit TLS. Without
 // InsecureAuth, so the server itself refuses a login that did not come over TLS.
 func (p *imapPerson) startServer() {
 	a := p.app
 	a.t.Helper()
-	p.mailbox = imapmemserver.NewUser(p.email, imapTestPassword)
+	p.mailbox = imapmemserver.NewUser(p.mailboxAddress(), imapTestPassword)
 	for name, use := range map[string][]imapv2.MailboxAttr{
-		"INBOX":   nil,
-		"Archive": {imapv2.MailboxAttrArchive},
-		"Trash":   {imapv2.MailboxAttrTrash},
+		serverInbox:   nil,
+		serverArchive: {imapv2.MailboxAttrArchive},
+		serverTrash:   {imapv2.MailboxAttrTrash},
 	} {
 		var opts *imapv2.CreateOptions
 		if len(use) > 0 {
@@ -283,12 +467,10 @@ func (p *imapPerson) startServer() {
 			a.fatalf("création du dossier %q sur le serveur IMAP de %s : %v", name, p.email, err)
 		}
 	}
-	mem := imapmemserver.New()
-	mem.AddUser(p.mailbox)
-
+	user, address := p.mailbox, p.mailboxAddress()
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return mem.NewSession(), nil, nil
+			return &mailboxSession{p: p, user: user, address: address}, nil, nil
 		},
 		Caps: imapv2.CapSet{imapv2.CapIMAP4rev1: {}, imapv2.CapIMAP4rev2: {}},
 	})
@@ -303,46 +485,372 @@ func (p *imapPerson) startServer() {
 
 // receive delivers mails to this person's IMAP inbox, unread, oldest first,
 // and returns the UIDs their server gave them: the numbers Mailsorter knows
-// them by. It does not sync.
+// them by. Their server dated them a few minutes ago, one minute apart: the
+// order of several mails is what it gives, never their being newer than
+// anything the scenario did (see arrive). It does not sync.
 func (p *imapPerson) receive(mails ...incoming) []string {
-	a := p.app
-	a.t.Helper()
+	p.app.t.Helper()
 	uids := make([]string, 0, len(mails))
 	base := time.Now().Add(-time.Duration(len(mails)+1) * time.Minute)
 	for i, m := range mails {
-		subject := m.Subject
-		if subject == "" {
-			subject = fmt.Sprintf("Message %d", i+1)
-		}
-		body := m.Body
-		if body == "" {
-			body = "Bonjour, ceci est le message " + subject + "."
-		}
-		date := base.Add(time.Duration(i) * time.Minute)
-
-		from := m.From
-		if addr, err := mail.ParseAddress(m.From); err == nil {
-			from = addr.String() // RFC 2047 for an accented name
-		}
-		var raw strings.Builder
-		fmt.Fprintf(&raw, "From: %s\r\n", from)
-		fmt.Fprintf(&raw, "To: %s\r\n", p.email)
-		fmt.Fprintf(&raw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
-		fmt.Fprintf(&raw, "Date: %s\r\n", date.Format(time.RFC1123Z))
-		fmt.Fprintf(&raw, "Message-ID: <%d.%d@scenarios.test>\r\n", date.UnixNano(), i)
-		if m.Unsubscribe != "" {
-			fmt.Fprintf(&raw, "List-Unsubscribe: %s\r\n", m.Unsubscribe)
-		}
-		raw.WriteString("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
-		raw.WriteString(body + "\r\n")
-
-		data, err := p.mailbox.Append("INBOX", bytes.NewReader([]byte(raw.String())), &imapv2.AppendOptions{Time: date})
-		if err != nil {
-			a.fatalf("dépôt du mail %q dans la boîte IMAP de %s : %v", subject, p.email, err)
-		}
-		uids = append(uids, fmt.Sprint(uint32(data.UID)))
+		uids = append(uids, p.deliver(m, i, base.Add(time.Duration(i)*time.Minute), nil, nil))
 	}
 	return uids
+}
+
+// arrive delivers mails to this person's IMAP inbox now, unread, and returns
+// their numbers: their server receives them after everything the scenario did
+// before the call, and before everything it does after. That date is the one
+// the server keeps (INTERNALDATE), and over IMAP it is what makes a mail one
+// that ARRIVES, after the option "appliquer mes règles automatiquement" was
+// turned on and after the mailbox was connected; receive dates its mails
+// minutes back, before both. The server's date has whole seconds, so arrive
+// waits for the next one, dates the mails with it, and returns only once
+// another second has begun: no mail is dated in the future, and nothing
+// before or after shares its second. It does not sync.
+func (p *imapPerson) arrive(mails ...incoming) []string {
+	p.app.t.Helper()
+	at := time.Now().Truncate(time.Second).Add(time.Second)
+	time.Sleep(time.Until(at))
+	uids := make([]string, 0, len(mails))
+	for i, m := range mails {
+		uids = append(uids, p.deliver(m, i, at, nil, nil))
+	}
+	time.Sleep(time.Until(at.Add(time.Second)))
+	return uids
+}
+
+// The boundaries of the multipart mails receive writes. "=_" cannot occur in
+// base64, and the texts of a scenario never hold it.
+const (
+	mixedBoundary       = "=_mailsorter_mixed"
+	alternativeBoundary = "=_mailsorter_alternative"
+)
+
+// writeMailContent writes the mail's Content-Type and everything after it:
+// its text alone (text/plain), the way receive always wrote it, or, with an
+// HTML version, both versions (multipart/alternative), and with an
+// attachment, those first and then the file (multipart/mixed, the file with
+// Content-Disposition: attachment), which is how a mail program sends one.
+func writeMailContent(raw *strings.Builder, m incoming, body string) {
+	if m.Attachment == nil {
+		writeMailText(raw, m, body)
+		return
+	}
+	f := m.Attachment
+	fmt.Fprintf(raw, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", mixedBoundary)
+	fmt.Fprintf(raw, "--%s\r\n", mixedBoundary)
+	writeMailText(raw, m, body)
+	fmt.Fprintf(raw, "--%s\r\n", mixedBoundary)
+	fmt.Fprintf(raw, "Content-Type: %s; name=\"%s\"\r\n", f.Type, f.Name)
+	fmt.Fprintf(raw, "Content-Disposition: attachment; filename=\"%s\"\r\n", f.Name)
+	raw.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+	// Lines of 76 characters, as RFC 2045 asks of base64.
+	encoded := base64.StdEncoding.EncodeToString(fileContent(*f))
+	for len(encoded) > 76 {
+		raw.WriteString(encoded[:76] + "\r\n")
+		encoded = encoded[76:]
+	}
+	raw.WriteString(encoded + "\r\n")
+	fmt.Fprintf(raw, "--%s--\r\n", mixedBoundary)
+}
+
+// writeMailText writes the text of the mail, headers of its part included:
+// text/plain, or multipart/alternative when it has an HTML version.
+func writeMailText(raw *strings.Builder, m incoming, body string) {
+	if m.HTML == "" {
+		raw.WriteString("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+		raw.WriteString(body + "\r\n")
+		return
+	}
+	fmt.Fprintf(raw, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", alternativeBoundary)
+	fmt.Fprintf(raw, "--%s\r\n", alternativeBoundary)
+	raw.WriteString("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+	raw.WriteString(body + "\r\n")
+	fmt.Fprintf(raw, "--%s\r\n", alternativeBoundary)
+	raw.WriteString("Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+	raw.WriteString(m.HTML + "\r\n")
+	fmt.Fprintf(raw, "--%s--\r\n", alternativeBoundary)
+}
+
+// fileContent is the filler an attached file holds: Size bytes of text, a
+// sentence naming the file over and over.
+func fileContent(f attachedFile) []byte {
+	if f.Size <= 0 {
+		return nil
+	}
+	pattern := []byte("Contenu du fichier " + f.Name + ". ")
+	return bytes.Repeat(pattern, f.Size/len(pattern)+1)[:f.Size]
+}
+
+// nameEncoding is one way a mail program writes a file name into a message.
+type nameEncoding int
+
+const (
+	nameRFC2047 nameEncoding = iota
+	nameRFC2231
+)
+
+// The two Content-Transfer-Encodings a mail program writes a file in.
+const (
+	transferBase64          = "base64"
+	transferQuotedPrintable = "quoted-printable"
+)
+
+// receiveWithFiles delivers one mail with these files attached to this
+// person's IMAP inbox, unread, and returns the number their server gave it.
+// The mail is a multipart/mixed, its text first and then each file as a part
+// of its own, which is how a mail program sends attachments. It does not
+// sync.
+func (p *imapPerson) receiveWithFiles(m incoming, files ...attachedFile) string {
+	p.app.t.Helper()
+	if len(files) == 0 {
+		p.app.fatalf("receiveWithFiles sans fichier : utiliser receive (à corriger dans le scénario)")
+	}
+	// writeMixed writes the text and Data of each file, nothing else: an HTML
+	// version, a filler Attachment or a Size would be left out without a word,
+	// and the scenario would prove something about a mail it never sent.
+	if m.HTML != "" || m.Attachment != nil {
+		p.app.fatalf("receiveWithFiles ne sait pas déposer le mail %q avec sa version HTML ou sa pièce jointe de remplissage : passer ses fichiers en arguments (à corriger dans le scénario)", m.Subject)
+	}
+	for _, f := range files {
+		if f.Size != 0 {
+			p.app.fatalf("le fichier %q du mail %q donne une taille, qui ne sert qu'à la pièce jointe de remplissage de receive : donner ses octets dans Data (à corriger dans le scénario)", f.Name, m.Subject)
+		}
+	}
+	return p.deliver(m, 0, time.Now().Add(-time.Minute), files, nil)
+}
+
+// drawnPicture is a picture an HTML mail carries for its text to draw: a part
+// with a Content-ID that the HTML points at with a cid: URL (RFC 2392), no
+// name, marked inline, the way a newsletter carries its logo.
+type drawnPicture struct {
+	// ContentID is the id the HTML writes after "cid:", without the angle
+	// brackets the Content-ID header puts around it.
+	ContentID string
+	Type      string // e.g. "image/png"
+	Data      []byte
+}
+
+// receiveHTMLWithPictures delivers one HTML mail to this person's IMAP inbox,
+// unread, and returns the number their server gave it: its text and its HTML
+// (m.HTML, which points at the pictures by their cid:), the pictures next to
+// the HTML, then the files attached, the way Apple Mail or Thunderbird write
+// such a mail. A multipart/mixed whose first part is a multipart/alternative
+// (the text, then a multipart/related: the HTML and the pictures), so the
+// parts are numbered 1.1 (the text), 1.2.1 (the HTML), 1.2.2 and on (the
+// pictures, in order), then 2 and on (the files). It does not sync.
+func (p *imapPerson) receiveHTMLWithPictures(m incoming, pictures []drawnPicture, files ...attachedFile) string {
+	p.app.t.Helper()
+	if m.HTML == "" || len(pictures) == 0 {
+		p.app.fatalf("receiveHTMLWithPictures a besoin du HTML du mail %q et des images qu'il montre : sans eux, utiliser receive ou receiveWithFiles (à corriger dans le scénario)", m.Subject)
+	}
+	if m.Attachment != nil {
+		p.app.fatalf("receiveHTMLWithPictures ne sait pas déposer le mail %q avec sa pièce jointe de remplissage : passer ses fichiers en arguments (à corriger dans le scénario)", m.Subject)
+	}
+	for _, f := range files {
+		if f.Size != 0 {
+			p.app.fatalf("le fichier %q du mail %q donne une taille, qui ne sert qu'à la pièce jointe de remplissage de receive : donner ses octets dans Data (à corriger dans le scénario)", f.Name, m.Subject)
+		}
+	}
+	return p.deliver(m, 0, time.Now().Add(-time.Minute), files, pictures)
+}
+
+// deliver puts one mail into this person's IMAP inbox, unread, dated date,
+// and returns the number the server gave it. i is its rank among the mails
+// delivered together, which names a mail without a subject. Without files
+// or pictures the mail is written by writeMailContent: its text, its HTML
+// version and its filler Attachment when it has them.
+func (p *imapPerson) deliver(m incoming, i int, date time.Time, files []attachedFile, pictures []drawnPicture) string {
+	a := p.app
+	a.t.Helper()
+	subject := m.Subject
+	if subject == "" {
+		subject = fmt.Sprintf("Message %d", i+1)
+	}
+	body := m.Body
+	if body == "" {
+		body = "Bonjour, ceci est le message " + subject + "."
+	}
+
+	from := m.From
+	if addr, err := mail.ParseAddress(m.From); err == nil {
+		from = addr.String() // RFC 2047 for an accented name
+	}
+	var raw strings.Builder
+	fmt.Fprintf(&raw, "From: %s\r\n", from)
+	fmt.Fprintf(&raw, "To: %s\r\n", p.mailboxAddress())
+	fmt.Fprintf(&raw, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
+	fmt.Fprintf(&raw, "Date: %s\r\n", date.Format(time.RFC1123Z))
+	fmt.Fprintf(&raw, "Message-ID: <%d.%d@scenarios.test>\r\n", date.UnixNano(), i)
+	if m.Unsubscribe != "" {
+		fmt.Fprintf(&raw, "List-Unsubscribe: %s\r\n", m.Unsubscribe)
+	}
+	if len(files) == 0 && len(pictures) == 0 {
+		// writeMailContent fills the Attachment with Size bytes of filler:
+		// bytes, an encoding or a way of writing the name given to it would
+		// be left out without a word.
+		if f := m.Attachment; f != nil && (f.Data != nil || f.Transfer != "" || f.NameAs != nameRFC2047) {
+			a.fatalf("la pièce jointe %q du mail %q est du remplissage de Size octets : un fichier avec ses octets, son encodage ou l'écriture de son nom se dépose avec receiveWithFiles (à corriger dans le scénario)", f.Name, subject)
+		}
+		raw.WriteString("MIME-Version: 1.0\r\n")
+		writeMailContent(&raw, m, body)
+	} else {
+		p.writeMixed(&raw, subject, body, m.HTML, pictures, files)
+	}
+
+	data, err := p.mailbox.Append("INBOX", bytes.NewReader([]byte(raw.String())), &imapv2.AppendOptions{Time: date})
+	if err != nil {
+		a.fatalf("dépôt du mail %q dans la boîte IMAP de %s : %v", subject, p.email, err)
+	}
+	return fmt.Sprint(uint32(data.UID))
+}
+
+// writeMixed writes the MIME headers and the body of a mail with files: the
+// text as its first part (with its HTML and the pictures the HTML draws, when
+// html is set: see writeHTMLWithPictures), then one part per file, each with
+// its name in both places a reader looks for it (the name parameter of
+// Content-Type and the filename parameter of Content-Disposition), the way
+// mail programs write them.
+func (p *imapPerson) writeMixed(raw *strings.Builder, subject, body, html string, pictures []drawnPicture, files []attachedFile) {
+	a := p.app
+	a.t.Helper()
+	var parts bytes.Buffer
+	w := multipart.NewWriter(&parts)
+	if html != "" {
+		p.writeHTMLWithPictures(w, subject, body, html, pictures)
+	} else {
+		text, err := w.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {"text/plain; charset=utf-8"},
+			"Content-Transfer-Encoding": {"8bit"},
+		})
+		if err != nil {
+			a.fatalf("écriture du texte du mail %q : %v", subject, err)
+		}
+		_, _ = io.WriteString(text, body+"\r\n")
+	}
+
+	for _, f := range files {
+		var typeParams, dispParams map[string]string
+		switch f.NameAs {
+		case nameRFC2047:
+			// mime.FormatMediaType would write the name as RFC 2231: the
+			// encoded word goes in already made, and is quoted as a value.
+			word := mime.BEncoding.Encode("utf-8", f.Name)
+			typeParams, dispParams = map[string]string{"name": word}, map[string]string{"filename": word}
+		case nameRFC2231:
+			// What mime.FormatMediaType does with a name that is not ASCII.
+			typeParams, dispParams = map[string]string{"name": f.Name}, map[string]string{"filename": f.Name}
+		default:
+			a.fatalf("le fichier %q n'a pas de façon connue d'écrire son nom (à corriger dans le scénario)", f.Name)
+		}
+		if strings.HasPrefix(f.Type, "text/") {
+			typeParams["charset"] = "utf-8"
+		}
+		part, err := w.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {mime.FormatMediaType(f.Type, typeParams)},
+			"Content-Disposition":       {mime.FormatMediaType("attachment", dispParams)},
+			"Content-Transfer-Encoding": {f.Transfer},
+		})
+		if err != nil {
+			a.fatalf("écriture du fichier %q du mail %q : %v", f.Name, subject, err)
+		}
+		switch f.Transfer {
+		case transferBase64:
+			writeBase64Lines(part, f.Data)
+		case transferQuotedPrintable:
+			// Text mode: a line break of the file is written as CRLF, so a
+			// file whose lines end in CRLF comes back unchanged.
+			qp := quotedprintable.NewWriter(part)
+			if _, err := qp.Write(f.Data); err != nil {
+				a.fatalf("encodage du fichier %q du mail %q : %v", f.Name, subject, err)
+			}
+			if err := qp.Close(); err != nil {
+				a.fatalf("encodage du fichier %q du mail %q : %v", f.Name, subject, err)
+			}
+		default:
+			a.fatalf("le fichier %q a un encodage inconnu %q (à corriger dans le scénario)", f.Name, f.Transfer)
+		}
+	}
+	if err := w.Close(); err != nil {
+		a.fatalf("écriture du mail %q : %v", subject, err)
+	}
+	fmt.Fprintf(raw, "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n", w.Boundary())
+	raw.Write(parts.Bytes())
+}
+
+// writeBase64Lines writes data in base64, 76 characters a line, as RFC 2045
+// asks.
+func writeBase64Lines(w io.Writer, data []byte) {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	for len(encoded) > 76 {
+		_, _ = io.WriteString(w, encoded[:76]+"\r\n")
+		encoded = encoded[76:]
+	}
+	_, _ = io.WriteString(w, encoded+"\r\n")
+}
+
+// writeHTMLWithPictures writes the first part of a mail whose HTML draws
+// pictures, into the multipart/mixed w: a multipart/alternative holding the
+// text, then a multipart/related holding the HTML and, after it, each
+// picture, in base64, with its Content-ID, marked inline and without a name.
+func (p *imapPerson) writeHTMLWithPictures(w *multipart.Writer, subject, body, html string, pictures []drawnPicture) {
+	a := p.app
+	a.t.Helper()
+	var relatedParts bytes.Buffer
+	related := multipart.NewWriter(&relatedParts)
+	page, err := related.CreatePart(textproto.MIMEHeader{
+		"Content-Type":              {"text/html; charset=utf-8"},
+		"Content-Transfer-Encoding": {"8bit"},
+	})
+	if err != nil {
+		a.fatalf("écriture du HTML du mail %q : %v", subject, err)
+	}
+	_, _ = io.WriteString(page, html+"\r\n")
+	for _, pic := range pictures {
+		part, err := related.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {pic.Type},
+			"Content-Transfer-Encoding": {transferBase64},
+			"Content-Id":                {"<" + pic.ContentID + ">"},
+			"Content-Disposition":       {"inline"},
+		})
+		if err != nil {
+			a.fatalf("écriture de l'image %q du mail %q : %v", pic.ContentID, subject, err)
+		}
+		writeBase64Lines(part, pic.Data)
+	}
+	if err := related.Close(); err != nil {
+		a.fatalf("écriture du HTML du mail %q : %v", subject, err)
+	}
+
+	var alternativeParts bytes.Buffer
+	alternative := multipart.NewWriter(&alternativeParts)
+	text, err := alternative.CreatePart(textproto.MIMEHeader{
+		"Content-Type":              {"text/plain; charset=utf-8"},
+		"Content-Transfer-Encoding": {"8bit"},
+	})
+	if err != nil {
+		a.fatalf("écriture du texte du mail %q : %v", subject, err)
+	}
+	_, _ = io.WriteString(text, body+"\r\n")
+	withPictures, err := alternative.CreatePart(textproto.MIMEHeader{
+		"Content-Type": {mime.FormatMediaType("multipart/related", map[string]string{"type": "text/html", "boundary": related.Boundary()})},
+	})
+	if err != nil {
+		a.fatalf("écriture du HTML du mail %q : %v", subject, err)
+	}
+	_, _ = withPictures.Write(relatedParts.Bytes())
+	if err := alternative.Close(); err != nil {
+		a.fatalf("écriture du texte du mail %q : %v", subject, err)
+	}
+
+	first, err := w.CreatePart(textproto.MIMEHeader{
+		"Content-Type": {mime.FormatMediaType("multipart/alternative", map[string]string{"boundary": alternative.Boundary()})},
+	})
+	if err != nil {
+		a.fatalf("écriture du texte du mail %q : %v", subject, err)
+	}
+	_, _ = first.Write(alternativeParts.Bytes())
 }
 
 // expectNumbered checks what the scenario takes for granted about the
@@ -362,6 +870,94 @@ func (p *imapPerson) syncAnswer() (int, map[string]interface{}) {
 	return p.app.callAs(p.token, http.MethodPost, "/api/emails/sync", nil)
 }
 
+// saveAppPassword is "Enregistrer" in the form "Changer le mot de passe
+// d'application" of /connect, as this person (also where "Mettre à jour"
+// leads when the provider refuses the password on file): PUT
+// /api/mailbox/password. It returns the answer, whatever it is.
+func (p *imapPerson) saveAppPassword(password string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPut, "/api/mailbox/password", map[string]string{"password": password})
+	return answer{code: code, body: out}
+}
+
+// connectedMailbox is the mailbox the /connect screen shows as connected for
+// this person (GET /api/mailbox, loadMailbox in Connect.js), as far as the
+// sentences about keeping it look: which row it is, since when, and the two
+// servers it is reached on. Kept as the answer wrote them, so that a value
+// written again, even the same instant, compares as what it is.
+type connectedMailbox struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"createdAt"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	TLS       string `json:"tls"`
+	SMTPHost  string `json:"smtpHost"`
+	SMTPPort  int    `json:"smtpPort"`
+	SMTPTLS   string `json:"smtpTls"`
+}
+
+// connectScreenMailbox is connectedMailbox as the screen loads it now. A
+// screen that shows no mailbox stops the scenario.
+func (p *imapPerson) connectScreenMailbox() connectedMailbox {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/mailbox", nil)
+	if code != http.StatusOK || out["mailbox"] == nil {
+		a.fatalf("l'écran de connexion de %s ne montre pas de boîte branchée : GET /api/mailbox a répondu %d : %v", p.email, code, out)
+	}
+	raw, err := json.Marshal(out["mailbox"])
+	if err != nil {
+		a.fatalf("réponse de GET /api/mailbox illisible pour %s : %v", p.email, err)
+	}
+	var box connectedMailbox
+	if err := json.Unmarshal(raw, &box); err != nil {
+		a.fatalf("réponse de GET /api/mailbox illisible pour %s : %v (reçu : %s)", p.email, err, raw)
+	}
+	return box
+}
+
+// expectSameMailbox checks that the /connect screen shows the very mailbox it
+// showed before: the same row, connected at the same instant, on the same
+// IMAP server and the same sending server. when says at which moment.
+func (p *imapPerson) expectSameMailbox(before connectedMailbox, when string) {
+	a := p.app
+	a.t.Helper()
+	now := p.connectScreenMailbox()
+	for _, f := range []struct {
+		what    string
+		was, is interface{}
+	}{
+		{"son identifiant", before.ID, now.ID},
+		{"sa date de branchement", before.CreatedAt, now.CreatedAt},
+		{"son serveur IMAP", before.Host, now.Host},
+		{"le port de son serveur IMAP", before.Port, now.Port},
+		{"le chiffrement de son serveur IMAP", before.TLS, now.TLS},
+		{"son serveur d'envoi", before.SMTPHost, now.SMTPHost},
+		{"le port de son serveur d'envoi", before.SMTPPort, now.SMTPPort},
+		{"le chiffrement de son serveur d'envoi", before.SMTPTLS, now.SMTPTLS},
+	} {
+		if f.was != f.is {
+			a.failf("%s, l'écran de connexion de %s devrait montrer la même boîte qu'avant, %s a changé : %v avant, %v maintenant", when, p.email, f.what, f.was, f.is)
+		}
+	}
+}
+
+// storedAppPassword is the app password stored for this person's mailbox, as
+// the database holds it, sealed: what the app will log in with next. Two
+// readings compare equal only if nothing was stored between them, since
+// sealing the same password twice gives two different values.
+func (p *imapPerson) storedAppPassword() string {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var account models.MailAccount
+	if err := a.h.db.MailAccounts().FindOne(ctx, bson.M{"userId": p.email}).Decode(&account); err != nil {
+		a.fatalf("la boîte branchée de %s n'est pas en base : %v", p.email, err)
+	}
+	return account.Secret
+}
+
 // sync presses "Synchroniser" and expects it to succeed.
 func (p *imapPerson) sync() {
 	p.app.t.Helper()
@@ -370,11 +966,32 @@ func (p *imapPerson) sync() {
 	}
 }
 
-// shownMail is one row of the inbox screen.
+// shownMail is one row of the inbox screen. IsRead is what the row shows as
+// read or "non lu" (FLAG_PATCH in Inbox.js patches the same field). IsStarred
+// and LabelIDs are the two fields the row reads its star from (see starred).
 type shownMail struct {
-	MessageID string `json:"messageId"`
-	From      string `json:"from"`
-	Subject   string `json:"subject"`
+	MessageID string   `json:"messageId"`
+	From      string   `json:"from"`
+	Subject   string   `json:"subject"`
+	IsRead    bool     `json:"isRead"`
+	IsStarred *bool    `json:"isStarred"`
+	LabelIDs  []string `json:"labelIds"`
+}
+
+// starred is whether the row shows the star "Favori", read the way both
+// themes read it (the row in Inbox.js, HotelRow in
+// components/hotel/InboxBits.js): isStarred, or the STARRED label among
+// labelIds.
+func (m shownMail) starred() bool {
+	if m.IsStarred != nil && *m.IsStarred {
+		return true
+	}
+	for _, l := range m.LabelIDs {
+		if l == labelStarred {
+			return true
+		}
+	}
+	return false
 }
 
 // inbox is what this person's inbox screen shows: the listing it loads, with
@@ -395,6 +1012,289 @@ func (p *imapPerson) inbox() []shownMail {
 		a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
 	}
 	return mails
+}
+
+// wholeInbox is everything this person's inbox screen lists once scrolled to
+// the end: the first page inbox loads, then "Charger plus" (loadMoreEmails in
+// EmailContext.js, 100 at a time) for as long as the listing hands back a next
+// page. A sentence about a mailbox of more than 100 mails is about every page,
+// and the first one alone would miss its oldest mails.
+func (p *imapPerson) wholeInbox() []shownMail {
+	a := p.app
+	a.t.Helper()
+	var all []shownMail
+	token := ""
+	for page := 1; ; page++ {
+		// A bound, so a listing that hands back the same token forever stops
+		// the scenario instead of hanging it.
+		if page > 50 {
+			a.fatalf("la boîte de réception de %s propose encore « Charger plus » après 50 pages : la liste ne finit pas", p.email)
+		}
+		path := "/api/emails?q=in%3Ainbox&maxResults=100"
+		if token != "" {
+			path += "&pageToken=" + url.QueryEscape(token)
+		}
+		code, out := a.callAs(p.token, http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			a.fatalf("la page %d de la boîte de réception de %s ne s'affiche pas : GET /api/emails a répondu %d : %v", page, p.email, code, out)
+		}
+		raw, err := json.Marshal(out["emails"])
+		if err != nil {
+			a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
+		}
+		var mails []shownMail
+		if err := json.Unmarshal(raw, &mails); err != nil {
+			a.fatalf("réponse de GET /api/emails illisible pour %s : %v", p.email, err)
+		}
+		all = append(all, mails...)
+		token, _ = out["nextPageToken"].(string)
+		if token == "" {
+			return all
+		}
+	}
+}
+
+// quickFilter is one of the filters above the inbox: its label, and the query
+// the inbox loads when it is clicked (QUICK_FILTERS in Inbox.js).
+type quickFilter struct {
+	label string
+	query string
+}
+
+var (
+	favoritesFilter   = quickFilter{label: "Favoris", query: "in:inbox is:starred"}
+	attachmentsFilter = quickFilter{label: "Pièces jointes", query: "in:inbox has:attachment"}
+	largeMailFilter   = quickFilter{label: "Volumineux", query: "in:inbox larger:5M"}
+)
+
+// underFilter is everything this person's inbox shows once the filter is
+// clicked and the list scrolled to the end: the first page the filter loads,
+// then "Charger plus" for as long as the listing hands back a next page, with
+// the page size the SPA asks for (fetchData and loadMoreEmails in
+// EmailContext.js, 100 at a time). A filter that does not display stops the
+// scenario: there is then nothing on the screen to look at.
+func (p *imapPerson) underFilter(f quickFilter) []shownMail {
+	a := p.app
+	a.t.Helper()
+	var all []shownMail
+	token := ""
+	for page := 1; ; page++ {
+		// A bound, so a listing that hands back the same token forever stops
+		// the scenario instead of hanging it.
+		if page > 50 {
+			a.fatalf("le filtre « %s » de %s propose encore « Charger plus » après 50 pages : la liste ne finit pas", f.label, p.email)
+		}
+		path := "/api/emails?q=" + url.QueryEscape(f.query) + "&maxResults=100"
+		if token != "" {
+			path += "&pageToken=" + url.QueryEscape(token)
+		}
+		code, out := a.callAs(p.token, http.MethodGet, path, nil)
+		if code != http.StatusOK {
+			a.fatalf("le filtre « %s » de %s ne s'affiche pas (page %d) : GET /api/emails avec q=%q a répondu %d : %v", f.label, p.email, page, f.query, code, out)
+		}
+		raw, err := json.Marshal(out["emails"])
+		if err != nil {
+			a.fatalf("réponse du filtre « %s » illisible pour %s : %v", f.label, p.email, err)
+		}
+		var mails []shownMail
+		if err := json.Unmarshal(raw, &mails); err != nil {
+			a.fatalf("réponse du filtre « %s » illisible pour %s : %v", f.label, p.email, err)
+		}
+		all = append(all, mails...)
+		token, _ = out["nextPageToken"].(string)
+		if token == "" {
+			return all
+		}
+	}
+}
+
+// expectFilterShows checks what the filter shows, every page: each mail of
+// want, by its subject, once, and no other. left gives, for a mail the filter
+// must leave out, why it must, for the failure message. when says at which
+// moment the filter is read.
+func (p *imapPerson) expectFilterShows(f quickFilter, when string, want []string, left map[string]string) {
+	a := p.app
+	a.t.Helper()
+	mails := p.underFilter(f)
+	count := map[string]int{}
+	for _, m := range mails {
+		count[m.Subject]++
+	}
+	wanted := map[string]bool{}
+	for _, subject := range want {
+		wanted[subject] = true
+		switch n := count[subject]; {
+		case n == 0:
+			a.failf("%s, le filtre « %s » de %s devrait montrer le mail %q, il ne le montre pas (il montre : %s)", when, f.label, p.email, subject, describeInbox(mails))
+		case n > 1:
+			a.failf("%s, le filtre « %s » de %s devrait montrer le mail %q une fois, il le montre %d fois", when, f.label, p.email, subject, n)
+		}
+	}
+	for _, m := range mails {
+		if wanted[m.Subject] {
+			continue
+		}
+		if why, ok := left[m.Subject]; ok {
+			a.failf("%s, le filtre « %s » de %s ne devrait pas montrer le mail n°%s %q (%s), il le montre", when, f.label, p.email, m.MessageID, m.Subject, why)
+			continue
+		}
+		a.failf("%s, le filtre « %s » de %s ne devrait montrer que %s, il montre aussi le mail n°%s %q", when, f.label, p.email, quotedList(want), m.MessageID, m.Subject)
+	}
+}
+
+// quotedList is subjects in a failure message: each quoted, comma separated.
+func quotedList(subjects []string) string {
+	if len(subjects) == 0 {
+		return "aucun mail"
+	}
+	parts := make([]string, 0, len(subjects))
+	for _, s := range subjects {
+		parts = append(parts, fmt.Sprintf("%q", s))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// openMail is opening a mail in the reader, as this person: the reader loads
+// it with markRead (getEmail in services/api.js), which is what makes a mail
+// read in Mailsorter. It expects the mail to open.
+func (p *imapPerson) openMail(uid string) {
+	p.app.t.Helper()
+	p.openInReader(uid)
+}
+
+// shownAttachment is one attachment the reader shows under a mail
+// (attachments in EmailReader.js): the name, type and size on its chip, and
+// the attachmentId its download sends. A chip without one is not a button.
+type shownAttachment struct {
+	Filename     string `json:"filename"`
+	MimeType     string `json:"mimeType"`
+	Size         int64  `json:"size"`
+	AttachmentID string `json:"attachmentId"`
+}
+
+// openInReader is openMail, returning the attachments the reader shows for
+// the mail, as the answer it loads hands them over.
+func (p *imapPerson) openInReader(uid string) []shownAttachment {
+	p.app.t.Helper()
+	return p.readerPage(uid).Attachments
+}
+
+// readerPage is what the reader loads for a mail (getEmail in
+// services/api.js), as far as these sentences look at it: the HTML it
+// renders, the attachments it shows under it, and inlineImages, which part
+// the screen downloads to draw in place of each cid: of the HTML
+// (EmailReader.js), keyed by the cid the way the screen keys it.
+type readerPage struct {
+	BodyHTML     string            `json:"bodyHtml"`
+	Attachments  []shownAttachment `json:"attachments"`
+	InlineImages map[string]string `json:"inlineImages"`
+}
+
+// readerPage is openMail, returning what the reader loads for the mail.
+func (p *imapPerson) readerPage(uid string) readerPage {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/emails/"+url.PathEscape(uid)+"?markRead=1", nil)
+	if code != http.StatusOK {
+		a.fatalf("le mail n°%s de %s ne s'ouvre pas dans la liseuse : GET /api/emails/%s a répondu %d : %v", uid, p.email, uid, code, out)
+	}
+	var page readerPage
+	if out["attachments"] != nil {
+		raw, err := json.Marshal(out["attachments"])
+		if err != nil {
+			a.fatalf("pièces jointes illisibles dans la réponse de GET /api/emails/%s pour %s : %v", uid, p.email, err)
+		}
+		if err := json.Unmarshal(raw, &page.Attachments); err != nil {
+			a.fatalf("pièces jointes illisibles dans la réponse de GET /api/emails/%s pour %s : %v (reçu : %s)", uid, p.email, err, raw)
+		}
+	}
+	if out["inlineImages"] != nil {
+		raw, err := json.Marshal(out["inlineImages"])
+		if err != nil {
+			a.fatalf("images du texte illisibles dans la réponse de GET /api/emails/%s pour %s : %v", uid, p.email, err)
+		}
+		if err := json.Unmarshal(raw, &page.InlineImages); err != nil {
+			a.fatalf("images du texte illisibles dans la réponse de GET /api/emails/%s pour %s : %v (reçu : %s)", uid, p.email, err, raw)
+		}
+	}
+	page.BodyHTML, _ = out["bodyHtml"].(string)
+	return page
+}
+
+// fileAnswer is what the server sent back for a download: the status, the
+// headers and the bytes as they came, which a JSON decoding would lose.
+type fileAnswer struct {
+	code   int
+	header http.Header
+	body   []byte
+}
+
+// said is the "error" field of a refusal, empty when the answer has none.
+func (f fileAnswer) said() string {
+	var out struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(f.body, &out) != nil {
+		return ""
+	}
+	return out.Error
+}
+
+func (f fileAnswer) String() string {
+	if s := f.said(); s != "" {
+		return fmt.Sprintf("%d %q", f.code, s)
+	}
+	return fmt.Sprintf("%d (%d octets, Content-Type %q)", f.code, len(f.body), f.header.Get("Content-Type"))
+}
+
+// download is a click on an attachment chip of the reader, as this person:
+// GET /api/emails/{id}/attachments/{attachmentId} (downloadAttachment in
+// services/api.js, whose bytes the reader saves as a file). It returns the
+// answer, whatever it is.
+func (p *imapPerson) download(uid, attachmentID string) fileAnswer {
+	a := p.app
+	a.t.Helper()
+	path := "/api/emails/" + url.PathEscape(uid) + "/attachments/" + url.PathEscape(attachmentID)
+	req, err := http.NewRequest(http.MethodGet, a.server.URL+path, nil)
+	if err != nil {
+		a.fatalf("requête GET %s : %v", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		a.fatalf("le téléchargement de la pièce jointe %q du mail n°%s de %s n'a pas abouti : %v", attachmentID, uid, p.email, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		a.fatalf("lecture de la pièce jointe %q du mail n°%s de %s : %v", attachmentID, uid, p.email, err)
+	}
+	return fileAnswer{code: resp.StatusCode, header: resp.Header, body: body}
+}
+
+// counters is what the counters above this person's inbox show: "Boîte de
+// réception" and "Non lus", the two STAT_CARDS of Inbox.js an IMAP mailbox
+// gets (the other two are Gmail only), as GET /api/stats hands them over.
+func (p *imapPerson) counters() (inbox, unread int) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/stats", nil)
+	if code != http.StatusOK {
+		a.fatalf("les compteurs de la boîte de %s ne s'affichent pas : GET /api/stats a répondu %d : %v", p.email, code, out)
+	}
+	return a.number(out, "inboxCount"), a.number(out, "unreadCount")
+}
+
+// shownRow returns the row of the inbox screen for the mail with this number,
+// and whether the screen shows one.
+func (p *imapPerson) shownRow(uid string) (shownMail, bool) {
+	p.app.t.Helper()
+	for _, m := range p.inbox() {
+		if m.MessageID == uid {
+			return m, true
+		}
+	}
+	return shownMail{}, false
 }
 
 func describeInbox(mails []shownMail) string {
@@ -447,4 +1347,1353 @@ func (p *imapPerson) expectDoesNotShow(subject, why string) {
 			a.failf("la boîte de réception de %s ne devrait pas montrer le mail %q (%s), elle le montre sous le n°%s", p.email, subject, why, m.MessageID)
 		}
 	}
+}
+
+// sendersTab is this person's Expéditeurs tab: one card per sender, as
+// GET /api/senders lists them, each with the count of mails it shows.
+func (p *imapPerson) sendersTab() []senderCard {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/senders", nil)
+	if code != http.StatusOK {
+		a.fatalf("l'onglet Expéditeurs de %s ne s'affiche pas : GET /api/senders a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var cards []senderCard
+	if err := json.Unmarshal([]byte(raw), &cards); err != nil {
+		a.fatalf("réponse de GET /api/senders illisible pour %s : %v", p.email, err)
+	}
+	return cards
+}
+
+// senderCardOf returns the card of the Expéditeurs tab whose sender has this
+// address, and whether the tab shows one. By the address, because a card
+// holds the sender as the mail wrote it, name included ("Boutique"
+// <info@boutique.com>), and which way the IMAP listing quotes that name is
+// not what a sentence about the tab is about.
+func (p *imapPerson) senderCardOf(addr string) (senderCard, bool) {
+	p.app.t.Helper()
+	for _, c := range p.sendersTab() {
+		got := c.SenderEmail
+		if parsed, err := mail.ParseAddress(got); err == nil {
+			got = parsed.Address
+		}
+		if strings.EqualFold(got, addr) {
+			return c, true
+		}
+	}
+	return senderCard{}, false
+}
+
+// describeSenders is the Expéditeurs tab in a failure message.
+func describeSenders(cards []senderCard) string {
+	if len(cards) == 0 {
+		return "aucun expéditeur"
+	}
+	parts := make([]string, 0, len(cards))
+	for _, c := range cards {
+		parts = append(parts, fmt.Sprintf("%s (%d mail(s))", c.SenderEmail, c.EmailCount))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// expectSenderListed checks that the Expéditeurs tab shows this sender.
+func (p *imapPerson) expectSenderListed(addr string) {
+	a := p.app
+	a.t.Helper()
+	if _, ok := p.senderCardOf(addr); !ok {
+		a.failf("l'onglet Expéditeurs de %s devrait montrer %s, il ne le montre pas (il montre : %s)", p.email, addr, describeSenders(p.sendersTab()))
+	}
+}
+
+// expectSenderNotListed checks that the Expéditeurs tab no longer shows this
+// sender. why says why it should have left.
+func (p *imapPerson) expectSenderNotListed(addr, why string) {
+	a := p.app
+	a.t.Helper()
+	if c, ok := p.senderCardOf(addr); ok {
+		a.failf("l'onglet Expéditeurs de %s ne devrait plus montrer %s (%s), il le montre encore, avec %d mail(s)", p.email, addr, why, c.EmailCount)
+	}
+}
+
+// act is a button of an inbox row, as this person: the single-message action
+// (POST /api/emails/action), with the verb the row sends ("archive" for
+// "Archiver", "delete" for "Supprimer"). It expects the action to go through:
+// a sentence about what the screen shows after an archive proves nothing if
+// nothing was archived.
+func (p *imapPerson) act(uid, action string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": uid, "action": action})
+	if code != http.StatusOK {
+		a.fatalf("l'action %q sur le mail n°%s de %s a répondu %d (attendu 200) : %v", action, uid, p.email, code, out)
+	}
+}
+
+// actAnswer is act, returning the answer whatever it is: for the sentences
+// about what that answer is.
+func (p *imapPerson) actAnswer(uid, action string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/action", map[string]string{"messageId": uid, "action": action})
+	return answer{code: code, body: out}
+}
+
+// protect is "Protéger" in the reader, as this person (handleProtect in
+// Inbox.js): POST /api/protected with the sender as the mail shows it, name
+// included, which the server reduces to the address. testApp.protect does the
+// same for the person on Gmail, who is not this one. It stops the scenario
+// when the server does not take it: a sentence about a protected sender proves
+// nothing about a sender that is not.
+func (p *imapPerson) protect(from string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/protected", map[string]string{"value": from})
+	if code != http.StatusCreated && code != http.StatusOK {
+		a.fatalf("« Protéger » l'expéditeur %q de %s a répondu %d (attendu 201) : %v : le scénario ne prouve rien", from, p.email, code, out)
+	}
+}
+
+// actTwiceAtOnce is a row's button clicked twice before the first answer
+// comes back (a double click, or the same mail in two tabs): two requests of
+// the single-message action, released at the same instant. It returns both
+// answers, whatever they are.
+func (p *imapPerson) actTwiceAtOnce(uid, action string) [2]answer {
+	p.app.t.Helper()
+	return p.twiceAtOnce("/api/emails/action", map[string]string{"messageId": uid, "action": action},
+		fmt.Sprintf("de l'action %q sur le mail n°%s", action, uid))
+}
+
+// undoFromHistoryTwiceAtOnce is "Annuler" on a line of the Historique screen
+// confirmed twice before the first answer comes back (a double click, or the
+// history open in two tabs): two POST /api/activity/undo on the same line,
+// released at the same instant. It returns both answers, whatever they are.
+func (p *imapPerson) undoFromHistoryTwiceAtOnce(line historyLine) [2]answer {
+	p.app.t.Helper()
+	return p.twiceAtOnce("/api/activity/undo", map[string]string{"id": line.ID},
+		fmt.Sprintf("de « Annuler » sur la ligne %q du mail n°%s", line.Action, line.MessageID))
+}
+
+// twiceAtOnce sends the same POST twice as this person, both requests
+// released at the same instant, and returns both answers, whatever they are.
+// what names the request in a failure.
+//
+// The two requests run on goroutines of their own, so they cannot go through
+// callAs, which stops the scenario on a network error: only the test's own
+// goroutine may do that. A network error is collected and reported from here,
+// once both have come back.
+func (p *imapPerson) twiceAtOnce(path string, body interface{}, what string) [2]answer {
+	a := p.app
+	a.t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		a.fatalf("encodage %s : %v", what, err)
+	}
+	var (
+		got  [2]answer
+		errs [2]error
+		wg   sync.WaitGroup
+	)
+	start := make(chan struct{})
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPost, a.server.URL+path, bytes.NewReader(raw))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+p.token)
+			req.Header.Set("Content-Type", "application/json")
+			<-start
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			var out map[string]interface{}
+			_ = json.Unmarshal(body, &out)
+			if out == nil && len(body) > 0 {
+				out = map[string]interface{}{"_raw": string(body)}
+			}
+			got[i] = answer{code: resp.StatusCode, body: out}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			a.fatalf("la requête n°%d %s de %s n'a pas abouti : %v", i+1, what, p.email, err)
+		}
+	}
+	return got
+}
+
+// ---------------------------------------------------------------------------
+// The same mailbox, from another mail program
+// ---------------------------------------------------------------------------
+
+// otherProgram opens this person's mailbox the way another mail program does
+// (the one on their phone, a webmail): its own IMAP connection, over TLS, with
+// the same app password, and nothing of Mailsorter in between. Whatever it
+// changes, Mailsorter can only learn from the server, which is what the
+// sentences about a mailbox used elsewhere are about. The caller closes it.
+func (p *imapPerson) otherProgram() *imapclient.Client {
+	p.app.t.Helper()
+	return p.programOn(p.port, p.mailboxAddress())
+}
+
+// programOn is otherProgram on the mailbox at this address, on the server
+// listening on port: the one connected now, or one connected before.
+func (p *imapPerson) programOn(port int, address string) *imapclient.Client {
+	a := p.app
+	a.t.Helper()
+	c, err := imapclient.DialTLS(net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), &imapclient.Options{
+		TLSConfig: &tls.Config{ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12},
+	})
+	if err != nil {
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à joindre le serveur IMAP de %s (%s) : %v", p.email, address, err)
+	}
+	if err := c.Login(address, p.appPasswordOnServer()).Wait(); err != nil {
+		_ = c.Close()
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte IMAP %s de %s : %v", address, p.email, err)
+	}
+	return c
+}
+
+// connectedBox is a mailbox of this person, as their mail program reaches
+// it: its server and its address. Kept while it is the one connected
+// (connectedNow), it is still there to look at once another one replaces it
+// (connectOtherMailbox leaves its server running, untouched), when
+// Mailsorter no longer reaches it.
+type connectedBox struct {
+	p       *imapPerson
+	address string
+	port    int
+	user    *imapmemserver.User
+}
+
+// connectedNow is the mailbox connected for this person now.
+func (p *imapPerson) connectedNow() connectedBox {
+	return connectedBox{p: p, address: p.mailboxAddress(), port: p.port, user: p.mailbox}
+}
+
+// connectAgain connects again a mailbox this person connected before and
+// disconnected since: the same server, holding what it holds, connected at
+// this instant, as connectMailbox writes it, with the app password it seals.
+// From then on receive, arrive and another mail program act on that one.
+func (p *imapPerson) connectAgain(b connectedBox) {
+	p.app.t.Helper()
+	if b.p != p {
+		p.app.fatalf("la boîte %s n'est pas une boîte de %s (à corriger dans le scénario)", b.address, p.email)
+	}
+	p.address, p.port, p.mailbox = b.address, b.port, b.user
+	if b.address == p.email {
+		p.address = ""
+	}
+	p.passwordMu.Lock()
+	p.newPassword = ""
+	p.passwordMu.Unlock()
+	p.connectMailbox()
+}
+
+// subjectsIn returns the subjects of the mails in this folder of the mailbox,
+// as the person's mail program lists them (opened read-only, read from the
+// envelopes, so looking marks nothing read), and whether the folder exists.
+func (b connectedBox) subjectsIn(folder string) ([]string, bool) {
+	p := b.p
+	p.app.t.Helper()
+	c := p.programOn(b.port, b.address)
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		return nil, false
+	}
+	var subjects []string
+	for _, m := range p.mailsIn(c, folder) {
+		subjects = append(subjects, m.subject)
+	}
+	return subjects, true
+}
+
+// serverUID reads back a number receive returned.
+func (p *imapPerson) serverUID(uid string) imapv2.UID {
+	p.app.t.Helper()
+	n, err := strconv.ParseUint(uid, 10, 32)
+	if err != nil || n == 0 {
+		p.app.fatalf("%q n'est pas un numéro de mail IMAP (à corriger dans le scénario)", uid)
+	}
+	return imapv2.UID(n)
+}
+
+// openInboxElsewhere is another mail program with this person's inbox open,
+// ready to change it.
+func (p *imapPerson) openInboxElsewhere() *imapclient.Client {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	if _, err := c.Select(serverInbox, nil).Wait(); err != nil {
+		_ = c.Close()
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir la boîte de réception IMAP de %s : %v", p.email, err)
+	}
+	return c
+}
+
+// expectGoneElsewhere checks, on the connection that just acted, that the
+// server's inbox no longer holds this mail. A MOVE or an EXPUNGE of a number
+// the folder does not hold answers OK and does nothing, so without this a
+// scenario built on a wrong number would prove nothing and say nothing.
+func (p *imapPerson) expectGoneElsewhere(c *imapclient.Client, uid, what string) {
+	a := p.app
+	a.t.Helper()
+	found, err := c.UIDSearch(&imapv2.SearchCriteria{UID: []imapv2.UIDSet{imapv2.UIDSetNum(p.serverUID(uid))}}, nil).Wait()
+	if err != nil {
+		a.fatalf("relecture de la boîte de réception IMAP de %s, une fois qu'%s : %v", p.email, what, err)
+	}
+	if len(found.AllUIDs()) > 0 {
+		a.fatalf("le mail n°%s est encore dans la boîte de réception du serveur IMAP de %s alors qu'%s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", uid, p.email, what)
+	}
+}
+
+// movedElsewhere is another mail program moving this mail out of the inbox
+// into folder: the person archived it on their phone. It does not sync.
+func (p *imapPerson) movedElsewhere(uid, folder string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openInboxElsewhere()
+	defer c.Close()
+	if _, err := c.Move(imapv2.UIDSetNum(p.serverUID(uid)), folder).Wait(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu déplacer le mail n°%s de %s vers %s : %v", uid, p.email, folder, err)
+	}
+	p.expectGoneElsewhere(c, uid, "un autre logiciel l'a déplacé vers "+folder)
+}
+
+// deletedElsewhere is another mail program deleting this mail for good:
+// marked deleted and expunged at once, as a program set to empty the trash as
+// it deletes does. It does not sync.
+func (p *imapPerson) deletedElsewhere(uid string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openInboxElsewhere()
+	defer c.Close()
+	deleted := &imapv2.StoreFlags{Op: imapv2.StoreFlagsAdd, Silent: true, Flags: []imapv2.Flag{imapv2.FlagDeleted}}
+	if err := c.Store(imapv2.UIDSetNum(p.serverUID(uid)), deleted, nil).Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu marquer supprimé le mail n°%s de %s : %v", uid, p.email, err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu effacer le mail n°%s de %s : %v", uid, p.email, err)
+	}
+	p.expectGoneElsewhere(c, uid, "un autre logiciel l'a supprimé définitivement")
+}
+
+// flaggedElsewhere is another mail program putting this mail of the inbox in
+// its favorites: the person starred it on their phone, which sets \Flagged on
+// the server. It does not sync.
+func (p *imapPerson) flaggedElsewhere(uid string) {
+	p.app.t.Helper()
+	p.flagElsewhere(uid, imapv2.FlagFlagged, "mettre en favori", "en favori")
+}
+
+// readElsewhere is another mail program marking this mail of the inbox read:
+// the person read it on their phone, which sets \Seen on the server. It does
+// not sync.
+func (p *imapPerson) readElsewhere(uid string) {
+	p.app.t.Helper()
+	p.flagElsewhere(uid, imapv2.FlagSeen, "marquer lu", "lu")
+}
+
+// flagElsewhere sets this flag on this mail of the inbox from another mail
+// program, then reads it back on the same connection: a STORE on a number the
+// folder does not hold answers OK and does nothing, so without the check a
+// scenario built on a wrong number would prove nothing and say nothing. change
+// and state name the change and the state it leaves in a failure.
+func (p *imapPerson) flagElsewhere(uid string, flag imapv2.Flag, change, state string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openInboxElsewhere()
+	defer c.Close()
+	set := p.serverUID(uid)
+	add := &imapv2.StoreFlags{Op: imapv2.StoreFlagsAdd, Silent: true, Flags: []imapv2.Flag{flag}}
+	if err := c.Store(imapv2.UIDSetNum(set), add, nil).Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu %s le mail n°%s de %s : %v", change, uid, p.email, err)
+	}
+	msgs, err := c.Fetch(imapv2.UIDSetNum(set), &imapv2.FetchOptions{UID: true, Flags: true}).Collect()
+	if err != nil {
+		a.fatalf("relecture des drapeaux du mail n°%s de %s, qu'un autre logiciel vient de %s : %v", uid, p.email, change, err)
+	}
+	for _, m := range msgs {
+		if m.UID != set {
+			continue
+		}
+		for _, f := range m.Flags {
+			if f == flag {
+				return
+			}
+		}
+	}
+	a.fatalf("le mail n°%s de la boîte de réception du serveur IMAP de %s n'est pas %s alors qu'un autre logiciel vient de le %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", uid, p.email, state, change)
+}
+
+// openFolderElsewhere is another mail program with this folder of the
+// person's mailbox open, ready to change it.
+func (p *imapPerson) openFolderElsewhere(folder string) *imapclient.Client {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	if _, err := c.Select(folder, nil).Wait(); err != nil {
+		_ = c.Close()
+		a.fatalf("un autre logiciel de messagerie n'arrive pas à ouvrir le dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	return c
+}
+
+// numberElsewhere is the number of the mail with this subject in the folder
+// open on c. By its subject, because a mail Mailsorter moved has a number in
+// its new folder that nobody told the scenario. A folder without that mail
+// stops the scenario: another program acting on a mail that is not there
+// proves nothing.
+func (p *imapPerson) numberElsewhere(c *imapclient.Client, folder, subject string) imapv2.UID {
+	a := p.app
+	a.t.Helper()
+	for _, m := range p.mailsIn(c, folder) {
+		if m.subject == subject {
+			return m.uid
+		}
+	}
+	a.fatalf("le dossier %s du serveur IMAP de %s ne contient pas le mail %q : le scénario ne prouve rien (à corriger dans le scénario)", folder, p.email, subject)
+	return 0
+}
+
+// expectLeftElsewhere checks, on the connection that just acted, that the
+// folder no longer holds this mail, for the reason expectGoneElsewhere gives.
+func (p *imapPerson) expectLeftElsewhere(c *imapclient.Client, folder, subject, what string) {
+	a := p.app
+	a.t.Helper()
+	for _, m := range p.mailsIn(c, folder) {
+		if m.subject == subject {
+			a.fatalf("le mail %q est encore dans le dossier %s du serveur IMAP de %s alors qu'%s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", subject, folder, p.email, what)
+		}
+	}
+}
+
+// newFolderElsewhere is another mail program creating a folder of the
+// person's own, the way they make one on their phone to file mail in.
+func (p *imapPerson) newFolderElsewhere(name string) {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if err := c.Create(name, nil).Wait(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu créer le dossier %s sur le serveur IMAP de %s : %v", name, p.email, err)
+	}
+}
+
+// folders is every folder of this person's server, by its full name
+// ("Projets/Maison" for a folder inside another), sorted, as another mail
+// program lists them (LIST "" "*").
+func (p *imapPerson) folders() []string {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	listed, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		a.fatalf("lecture des dossiers du serveur IMAP de %s : %v", p.email, err)
+	}
+	names := make([]string, 0, len(listed))
+	for _, l := range listed {
+		names = append(names, l.Mailbox)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// hasFolder reports whether this person's server has a folder by this full
+// name, as another mail program lists it.
+func (p *imapPerson) hasFolder(name string) bool {
+	p.app.t.Helper()
+	for _, f := range p.folders() {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
+// movedFromElsewhere is another mail program moving the mail with this
+// subject out of folder into to: the person filed it elsewhere on their
+// phone. It does not sync.
+func (p *imapPerson) movedFromElsewhere(folder, subject, to string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openFolderElsewhere(folder)
+	defer c.Close()
+	uid := p.numberElsewhere(c, folder, subject)
+	if _, err := c.Move(imapv2.UIDSetNum(uid), to).Wait(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu déplacer le mail %q de %s du dossier %s vers %s : %v", subject, p.email, folder, to, err)
+	}
+	p.expectLeftElsewhere(c, folder, subject, "un autre logiciel l'a déplacé vers "+to)
+}
+
+// erasedFromElsewhere is another mail program deleting the mail with this
+// subject from folder for good, as deletedElsewhere does in the inbox. It
+// does not sync.
+func (p *imapPerson) erasedFromElsewhere(folder, subject string) {
+	a := p.app
+	a.t.Helper()
+	c := p.openFolderElsewhere(folder)
+	defer c.Close()
+	uid := p.numberElsewhere(c, folder, subject)
+	deleted := &imapv2.StoreFlags{Op: imapv2.StoreFlagsAdd, Silent: true, Flags: []imapv2.Flag{imapv2.FlagDeleted}}
+	if err := c.Store(imapv2.UIDSetNum(uid), deleted, nil).Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu marquer supprimé le mail %q du dossier %s de %s : %v", subject, folder, p.email, err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		a.fatalf("un autre logiciel de messagerie n'a pas pu effacer le mail %q du dossier %s de %s : %v", subject, folder, p.email, err)
+	}
+	p.expectLeftElsewhere(c, folder, subject, "un autre logiciel l'a supprimé définitivement")
+}
+
+// serverMail is one mail of a folder, as another mail program lists it.
+type serverMail struct {
+	uid     imapv2.UID
+	subject string
+}
+
+// mailsIn lists the folder open on c, read from the envelopes, so listing
+// marks nothing read.
+func (p *imapPerson) mailsIn(c *imapclient.Client, folder string) []serverMail {
+	a := p.app
+	a.t.Helper()
+	found, err := c.UIDSearch(&imapv2.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	uids := found.AllUIDs()
+	if len(uids) == 0 {
+		return nil
+	}
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uids...), &imapv2.FetchOptions{UID: true, Envelope: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture du dossier %s du serveur IMAP de %s : %v", folder, p.email, err)
+	}
+	mails := make([]serverMail, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Envelope != nil {
+			mails = append(mails, serverMail{uid: m.UID, subject: m.Envelope.Subject})
+		}
+	}
+	return mails
+}
+
+// onServer returns the subjects of the mails in this folder of the person's
+// server, as another mail program lists them. Opened read-only and read from
+// the envelopes, so looking marks nothing read.
+func (p *imapPerson) onServer(folder string) []string {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
+	}
+	mails := p.mailsIn(c, folder)
+	if len(mails) == 0 {
+		return nil
+	}
+	subjects := make([]string, 0, len(mails))
+	for _, m := range mails {
+		subjects = append(subjects, m.subject)
+	}
+	return subjects
+}
+
+// seenOnServer says whether the mail with this subject in this folder of the
+// person's server is read there (the \Seen flag), as another mail program
+// shows it.
+func (p *imapPerson) seenOnServer(folder, subject string) bool {
+	p.app.t.Helper()
+	return p.hasFlagOnServer(folder, subject, imapv2.FlagSeen)
+}
+
+// flaggedOnServer says whether the mail with this subject in this folder of
+// the person's server is a favorite there (the \Flagged flag, which mail
+// programs show as a star or a flag), as another mail program shows it.
+func (p *imapPerson) flaggedOnServer(folder, subject string) bool {
+	p.app.t.Helper()
+	return p.hasFlagOnServer(folder, subject, imapv2.FlagFlagged)
+}
+
+// hasFlagOnServer says whether the mail with this subject in this folder of
+// the person's server carries this flag, as another mail program shows it.
+// Opened read-only and read from the flags, so looking marks nothing read. A
+// folder without that mail stops the scenario: a flag read on nothing proves
+// nothing.
+func (p *imapPerson) hasFlagOnServer(folder, subject string, flag imapv2.Flag) bool {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
+	}
+	uid := p.numberElsewhere(c, folder, subject)
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uid), &imapv2.FetchOptions{UID: true, Flags: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture des drapeaux du mail %q dans le dossier %s du serveur IMAP de %s : %v", subject, folder, p.email, err)
+	}
+	for _, m := range msgs {
+		if m.UID != uid {
+			continue
+		}
+		for _, f := range m.Flags {
+			if f == flag {
+				return true
+			}
+		}
+		return false
+	}
+	a.fatalf("le serveur IMAP de %s ne donne pas les drapeaux du mail %q du dossier %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", p.email, subject, folder)
+	return false
+}
+
+// sizeOnServer is the size in bytes of the mail with this subject in this
+// folder of the person's server (RFC822.SIZE), as another mail program reads
+// it. Opened read-only. A folder without that mail stops the scenario.
+func (p *imapPerson) sizeOnServer(folder, subject string) int64 {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	if _, err := c.Select(folder, &imapv2.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		a.fatalf("le dossier %s du serveur IMAP de %s ne s'ouvre pas : %v", folder, p.email, err)
+	}
+	uid := p.numberElsewhere(c, folder, subject)
+	msgs, err := c.Fetch(imapv2.UIDSetNum(uid), &imapv2.FetchOptions{UID: true, RFC822Size: true}).Collect()
+	if err != nil {
+		a.fatalf("lecture de la taille du mail %q dans le dossier %s du serveur IMAP de %s : %v", subject, folder, p.email, err)
+	}
+	for _, m := range msgs {
+		if m.UID == uid {
+			return m.RFC822Size
+		}
+	}
+	a.fatalf("le serveur IMAP de %s ne donne pas la taille du mail %q du dossier %s : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", p.email, subject, folder)
+	return 0
+}
+
+// expectOnServer checks that this folder of the person's server holds a mail
+// with this subject: where the mail went, seen from outside Mailsorter.
+func (p *imapPerson) expectOnServer(folder, subject string) {
+	a := p.app
+	a.t.Helper()
+	subjects := p.onServer(folder)
+	for _, s := range subjects {
+		if s == subject {
+			return
+		}
+	}
+	held := "aucun mail"
+	if len(subjects) > 0 {
+		held = fmt.Sprintf("%q", subjects)
+	}
+	a.failf("le mail %q devrait être dans le dossier %s du serveur IMAP de %s, il n'y est pas (le dossier contient : %s)", subject, folder, p.email, held)
+}
+
+// expectNotOnServer checks that this folder of the person's server no longer
+// holds a mail with this subject. why says why it should have left.
+func (p *imapPerson) expectNotOnServer(folder, subject, why string) {
+	a := p.app
+	a.t.Helper()
+	for _, s := range p.onServer(folder) {
+		if s == subject {
+			a.failf("le mail %q ne devrait plus être dans le dossier %s du serveur IMAP de %s (%s), il y est encore", subject, folder, p.email, why)
+			return
+		}
+	}
+}
+
+// requireOnServer is expectOnServer for what a scenario starts from: when the
+// folder does not hold the mail, the scenario stops there, since undoing an
+// action that moved nothing proves nothing. what names that action.
+func (p *imapPerson) requireOnServer(folder, subject, what string) {
+	a := p.app
+	a.t.Helper()
+	for _, s := range p.onServer(folder) {
+		if s == subject {
+			return
+		}
+	}
+	a.fatalf("le mail %q devrait être dans le dossier %s du serveur IMAP de %s, puisqu'%s : il n'y est pas, le scénario ne prouve rien", subject, folder, p.email, what)
+}
+
+// expectBackInInbox checks that the inbox screen lists the mail with this
+// subject again, and once. By its subject rather than its number: a mail that
+// comes back to an IMAP inbox gets a new number there from the server. when
+// says at which moment the screen is read.
+func (p *imapPerson) expectBackInInbox(subject, when string) {
+	a := p.app
+	a.t.Helper()
+	mails := p.inbox()
+	var numbers []string
+	for _, m := range mails {
+		if m.Subject == subject {
+			numbers = append(numbers, m.MessageID)
+		}
+	}
+	switch {
+	case len(numbers) == 0:
+		a.failf("%s, la boîte de réception de %s devrait montrer de nouveau le mail %q, elle ne le montre pas (elle montre : %s)", when, p.email, subject, describeInbox(mails))
+	case len(numbers) > 1:
+		a.failf("%s, la boîte de réception de %s devrait montrer le mail %q une fois, elle le montre %d fois (n°%s)", when, p.email, subject, len(numbers), strings.Join(numbers, ", n°"))
+	}
+}
+
+// folderOnServer returns the name under which the person's server lists the
+// folder a mail program shows as name, and whether it lists one, as another
+// mail program reads them (LIST "" "*"). For the sentences about a folder
+// Mailsorter creates: expectOnServer stops the scenario on a folder that does
+// not open, and a folder that was never created is then the very thing the
+// sentence is about.
+//
+// The name itself, at the root, or the name under a prefix the server
+// announces for personal folders (NAMESPACE, RFC 2342: "INBOX." on servers
+// that keep every folder under the inbox), where a mail program creating the
+// folder rightly puts it. The test server announces no prefix, so there the
+// name itself is the only one accepted; the prefixed one is accepted so that
+// these sentences do not forbid what such a server requires.
+func (p *imapPerson) folderOnServer(name string) (string, bool) {
+	a := p.app
+	a.t.Helper()
+	c := p.otherProgram()
+	defer c.Close()
+	accepted := []string{name}
+	if c.Caps().Has(imapv2.CapNamespace) {
+		ns, err := c.Namespace().Wait()
+		if err != nil {
+			a.fatalf("lecture des espaces de dossiers (NAMESPACE) du serveur IMAP de %s : %v", p.email, err)
+		}
+		for _, personal := range ns.Personal {
+			if personal.Prefix != "" {
+				accepted = append(accepted, personal.Prefix+name)
+			}
+		}
+	}
+	folders, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		a.fatalf("lecture des dossiers du serveur IMAP de %s : %v", p.email, err)
+	}
+	for _, want := range accepted {
+		for _, f := range folders {
+			if f.Mailbox == want {
+				return f.Mailbox, true
+			}
+		}
+	}
+	return "", false
+}
+
+// ---------------------------------------------------------------------------
+// "Reporter", and the Reporté screen ("Plus tard" in the hotel theme)
+// ---------------------------------------------------------------------------
+
+// snoozeAnswer is "Reporter" on one mail, as this person, to tomorrow morning
+// (handleSnooze in Inbox.js, "Demain matin" in SnoozeMenu.js), on the number the
+// row holds. It returns the answer, whatever it is.
+func (p *imapPerson) snoozeAnswer(uid string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/snooze",
+		map[string]string{"messageId": uid, "preset": "tomorrow"})
+	return answer{code: code, body: out}
+}
+
+// snoozeSelectionAnswer is "Reporter" on a selection of mails, as this person,
+// to tomorrow morning (runBulkSnooze in Inbox.js). It returns the answer,
+// whatever it is.
+func (p *imapPerson) snoozeSelectionAnswer(uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-snooze",
+		map[string]interface{}{"messageIds": uids, "preset": "tomorrow"})
+	return answer{code: code, body: out}
+}
+
+// reportedMail is one row of the "Prévus" tab of the Reporté screen
+// (Snoozed.js): the subject and the sender it shows, and the id its
+// "Réactiver" sends back.
+type reportedMail struct {
+	ID        string `json:"id"`
+	MessageID string `json:"messageId"`
+	From      string `json:"from"`
+	Subject   string `json:"subject"`
+}
+
+// reported is this person's mails reported and not back yet: the "Prévus" tab
+// of the Reporté screen, as it loads it (GET /api/snoozes?status=scheduled).
+func (p *imapPerson) reported() []reportedMail {
+	p.app.t.Helper()
+	return p.app.reportedAs(p.token, p.email)
+}
+
+// reportedAs is the "Prévus" tab of the Reporté screen of the account signed
+// in with token: the Gmail person's as well as an IMAP person's. who names
+// the person in a failure.
+func (a *testApp) reportedAs(token, who string) []reportedMail {
+	a.t.Helper()
+	code, out := a.callAs(token, http.MethodGet, "/api/snoozes?status=scheduled", nil)
+	if code != http.StatusOK {
+		a.fatalf("les mails reportés de %s ne s'affichent pas : GET /api/snoozes a répondu %d : %v", who, code, out)
+	}
+	raw, err := json.Marshal(out["snoozes"])
+	if err != nil {
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", who, err)
+	}
+	var rows []reportedMail
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		a.fatalf("réponse de GET /api/snoozes illisible pour %s : %v", who, err)
+	}
+	return rows
+}
+
+// reportsHourPasses is the hour of every report of this person passing,
+// whatever became of them (reportsHourPassesFor).
+func (p *imapPerson) reportsHourPasses() {
+	p.app.t.Helper()
+	p.app.reportsHourPassesFor(p.email)
+}
+
+// reportedRow returns the row of the "Prévus" tab for the mail with this
+// subject, and whether the tab shows one. By its subject, which is what the
+// row shows: the number of a reported mail is the one it had in the inbox.
+func (p *imapPerson) reportedRow(subject string) (reportedMail, bool) {
+	p.app.t.Helper()
+	for _, r := range p.reported() {
+		if r.Subject == subject {
+			return r, true
+		}
+	}
+	return reportedMail{}, false
+}
+
+// describeReported is the "Prévus" tab in a failure message.
+func describeReported(rows []reportedMail) string {
+	if len(rows) == 0 {
+		return "aucun mail"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		parts = append(parts, fmt.Sprintf("%q de %q", r.Subject, r.From))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// wakeNowAnswer is "Réactiver" on a row of the "Prévus" tab, once its
+// confirmation "Ramener maintenant" is accepted (handleWake in Snoozed.js). It
+// returns the answer, whatever it is.
+func (p *imapPerson) wakeNowAnswer(row reportedMail) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/snoozes/"+url.PathEscape(row.ID)+"/wake", nil)
+	return answer{code: code, body: out}
+}
+
+// timeComesForSnoozes is the hour of this person's reports coming: every wake
+// time of theirs still scheduled moved into the past, then the background
+// sweep run once, as its 1 minute loop does (wakeDueSnoozes, snooze.go). The
+// app reads no clock a scenario can turn, so the wake time is moved in the
+// database, as timeComesForSnoozes does for the Gmail user; the harness builds
+// the Handler without NewHandler, so no loop runs on its own.
+//
+// A person with no report scheduled stops the scenario: a sweep with nothing
+// due proves nothing about what it brings back.
+func (p *imapPerson) timeComesForSnoozes() {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := a.h.db.Snoozes().UpdateMany(ctx,
+		bson.M{"userId": p.email, "status": "scheduled"},
+		bson.M{"$set": bson.M{"wakeAt": time.Now().Add(-time.Minute)}})
+	if err != nil {
+		a.fatalf("avance de l'heure des reports de %s : %v", p.email, err)
+	}
+	if res.MatchedCount == 0 {
+		a.fatalf("aucun report de %s n'est prévu dans la base au moment de l'heure du réveil : le scénario ne prouve rien", p.email)
+	}
+	a.h.wakeDueSnoozes()
+}
+
+// ---------------------------------------------------------------------------
+// The AI's triage plan, and the history, as this person sees them
+// ---------------------------------------------------------------------------
+
+// analyze is "Trier avec l'IA" on these mails, as this person, and expects the
+// analysis to go through: a scenario about what happens to a proposal proves
+// nothing if the AI made none.
+func (p *imapPerson) analyze(uids ...string) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": uids})
+	if code != http.StatusOK {
+		a.fatalf("l'analyse par l'IA des mails n°%s de %s a répondu %d (attendu 200) : %v", strings.Join(uids, ", n°"), p.email, code, out)
+	}
+}
+
+// analyzeAnswer is "Analyser" on these mails, as this person, returning the
+// answer whatever it is: for a mail the analysis may rightly turn down.
+func (p *imapPerson) analyzeAnswer(uids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/analyze", map[string]interface{}{"emailIds": uids})
+	return answer{code: code, body: out}
+}
+
+// plan is the AI's triage plan as this person's inbox loads it
+// (GET /api/ai/suggestions): the proposals still waiting for an answer. It is
+// what the plan shows again after a refresh, so a proposal missing from it is
+// one the person can no longer apply or ignore.
+func (p *imapPerson) plan() []models.AISuggestion {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/ai/suggestions", nil)
+	if code != http.StatusOK {
+		a.fatalf("le plan de l'IA de %s ne s'affiche pas : GET /api/ai/suggestions a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var plan []models.AISuggestion
+	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+		a.fatalf("réponse de GET /api/ai/suggestions illisible pour %s : %v", p.email, err)
+	}
+	return plan
+}
+
+// inPlan reports whether the plan still shows this proposal.
+func (p *imapPerson) inPlan(id string) bool {
+	p.app.t.Helper()
+	for _, s := range p.plan() {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// proposalFor returns the proposal the plan shows for this mail, and fails
+// the scenario when it shows none.
+func (p *imapPerson) proposalFor(uid string) models.AISuggestion {
+	a := p.app
+	a.t.Helper()
+	for _, s := range p.plan() {
+		if s.EmailID == uid {
+			return s
+		}
+	}
+	a.fatalf("le plan de l'IA de %s ne propose rien pour le mail n°%s : le scénario ne prouve rien", p.email, uid)
+	return models.AISuggestion{}
+}
+
+// proposalStatus is what the database holds for a proposal ("pending",
+// "applied", "rejected"). Only for a failure message: it says why the plan no
+// longer shows a proposal.
+func (p *imapPerson) proposalStatus(id string) string {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Sprintf("identifiant %q illisible", id)
+	}
+	var s models.AISuggestion
+	if err := a.h.db.AISuggestions().FindOne(ctx, bson.M{"userId": p.email, "_id": oid}).Decode(&s); err != nil {
+		return fmt.Sprintf("introuvable (%v)", err)
+	}
+	return s.Status
+}
+
+// applyProposal is "Appliquer" on one proposal of the plan, as this person,
+// and returns the answer, whatever it is.
+func (p *imapPerson) applyProposal(id string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/apply", map[string]string{"suggestionId": id})
+	return answer{code: code, body: out}
+}
+
+// tidyAll is "Tout ranger" on these proposals of the plan, as this person, and
+// returns the answer, whatever it is.
+func (p *imapPerson) tidyAll(ids ...string) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/ai/apply-batch", map[string]interface{}{"suggestionIds": ids})
+	return answer{code: code, body: out}
+}
+
+// listedFolder is one entry of the list of folders, or labels, Mailsorter
+// offers to file a mail into (GET /api/labels): the shape of a Gmail label.
+// Every screen that offers one (LabelPicker in Inbox.js, the rules editor)
+// shows the name of the entries whose type is "user", and only those.
+type listedFolder struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// offeredByScreens reports whether the screens offer this entry to file into.
+func (f listedFolder) offeredByScreens() bool {
+	return f.Type == "user" && f.Name != ""
+}
+
+// foldersToFileInto is the list of folders Mailsorter offers this person to
+// file a mail into, every entry as GET /api/labels hands it over. It stops the
+// scenario when the list does not load: there is then nothing to look at.
+func (p *imapPerson) foldersToFileInto() []listedFolder {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/labels", nil)
+	if code != http.StatusOK {
+		a.fatalf("la liste des dossiers où classer de %s ne s'affiche pas : GET /api/labels a répondu %d : %v", p.email, code, out)
+	}
+	raw, _ := out["_raw"].(string)
+	var list []listedFolder
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		a.fatalf("réponse de GET /api/labels illisible pour %s : %v (%v)", p.email, err, out)
+	}
+	return list
+}
+
+// describeFolders is that list in a failure message.
+func describeFolders(list []listedFolder) string {
+	if len(list) == 0 {
+		return "aucun dossier"
+	}
+	parts := make([]string, 0, len(list))
+	for _, f := range list {
+		parts = append(parts, fmt.Sprintf("%q (type %q)", f.Name, f.Type))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// history returns this person's action log for one mail, oldest first: what
+// their Historique screen lists for it. Scoped to this person, since another
+// person's mail may carry the same number.
+func (p *imapPerson) history(uid string) []models.ActionLog {
+	a := p.app
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cur, err := a.h.db.ActionLog().Find(ctx, bson.M{"userId": p.email, "messageId": uid},
+		options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}))
+	if err != nil {
+		a.fatalf("lecture de l'historique de %s : %v", p.email, err)
+	}
+	var rows []models.ActionLog
+	if err := cur.All(ctx, &rows); err != nil {
+		a.fatalf("lecture de l'historique de %s : %v", p.email, err)
+	}
+	return rows
+}
+
+// ---------------------------------------------------------------------------
+// "Annuler", from the three places that offer it
+// ---------------------------------------------------------------------------
+
+// undoRightAfter is "Annuler" in the message that follows a row's "Archiver"
+// or "Supprimer" (undoToast in Inbox.js), as this person, on the number the
+// mail had in the inbox. It returns the answer, whatever it is.
+func (p *imapPerson) undoRightAfter(uid, action string) answer {
+	p.app.t.Helper()
+	return p.app.undoRightAfterAs(p.token, uid, action)
+}
+
+// tidyUndo is one request of the "Annuler" that follows "Tout ranger": the
+// mails of one verdict, and what the server answered.
+type tidyUndo struct {
+	action string
+	uids   []string
+	got    answer
+}
+
+// undoTidy is "Annuler" in the message that follows "Tout ranger" (undo in
+// useTriagePlan, TriagePlan.js): one POST /api/emails/batch-undo per verdict,
+// with the numbers the mails had in the inbox when they were tidied, and
+// nothing for a "keep", which moved nothing. applied are the proposals
+// "Tout ranger" applied. It returns each answer, whatever it is.
+func (p *imapPerson) undoTidy(applied []models.AISuggestion) []tidyUndo {
+	p.app.t.Helper()
+	// The client's spelling of a verdict (canonicalAction in ui/actions.js).
+	canonical := map[string]string{"trash": "delete", "markRead": "read", "markUnread": "unread"}
+	var order []string
+	byVerb := map[string]*tidyUndo{}
+	labels := map[string]string{}
+	for _, s := range applied {
+		action := s.Action
+		if c, ok := canonical[action]; ok {
+			action = c
+		}
+		if action == "keep" {
+			continue
+		}
+		key := action
+		if action == "label" {
+			key = action + "|" + s.LabelName
+			labels[key] = s.LabelName
+		}
+		if byVerb[key] == nil {
+			byVerb[key] = &tidyUndo{action: action}
+			order = append(order, key)
+		}
+		byVerb[key].uids = append(byVerb[key].uids, s.EmailID)
+	}
+	out := make([]tidyUndo, 0, len(order))
+	for _, key := range order {
+		u := byVerb[key]
+		code, body := p.app.callAs(p.token, http.MethodPost, "/api/emails/batch-undo",
+			map[string]interface{}{"messageIds": u.uids, "action": u.action, "labelName": labels[key]})
+		u.got = answer{code: code, body: body}
+		out = append(out, *u)
+	}
+	return out
+}
+
+// historyScreen is this person's Historique screen: the first page it loads
+// (History.js, 50 lines), newest first.
+func (p *imapPerson) historyScreen() []historyLine {
+	p.app.t.Helper()
+	return p.app.historyScreenAs(p.token, p.email)
+}
+
+// historyLineFor returns the newest line of the Historique screen for this
+// action on the mail with this number, and stops the scenario when the
+// screen shows none: there is then nothing to press "Annuler" on.
+func (p *imapPerson) historyLineFor(uid, action string) historyLine {
+	a := p.app
+	a.t.Helper()
+	for _, l := range p.historyScreen() {
+		if l.MessageID == uid && l.Action == action {
+			return l
+		}
+	}
+	a.fatalf("l'historique de %s ne montre pas de ligne %q pour le mail n°%s : le scénario ne prouve rien", p.email, action, uid)
+	return historyLine{}
+}
+
+// historyLinesOf returns every line the Historique screen shows for the mail
+// with this number, newest first. For the sentences about an action that does
+// nothing: the screen must then show no line for it, so the scenario counts
+// them where the person reads them, not in the database.
+func (p *imapPerson) historyLinesOf(uid string) []historyLine {
+	p.app.t.Helper()
+	var lines []historyLine
+	for _, l := range p.historyScreen() {
+		if l.MessageID == uid {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// historyLineSent is the line of this person's Historique screen with this
+// id, every field as GET /api/activity/log hands it over, or nil when the
+// screen no longer shows it: for a sentence about what a line says beyond the
+// fields historyLine reads.
+func (p *imapPerson) historyLineSent(id string) map[string]interface{} {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/activity/log?limit=50", nil)
+	if code != http.StatusOK {
+		a.fatalf("l'historique de %s ne s'affiche pas : GET /api/activity/log a répondu %d : %v", p.email, code, out)
+	}
+	entries, _ := out["entries"].([]interface{})
+	for _, e := range entries {
+		if line, ok := e.(map[string]interface{}); ok && line["id"] == id {
+			return line
+		}
+	}
+	return nil
+}
+
+// holdsString reports whether v, a value decoded from JSON, holds the string
+// want at any depth, outside the keys in skip (at any depth too).
+func holdsString(v interface{}, want string, skip map[string]bool) bool {
+	switch t := v.(type) {
+	case string:
+		return t == want
+	case map[string]interface{}:
+		for k, inner := range t {
+			if !skip[k] && holdsString(inner, want, skip) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, inner := range t {
+			if holdsString(inner, want, skip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// describeHistory is lines of the Historique screen in a failure message:
+// the action and where it came from (the Source* constants in ledger.go).
+func describeHistory(lines []historyLine) string {
+	if len(lines) == 0 {
+		return "aucune ligne"
+	}
+	parts := make([]string, 0, len(lines))
+	for _, l := range lines {
+		parts = append(parts, fmt.Sprintf("%q (%s)", l.Action, l.Source))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// undoFromHistory is "Annuler" on a line of the Historique screen (handleUndo
+// in History.js), once its confirmation is accepted. It returns the answer,
+// whatever it is.
+func (p *imapPerson) undoFromHistory(line historyLine) answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/activity/undo", map[string]string{"id": line.ID})
+	return answer{code: code, body: out}
+}
+
+// expectMarkedUndone checks, on the Historique screen as it loads again, that
+// this line shows "Annulé" (undone) or not. what names the line in a failure.
+func (p *imapPerson) expectMarkedUndone(line historyLine, undone bool, what string) {
+	a := p.app
+	a.t.Helper()
+	for _, l := range p.historyScreen() {
+		if l.ID != line.ID {
+			continue
+		}
+		switch {
+		case undone && !l.Undone:
+			a.failf("dans l'historique de %s, la ligne %s devrait être marquée annulée, elle ne l'est pas", p.email, what)
+		case !undone && l.Undone:
+			a.failf("dans l'historique de %s, la ligne %s ne devrait pas être marquée annulée, elle l'est", p.email, what)
+		}
+		return
+	}
+	a.failf("l'historique de %s ne montre plus la ligne %s", p.email, what)
+}
+
+// expectNoLongerUndoable checks, on this person's Historique screen as it
+// loads again, that this line shows "Annulé" and no longer offers "Annuler".
+// what names the line in a failure.
+func (p *imapPerson) expectNoLongerUndoable(line historyLine, what string) {
+	p.app.t.Helper()
+	p.app.expectNoLongerUndoableAs(p.token, p.email, line, what)
+}
+
+// actionTakenDaysAgo is days going by since the action of this history line:
+// the line's date, and the date the stored copy of its mail records for when
+// it left the inbox (leftAt, written by mirroredIMAP), both moved that many
+// days back, which is what the database holds once that time has passed. The
+// app reads no clock a scenario can turn, and a sentence about an action older
+// than "Annuler" allows cannot wait thirty days.
+//
+// The line must exist: moving nothing back would prove nothing. The stored
+// copy may not, once the app keeps none for a mail that left the inbox.
+func (p *imapPerson) actionTakenDaysAgo(line historyLine, days int) {
+	a := p.app
+	a.t.Helper()
+	oid, err := primitive.ObjectIDFromHex(line.ID)
+	if err != nil {
+		a.fatalf("la ligne d'historique %q n'a pas un identifiant lisible : %v", line.ID, err)
+	}
+	then := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := a.h.db.ActionLog().UpdateOne(ctx,
+		bson.M{"_id": oid, "userId": p.email},
+		bson.M{"$set": bson.M{"createdAt": then}})
+	if err != nil {
+		a.fatalf("recul de %d jours de la ligne d'historique %q de %s : %v", days, line.Action, p.email, err)
+	}
+	if res.MatchedCount != 1 {
+		a.fatalf("la ligne d'historique %q du mail n°%s de %s est introuvable dans la base : le scénario ne prouve rien (à corriger dans acceptance_imap_test.go)", line.Action, line.MessageID, p.email)
+	}
+	if _, err := a.h.db.Emails().UpdateMany(ctx,
+		bson.M{"userId": p.email, "messageId": line.MessageID, "leftInbox": true},
+		bson.M{"$set": bson.M{"leftAt": then}}); err != nil {
+		a.fatalf("recul de %d jours de la sortie de la boîte de réception du mail n°%s de %s : %v", days, line.MessageID, p.email, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The Règles screen, as this person
+// ---------------------------------------------------------------------------
+
+// rule saves a sorting rule as this person, the way the editor of the Règles
+// screen does: one condition, then the actions in order. testApp.rule does the
+// same for the person on Gmail. It stops the scenario when the server does not
+// take it: a sentence about what a rule does proves nothing about a rule that
+// was never saved.
+func (p *imapPerson) rule(name string, priority int, field, operator, value string, actions ...models.RuleAction) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPost, "/api/rules", models.SortingRuleInput{
+		Name:       name,
+		Enabled:    true,
+		MatchAll:   true,
+		Conditions: []models.RuleCondition{{Field: field, Operator: operator, Value: value}},
+		Actions:    actions,
+		Priority:   priority,
+	})
+	if code != http.StatusCreated && code != http.StatusOK {
+		a.fatalf("la règle %q de %s n'a pas pu être enregistrée : POST /api/rules a répondu %d (attendu 201) : %v : le scénario ne prouve rien", name, p.email, code, out)
+	}
+}
+
+// applyRules is "Appliquer maintenant" on the Règles screen (applyNow in
+// Rules.js), what the sentences call « Appliquer mes règles », as this person.
+// It returns the answer, whatever it is.
+func (p *imapPerson) applyRules() answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/rules/apply", nil)
+	return answer{code: code, body: out}
+}
+
+// previewRules is "Aperçu" on the Règles screen (runPreview in Rules.js), as
+// this person. It returns the answer, whatever it is.
+func (p *imapPerson) previewRules() answer {
+	p.app.t.Helper()
+	code, out := p.app.callAs(p.token, http.MethodPost, "/api/rules/preview", nil)
+	return answer{code: code, body: out}
+}
+
+// autoApplyRulesOn is whether the Règles screen shows the option "appliquer
+// mes règles automatiquement" on ("Appliquer à chaque synchronisation"), as
+// the screen loads it (GET /api/account/settings).
+func (p *imapPerson) autoApplyRulesOn() bool {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodGet, "/api/account/settings", nil)
+	if code != http.StatusOK {
+		a.fatalf("les réglages de %s ne s'affichent pas : GET /api/account/settings a répondu %d : %v", p.email, code, out)
+	}
+	on, ok := out["autoApplyRules"].(bool)
+	if !ok {
+		a.fatalf("réponse de GET /api/account/settings illisible pour %s : pas d'option autoApplyRules dans %v", p.email, out)
+	}
+	return on
+}
+
+// setAutoApplyRules flips that option as this person (toggleAutoApply in
+// Rules.js), then reads it back the way the screen loads it: a sentence about
+// the option on proves nothing if it did not stay on.
+func (p *imapPerson) setAutoApplyRules(on bool) {
+	a := p.app
+	a.t.Helper()
+	code, out := a.callAs(p.token, http.MethodPut, "/api/account/settings", map[string]bool{"autoApplyRules": on})
+	if code != http.StatusOK {
+		a.fatalf("l'option « appliquer mes règles automatiquement » de %s n'a pas pu être réglée : PUT /api/account/settings a répondu %d : %v : le scénario ne prouve rien", p.email, code, out)
+	}
+	if got := p.autoApplyRulesOn(); got != on {
+		a.fatalf("l'option « appliquer mes règles automatiquement » de %s devrait être %s, l'écran Règles la montre %s : le scénario ne prouve rien", p.email, onOff(on), onOff(got))
+	}
+}
+
+// onOff is an option's state in a failure message.
+func onOff(on bool) string {
+	if on {
+		return "activée"
+	}
+	return "coupée"
 }

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/nohe-sohbi/mailsorter/backend/internal/gmail"
-	"github.com/nohe-sohbi/mailsorter/backend/internal/mailbox"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/models"
 	"github.com/nohe-sohbi/mailsorter/backend/internal/search"
 	"go.mongodb.org/mongo-driver/bson"
@@ -47,18 +46,46 @@ func (e errUnsupportedQuery) Error() string {
 	return "api: query terms a stored mailbox cannot answer: " + strings.Join(e.terms, " ")
 }
 
+// notLeftInbox is the filter every read of the stored mailbox that shows or
+// counts what is IN the inbox carries: a message Mailsorter moved out stays
+// stored for up to 30 days (undoWindow), hidden, so "Annuler" knows where it
+// went (mirroredIMAP), and must not be listed, counted, grouped by sender or
+// acted on as if it were still there. Reads that resolve an identity for the
+// history do not.
+var notLeftInbox = bson.M{"$ne": true}
+
 // mirrorFilter turns a parsed query into the lookup that answers it.
 //
 // Anything the query could not express is the caller's problem, not this
 // function's: it is handed a Criteria that is already only the answerable part.
 func mirrorFilter(userEmail string, crit search.Criteria, now time.Time) bson.M {
-	filter := bson.M{"userId": userEmail}
+	// leftInbox: a message Mailsorter moved out of the inbox, kept hidden so
+	// "Annuler" can bring it back (mirroredIMAP, undoWindow).
+	filter := bson.M{"userId": userEmail, "leftInbox": notLeftInbox}
 
 	if crit.Folder != "" {
 		filter["folder"] = crit.Folder
 	}
 	if crit.Unread != nil {
 		filter["isRead"] = *crit.Unread
+	}
+	if crit.Starred {
+		filter["isStarred"] = true
+	}
+	if crit.HasAttachment {
+		filter["hasAttachments"] = true
+	}
+	// A message the sync has not read the size of yet (sizeEstimate missing)
+	// matches neither bound: it is not known to be large, nor small.
+	sizeBounds := bson.M{}
+	if crit.Larger > 0 {
+		sizeBounds["$gt"] = crit.Larger
+	}
+	if crit.Smaller > 0 {
+		sizeBounds["$lt"] = crit.Smaller
+	}
+	if len(sizeBounds) > 0 {
+		filter["sizeEstimate"] = sizeBounds
 	}
 	for _, v := range crit.From {
 		filter["from"] = containsInsensitive(v)
@@ -110,11 +137,12 @@ func containsInsensitive(value string) bson.M {
 	return bson.M{"$regex": regexp.QuoteMeta(value), "$options": "i"}
 }
 
-// listFromMirror answers a listing out of the stored mailbox.
+// listFromMirror answers a listing out of the stored mailbox, of the
+// generation connected now (gen, see generation.go).
 //
 // The page token is an offset. Gmail's is opaque and so is this one as far as
 // the client is concerned; it only ever echoes back what it was handed.
-func (h *Handler) listFromMirror(ctx context.Context, userEmail, query string, maxResults int64, pageToken string) (map[string]interface{}, error) {
+func (h *Handler) listFromMirror(ctx context.Context, userEmail, gen, query string, maxResults int64, pageToken string) (map[string]interface{}, error) {
 	crit, unsupported := search.Parse(query)
 	if len(unsupported) > 0 {
 		return nil, errUnsupportedQuery{terms: unsupported}
@@ -129,6 +157,7 @@ func (h *Handler) listFromMirror(ctx context.Context, userEmail, query string, m
 	}
 
 	filter := mirrorFilter(userEmail, crit, time.Now())
+	filter["generation"] = inGeneration(gen)
 
 	total, err := h.db.Emails().CountDocuments(ctx, filter)
 	if err != nil {
@@ -186,19 +215,19 @@ func parseOffsetToken(token string) (int64, error) {
 // It reports what it can and leaves the rest at zero rather than inventing it:
 // there is no sent, draft, spam or trash mirror, and LabelStats is Gmail label
 // vocabulary that means nothing on a transport where a message is in one
-// folder. The frontend renders a counter it has no value for as a dash.
-func (h *Handler) statsFromMirror(ctx context.Context, userEmail string) (*gmail.MailboxStats, error) {
-	inbox := bson.M{"userId": userEmail, "folder": string(mailbox.FolderInbox)}
+// folder. The frontend renders a counter it has no value for as a dash. Of
+// the generation connected now (gen).
+func (h *Handler) statsFromMirror(ctx context.Context, userEmail, gen string) (*gmail.MailboxStats, error) {
+	inbox := inboxOf(userEmail, gen)
+	inbox["leftInbox"] = bson.M{"$ne": true}
 
 	total, err := h.db.Emails().CountDocuments(ctx, inbox)
 	if err != nil {
 		return nil, fmt.Errorf("count stored messages: %w", err)
 	}
-	unread, err := h.db.Emails().CountDocuments(ctx, bson.M{
-		"userId": userEmail,
-		"folder": string(mailbox.FolderInbox),
-		"isRead": false,
-	})
+	unreadOnes := inboxOf(userEmail, gen)
+	unreadOnes["leftInbox"], unreadOnes["isRead"] = bson.M{"$ne": true}, false
+	unread, err := h.db.Emails().CountDocuments(ctx, unreadOnes)
 	if err != nil {
 		return nil, fmt.Errorf("count unread stored messages: %w", err)
 	}

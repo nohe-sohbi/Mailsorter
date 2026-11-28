@@ -95,8 +95,8 @@ type chatResponse struct {
 
 // AnalyzeEmail analyzes a single email and returns a suggested action.
 // Implements Analyzer.
-func (c *MistralClient) AnalyzeEmail(email models.Email, existingLabels []string) (*EmailAnalysis, error) {
-	prompt := buildAnalyzeEmailPrompt(email, existingLabels)
+func (c *MistralClient) AnalyzeEmail(email models.Email) (*EmailAnalysis, error) {
+	prompt := buildAnalyzeEmailPrompt(email)
 
 	response, err := c.chat(prompt)
 	if err != nil {
@@ -108,8 +108,8 @@ func (c *MistralClient) AnalyzeEmail(email models.Email, existingLabels []string
 
 // AnalyzeSender analyzes multiple emails from the same sender.
 // Implements Analyzer.
-func (c *MistralClient) AnalyzeSender(senderEmail string, emails []models.Email, existingLabels []string) (*SenderAnalysis, error) {
-	prompt := buildSenderPrompt(senderEmail, emails, existingLabels)
+func (c *MistralClient) AnalyzeSender(senderEmail string, emails []models.Email) (*SenderAnalysis, error) {
+	prompt := buildSenderPrompt(senderEmail, emails)
 
 	response, err := c.chat(prompt)
 	if err != nil {
@@ -124,12 +124,12 @@ func (c *MistralClient) AnalyzeSender(senderEmail string, emails []models.Email,
 // slashing both cost and latency. Returns an error if the model's response
 // can't be aligned with the input, so the caller can fall back per-email.
 // Implements Analyzer.
-func (c *MistralClient) AnalyzeBatch(emails []models.Email, existingLabels []string) ([]EmailAnalysis, error) {
+func (c *MistralClient) AnalyzeBatch(emails []models.Email) ([]EmailAnalysis, error) {
 	if len(emails) == 0 {
 		return nil, nil
 	}
 
-	prompt := buildBatchPrompt(emails, existingLabels)
+	prompt := buildBatchPrompt(emails)
 
 	maxTokens := 120*len(emails) + 200
 	if maxTokens > 4000 {
@@ -188,12 +188,6 @@ func (c *MistralClient) chatTokens(prompt string, maxTokens int) (string, error)
 					log.Printf("Mistral model %s not available (%v), falling back to mistral-small-latest", currentModel, err)
 					currentModel = "mistral-small-latest"
 					c.model = "mistral-small-latest"
-					fallbackNeeded = true
-					break
-				} else if currentModel != "open-mistral-nemo" {
-					log.Printf("Mistral model %s not available (%v), falling back to open-mistral-nemo", currentModel, err)
-					currentModel = "open-mistral-nemo"
-					c.model = "open-mistral-nemo"
 					fallbackNeeded = true
 					break
 				}

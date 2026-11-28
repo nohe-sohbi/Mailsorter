@@ -119,25 +119,18 @@ func (h *Handler) autoApplyRulesEnabled(ctx context.Context, userEmail string) b
 }
 
 // userSettings loads the caller's tunable settings, applying the server default
-// digest hour when the user has not picked one (a stored 0 is treated as
-// "unset" rather than midnight, which is rarely what a user means).
+// digest hour when the user has not picked one (see digestHourOf).
 func (h *Handler) userSettings(ctx context.Context, userEmail string) models.UserSettings {
 	var doc struct {
 		AutoApplyRules  bool `bson:"autoApplyRules"`
 		AutoSyncEnabled bool `bson:"autoSyncEnabled"`
 		DigestEnabled   bool `bson:"digestEnabled"`
-		DigestHourUTC   int  `bson:"digestHourUTC"`
+		DigestHourUTC   *int `bson:"digestHourUTC"`
 	}
 	if err := h.db.Users().FindOne(ctx, bson.M{"email": userEmail}).Decode(&doc); err != nil {
 		return models.UserSettings{DigestHourUTC: defaultDigestHour()}
 	}
-	hour := doc.DigestHourUTC
-	// 0 is midnight, a perfectly good hour. Treating it as "unset" here (while
-	// the write path accepted and stored it) meant picking 00:00 silently
-	// reverted to the default on the next read, with no way to ever save it.
-	if hour < 0 || hour > 23 {
-		hour = defaultDigestHour()
-	}
+	hour := digestHourOf(doc.DigestHourUTC)
 	return models.UserSettings{
 		AutoApplyRules:  doc.AutoApplyRules,
 		AutoSyncEnabled: doc.AutoSyncEnabled,
@@ -198,11 +191,23 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	if in.AutoApplyRules != nil && *in.AutoApplyRules {
+		// When it is turned on, from off only: saving it on again moves
+		// nothing. Over IMAP the sync sorts on its own the mails received
+		// after it (syncRulesFor), never the ones already there.
+		if _, err := h.db.Users().UpdateOne(ctx,
+			bson.M{"email": userEmail, "autoApplyRules": bson.M{"$ne": true}},
+			bson.M{"$set": bson.M{"autoApplyRulesSince": time.Now()}},
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer les réglages.")
+			return
+		}
+	}
 	if _, err := h.db.Users().UpdateOne(ctx,
 		bson.M{"email": userEmail},
 		bson.M{"$set": set},
 	); err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to update settings")
+		writeError(w, http.StatusInternalServerError, "Impossible d'enregistrer les réglages.")
 		return
 	}
 

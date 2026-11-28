@@ -152,12 +152,14 @@ func TestBatchInverseIsReplayable(t *testing.T) {
 // history undo and the batch undo reverse the same ledger entries.
 //
 // They do NOT overlap everywhere, and that is deliberate. The batch can reverse
-// a labelling because the client still holds the label name it just applied; the
-// ledger stores no label name, so the history genuinely cannot, and claiming
-// otherwise would put a dead "Annuler" on every label row.
+// a Gmail labelling because the client still holds the label name it just
+// applied; most ledger lines do not (only an applied AI proposal records it),
+// so the history cannot, and claiming otherwise would put a dead "Annuler" on
+// every label row. Over IMAP it can (activity.InverseOnFolders): a label is a
+// folder there, and the mail comes back from where Mailsorter put it.
 func TestBatchInverseAgreesWithLedgerWhereBothKnowTheAction(t *testing.T) {
 	ledgerCannotReverse := map[string]string{
-		"label": "the action log stores no label name, so a per-entry undo has nothing to remove",
+		"label": "over the Gmail API most action log lines name no label, so a per-entry undo has nothing to remove",
 	}
 
 	for action, inverse := range batchInverse {
@@ -210,12 +212,12 @@ func TestBatchActionRejectsMalformedJSON(t *testing.T) {
 }
 
 // apply-batch reports this so the client offers "Annuler" only where batch-undo
-// can perform it. It cannot on IMAP yet, and an undo that answers 501 after the
-// user pressed it is worse than none.
-func TestBatchUndoReachesOnlyTheGmailAPI(t *testing.T) {
+// can perform it: the Gmail API and IMAP, not Graph (not implemented). An undo
+// that answers 501 after the user pressed it is worse than none.
+func TestBatchUndoReachesGmailAndIMAP(t *testing.T) {
 	cases := map[provider.Transport]bool{
 		provider.TransportGmailAPI: true,
-		provider.TransportIMAP:     false,
+		provider.TransportIMAP:     true,
 		provider.TransportGraph:    false,
 		"":                         false,
 	}

@@ -12,113 +12,159 @@ import {
   Lock, Server, Undo, Mail, ChevronDown,
 } from '../ui/icons';
 import Spinner from '../ui/Spinner';
+import { aiEgress, AI_READS, canConnect, canPromise, isGmailOnly } from '../components/landing/features';
 
-const GMAIL_ONLY = 'labels';
-
+// Every claim of this landing holds on THIS instance. A feature only the Gmail
+// API offers is shown only when the instance has Google credentials, and then
+// marked "Gmail", because a mailbox connected over IMAP does not get it yet
+// (GMAIL_ONLY in components/landing/features.js, which the hotel landing reads
+// too). The quota is said only where there is one, the Pro plan only where it
+// can exist.
 const FEATURES = [
   {
     Icon: Sparkles,
     title: 'Tri par IA en un clic',
-    text: "L'IA lit, comprend et classe vos emails comme un assistant humain : newsletters, factures, colis, spam.",
+    text: "L'IA lit vos emails et propose quoi en faire : newsletters, factures, colis, publicités. Vous validez d'un clic.",
   },
   {
     Icon: BellOff,
-    title: 'Désabonnement en 1 clic',
-    text: 'Mailsorter traque les newsletters qui vous noient et vous désabonne instantanément, sans formulaire ni sortie de l\'app.',
+    title: 'Désabonnement simplifié',
+    text: "Mailsorter repère les newsletters qui vous noient et vous désabonne, souvent en un clic. Sinon, il ouvre pour vous la page de désabonnement de l'expéditeur.",
+    feature: 'unsubscribe',
   },
   {
     Icon: Users,
     title: 'Règles par expéditeur',
     text: 'Apprenez une fois, appliquez pour toujours. Mailsorter mémorise vos préférences pour chaque expéditeur.',
+    feature: 'rules',
   },
   {
     Icon: Archive,
     title: 'Nettoyage en masse',
-    text: 'Archivez ou supprimez des centaines d\'emails d\'un coup. Inbox Zero en minutes, pas en heures.',
+    text: "Archivez ou supprimez des centaines d'emails d'un coup. Une boîte vide en quelques minutes, pas en quelques heures.",
   },
   {
     Icon: Tag,
     title: 'Libellés intelligents',
-    text: 'Des étiquettes précises et cohérentes, créées et appliquées automatiquement dans votre Gmail.',
-    soon: true,
-    needs: GMAIL_ONLY,
+    text: "Des étiquettes précises et cohérentes, proposées par l'IA et appliquées dans votre boîte quand vous validez. Sur une boîte IMAP, l'étiquette est un dossier.",
+    feature: 'label',
   },
 ];
 
-const STEPS = [
-  {
-    n: '01',
-    title: 'Créez votre compte',
-    text: 'Inscription en 10 secondes. Vos accès et vos préférences restent sous votre contrôle.',
-  },
-  {
-    n: '02',
-    title: 'Définissez la boîte à ranger',
-    text: 'Connectez Gmail en un clic ou n\'importe quelle messagerie (Orange, Outlook, Yahoo...) avec un mot de passe d\'application.',
-  },
-  {
-    n: '03',
-    title: 'Laissez l\'IA faire le tri',
-    text: 'L\'IA analyse et propose un tri sur mesure. Validez en un clic ou activez l\'autopilote.',
-  },
-];
+function steps(isConfigured) {
+  return [
+    {
+      n: '01',
+      title: 'Créez votre compte',
+      text: 'Inscription en 10 secondes. Vos accès et vos préférences restent sous votre contrôle.',
+    },
+    {
+      n: '02',
+      title: 'Définissez la boîte à ranger',
+      text: isConfigured
+        ? "Connectez Gmail en un clic, ou une autre messagerie prise en charge avec un mot de passe d'application."
+        : "Branchez votre messagerie avec un mot de passe d'application, créé chez votre fournisseur.",
+    },
+    {
+      n: '03',
+      title: "Laissez l'IA proposer le tri",
+      text: "L'IA analyse et propose un tri sur mesure. Vous validez en un clic.",
+    },
+  ];
+}
 
-const FACTS = [
-  { big: '0', small: 'mot de passe stocké', title: 'La connexion passe par OAuth Google ou mot de passe d\'application scellé.' },
-  { big: 'AES-256', small: 'chiffré au repos', title: 'Vos identifiants et jetons sont scellés en AES-256-GCM avant d\'atteindre la base.' },
-  { big: '200', small: 'emails analysés / mois offerts', title: 'Quota du plan gratuit. Le cache et l\'auto-pilote ne le consomment pas.' },
-  { big: '1 clic', small: 'pour annuler une action', title: 'Chaque action est journalisée avec son inverse, et annulable depuis l\'historique.' },
-];
+function facts({ selfHosted, undo, autopilot }) {
+  return [
+    {
+      big: '0',
+      small: 'mot de passe en clair',
+      title: "Le mot de passe de votre compte est haché (bcrypt), celui de votre boîte est chiffré (AES-256-GCM) : aucun n'est conservé en clair.",
+    },
+    { big: 'AES-256', small: 'chiffré au repos', title: "Vos identifiants et jetons sont scellés en AES-256-GCM avant d'atteindre la base." },
+    selfHosted
+      ? { big: '200', small: "caractères lus par l'IA, au plus", title: AI_READS }
+      : {
+          big: '200',
+          small: 'emails analysés / mois offerts',
+          title: autopilot
+            ? "Quota du plan gratuit. Le cache et l'auto-pilote ne le consomment pas."
+            : 'Quota du plan gratuit. Les analyses déjà en cache ne le consomment pas.',
+        },
+    undo
+      ? { big: '1 clic', small: 'pour annuler une action', title: "Chaque action est journalisée avec son inverse, et annulable depuis l'historique." }
+      : { big: '0', small: 'action sans votre accord', title: "Rien ne bouge sans votre validation, et chaque action est inscrite dans l'historique." },
+  ];
+}
 
-const TRUST = [
-  {
-    Icon: Lock,
-    title: 'Ce que Mailsorter vous demandera',
-    text: 'Lire et ranger votre boîte (archiver, étiqueter, corbeille), gérer vos libellés, et vous envoyer le récap quotidien si vous l\'activez. Rien d\'autre.',
-  },
-  {
-    Icon: Sparkles,
-    title: 'Ce qui part à l\'IA',
-    text: 'L\'expéditeur, le sujet et un extrait de 200 caractères, uniquement quand vous lancez une analyse. Jamais le contenu complet, jamais les pièces jointes.',
-  },
-  {
-    Icon: Undo,
-    title: 'Rien d\'irréversible',
-    text: 'Supprimer, c\'est envoyer à la corbeille, récupérable 30 jours. Chaque action est journalisée avec son origine et s\'annule d\'un clic.',
-  },
-  {
-    Icon: Shield,
-    title: 'Vos données, reprises quand vous voulez',
-    text: 'Un export JSON complet et une suppression définitive, tous les deux en libre-service. Supprimer votre compte ne touche pas vos emails.',
-  },
-];
+function trust({ undo, selfHosted }) {
+  return [
+    {
+      Icon: Lock,
+      title: 'Ce que Mailsorter vous demandera',
+      text: "Lire votre boîte, y ranger ce que vous validez (archiver, corbeille) et vous envoyer à vous-même le récap quotidien si vous l'activez. Avec l'API Gmail, aussi étiqueter. Rien d'autre.",
+    },
+    {
+      Icon: Sparkles,
+      title: "Ce qui part à l'IA",
+      text: `L'expéditeur, le sujet et un extrait de 200 caractères, uniquement quand vous lancez une analyse. Jamais le contenu complet, jamais les pièces jointes. ${aiEgress(selfHosted)}`,
+    },
+    {
+      Icon: Undo,
+      title: "Rien d'irréversible",
+      text: `Supprimer, c'est envoyer dans la corbeille de votre fournisseur (30 jours chez Gmail). Chaque action est journalisée avec son origine${undo ? " et s'annule d'un clic" : ''}.`,
+    },
+    {
+      Icon: Shield,
+      title: 'Vos données, reprises quand vous voulez',
+      text: 'Un export JSON complet et une suppression définitive, tous les deux en libre-service. Supprimer votre compte ne touche pas vos emails.',
+    },
+  ];
+}
 
-const FAQ = [
-  {
-    q: 'Est-ce que vous lisez mes emails ?',
-    a: "Le serveur les lit pour les trier, et en garde une copie dans la base de l'instance pour afficher votre boîte sans rappeler votre fournisseur à chaque clic. Personne ne les consulte. Le détail de ce qui est conservé est dans la politique de confidentialité.",
-  },
-  {
-    q: 'Mes emails partent-ils chez un fournisseur d\'IA ?',
-    a: "Uniquement quand vous lancez une analyse, et seulement l'expéditeur, le sujet et un extrait de 200 caractères, chez Mistral. Les règles de tri, elles, sont purement déterministes : elles ne font appel à aucune IA et ne consomment aucun quota.",
-  },
-  {
-    q: 'Que se passe-t-il si Mailsorter se trompe ?',
-    a: "Rien d'irréversible. Une suppression part à la corbeille, récupérable 30 jours. Chaque action est inscrite dans un journal qui dit qui l'a décidée, et les actions réversibles s'annulent d'un clic. Vous pouvez aussi protéger des expéditeurs, qui ne seront jamais archivés ni supprimés automatiquement.",
-  },
-  {
-    q: 'Comment fonctionne la connexion de ma boîte mail ?',
-    a: "Dans un premier temps, vous créez votre compte Mailsorter avec un email et un mot de passe. Ensuite, vous choisissez la boîte mail à ranger : soit Gmail via la connexion Google sécurisée, soit toute autre messagerie avec un mot de passe d'application délivré par votre fournisseur.",
-  },
-  {
-    q: 'Combien ça coûte ?',
-    a: "200 emails analysés par mois, gratuitement et sans carte bancaire. Au-delà, le plan Pro lève la limite. Le cache et l'auto-pilote ne consomment pas votre quota, et les règles sont gratuites et illimitées.",
-  },
-  {
-    q: 'Puis-je récupérer ou effacer mes données ?',
-    a: "À tout moment, depuis l'application : un export JSON de tout ce qui est stocké à votre sujet, et une suppression définitive. Les deux sont pilotés par la même liste dans le code, donc rien ne peut être gardé sans être exportable.",
-  },
-];
+function faq({ selfHosted, billingOn, isConfigured, undo, rules, autopilot }) {
+  return [
+    {
+      q: 'Est-ce que vous lisez mes emails ?',
+      a: "Le serveur les lit pour les trier, et en garde une copie dans la base de l'instance pour afficher votre boîte sans rappeler votre fournisseur à chaque clic. Personne ne les consulte. Le détail de ce qui est conservé est dans la politique de confidentialité.",
+    },
+    {
+      q: "Mes emails partent-ils chez un fournisseur d'IA ?",
+      a: `Uniquement quand vous lancez une analyse, et seulement l'expéditeur, le sujet et un extrait de 200 caractères, ${
+        selfHosted
+          ? "chez le fournisseur d'IA configuré sur l'instance (qui peut être un modèle local), ou chez celui dont vous avez branché votre propre clé dans les réglages."
+          : "chez Mistral AI, le fournisseur d'IA du service en ligne, ou chez celui dont vous avez branché votre propre clé dans les réglages."
+      }${selfHosted ? ` ${aiEgress(true)}` : ''}${
+        rules ? ` Les règles de tri, elles, ne font appel à aucune IA${selfHosted ? '' : ' et ne consomment aucun quota'}.` : ''
+      }`,
+    },
+    {
+      q: 'Que se passe-t-il si Mailsorter se trompe ?',
+      a: `Rien d'irréversible. Une suppression part dans la corbeille de votre fournisseur (30 jours chez Gmail). Chaque action est inscrite dans un journal qui dit qui l'a décidée${
+        undo ? ", et les actions réversibles s'annulent d'un clic" : ''
+      }. Vous pouvez aussi protéger des expéditeurs, qui ne seront jamais archivés ni supprimés automatiquement.`,
+    },
+    {
+      q: 'Comment fonctionne la connexion de ma boîte mail ?',
+      a: isConfigured
+        ? "Dans un premier temps, vous créez votre compte Mailsorter avec un email et un mot de passe. Ensuite, vous choisissez la boîte mail à ranger : soit Gmail via la connexion Google, soit une autre messagerie prise en charge avec un mot de passe d'application délivré par votre fournisseur."
+        : "Dans un premier temps, vous créez votre compte Mailsorter avec un email et un mot de passe. Ensuite, vous branchez la boîte mail à ranger avec un mot de passe d'application délivré par votre fournisseur.",
+    },
+    {
+      q: 'Combien ça coûte ?',
+      a: selfHosted
+        ? "Sur votre instance, Mailsorter ne vous facture rien, et il n'y a pas de limite d'analyses. Seule une IA en ligne, si l'instance en utilise une, se paie chez son fournisseur."
+        : `200 emails analysés par mois, gratuitement et sans carte bancaire. ${
+            billingOn ? 'Au-delà, le plan Pro lève la limite.' : 'Au-delà, il y aura un plan Pro.'
+          } ${autopilot ? "Le cache et l'auto-pilote ne consomment pas" : 'Les analyses déjà en cache ne consomment pas'} votre quota${
+            rules ? ', et les règles sont gratuites et illimitées' : ''
+          }.`,
+    },
+    {
+      q: 'Puis-je récupérer ou effacer mes données ?',
+      a: "À tout moment, depuis l'application : un export JSON de tout ce qui est stocké à votre sujet, et une suppression définitive. Les deux sont pilotés par la même liste dans le code, donc rien ne peut être gardé sans être exportable.",
+    },
+  ];
+}
 
 function AuthBox({ isConfigured, onSignedIn }) {
   const { mode, setMode, email, setEmail, password, setPassword, busy, googleBusy, error, submit, startGoogle } =
@@ -252,9 +298,10 @@ function AuthBox({ isConfigured, onSignedIn }) {
   );
 }
 
-const DEMO_SUGGESTIONS = [
+// `feature` marks a verdict only some instances can apply (features.js).
+const DEMO_ALL = [
   { Icon: Archive, from: 'Medium Digest', act: 'Archiver', conf: 96 },
-  { Icon: Tag, from: 'Amazon', act: 'Libellé · Achats', conf: 92 },
+  { Icon: Tag, from: 'Amazon', act: 'Libellé · Achats', conf: 92, feature: 'label' },
   { Icon: Sparkles, from: 'Promo Casino', act: 'Supprimer', conf: 88 },
 ];
 
@@ -262,7 +309,8 @@ const DEMO_SUGGESTIONS = [
 // pas, et le visiteur retenait ça plutôt que la promesse. Elle rejoue maintenant
 // un cycle d'application complet, en pur client (aucun appel, aucune boîte), puis
 // se réinitialise pour qu'on la rejoue.
-function SuggestionsDemo() {
+function SuggestionsDemo({ isConfigured }) {
+  const DEMO_SUGGESTIONS = DEMO_ALL.filter((d) => !d.feature || canPromise(d.feature, isConfigured));
   const [applied, setApplied] = useState(0);
   const [running, setRunning] = useState(false);
   const timers = useRef([]);
@@ -355,9 +403,19 @@ function Login() {
   const [providers, setProviders] = useState([]);
 
   const features = useMemo(
-    () => FEATURES.filter((f) => !f.needs || (f.needs === GMAIL_ONLY && isConfigured)),
+    () => FEATURES.filter((f) => !f.feature || canPromise(f.feature, isConfigured)),
     [isConfigured]
   );
+  const undo = canPromise('undo', isConfigured);
+  const rules = canPromise('rules', isConfigured);
+  const autopilot = canPromise('sender', isConfigured);
+  // The single rule every provider list follows (landing/features.js): what
+  // cannot be connected here yet is listed apart, as "bientôt".
+  const reachable = providers.filter((p) => canConnect(p, isConfigured));
+  const soon = providers.filter((p) => !canConnect(p, isConfigured));
+  // The Pro waitlist and the "host it yourself" pitch are the online service's:
+  // an instance installed at home bills nobody and is already self-hosted.
+  const online = !loading && !selfHosted;
 
   const [waitlistEmail, setWaitlistEmail] = useState(getWaitlistEmail);
   const [joining, setJoining] = useState(false);
@@ -453,29 +511,30 @@ function Login() {
         <section className="grid items-center gap-12 pt-16 lg:grid-cols-2 lg:pt-24">
           <div className="animate-fade-up">
             <span className="chip mb-5 border border-brand-100 bg-brand-50 text-brand-700">
-              <Sparkles size={14} /> Propulsé par l'IA Mistral
+              <Sparkles size={14} /> Propulsé par l'IA
             </span>
             <h1 className="font-display text-4xl font-bold leading-[1.05] tracking-tight text-ink-900 sm:text-6xl">
               Votre boîte mail,
               <br />
-              <span className="text-brand-600">triée pendant que vous dormez.</span>
+              <span className="text-brand-600">triée en quelques clics.</span>
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-600">
-              Mailsorter lit, comprend et range vos emails à votre place.
-              Stop au scroll infini : atteignez l'Inbox Zero en quelques clics, et gardez-la propre pour
-              toujours.
+              Mailsorter lit vos emails et vous propose quoi en faire. Vous validez d'un clic, et votre
+              boîte se vide en quelques minutes.
             </p>
 
             {/* Formulaire d'inscription / connexion au compte MailSorter */}
             <AuthBox isConfigured={isConfigured} onSignedIn={(to) => navigate(to)} />
 
-            <p className="mt-4 text-xs text-ink-500">
-              Pas encore prêt à commencer ?{' '}
-              <a href="#garder-contact" className="font-semibold text-brand-600 underline-offset-2 hover:underline">
-                Laissez-nous votre adresse
-              </a>
-              .
-            </p>
+            {online && (
+              <p className="mt-4 text-xs text-ink-500">
+                Pas encore prêt à commencer ?{' '}
+                <a href="#garder-contact" className="font-semibold text-brand-600 underline-offset-2 hover:underline">
+                  Laissez-nous votre adresse
+                </a>
+                .
+              </p>
+            )}
           </div>
 
           {/* Démo de l'écran de suggestions. Annoncée comme telle : ce n'est pas
@@ -484,7 +543,7 @@ function Login() {
               revanche, en pur client : le bouton rejoue l'application, sans
               toucher à une boîte. */}
           <div className="animate-fade-up [animation-delay:120ms]">
-            <SuggestionsDemo />
+            <SuggestionsDemo isConfigured={isConfigured} />
             <p className="mt-2 text-center text-xs text-ink-400">Démo de l'écran de suggestions</p>
           </div>
         </section>
@@ -496,22 +555,34 @@ function Login() {
               Messageries prises en charge
             </p>
             <ul className="mt-3 flex flex-wrap gap-1.5">
-              {providers.map((p) => (
+              {reachable.map((p) => (
                 <li key={p.key} className="chip bg-ink-100 text-ink-700">
                   {p.name}
                 </li>
               ))}
             </ul>
+            {soon.length > 0 && (
+              <>
+                <p className="mt-4 text-xs font-semibold uppercase tracking-wider text-ink-500">Bientôt</p>
+                <ul className="mt-2 flex flex-wrap gap-1.5">
+                  {soon.map((p) => (
+                    <li key={p.key} className="chip bg-ink-50 text-ink-400">
+                      {p.name}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <p className="mt-3 text-xs text-ink-500">
-              Vous créez votre compte Mailsorter, puis vous branchez la boîte de votre choix
-              (Gmail, Orange, Outlook, Yahoo...) en toute sécurité.
+              Vous créez votre compte Mailsorter, puis vous branchez la boîte de votre choix parmi celles
+              qui sont prises en charge.
             </p>
           </section>
         )}
 
         {/* Faits vérifiables */}
         <section className="mt-14 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {FACTS.map(({ big, small, title }) => (
+          {facts({ selfHosted, undo, autopilot }).map(({ big, small, title }) => (
             <div key={small} className="card p-5 text-center" title={title}>
               <div className="font-display text-3xl font-bold text-ink-900">{big}</div>
               <div className="mt-1 text-xs text-ink-500">{small}</div>
@@ -525,14 +596,18 @@ function Login() {
             Tout ce qu'une boîte mail aurait dû faire seule.
           </h2>
           <div className="mt-10 grid gap-4 sm:grid-cols-2">
-            {features.map(({ Icon, title, text, soon }) => (
+            {features.map(({ Icon, title, text, feature }) => (
               <div key={title} className="card group p-6 transition-shadow hover:shadow-card">
                 <span className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
                   <Icon size={22} />
                 </span>
                 <h3 className="flex flex-wrap items-center gap-2 text-lg font-bold text-ink-900">
                   {title}
-                  {soon && <span className="chip bg-caution-50 text-caution-700">Bientôt</span>}
+                  {feature && isGmailOnly(feature) && (
+                    <span className="chip bg-caution-50 text-caution-700" title="Pas encore disponible sur les boîtes IMAP">
+                      Gmail
+                    </span>
+                  )}
                 </h3>
                 <p className="mt-2 text-sm leading-relaxed text-ink-600">{text}</p>
               </div>
@@ -546,7 +621,7 @@ function Login() {
             Trois étapes. Zéro effort.
           </h2>
           <div className="mt-10 grid gap-4 md:grid-cols-3">
-            {STEPS.map(({ n, title, text }) => (
+            {steps(isConfigured).map(({ n, title, text }) => (
               <div key={n} className="card p-6">
                 <div className="font-display text-4xl font-bold text-ink-200">{n}</div>
                 <h3 className="mt-3 text-lg font-bold text-ink-900">{title}</h3>
@@ -566,10 +641,10 @@ function Login() {
           </h2>
           <p className="mt-3 max-w-2xl text-ink-600">
             Donner à une application l'accès à sa boîte mail n'est pas anodin. Voici ce qui est demandé,
-            ce qui est conservé, et ce qui ne sort jamais.
+            ce qui est conservé, et ce qui part à l'IA.
           </p>
           <div className="mt-10 grid gap-4 sm:grid-cols-2">
-            {TRUST.map(({ Icon, title, text }) => (
+            {trust({ undo, selfHosted }).map(({ Icon, title, text }) => (
               <div key={title} className="card p-6">
                 <span className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-positive-50 text-positive-600">
                   <Icon size={22} />
@@ -588,6 +663,7 @@ function Login() {
         </section>
 
         {/* Auto-hébergement */}
+        {online && (
         <section className="mt-16 flex flex-col gap-5 rounded-2xl border border-hairline bg-surface p-8 sm:flex-row sm:items-center">
           <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-ink-100 text-ink-700">
             <Server size={24} />
@@ -595,9 +671,9 @@ function Login() {
           <div className="flex-1">
             <h3 className="text-lg font-bold text-ink-900">Ou hébergez-le vous-même.</h3>
             <p className="mt-1.5 text-sm leading-relaxed text-ink-600">
-              Le code est public. Vous pouvez faire tourner Mailsorter sur votre serveur, avec votre
-              propre projet Google : vos emails et vos jetons ne quittent alors jamais votre
-              infrastructure, et il n'y a personne à qui faire confiance.
+              Le code est public. Vous pouvez faire tourner Mailsorter sur votre serveur : vos emails et
+              vos accès restent alors sur votre infrastructure, et avec un modèle d'IA local, rien n'en
+              sort.
             </p>
           </div>
           <a
@@ -609,6 +685,7 @@ function Login() {
             Voir le code
           </a>
         </section>
+        )}
 
         {/* FAQ */}
         <section className="mt-24">
@@ -616,7 +693,7 @@ function Login() {
             Les questions qu'on nous pose.
           </h2>
           <div className="mt-8 space-y-2.5">
-            {FAQ.map(({ q, a }) => (
+            {faq({ selfHosted, billingOn, isConfigured, undo, rules, autopilot }).map(({ q, a }) => (
               <details key={q} className="card group p-5 [&_summary::-webkit-details-marker]:hidden">
                 <summary className="flex cursor-pointer items-center justify-between gap-4 text-base font-bold text-ink-900">
                   {q}
@@ -634,7 +711,7 @@ function Login() {
         {/* Final CTA */}
         <section className="mt-24 overflow-hidden rounded-3xl bg-brand-fill p-10 text-center text-white sm:p-16">
           <h2 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">
-            Reprenez le contrôle de votre inbox.
+            Reprenez le contrôle de votre boîte mail.
           </h2>
           <p className="mx-auto mt-3 max-w-md text-white/85">
             Créez votre compte en 10 secondes et regardez le désordre disparaître.
@@ -649,19 +726,21 @@ function Login() {
           </button>
         </section>
 
-        {/* Garder le contact sans donner sa boîte */}
+        {/* Garder le contact sans donner sa boîte. Le service en ligne seulement :
+            une instance installée chez soi n'a ni plan Pro ni liste d'attente. */}
+        {online && (
         <section id="garder-contact" className="card mt-6 p-8 text-center">
           <span className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
             <Mail size={22} />
           </span>
           <h3 className="text-lg font-bold text-ink-900">Pas encore prêt ?</h3>
           <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-ink-600">
-            {!loading && !selfHosted && billingOn
+            {billingOn
               ? 'Le plan Pro est disponible dès maintenant.'
               : "Laissez votre adresse : vous serez prévenu des nouveautés et de l'ouverture du plan Pro. Pas d'accès à votre boîte, pas de compte à créer."}
           </p>
 
-          {!loading && !selfHosted && billingOn ? (
+          {billingOn ? (
             <div className="mt-5 flex justify-center">
               <button
                 type="button"
@@ -705,12 +784,13 @@ function Login() {
             </form>
           )}
 
-          {!loading && !selfHosted && billingOn ? null : waitlistError && (
+          {billingOn ? null : waitlistError && (
             <p role="alert" className="mt-3 text-sm text-danger-700">
               {waitlistError}
             </p>
           )}
         </section>
+        )}
 
         <PublicFooter />
       </div>

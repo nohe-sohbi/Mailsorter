@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { snoozeService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
+import { useMailboxErrorToast } from '../ui/mailboxError';
 import { EmptyState, ErrorState, LiveAnnouncer } from '../ui/primitives';
 import { Clock, Undo, Mail, Alert, Check } from '../ui/icons';
 import Spinner from '../ui/Spinner';
@@ -21,10 +22,13 @@ const gradientFor = (seed = '') => {
 };
 const senderName = (from = '') => from.split('<')[0].replace(/"/g, '').trim() || from;
 
-// Le backend connaît trois états (`scheduled`, `done`, `failed`) et la page n'en
-// montrait qu'un. Un report en échec (message introuvable côté Gmail, cinq
-// tentatives épuisées) quittait donc la liste sans un mot : l'email restait
-// hors de la boîte, définitivement, sans que personne ne l'apprenne.
+// Le backend connaît trois états à montrer (`scheduled`, `done`, `failed`) et la
+// page n'en montrait qu'un. Un report en échec (message introuvable dans la
+// boîte, cinq tentatives épuisées) quittait donc la liste sans un mot : l'email
+// restait hors de la boîte, définitivement, sans que personne ne l'apprenne. Le
+// quatrième, `cancelled` (annulé par « Annuler », ou sorti de « Plus tard » par
+// un autre logiciel sur une boîte IMAP), n'a pas d'onglet : il n'y a plus rien
+// à faire revenir.
 const TABS = [
   {
     key: 'scheduled',
@@ -39,7 +43,7 @@ const TABS = [
       scene: { prop: 'alarm', color: '#2F6F73' },
       hotelTitle: 'Rien en attente.',
       hotelDescription:
-        "Un e-mail reporté disparaît de la boîte et revient ce soir, demain ou ce week-end, comme si vous l'aviez reçu à ce moment-là.",
+        'Un e-mail reporté quitte votre boîte, puis y revient non lu ce soir, demain ou ce week-end.',
       description:
         "Depuis le lecteur d'email, utilisez « Reporter » pour mettre un email de côté jusqu'au moment qui vous arrange.",
     },
@@ -56,7 +60,7 @@ const TABS = [
       title: 'Aucun report terminé',
       scene: { prop: 'wallclock', color: '#2F6F73' },
       description:
-        'Les emails revenus dans votre boîte, à l’heure prévue ou réactivés à la main, s’afficheront ici.',
+        "Les emails revenus dans votre boîte, à l'heure prévue ou réactivés à la main, s'afficheront ici.",
     },
   },
   {
@@ -150,6 +154,7 @@ function countdown(dateStr, now) {
 
 function Snoozed() {
   const toast = useToast();
+  const showMailboxError = useMailboxErrorToast();
   const hotel = useHotel();
   const confirm = useConfirm();
   const [tab, setTab] = useState('scheduled');
@@ -258,7 +263,10 @@ function Snoozed() {
       if (tab === 'failed') setFailedCount((c) => Math.max(0, c - 1));
       toast.success('Email réactivé, de retour dans votre boîte');
     } catch (err) {
-      toast.error(apiError(err, 'Réactivation impossible. Réessayez.'));
+      // The server's sentence: the mailbox to connect again (428, with the
+      // way there), not answering (502), being brought back already (423),
+      // several copies in "Plus tard" (409).
+      showMailboxError(err, 'Réactivation impossible. Réessayez.');
     } finally {
       setWaking(null);
     }
@@ -436,9 +444,9 @@ function Snoozed() {
                       <Alert size={14} className="mt-0.5 shrink-0" />
                       <span>
                         Le retour dans votre boîte a échoué {s.attempts || 5} fois, puis Mailsorter a cessé
-                        de réessayer. Le message a sans doute été supprimé ou déplacé définitivement dans
-                        Gmail. Cet email est donc toujours hors de votre boîte : « Réactiver » relance la
-                        tentative.
+                        de réessayer. Le message a sans doute été supprimé ou déplacé depuis votre messagerie,
+                        ou celle-ci n'a pas répondu. Cet email est donc toujours hors de votre boîte :
+                        « Réactiver » relance la tentative.
                       </span>
                     </p>
                   )}

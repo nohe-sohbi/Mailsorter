@@ -1,6 +1,8 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Shield, Code, Mail } from '../ui/icons';
+import { useInstance } from '../contexts/InstanceContext';
+import { AI_READS } from './landing/features';
 
 // The footer of every page a logged-out visitor can reach.
 //
@@ -12,17 +14,23 @@ import { Shield, Code, Mail } from '../ui/icons';
 //
 // Rendered by Login, Pricing and the two legal pages, so the links can never be
 // present on one and missing on another.
+//
+// CONTACT_EMAIL is the author of Mailsorter, who runs the online service. An
+// instance installed at home is run by whoever installed it: the author knows
+// nothing of its accounts and can answer no request about them, so the link is
+// not offered there.
 export const CONTACT_EMAIL = 'nohe@sohbi.dev';
 export const SOURCE_URL = 'https://github.com/nohe-sohbi/Mailsorter';
 
 function PublicFooter({ className = '' }) {
+  const { selfHosted } = useInstance();
   return (
     <footer className={`mt-16 border-t border-hairline pt-8 text-sm text-muted ${className}`}>
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <span className="block font-semibold text-ink-700">Mailsorter</span>
           <span className="mt-1 flex items-center gap-2 text-xs">
-            <Shield size={13} /> Vos emails ne quittent jamais votre contrôle.
+            <Shield size={13} /> {AI_READS}
           </span>
         </div>
 
@@ -33,12 +41,14 @@ function PublicFooter({ className = '' }) {
           <Link to="/conditions" className="transition-colors hover:text-ink-900">
             Conditions d'utilisation
           </Link>
-          <a
-            href={`mailto:${CONTACT_EMAIL}`}
-            className="flex items-center gap-1.5 transition-colors hover:text-ink-900"
-          >
-            <Mail size={13} /> Contact
-          </a>
+          {!selfHosted && (
+            <a
+              href={`mailto:${CONTACT_EMAIL}`}
+              className="flex items-center gap-1.5 transition-colors hover:text-ink-900"
+            >
+              <Mail size={13} /> Contact
+            </a>
+          )}
           <a
             href={SOURCE_URL}
             target="_blank"

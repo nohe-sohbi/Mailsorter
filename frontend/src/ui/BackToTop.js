@@ -4,7 +4,7 @@ import { useHotel } from './hotel/HotelTheme';
 
 // Retour en haut de page : bouton flottant qui n'apparaît que quand
 // l'utilisateur a fait défiler la page. Ajout pur (aucun composant, aucune
-// dépendance, aucune modification du code existant) — respecte le design
+// dépendance, aucune modification du code existant) - respecte le design
 // system (tokens CSS vars du Grand Hotel + rampe ink/surface de l'UI classique).
 
 const SCROLL_THRESHOLD = 400;

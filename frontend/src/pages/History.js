@@ -2,13 +2,14 @@ import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { accountService, apiError } from '../services/api';
 import { useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/Confirm';
-import { actionMeta } from '../ui/actions';
+import { actionMeta, labelPlace } from '../ui/actions';
 import { EmptyState, ErrorState, LiveAnnouncer } from '../ui/primitives';
 import { History as HistoryIcon, Undo, Search } from '../ui/icons';
 import Spinner from '../ui/Spinner';
 import { cn } from '../ui/cn';
 import { useHotel } from '../ui/hotel/HotelTheme';
 import PageHead from '../components/hotel/PageHead';
+import { useMailbox } from '../contexts/EmailContext';
 
 // Une page à la fois : le serveur plafonne à 200, mais 50 lignes remplissent
 // déjà l'écran et rendent « Charger plus » utile plutôt que décoratif.
@@ -99,7 +100,46 @@ function byDay(entries) {
   return days;
 }
 
-function HotelRegister({ entries, undoing, onUndo }) {
+// Actions that have an inverse. When the server still says one of these
+// cannot be undone, it is because it no longer can (on IMAP: past 30 days,
+// a move Mailsorter cannot trace, a read change on a mail that left the
+// inbox), not because the action has no inverse. Over IMAP a label is a
+// folder, and filing there is undone like an archive.
+const HAS_INVERSE = new Set(['archive', 'delete', 'trash', 'read', 'markRead']);
+
+const hasInverse = (e, folders) => HAS_INVERSE.has(e.action) || (folders && e.action === 'label');
+
+// An action on another mailbox than the one connected now (`mailboxGone`: one
+// disconnected or replaced since) is final: its mail number names a mail of
+// the mailbox connected now.
+const finalLabel = (e, folders, none = 'Définitif') =>
+  e.mailboxGone ? 'Définitif' : hasInverse(e, folders) ? 'Plus annulable' : none;
+
+const finalHint = (e, folders) =>
+  e.mailboxGone
+    ? 'Cette action concerne une boîte débranchée depuis.'
+    : hasInverse(e, folders)
+    ? "Mailsorter ne peut plus annuler cette action d'ici : le mail a changé de place depuis, ou elle est trop ancienne."
+    : "Cette action n'a pas d'inverse automatique.";
+
+// What a line says was done: the verb in the past, and for a label where it
+// filed the mail ("Classé dans « Factures »" over IMAP, where it is a folder).
+const placeOf = (e, folders) => (e.action === 'label' ? labelPlace(e.labelName, { folders }) : '');
+// A report leaves the inbox and comes back to it: the ledger records it as an
+// archive and an unarchive, which is what it does on the mailbox, but the
+// person reads what they did: « Reporté », then « Revenu dans la boîte ».
+const SNOOZE_PAST = { archive: 'Reporté', unarchive: 'Revenu dans la boîte' };
+const verbOf = (e, folders) =>
+  (e.source === 'snooze' && SNOOZE_PAST[e.action]) || actionMeta(e.action, { folders }).past;
+const pastOf = (e, folders) => `${verbOf(e, folders)}${placeOf(e, folders)}`;
+// Inside a sentence: the verb in lower case, the folder or label as the user
+// named it (« classé dans « Livraisons » », not « livraisons »).
+const pastInSentence = (e, folders) => `${verbOf(e, folders).toLowerCase()}${placeOf(e, folders)}`;
+
+// What the right-hand side of a row says. `undoOk` waits for the mailbox to be
+// known: undo works on the Gmail API and on IMAP alike, a message Mailsorter
+// moved remembering where it went.
+function HotelRegister({ entries, undoing, onUndo, undoOk, folders }) {
   return (
     <div className="card px-5 pb-4 pt-1 sm:px-7">
       {byDay(entries).map((day) => (
@@ -107,7 +147,6 @@ function HotelRegister({ entries, undoing, onUndo }) {
           <h2 className="hd-reg__day">{day.label}</h2>
           <ul className="hd-reg">
             {day.entries.map((e) => {
-              const meta = actionMeta(e.action);
               const identity = identityOf(e);
               const who = identity.sender || identity.title;
               return (
@@ -119,20 +158,22 @@ function HotelRegister({ entries, undoing, onUndo }) {
                     <span className={identity.known ? undefined : 'italic text-muted'} title={identity.known ? identity.from : UNKNOWN_HINT}>
                       {who}
                     </span>{' '}
-                    <em>{meta.past.toLowerCase()}</em>
+                    <em>{pastInSentence(e, folders)}</em>
                     <small>
                       {identity.sender && identity.known ? `${identity.title}. ` : ''}
                       {SOURCE_LABELS[e.source] || e.source}
                     </small>
                   </div>
-                  {e.undoable ? (
+                  {e.undoable && undoOk ? (
                     <button onClick={() => onUndo(e)} disabled={undoing === e.id} className="hd-link" title="Annuler cette action">
                       {undoing === e.id ? <Spinner size={13} /> : 'Annuler'}
                     </button>
-                  ) : (
-                    <span className="text-xs text-muted" title={e.undone ? undefined : "Cette action n'a pas d'inverse automatique."}>
-                      {e.undone ? 'Annulé' : 'Définitif'}
+                  ) : e.undone || !e.undoable ? (
+                    <span className="text-xs text-muted" title={e.undone ? undefined : finalHint(e, folders)}>
+                      {e.undone ? 'Annulé' : finalLabel(e, folders)}
                     </span>
+                  ) : (
+                    <span />
                   )}
                 </li>
               );
@@ -168,6 +209,9 @@ function History() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [undoing, setUndoing] = useState(null);
+  // Undo works on both transports; it only waits for the mailbox to be known.
+  // Over IMAP a label is a folder (`folders`).
+  const { known: undoOk, isImap: folders } = useMailbox();
 
   // Read inside async callbacks to tell whether the filter moved on since a
   // request was issued.
@@ -211,7 +255,7 @@ function History() {
     // happened. Changing source or search while it is in flight would otherwise
     // graft the tail of the old filter onto the new list, and overwrite the
     // cursor with one that no longer describes what is on screen.
-    const filterAtCall = `${source} ${query}`;
+    const filterAtCall = `${source}\u0000${query}`;
     setLoadingMore(true);
     try {
       const { data } = await accountService.getActionLog({
@@ -220,7 +264,7 @@ function History() {
         limit: PAGE_SIZE,
         before: nextBefore,
       });
-      if (filterAtCall !== `${sourceRef.current} ${queryRef.current}`) return;
+      if (filterAtCall !== `${sourceRef.current}\u0000${queryRef.current}`) return;
       const page = data.entries || [];
       // Le curseur est temporel : une action enregistrée entre deux pages peut
       // décaler la fenêtre, on dédoublonne sur l'id plutôt que d'afficher deux
@@ -238,15 +282,14 @@ function History() {
   };
 
   const handleUndo = async (entry) => {
-    const meta = actionMeta(entry.action);
     const identity = identityOf(entry);
     // Le ledger n'a pas d'inverse pour un inverse : une fois la ligne annulée,
     // le bouton disparaît définitivement. `danger` reste faux parce que l'effet
-    // est restaurateur (l'email revient) — le peindre en rouge mentirait.
+    // est restaurateur (l'email revient) - le peindre en rouge mentirait.
     if (
       !(await confirm({
         title: 'Annuler cette action ?',
-        message: `« ${identity.title} » : l'action « ${meta.past} » sera défaite dans votre boîte Gmail.`,
+        message: `« ${identity.title} » : l'action « ${pastOf(entry, folders)} » sera défaite dans votre boîte.`,
         detail: "Cette annulation est définitive : elle ne pourra pas être refaite depuis l'historique.",
         confirmLabel: "Annuler l'action",
         cancelLabel: 'Revenir',
@@ -266,8 +309,16 @@ function History() {
       // 409 = déjà annulée ailleurs (autre onglet, autre session) : la ligne
       // affichée est périmée, on la remet d'aplomb au lieu de laisser un bouton
       // qui échouera à chaque clic.
-      if (err.response?.status === 409) {
+      // Sauf le 409 « plusieurs copies » (severalCopies) : rien n'a été annulé,
+      // la ligne cesse seulement de proposer « Annuler », comme pour un 404.
+      const severalCopies = Boolean(err.response?.data?.severalCopies);
+      if (err.response?.status === 409 && !severalCopies) {
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true, undoable: false } : e)));
+      }
+      // 404 = le mail n'est plus là où Mailsorter l'avait mis, ou l'action est
+      // trop ancienne : le serveur ne la propose plus, la ligne non plus.
+      if (err.response?.status === 404 || severalCopies) {
+        setEntries((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undoable: false } : e)));
       }
       toast.error(apiError(err, 'Annulation impossible.'));
     } finally {
@@ -291,7 +342,7 @@ function History() {
         <PageHead
           floor="/history"
           title="Historique"
-          sub="Tout ce que Mailsorter a fait à votre place, et de quoi l'annuler."
+          sub={undoOk ? "Tout ce que Mailsorter a fait à votre place, et de quoi l'annuler." : 'Tout ce que Mailsorter a fait à votre place.'}
         />
       ) : (
         <div className="mb-6 flex items-center gap-3">
@@ -301,7 +352,9 @@ function History() {
           <div>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink-900">Historique</h1>
             <p className="text-sm text-muted">
-              Tout ce que Mailsorter a fait à votre place, et un bouton pour l'annuler.
+              {undoOk
+                ? "Tout ce que Mailsorter a fait à votre place, et un bouton pour l'annuler."
+                : 'Tout ce que Mailsorter a fait à votre place.'}
             </p>
           </div>
         </div>
@@ -316,7 +369,7 @@ function History() {
           <input
             type="search"
             className="input pl-10"
-            placeholder={hotel ? 'Rechercher un sujet ou un expéditeur' : 'Rechercher un sujet ou un expéditeur…'}
+            placeholder={hotel ? 'Rechercher un sujet ou un expéditeur' : 'Rechercher un sujet ou un expéditeur...'}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Rechercher dans l'historique"
@@ -390,9 +443,17 @@ function History() {
               Icon={HistoryIcon}
               scene={{ prop: 'newspaper', color: '#7A2E3B' }}
               hotelTitle="Rien d'écrit pour l'instant."
-              hotelDescription="Dès qu'un e-mail est trié, par vous, une règle ou l'IA, il est noté ici, avec de quoi l'annuler."
+              hotelDescription={
+                undoOk
+                  ? "Dès qu'un e-mail est trié, par vous, une règle ou l'IA, il est noté ici, avec de quoi l'annuler."
+                  : "Dès qu'un e-mail est trié, par vous ou par l'IA, il est noté ici."
+              }
               title="Aucune action pour l'instant"
-              description="Dès que vous (ou l'auto-pilote) triez un email, l'action apparaîtra ici, avec une option pour la défaire."
+              description={
+                undoOk
+                  ? "Dès que vous (ou l'auto-pilote) triez un email, l'action apparaîtra ici, avec une option pour la défaire."
+                  : "Dès que vous triez un email, l'action apparaîtra ici."
+              }
             />
           )}
         </div>
@@ -403,15 +464,17 @@ function History() {
               <span className="font-semibold text-ink-900">{entries.length}</span> action{plural} affichée{plural}
               {nextBefore ? ", l'historique continue plus bas" : ''}
             </p>
-            <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>
+            {undoOk && <p className="text-xs text-muted">Les actions réversibles s'annulent d'un clic.</p>}
           </div>
 
           {hotel ? (
-            <HotelRegister entries={entries} undoing={undoing} onUndo={handleUndo} />
+            <HotelRegister entries={entries} undoing={undoing} onUndo={handleUndo} undoOk={undoOk} folders={folders} />
           ) : (
             <ul className="space-y-2.5">
               {entries.map((e) => {
-                const meta = actionMeta(e.action);
+                // A report and its return wear the report's icon, as they
+                // read « Reporté » and « Revenu dans la boîte » (verbOf).
+                const meta = e.source === 'snooze' ? actionMeta('snooze') : actionMeta(e.action, { folders });
                 const Icon = meta.Icon;
                 const identity = identityOf(e);
                 return (
@@ -437,7 +500,7 @@ function History() {
                         {e.undone && <span className="chip shrink-0 bg-positive-50 text-positive-700">Annulé</span>}
                       </div>
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
-                        <span className="font-semibold text-ink-700">{meta.past}</span>
+                        <span className="font-semibold text-ink-700">{pastOf(e, folders)}</span>
                         {identity.sender && (
                           <>
                             <span aria-hidden="true" className="text-subtle">·</span>
@@ -455,7 +518,7 @@ function History() {
                       </div>
                     </div>
 
-                    {e.undoable ? (
+                    {e.undoable && undoOk ? (
                       <button
                         onClick={() => handleUndo(e)}
                         disabled={undoing === e.id}
@@ -465,12 +528,10 @@ function History() {
                         {undoing === e.id ? <Spinner size={14} /> : <Undo size={14} />} Annuler
                       </button>
                     ) : (
-                      !e.undone && (
-                        <span
-                          className="shrink-0 text-xs text-muted"
-                          title="Cette action n'a pas d'inverse automatique."
-                        >
-                          Non réversible
+                      !e.undone &&
+                      !e.undoable && (
+                        <span className="shrink-0 text-xs text-muted" title={finalHint(e, folders)}>
+                          {finalLabel(e, folders, 'Non réversible')}
                         </span>
                       )
                     )}
